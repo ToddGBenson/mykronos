@@ -6,9 +6,9 @@ what `backend/.env` says — and it fails silently, reading as its code default.
 
 The compose file already carried this lesson for Slack: "a notifier that is
 wired everywhere except the one process that runs is worse than no notifier:
-it looks configured." `routing_enabled` was then set in `.env`, deployed, and
-read `False` in the container for exactly the same reason. Hence a test rather
-than a third comment.
+it looks configured." `routing_enabled` (since retired, D-161) was then set in
+`.env`, deployed, and read `False` in the container for exactly the same
+reason. Hence a test rather than a third comment.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ COMPOSE = (
 #: belong here. These are the ones where the code default and the operator's
 #: intent can differ, and where being wrong is silent.
 MUST_BE_PASSABLE = (
-    "MYKRONOS_ROUTING_ENABLED",
     "MYKRONOS_SLACK_WEBHOOK_URL",
     "MYKRONOS_SLACK_BOT_TOKEN",
     "MYKRONOS_SLACK_CHANNEL",
@@ -67,16 +66,6 @@ def test_it_interpolates_rather_than_hardcoding(name, backend_environment) -> No
     assert str(backend_environment[name]).startswith("${"), (
         f"{name} is hardcoded in compose, so backend/.env cannot change it"
     )
-
-
-def test_routing_defaults_to_off_in_compose() -> None:
-    """Turning it on is a per-deployment decision — it opens issues in
-    somebody's tracker. A compose file that defaulted it to true would make
-    that decision for everyone who pulls."""
-    document = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
-    value = str(document["services"]["backend"]["environment"]["MYKRONOS_ROUTING_ENABLED"])
-
-    assert value.endswith(":-false}"), value
 
 
 def test_the_reviewer_defaults_to_shadow_in_compose() -> None:

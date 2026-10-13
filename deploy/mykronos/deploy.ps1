@@ -620,7 +620,7 @@ if ($keyPath -and (Test-Path $keyPath)) {
     $env:MYKRONOS_GITHUB_APP_KEY_HOST_PATH = (Resolve-Path $keyPath).Path
     Write-Host "GitHub App key will be mounted read-only." -ForegroundColor DarkGray
 } else {
-    Write-Host "No GitHub App key found; the stack will run without it." -ForegroundColor Yellow
+    Write-Host "No GitHub App key found; compose refuses to start without it. Set MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH in backend/.env." -ForegroundColor Yellow
 }
 
 if ($MigrateFrom) {

@@ -22,7 +22,7 @@ knew and did not say:
 | What the agent got wrong | What the platform knew |
 |---|---|
 | Treated an open count as "nobody fixed it" | The lane was failing, so nothing *could* close (`briefing.stalled`) |
-| Dispositioned DAST findings that reappeared under new ids | DAST finding identity is not stable (#274) |
+| Treated a DAST finding's URL as its identity | Since #440 the identity is the route; the URL is evidence in `raw_finding_json.instance.uri` |
 | Recommended pulling an image to fix container CVEs | `fixed_version` names a patched *package*, not a patched image |
 | Reported an atlas version as the running one | `version_basis` said `declared_floor` |
 | Read "true_positive" as a judgement | `classify()` derives it from severity alone |
@@ -79,6 +79,7 @@ WorkItem
   actions[]              {label, method, path, governed_by, effect}
   done_when              what the platform will observe when this is finished
   caveats[]              {code, detail}: see §3
+  playbook               <kind>@<version>: how to work it, see §5
 ```
 
 **`unknown` is not an empty list.** A source that could not be read appears there and nowhere else. A queue
@@ -134,7 +135,7 @@ improve.
 | Code | On | Meaning |
 |---|---|---|
 | `lane_frozen` | `triage` | The finding's lane is stalled. Nothing done to it will be observed until the lane runs. |
-| `identity_unstable` | `triage`, DAST | DAST findings get a new id each scan (#274). A disposition will not follow the finding. |
+| `identity_is_the_route` | `triage`, DAST | The identity is the route (#440): one disposition covers every URL on it. The scanned URL is in `raw_finding_json.instance.uri`. |
 | `fix_is_a_package` | `triage`, containers | A fixed version is a patched package, not a patched image. Compare digests before recommending a pull. |
 | `declared_version` | `triage`, atlas | The version is the declared floor or pin, not the resolved one. The running version may differ. |
 | `severity_only_triage` | `triage` | The `true_positive` label comes from severity alone; nothing read the code. |
@@ -169,17 +170,121 @@ The six times TheHub's scanning stopped become branches of `lane_stalled`: read 
 first, then token, branch, red `unit`, Actions disabled, billing. That knowledge stops living in one agent's
 memory file.
 
-## 6. The track record (phase 4)
+### 5.1 As built
 
-Computed per agent family and per instance from records that already exist. No new events are needed:
+**The file.** `agent-playbooks-v1.yaml`, loaded through the `agent_playbooks_path` setting and copied into
+the backend image beside the other reviewed files. `version` is quoted text (`"1.0"`), and each item's
+`playbook` is `<kind>@<version>`.
 
-- dispositions overturned when sampled (`ApprovalDecision.sample_*`),
-- the agent's pull requests rejected or closed unmerged,
-- findings it reported fixed that reopened (`regression`),
-- claims that lapsed with no disposition (`worklist`),
-- `needs_info` answers per request.
+```
+playbooks.<kind>
+  purpose              what the item means and what "done" is
+  steps[]              ordered
+    id                 stable slug
+    do                 what to do
+    check              what to confirm before moving on
+    routes[]           "METHOD /path" this step reads or calls
+    outside[]          evidence outside the API (a gh command, a build log)
+    if_found           for a diagnostic branch: what it means when the check finds the cause
+    then               continue | repair | escalate | stop
+  stop_when[]
+  escalate             {when[], evidence[]}
+  never[]              what this kind of item tempts an agent to do that it must not
+```
 
-A delegation (spec 34 §5) is then granted against a published record rather than on trust, and sampling and
+**The order in `lane_stalled`** differs from the list above in one place, and on purpose: it reads the
+failure first, then checks for a quiet repository (a silent lane in a repository nobody pushed to is idle,
+not stalled, and most lanes are commit-triggered), then billing, Actions disabled, a red upstream quality
+lane, the wrong branch or a pinned commit, the ingestion token, and a host or Docker restart. Billing and
+disabled Actions come before the token because they are read straight off the annotation and stop every job
+at once. `ci_job_failing` follows the same order for a single job.
+
+**The kinds are one list.** `agent_work.KINDS` names every kind `build` can emit. `WorkItem` refuses a
+kind outside it; `mykronos.playbooks` refuses a file missing a kind or naming one that does not exist, and an
+unknown key anywhere (a misspelt `stop_when` would otherwise load as a playbook with no stop conditions).
+
+**The routes are checked.** `tests/test_playbooks.py` walks the app's routes and fails on any route a
+playbook names that the app does not serve, naming the playbook and step. Renaming a route without updating
+the playbook that sends agents to it fails CI.
+
+**Read routes.** `GET /api/agent/playbooks` (all, in band order) and `GET /api/agent/playbooks/{kind}` (404
+for an unknown kind), for any principal. A file that will not load answers 503 on these and on
+`/api/agent/work`, rather than a queue whose items name playbooks nobody can read.
+
+**What the file does not do.** It grants nothing: the routes it names enforce their own rules. It is in
+`approval-policy-v1.yaml`'s `governance` change class (#805), so only a person approves a change to it: a file
+that tells agents when to escalate is not one an agent should approve edits to.
+
+## 6. The track record — `GET /api/agent/scorecard` (phase 4)
+
+Computed per model family and per instance from records that already exist. No new events and no new
+tables: every number is a read over `approval_requests`, `approval_decisions`, `audit_log`,
+`triage_state` and finding status in the lake (`mykronos/agent_scorecard.py`). Any principal may read it,
+because it is the record a delegation (spec 34 §5) rests on, and an agent should read the same numbers
+the operator does. It carries counts, never rationales or review notes.
+
+**An agent is grouped as its records say.** Approvals, requests and audit entries each snapshot the
+agent's `family` and `instance` when it acted, so a revoked credential cannot rewrite its record. A record
+with no family is shown under `(unrecorded)`, never dropped. `family` and `instance` filter the
+response; a family's aggregate always covers all its instances.
+
+**Every metric carries its source, its denominator, and one of three states.** `computed` has a non-zero
+denominator. `no_data` means the source was read and the denominator is zero, so an agent never sampled
+has no agreement rate rather than 100% or 0%. `unavailable` means the source could not be read or no
+record supports the number, and `note` says which. Neither of the last two is a zero. A source that
+fails to read is also named in `unknown`.
+
+| Metric | Value / denominator | Source |
+|---|---|---|
+| `approver.verdicts` | rejections / decisions as an approver, with every verdict in `breakdown` | `approval_decisions`, `approver_kind = agent` |
+| `approver.sampled` | sampled / decisions made under a delegation | same |
+| `approver.sample_reviewed` | reviewed by a person / sampled; `awaiting_review` is the queue | same |
+| `approver.overturned` | `sample_verdict = disagree` / reviewed samples | same |
+| `approver.agreement` | `agree` / reviewed samples, all time | same |
+| `approver.agreement_window` | `agree` / the newest `agreement_window` reviewed samples, against `suspend_below_agreement` | same, in `sampling._agreement`'s order |
+| `requester.rejected` | rejected / decided (approved + rejected), every state in `breakdown` | `approval_requests`, `requester_kind = agent` |
+| `requester.needs_info` | requests answered `needs_info` at least once / requests made | `approval_requests` + `approval_decisions` |
+| `dispositions.reopened` | reopened / `false_positive` and `suppressed` dispositions the agent applied | `audit_log` `finding.status` (`actor_kind = agent`) and `finding.reopened` |
+| `claims.lapsed_open` | lapsed claims on a finding still `open` / claims recorded under the agent's actor | `triage_state` and lake `findings.status` |
+
+`requests_by_duty` repeats `rejected` and `needs_info` for each duty, so `pull_request_merge` rejections
+appear separately. A pending request past its expiry counts as `expired`, because the engine only marks
+it lazily. Each group also lists the delegations its approvals were made under, with the agreement figure
+from `sampling.delegation_stats`. That per-delegation figure is the one that suspends: suspension acts on
+a delegation across every family it trusts, not on a family.
+
+**Limits of what is derived:**
+
+- `dispositions.reopened` counts a disposition as reopened only when the next status event on its
+  finding is a reopen. If someone dispositioned it again first, the outcome is `superseded`. Who reopened
+  it is in `breakdown` (`human`, `self`, `another_agent`). `accepted_risk` dispositions are counted as
+  `not_measurable`, because an acceptance ends through the acceptance sweep, which writes no audit entry.
+- `claims.lapsed_open` is a lower bound. `triage_state` keeps one claim per finding and claims are not
+  audited, so a released or re-claimed claim leaves no trace. A claim's `by` is the handle the caller
+  typed, and it is matched to the agent's actor name, which is the handle the work queue treats as the
+  agent's own.
+- `unattributed_dispositions` counts the `finding.status` entries that name no actor kind: entries
+  written before spec 34 §1, or by a CLI or script. No agent's record includes them.
+
+**Two items from the original list cannot be derived. Each is reported `unavailable` with its reason on
+every group:**
+
+- `findings.reported_fixed_reopened`: no principal reports a finding fixed. `fixed` is an observation the
+  reconciler makes after two successful scans miss a finding, and the status route refuses it from
+  anyone. When a fixed finding comes back, compaction reopens it and only logs a count
+  (`CompactionResult.reopened`), so nothing records which finding reopened or which change claimed to fix
+  it. `dispositions.reopened` is the measurable version.
+- `pull_requests.closed_unmerged`: the platform records an approval request for each head commit, not
+  what happened to the pull request on GitHub, so nothing stores a pull request closed without merging.
+  Every GitHub action also comes from one shared account (spec 34 §1.2), so a close could not be
+  attributed to an agent even if it were stored. Rejected `pull_request_merge` requests are measured.
+  Requests the platform opens itself for unclaimed pull requests are `automation`, so they appear on no
+  agent's record.
+
+Closing either gap would need a new record: a per-finding reopen event from compaction, or the PR
+stamp job recording a close. This phase adds neither.
+
+A delegation is then granted against a published record rather than on trust, and sampling and
 suspension (`suspend_below_agreement`) already turn a falling record into consequences.
 
 ## 7. What this spec does not do
@@ -194,7 +299,7 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | §2 work queue, §3 caveats | In this pull request |
-| 2 | §4 MCP server (#319) | After phase 1 merges |
-| 3 | §5 playbooks | After phase 1 merges |
-| 4 | §6 track record | After phase 1 merges |
+| 1 | §2 work queue, §3 caveats | Merged (#799) |
+| 2 | §4 MCP server (#319) | Merged (#803): `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). Not built: `pipeline()` and `coverage()`, which have no route yet (#318) |
+| 3 | §5 playbooks | Built (§5.1): `agent-playbooks-v1.yaml`, `mykronos.playbooks`, `GET /api/agent/playbooks[/{kind}]`, `WorkItem.playbook` |
+| 4 | §6 track record: `GET /api/agent/scorecard` | Merged (#802); two §6 items are reported `unavailable` with the reason (§6) |

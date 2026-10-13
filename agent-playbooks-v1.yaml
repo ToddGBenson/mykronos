@@ -1,0 +1,817 @@
+# Agent playbooks - how an agent works each kind of item on its queue (spec 36 §5).
+#
+# Reviewed in a pull request like approval-policy-v1.yaml and
+# oracle-policy-v1.yaml. Every item `GET /api/agent/work` returns names its
+# playbook as `<kind>@<version>`; `GET /api/agent/playbooks/{kind}` serves it.
+#
+# A playbook grants nothing. Every route it names enforces its own rules, and
+# the duties in approval-policy-v1.yaml decide who approves what. What a
+# playbook adds is the order: which check comes first, what to confirm before
+# moving on, when to stop, and when a person has to be told.
+#
+# Vocabulary
+#   purpose      one paragraph: what the item means and what "done" is
+#   steps        in order. Each step:
+#     id           stable slug, unique within the playbook
+#     do           what to do
+#     check        what to confirm before moving on
+#     routes       "METHOD /path" this step reads or calls. Path templates use
+#                  the API's own names ({repo_id} is the onboarding id, never
+#                  owner/repo). tests/test_playbooks.py fails if a route named
+#                  here does not exist in the app.
+#     outside      evidence outside this API: a gh command, a build log, the
+#                  item's own evidence. A step names a route, outside
+#                  evidence, or both.
+#     if_found     for a diagnostic branch: what it means when the check
+#                  identifies the cause, and what to do about it
+#     then         what follows when if_found applies:
+#                    continue  - go on to the next step (the default)
+#                    repair    - fix it (a pull request, a governed request),
+#                                then wait for done_when
+#                    escalate  - stop and tell a person, with the evidence below
+#                    stop      - nothing to do; the item is not what it looked like
+#   stop_when    conditions under which the agent stops working the item
+#   escalate     when a person must decide, and the evidence to hand them
+#   never        things this kind of item tempts an agent to do that it must not
+#
+# Rules that hold for every playbook (spec 34, spec 36 §1):
+#   - An agent uses its own mka_ credential, never the operator's admin token.
+#   - An agent never approves its own request, and never marks work done: the
+#     platform observes "done" (each item's done_when).
+#   - A critical or high finding is closed only through
+#     POST /api/dashboard/findings/{finding_id}/disposition-requests; a risk is
+#     accepted only through POST /api/risk-acceptances.
+#   - A route that answers 404 or 422 for a field this file names may mean the
+#     deployed backend predates it. Compare the running build before assuming
+#     the playbook is wrong.
+
+version: "1.0"
+
+playbooks:
+
+  # -------------------------------------------------------------------------
+  # Band 1: the platform
+  # -------------------------------------------------------------------------
+
+  lane_stalled:
+    purpose: >-
+      A scan lane cannot close findings: it is failing, silent, or blocked by a
+      red upstream lane. A finding closes only after two consecutive successful
+      scans observe its absence, so every finding in the lane is frozen until it
+      runs. Repair the cause; a re-run of a broken lane fails again and closes
+      nothing. Lanes have stopped many times for different causes, so the
+      branches below are checked in order and each one depends on the first.
+    steps:
+      - id: read-the-item
+        do: >-
+          Read the item's title, summary and evidence. The reason is failing,
+          silent or blocked. Re-read the lane in the briefing narrowed to this
+          repository, and its run history.
+        check: >-
+          You know the reason, the consecutive failures, the last success, how
+          many findings it holds, and whether the item offers a dispatch action
+          (it offers none where this platform cannot start the lane).
+        routes:
+          - "GET /api/agent/work"
+          - "GET /api/dashboard/briefing?repo_id={repo_id}"
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+      - id: read-the-failure-first
+        do: >-
+          Read the failed job's annotations or build output before anything
+          else. Every later branch depends on what it says. On GitHub Actions
+          find the run's check runs and read their annotations; on Concourse
+          open the failed build from the CI page (job state and build history
+          are readable without a write token). Confirm which system runs this
+          repository's scans first (`scanned_by`): a cause in a system that
+          does not scan the repository cannot be why its lane stopped.
+        check: >-
+          You have the failing step and its message, or you have confirmed
+          there is no failed run at all (a lane that never started).
+        routes:
+          - "GET /api/repos/{repo_id}"
+          - "GET /api/dashboard/repos/{repo_id}/ci"
+        outside:
+          - "gh api repos/<owner>/<repo>/commits/<sha>/check-runs"
+          - "gh api repos/<owner>/<repo>/check-runs/<id>/annotations"
+          - "gh run view <run-id> --log-failed"
+          - "The Concourse build linked from the item's evidence"
+      - id: quiet-repository
+        do: >-
+          If there is no failed run (the reason is silent), check for commits to
+          the default branch since the lane last ran before calling it stalled.
+          Most lanes trigger on a commit, so a repository nobody pushed to looks
+          exactly like a dead lane. Commits with no run after them send you on:
+          billing and disabled Actions also stop runs from starting at all.
+        check: >-
+          At least one commit landed after the lane's last_run_at, or the lane is
+          scheduled and its schedule has passed.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+          - "GET /api/repos/{repo_id}"
+        outside:
+          - "gh api repos/<owner>/<repo>/commits?sha=<default_branch>&since=<last_run_at>"
+        if_found: >-
+          No commits since the last run: the lane is idle, not stalled. Do not
+          dispatch it and do not escalate.
+        then: stop
+      - id: billing-or-spending-limit
+        do: >-
+          Look for an annotation saying the job was not started because of
+          billing, failed payments or a spending limit. This applies to private
+          repositories on GitHub Actions; a public repository does not spend
+          minutes.
+        check: >-
+          The annotation names billing or a spending limit, and the repository
+          is scanned by GitHub Actions.
+        outside:
+          - "gh api repos/<owner>/<repo>/check-runs/<id>/annotations"
+        if_found: >-
+          This is an operator action on the account. Escalate with the
+          annotation text. Never merge a pull request past it: with the jobs
+          not starting, nothing about the change has been checked.
+        then: escalate
+      - id: actions-disabled
+        do: >-
+          Check whether GitHub Actions is disabled in the repository's
+          settings. When it is, every workflow stops at once and pull requests
+          show zero checks rather than failed ones.
+        check: >-
+          `enabled` is true in the repository's Actions permissions, and the
+          workflows this platform installed are enabled.
+        routes:
+          - "GET /api/repos/{repo_id}/workflows"
+        outside:
+          - "gh api repos/<owner>/<repo>/actions/permissions"
+          - "gh pr checks <number> (zero checks reported, not failed checks)"
+        if_found: >-
+          `enabled: false`, or the workflows are disabled. Re-enabling is a
+          repository setting a person owns. Escalate with the permissions
+          response and the time the last workflow ran.
+        then: escalate
+      - id: red-upstream-quality-lane
+        do: >-
+          Check whether an upstream quality lane is red. Pipeline scan lanes
+          carry `passed: [unit, ...]` (some also gate on `lint-and-types`), so
+          one red quality lane silently stops all scanning behind it. The
+          briefing reports this as reason `blocked` with `blocked_by`; a red
+          `lint-and-types` appears instead as a failing CI job and silent lanes.
+        check: >-
+          The upstream lane's newest run succeeded after this lane last ran.
+        routes:
+          - "GET /api/dashboard/briefing?repo_id={repo_id}"
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+          - "GET /api/dashboard/repos/{repo_id}/ci"
+        if_found: >-
+          The fix is upstream. Work the upstream lane's failure (its own
+          annotation first), open a pull request that makes it green, and ask
+          for its review. Do not re-run the blocked lane: the pipeline will not
+          schedule it until the upstream passes.
+        then: repair
+      - id: wrong-branch-or-pinned-commit
+        do: >-
+          Check whether the pipeline is watching the wrong branch or a pinned
+          ref. Runs succeed, every time, with the same commit_sha.
+        check: >-
+          The lane's newest successful runs carry the repository's current head
+          on its default branch. Look at `not_covering` in scan health and the
+          briefing's `stale` list.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+          - "GET /api/dashboard/briefing?repo_id={repo_id}"
+        if_found: >-
+          `wrong_branch` or `same_commit`. The fix is in the pipeline
+          definition: point the resource at the default branch, or remove the
+          pin, in a pull request. A re-run produces one more clean scan of the
+          same tree.
+        then: repair
+      - id: ingestion-token-out-of-sync
+        do: >-
+          If the build output shows the ingest preflight refused with a 401,
+          check whether scans from this repository's other lanes still arrive.
+          They read the same ingestion token. Check that scans arrive before
+          rotating anything: rotating a token whose stored copy works takes the
+          repository dark (D-097).
+        check: >-
+          Other lanes of this repository have recent successful runs (the token
+          works), or every lane of it fails the preflight on 401 (the token
+          does not).
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+          - "GET /api/repos/{repo_id}"
+        outside:
+          - "The failed build's preflight step output"
+        if_found: >-
+          Every lane 401s. The token's copies have drifted apart, which only the
+          operator can repair, because it means writing to every place the token
+          is read from. Escalate with the 401 output and the time scans stopped.
+          Never rotate it yourself.
+        then: escalate
+      - id: host-or-docker-restart
+        do: >-
+          If many lanes across repositories errored at the same time, suspect a
+          Docker or host restart. Three repairs are needed and all CI stays dead
+          until all three are done: CI workers die on a stale cgroup, Vault comes
+          back sealed, and builds that errored never retry by themselves.
+        check: >-
+          Platform health shows Vault reachable and unsealed and CI reachable,
+          and the errored jobs have a build after the restart.
+        routes:
+          - "GET /api/dashboard/platform-health"
+          - "GET /api/dashboard/briefing"
+        if_found: >-
+          A restart signature: simultaneous errored jobs, Vault sealed, or
+          workers missing. Each repair is an operator action on the host.
+          Escalate with the list of errored jobs and their times, and the
+          platform-health dependency detail. Name all three repairs so none is
+          missed.
+        then: escalate
+      - id: repair-and-rerun
+        do: >-
+          With the cause known and repaired, or for a silent lane whose
+          repository has moved, run the lane through the item's action where it
+          offers one. Otherwise wait for the lane's own trigger.
+        check: >-
+          The next run succeeds. Then wait for a second success; that is when
+          frozen findings can close.
+        routes:
+          - "POST /api/repos/{repo_id}/scan"
+          - "POST /api/approvals/pull-requests"
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+    stop_when:
+      - "Two consecutive successful runs of the lane (the item leaves the queue)."
+      - "The repository has not moved since the lane last ran: it is idle, not stalled."
+      - "The cause is an operator action and you have escalated it."
+    escalate:
+      when:
+        - "Billing or a spending limit stops jobs from starting."
+        - "Actions is disabled in the repository's settings."
+        - "An ingestion token fails on every lane of the repository."
+        - "A restart left workers dead, Vault sealed, or errored jobs unretried."
+        - "The cause is not one of the branches above after reading the failure."
+      evidence:
+        - "The failed job's annotation or build output, quoted."
+        - "Which system scans the repository (scanned_by) and the lane's last success."
+        - "Consecutive failures and the open findings the lane holds."
+        - "Which branches you checked and what each showed."
+    never:
+      - "Re-run a failing lane without repairing it."
+      - "Rotate an ingestion token, or mark one synced."
+      - "Merge past a billing or spending-limit failure."
+      - "Call a lane stalled before checking the repository moved."
+
+  ci_job_failing:
+    purpose: >-
+      A CI job is failing on its trigger and nobody paused it. It may produce
+      evidence rather than findings, so nothing else on the platform will
+      mention it. Find out why it throws and repair that; re-running a broken
+      job fails again.
+    steps:
+      - id: read-the-failure-first
+        do: >-
+          Open the failed build from the item's evidence and read its output, or
+          for GitHub Actions the check run's annotations. Every later step
+          depends on what it says.
+        check: >-
+          You have the failing step and its message.
+        outside:
+          - "The build linked from the item's evidence ref"
+          - "gh api repos/<owner>/<repo>/check-runs/<id>/annotations"
+          - "gh run view <run-id> --log-failed"
+      - id: billing-or-spending-limit
+        do: >-
+          If the annotation says the job was not started because of billing or a
+          spending limit, it is an account problem, not the job's.
+        check: >-
+          The annotation names billing or a spending limit.
+        outside:
+          - "gh api repos/<owner>/<repo>/check-runs/<id>/annotations"
+        if_found: >-
+          Escalate with the annotation. Never merge past it.
+        then: escalate
+      - id: actions-disabled
+        do: >-
+          If every workflow in the repository stopped at once, check whether
+          Actions is disabled in its settings.
+        check: >-
+          `enabled` is true.
+        outside:
+          - "gh api repos/<owner>/<repo>/actions/permissions"
+        if_found: >-
+          `enabled: false`. Escalate with the response; a person owns the setting.
+        then: escalate
+      - id: upstream-or-quality-lane
+        do: >-
+          If this job is a quality lane such as `unit` or `lint-and-types`,
+          treat it as urgent: every scan lane gated on it with `passed:` is
+          stopped behind it, and the briefing shows those lanes as blocked or
+          silent.
+        check: >-
+          You know which lanes wait on this job.
+        routes:
+          - "GET /api/dashboard/briefing"
+        if_found: >-
+          Repair the job in a pull request (lint the whole tree, not only the
+          files you changed) and request its independent review.
+        then: repair
+      - id: ingestion-token-out-of-sync
+        do: >-
+          If the job fails the ingest preflight on a 401, check that scans from
+          the repository's other lanes still arrive before suspecting the
+          token. Rotating a token whose stored copy works takes the repository
+          dark (D-097).
+        check: >-
+          Other lanes of the repository succeed recently, or all of them 401.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+        if_found: >-
+          Every lane 401s: escalate with the preflight output. Never rotate.
+        then: escalate
+      - id: host-or-docker-restart
+        do: >-
+          If many jobs errored at the same moment, suspect a restart: workers on
+          a stale cgroup, Vault sealed, errored builds that will not retry.
+        check: >-
+          Platform health shows Vault and CI reachable, and the job has a build
+          after the restart.
+        routes:
+          - "GET /api/dashboard/platform-health"
+        if_found: >-
+          Escalate with the errored jobs and times and name all three repairs.
+        then: escalate
+      - id: repair
+        do: >-
+          For a defect in the job or the code it runs, open a pull request that
+          fixes it and request its independent review.
+        check: >-
+          The job's next build on the merged change succeeds.
+        routes:
+          - "POST /api/approvals/pull-requests"
+          - "GET /api/dashboard/repos/{repo_id}/ci"
+    stop_when:
+      - "The job's latest build succeeds."
+      - "The cause is an operator action and you have escalated it."
+    escalate:
+      when:
+        - "Billing, a spending limit, or disabled Actions stops the job."
+        - "A credential, Vault, or the CI host itself is the cause."
+        - "The failure is in infrastructure an agent cannot change."
+      evidence:
+        - "The build output or annotation, quoted."
+        - "The job's last success and how many builds have failed since."
+        - "What depends on the job (lanes gated on it)."
+    never:
+      - "Re-run the job unchanged and call it fixed."
+      - "Pause the job to make the item go away."
+      - "Rotate an ingestion token."
+
+  ci_job_paused:
+    purpose: >-
+      Somebody switched this CI job off. A pause is a decision; the build that
+      was running when it stopped is usually why. Find out what it was waiting
+      on before anyone unpauses it.
+    steps:
+      - id: read-the-last-build
+        do: >-
+          Open the last build from the item's evidence and read why it failed.
+          Look in the repository's backlog and decision log for the pause being
+          deliberate.
+        check: >-
+          You know what the last build said and whether the pause is recorded
+          as intended.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/ci"
+        outside:
+          - "The build linked from the item's evidence ref"
+          - "gh issue list --search <job name> --state all"
+        if_found: >-
+          The pause is recorded as deliberate and its condition still holds.
+          Leave it paused.
+        then: stop
+      - id: repair-the-cause
+        do: >-
+          If the job was paused because it failed, fix that failure in a pull
+          request, using the ci_job_failing branches, and request its review.
+        check: >-
+          The change that makes the job pass is merged.
+        routes:
+          - "POST /api/approvals/pull-requests"
+      - id: ask-for-the-unpause
+        do: >-
+          Unpausing is a CI write this platform does not make. Ask the operator
+          to unpause, with the repair that makes it safe.
+        check: >-
+          The job is unpaused and its next build succeeds.
+        routes:
+          - "GET /api/agent/work"
+    stop_when:
+      - "The job is unpaused and its next build succeeds."
+      - "The pause is recorded as deliberate and its reason still holds."
+    escalate:
+      when:
+        - "Always, to unpause: it is an operator's CI action."
+        - "The pause has no recorded reason and the last build passed."
+      evidence:
+        - "The last build's output and status."
+        - "The repair that was merged, or why none is needed."
+        - "What the paused job gates (scan lanes, deploys)."
+    never:
+      - "Unpause a job someone paused without knowing why."
+
+  platform_job_unhealthy:
+    purpose: >-
+      A scheduled job inside this platform is failing, late, or has never run.
+      The job runner catches every exception and retries, which keeps it
+      invisible: a job that has thrown for a fortnight looks the same from
+      outside as one that never had a problem.
+    steps:
+      - id: read-platform-health
+        do: >-
+          Read the job's row and the dependency probes. Failing, late and never
+          run need three different things done.
+        check: >-
+          You know the job's status, its consecutive failures and its last
+          error, and whether Vault and CI are reachable.
+        routes:
+          - "GET /api/dashboard/platform-health"
+      - id: dependency-down
+        do: >-
+          If a dependency probe failed (Vault sealed, CI unreachable), the job is
+          a symptom.
+        check: >-
+          Every dependency in platform health is reachable.
+        routes:
+          - "GET /api/dashboard/platform-health"
+        if_found: >-
+          Escalate the dependency, not the job. A sealed Vault after a restart
+          needs the operator.
+        then: escalate
+      - id: never-run
+        do: >-
+          A job that has never run is a deployment that came up without it.
+        check: >-
+          The job has at least one recorded run.
+        routes:
+          - "GET /api/dashboard/platform-health"
+        if_found: >-
+          Escalate: the deployment is missing the job, and only the operator
+          deploys.
+        then: escalate
+      - id: repair
+        do: >-
+          For a job that throws, find the error in its detail, reproduce it
+          against the code, and fix it in a pull request with a test that fails
+          without the fix.
+        check: >-
+          The job's next run after the fix is deployed succeeds.
+        routes:
+          - "POST /api/approvals/pull-requests"
+          - "GET /api/dashboard/platform-health"
+    stop_when:
+      - "The job's next run succeeds."
+      - "The cause is a dependency or the deployment, and you have escalated it."
+    escalate:
+      when:
+        - "A dependency is down or Vault is sealed."
+        - "The job never ran in this deployment."
+        - "The fix is merged and needs a deploy."
+      evidence:
+        - "The job's status, consecutive failures and detail from platform health."
+        - "The dependency probes."
+        - "The pull request that fixes it, if any."
+    never:
+      - "Read a job reported fine as healthy when it has not had twice its interval to run."
+
+  # -------------------------------------------------------------------------
+  # Band 2: composite risk
+  # -------------------------------------------------------------------------
+
+  toxic_combination:
+    purpose: >-
+      Two or more findings in one repository combine into a risk worse than
+      either. Any one member closing stops the combination firing, but fixing
+      one half usually closes a finding without closing the risk. Work it as
+      one story.
+    steps:
+      - id: read-the-combination
+        do: >-
+          Read the combination and each member finding. Note any accepted
+          member: the combination still counts.
+        check: >-
+          You can say how the members combine and which one is cheapest to break.
+        routes:
+          - "GET /api/dashboard/toxic-combinations"
+          - "GET /api/dashboard/findings/{finding_id}/record"
+      - id: groom-as-one-story
+        do: >-
+          Groom the combination into one issue rather than one per member.
+        check: >-
+          One issue covers the combination and links every member.
+        routes:
+          - "POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom"
+      - id: break-the-chain
+        do: >-
+          Fix the member that breaks the combination, in a pull request, and
+          request its review. Prefer fixing both halves.
+        check: >-
+          The fix is merged and the member's lane has run since.
+        routes:
+          - "POST /api/approvals/pull-requests"
+          - "GET /api/dashboard/toxic-combinations"
+    stop_when:
+      - "The combination stops firing."
+    escalate:
+      when:
+        - "A member is critical, or the combination touches a public endpoint."
+        - "Breaking it needs an architectural change or an acceptance."
+      evidence:
+        - "The combination's rationale and every member with its severity."
+        - "Which member you propose to break and why."
+    never:
+      - "Accept one member to make the combination go away."
+      - "Read 'no combination' from a rule the rules_cannot_fire caveat names as evidence of none."
+
+  public_exposure:
+    purpose: >-
+      A registered public endpoint gives an anonymous visitor something high or
+      critical. Name the environment before reasoning about it: what is exposed
+      on one deployment says nothing about another.
+    steps:
+      - id: read-the-observations
+        do: >-
+          Read the endpoint and its observations, and which environment it is.
+        check: >-
+          You know the URL, its environment, each high or critical observation,
+          and when it was last probed.
+        routes:
+          - "GET /api/exposure"
+      - id: reprobe-if-stale
+        do: >-
+          If the item carries the probe_stale caveat, probe now before acting on
+          an old answer.
+        check: >-
+          The observations are from a probe newer than two probe intervals.
+        routes:
+          - "POST /api/exposure/probe"
+          - "GET /api/exposure"
+        if_found: >-
+          The fresh probe observes nothing high or critical. The item is done.
+        then: stop
+      - id: close-the-gap
+        do: >-
+          Fix what the visitor reaches: the gate, the tunnel, the route. Open a
+          pull request and request its review.
+        check: >-
+          The next probe observes nothing high or critical.
+        routes:
+          - "POST /api/approvals/pull-requests"
+          - "POST /api/exposure/probe"
+    stop_when:
+      - "The next probe observes nothing high or critical at the endpoint."
+    escalate:
+      when:
+        - "A critical observation, at once, before any fix."
+        - "The fix is a tunnel, gate or host setting an agent cannot change."
+      evidence:
+        - "The URL, its environment and the observations, with probe time."
+        - "What an anonymous request returned."
+    never:
+      - "Remove the endpoint from the register to clear the item."
+
+  # -------------------------------------------------------------------------
+  # Band 3: the principal's own approval requests
+  # -------------------------------------------------------------------------
+
+  approval_needs_info:
+    purpose: >-
+      An approver answered one of your requests with needs_info. The request is
+      still pending and its evidence is frozen by digest, so it cannot be
+      edited. Supply what was asked for by changing the subject or filing a
+      fuller request.
+    steps:
+      - id: read-the-question
+        do: >-
+          Read the request, its decisions and the frozen evidence. Find exactly
+          what the approver said is missing.
+        check: >-
+          You can state the approver's question in one sentence.
+        routes:
+          - "GET /api/approvals/{request_id}"
+          - "GET /api/approvals/{request_id}/evidence"
+          - "GET /api/approvals/{request_id}/chain"
+      - id: supply-it
+        do: >-
+          If the missing information is in the subject (a pull request, a
+          finding's evidence), change the subject and file a new request
+          through the same route that created this one; that route rebuilds the
+          evidence from the platform's records. A pull request is re-requested
+          at its new head.
+        check: >-
+          The new request's evidence contains what was asked for.
+        routes:
+          - "POST /api/approvals/pull-requests"
+          - "POST /api/dashboard/findings/{finding_id}/disposition-requests"
+          - "POST /api/risk-acceptances"
+          - "POST /api/approvals"
+    stop_when:
+      - "The request is decided."
+      - "You have filed a fuller request; the old one expires on its own."
+    escalate:
+      when:
+        - "The question asks for something only a person can attest."
+        - "You cannot supply it without widening what the request asks for."
+      evidence:
+        - "The request id, the approver's rationale and what you can and cannot supply."
+    never:
+      - "Approve or decide your own request."
+      - "Ask another agent of your own lineage to approve it."
+
+  # -------------------------------------------------------------------------
+  # Band 4: acceptances
+  # -------------------------------------------------------------------------
+
+  acceptance_attention:
+    purpose: >-
+      An accepted risk needs a decision: its review is due, a premise it rests
+      on failed, open findings match its scope without being covered, or it
+      expires within 14 days. Renew it, let a person revoke it, or fix what it
+      covers.
+    steps:
+      - id: read-the-record
+        do: >-
+          Read the acceptance, its premises, milestones and the findings it
+          covers.
+        check: >-
+          You know which reason applies and whether the original justification
+          still holds.
+        routes:
+          - "GET /api/risk-acceptances/{record_id}"
+      - id: premise-failed
+        do: >-
+          If a premise failed, the acceptance no longer rests on what was
+          approved.
+        check: >-
+          Every premise still holds.
+        routes:
+          - "GET /api/risk-acceptances/{record_id}"
+        if_found: >-
+          Escalate. Revoking is a person's action, and renewing on a failed
+          premise asks an approver to accept something different.
+        then: escalate
+      - id: fix-or-renew
+        do: >-
+          Prefer fixing what the acceptance covers. Otherwise request a renewal
+          with an updated justification; it is a new approval request and the
+          record stays as it is until decided.
+        check: >-
+          A renewal request exists, or the covered findings have a fix merged.
+        routes:
+          - "POST /api/risk-acceptances/{record_id}/renew"
+          - "POST /api/risk-acceptances"
+    stop_when:
+      - "The acceptance is renewed, revoked or closed."
+    escalate:
+      when:
+        - "A premise failed."
+        - "The renewal limit is reached or the finding is now KEV-listed."
+        - "Scope drift means findings the acceptance never covered are open."
+      evidence:
+        - "The record, which reason applies, and the findings it covers."
+    never:
+      - "Revoke an acceptance (only a person may)."
+      - "Widen an acceptance's scope to swallow new findings."
+
+  # -------------------------------------------------------------------------
+  # Band 5: tokens
+  # -------------------------------------------------------------------------
+
+  token_delivery:
+    purpose: >-
+      The rotation sweep deferred an ingestion token to a person, because this
+      platform cannot deliver to everything that reads it. `unverified` means
+      check that scans arrive, never rotate. `due` means a person rotates it
+      and delivers to every reader at once.
+    steps:
+      - id: check-scans-arrive
+        do: >-
+          Check that scans from the repository still arrive. That is the
+          delivery confirmation an unverified token is missing.
+        check: >-
+          Lanes of the repository have recent successful runs.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+          - "GET /api/repos/{repo_id}"
+        if_found: >-
+          Scans arrive: the token works. Say so in the evidence for the
+          operator and stop. Do not rotate.
+        then: stop
+      - id: escalate-the-rotation
+        do: >-
+          For a token that is due, or one whose scans do not arrive, hand it to
+          the operator. Rotation writes to every reader of the token, which only
+          the operator can reach.
+        check: >-
+          The operator has the repository, the token state and the scan
+          evidence.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/scan-health"
+    stop_when:
+      - "A scan confirms the token arrives (unverified)."
+      - "Rotated by hand and a scan confirms the new token arrives (due)."
+    escalate:
+      when:
+        - "The token is due."
+        - "Scans from the repository have stopped."
+      evidence:
+        - "The repository, the token state and days until due."
+        - "Which system scans it, and its newest successful run per lane."
+    never:
+      - "Rotate an unverified token (D-097)."
+      - "Rotate any token, or mark one synced."
+
+  # -------------------------------------------------------------------------
+  # Band 6: findings
+  # -------------------------------------------------------------------------
+
+  triage:
+    purpose: >-
+      One open finding from the ranked queue. Decide whether it is real, then
+      fix it, disposition it through the route its severity requires, or
+      propose an acceptance. A fix shows only when its lane runs successfully
+      twice.
+    steps:
+      - id: claim-it
+        do: >-
+          Claim the finding so another agent does not work it too. Release the
+          claim if you stop.
+        check: >-
+          The claim is yours.
+        routes:
+          - "POST /api/dashboard/triage/{finding_id}/claim"
+          - "DELETE /api/dashboard/triage/{finding_id}/claim"
+      - id: read-the-whole-record
+        do: >-
+          Read the whole record, including the raw scanner output, and apply
+          the item's caveats: a lane_frozen finding cannot close until its lane
+          runs; a DAST finding's identity is its route, so read the URL
+          actually scanned from the raw finding's instance URI and parameter; a container fixed_version is a
+          patched package, not a patched image; an atlas version may be the
+          declared floor; 'true_positive' came from severity alone.
+        check: >-
+          You have read the code or the request the finding points at, not only
+          its label.
+        routes:
+          - "GET /api/dashboard/findings/{finding_id}/record"
+          - "GET /api/dashboard/findings/{finding_id}"
+      - id: fix-it
+        do: >-
+          If it is real, fix it: a deterministic fix where Patchwork has one,
+          otherwise a pull request of your own, and request its review.
+        check: >-
+          The fix is merged and the lane has run successfully twice since.
+        routes:
+          - "POST /api/patchwork/findings/{finding_id}/preview"
+          - "POST /api/patchwork/findings/{finding_id}/fix"
+          - "POST /api/approvals/pull-requests"
+      - id: disposition-it
+        do: >-
+          If it is not real, disposition it with evidence. For a critical or
+          high finding an agent must request it: the evidence is frozen and an
+          independent approver decides. Medium and below take the direct route.
+          The item's actions already name the right one for you.
+        check: >-
+          A disposition request exists (critical, high) or the status is set
+          with your reason (medium and below).
+        routes:
+          - "POST /api/dashboard/findings/{finding_id}/disposition-requests"
+          - "PATCH /api/dashboard/findings/{finding_id}/status"
+      - id: or-accept-it
+        do: >-
+          If it is real and will not be fixed now, propose a risk acceptance
+          with a review date. It is decided by an approver.
+        check: >-
+          The acceptance request exists.
+        routes:
+          - "POST /api/risk-acceptances"
+      - id: or-groom-it
+        do: >-
+          If it needs work you will not do now, groom it into an issue. Search
+          the backlog first so you do not file a duplicate.
+        check: >-
+          One issue tracks it.
+        routes:
+          - "POST /api/triage/{finding_id}/groom"
+        outside:
+          - "gh issue list --search <distinctive noun> --state all"
+    stop_when:
+      - "The finding is dispositioned, or two successful scans observe it gone."
+      - "Its disposition or acceptance request is with an approver."
+      - "Another principal holds the claim."
+    escalate:
+      when:
+        - "A critical finding is real and no fix is possible soon."
+      evidence:
+        - "The finding record, the raw scanner output you relied on, and your reasoning."
+    never:
+      - "Set a critical or high finding's status directly as an agent."
+      - "Hand-set a finding to fixed; scans own that."
+      - "Recommend pulling an image because a package has a fixed_version."

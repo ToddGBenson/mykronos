@@ -70,7 +70,6 @@ from mykronos.jobs import (
     purge_orphaned_learnings,
     reconcile_installations,
     rotate_ingestion_tokens,
-    route_open_findings,
     score_portfolio,
     sweep_acceptances,
     sweep_governance,
@@ -80,10 +79,9 @@ from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import (
     Catalog,
     WriteAheadBuffer,
-    carry_forward,
     compact,
-    reconcile_absences,
 )
+from mykronos.lake.maintenance import carry_forward_exclusively, reconcile_after_linking
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
@@ -425,7 +423,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def _absences() -> None:
             # In a thread: it rewrites Parquet partitions and would otherwise
             # block ingestion for the duration.
-            await asyncio.to_thread(reconcile_absences, app.state.catalog)
+            #
+            # Carry-forward first, in the same thread and under one lock
+            # (`lake/maintenance.py`, TheHub #60734): an exact link withdraws a
+            # re-keyed finding as `superseded`, and on two independent timers
+            # absence could close the same row as `fixed` first.
+            result = await asyncio.to_thread(reconcile_after_linking, app.state.catalog)
+            if result.carried.carried:
+                logger.info("Carry-forward before absences: %s", result.carried.summary())
 
         async def _carry_forward() -> None:
             # In a thread, for the same reason as absences. Runs before it in
@@ -433,7 +438,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # timers: a finding withdrawn as `superseded` here is one the
             # absence reconciler will not later close as `fixed`, and `fixed`
             # is the number this platform is most careful about.
-            result = await asyncio.to_thread(carry_forward, app.state.catalog)
+            result = await asyncio.to_thread(carry_forward_exclusively, app.state.catalog)
             if result.carried or result.stranded:
                 logger.info("Carry-forward: %s", result.summary())
 
@@ -591,14 +596,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
             )
 
-        async def _routing() -> None:
-            await route_open_findings(
-                app.state.db,
-                app.state.catalog,
-                app.state.knowledge,
-                app.state.github_factory,
-            )
-
         async def _timeout_audit() -> None:
             # Live Concourse history against the committed caps (TheHub
             # #60729). A finding notifies; unread history raises, so this
@@ -720,14 +717,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             *(
                 [("digest", settings.weekly_digest_interval_seconds, _digest)]
                 if settings.digest_enabled
-                else []
-            ),
-            # Off unless a deployment opts in (`routing_enabled`): this
-            # one opens issues in somebody's tracker, and doing that the
-            # moment the platform is upgraded is not its decision to make.
-            *(
-                [("routing", settings.finding_routing_interval_seconds, _routing)]
-                if settings.routing_enabled
                 else []
             ),
         ):

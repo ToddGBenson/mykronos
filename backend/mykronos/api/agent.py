@@ -19,11 +19,11 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from mykronos import agent_work, briefing, briefing_sources
+from mykronos import agent_work, briefing, briefing_sources, playbooks
 from mykronos.adminauth import Principal, PrincipalDep
 from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import ApprovalDecision, ApprovalRequest, RepoOnboarding, RiskAcceptance
@@ -80,6 +80,8 @@ class WorkItemOut(BaseModel):
     preconditions: list[WorkPreconditionOut]
     actions: list[WorkActionOut]
     caveats: list[WorkCaveatOut]
+    #: `<kind>@<version>`: how to work this item. `GET /api/agent/playbooks/{kind}`.
+    playbook: str
 
 
 class WorkWaitingOut(BaseModel):
@@ -202,6 +204,8 @@ async def work(
     """
     state = request.app.state
     settings = state.settings
+    # First, so a broken playbooks file fails the call before any gathering.
+    playbook_version = _playbooks(request).version
     repo_ids = await asyncio.to_thread(_repo_ids, state.db)
     repo = None
     if repo_id is not None:
@@ -244,5 +248,200 @@ async def work(
         repo_ids=repo_ids,
         now=utcnow(),
         probe_interval_seconds=int(settings.exposure_probe_interval_seconds),
+        playbook_version=playbook_version,
     )
     return WorkQueueOut.model_validate(dataclasses.asdict(queue))
+
+
+# -- The track record (spec 36 §6, phase 4) -----------------------------------
+#
+# Kept to its own section, below the work queue, so the two grow without
+# touching each other. The computation is `mykronos.agent_scorecard`; this is
+# only the read and the response shape.
+
+
+class ScorecardMetricOut(BaseModel):
+    #: Stable; branch on this.
+    name: str
+    #: computed | no_data | unavailable. `no_data`: the source was read and
+    #: the denominator is zero. `unavailable`: it could not be derived; `note`
+    #: says why. Neither is zero.
+    status: str
+    source: str
+    value: int | None
+    denominator: int | None
+    denominator_label: str
+    rate: float | None
+    breakdown: dict[str, int]
+    note: str
+
+
+class ScorecardDutyOut(BaseModel):
+    duty: str
+    requests: int
+    by_state: dict[str, int]
+    rejected: ScorecardMetricOut
+    needs_info: ScorecardMetricOut
+
+
+class ScorecardDelegationOut(BaseModel):
+    delegation_id: str
+    duty: str
+    agreed: int
+    reviewed: int
+    window: int
+    threshold: float
+    below_threshold: bool | None
+    suspended_at: datetime | None
+    suspended_reason: str | None
+
+
+class ScorecardGroupOut(BaseModel):
+    family: str
+    #: Null on a family's aggregate.
+    instance: str | None
+    actor: str
+    instances: list[str]
+    metrics: list[ScorecardMetricOut]
+    requests_by_duty: list[ScorecardDutyOut]
+    #: The delegations this group's approvals were made under, with the
+    #: agreement that suspends them (spec 34 §5.2).
+    delegations: list[ScorecardDelegationOut]
+
+
+class ScorecardOut(BaseModel):
+    generated_at: datetime
+    agreement_window: int
+    suspend_below_agreement: float
+    policy_version: str
+    families: list[ScorecardGroupOut]
+    instances: list[ScorecardGroupOut]
+    #: Disposition audit entries that name no actor kind: written before
+    #: spec 34 §1, or by a CLI or script. No agent's record includes them.
+    unattributed_dispositions: int | None
+    #: Sources that could not be read. Not the same as an empty record.
+    unknown: list[WorkUnknownOut]
+
+
+@router.get("/scorecard", response_model=ScorecardOut)
+async def scorecard(
+    request: Request,
+    principal: PrincipalDep,
+    family: Annotated[
+        str | None, Query(description="Only this model family, e.g. claude-opus-5.5.")
+    ] = None,
+    instance: Annotated[
+        str | None, Query(description="Only this agent instance id.")
+    ] = None,
+) -> ScorecardOut:
+    """An agent's track record, per model family and per instance (spec 36 §6).
+
+    Readable by any principal: it is the record a delegation rests on (spec
+    34 §5), and an agent deciding whether its own work is trusted should read
+    the same numbers the operator does. It carries counts, never rationales or
+    notes.
+
+    Every metric names its source and its denominator. One the existing
+    records cannot support is `unavailable` with the reason, never zero.
+    """
+    # Imported here rather than at the top so this section touches nothing
+    # above it: the work queue and its playbooks change that block.
+    from mykronos import agent_scorecard
+    from mykronos.approvals.policy import cached_policy
+
+    state = request.app.state
+    policy = cached_policy(state.settings.approval_policy_path)
+    now = utcnow()
+    gathered = await asyncio.to_thread(
+        agent_scorecard.gather, state.db, state.catalog, policy, now=now
+    )
+    card = agent_scorecard.compute(gathered, policy, now=now, family=family, instance=instance)
+    return ScorecardOut.model_validate(dataclasses.asdict(card))
+
+
+# ---------------------------------------------------------------------------
+# Playbooks (spec 36 §5)
+#
+# Reads of `agent-playbooks-v1.yaml`, the reviewed file that says how each kind
+# of item above is worked. Every item's `playbook` field names one of these.
+# Any principal may read them: a playbook grants nothing, and a person reading
+# what an agent was told to do is the point of keeping it in a file.
+
+
+class PlaybookStepOut(BaseModel):
+    id: str
+    do: str
+    #: What to confirm before moving on.
+    check: str
+    #: `METHOD /path` this step reads or calls; `{repo_id}` is the onboarding id.
+    routes: list[str]
+    #: Evidence outside this API: a gh command, a build log, the item's evidence.
+    outside: list[str]
+    #: For a diagnostic branch: what it means when the check finds the cause.
+    if_found: str
+    #: continue | repair | escalate | stop: what follows when `if_found` applies.
+    then: str
+
+
+class PlaybookEscalationOut(BaseModel):
+    when: list[str]
+    evidence: list[str]
+
+
+class PlaybookOut(BaseModel):
+    kind: str
+    version: str
+    #: `<kind>@<version>`, as a work item carries it.
+    ref: str
+    purpose: str
+    #: Ordered. Work from the top.
+    steps: list[PlaybookStepOut]
+    stop_when: list[str]
+    escalate: PlaybookEscalationOut
+    never: list[str]
+
+
+class PlaybookSetOut(BaseModel):
+    version: str
+    #: One per work-item kind, in band order.
+    playbooks: list[PlaybookOut]
+
+
+def _playbooks(request: Request) -> playbooks.Playbooks:
+    try:
+        return playbooks.cached_playbooks(request.app.state.settings.agent_playbooks_path)
+    except playbooks.PlaybookError as exc:
+        # Loud on purpose: a queue whose items name playbooks that cannot be
+        # read is worse than no queue (spec 36 §5).
+        logger.error("Agent playbooks could not be loaded: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"The agent playbooks could not be loaded: {exc}",
+        ) from exc
+
+
+def _playbook_out(book: playbooks.Playbook) -> PlaybookOut:
+    return PlaybookOut.model_validate({**dataclasses.asdict(book), "ref": book.ref})
+
+
+@router.get("/playbooks", response_model=PlaybookSetOut)
+async def list_playbooks(request: Request, principal: PrincipalDep) -> PlaybookSetOut:
+    """Every playbook, one per kind of work item, in band order (spec 36 §5)."""
+    loaded = _playbooks(request)
+    return PlaybookSetOut(
+        version=loaded.version,
+        playbooks=[_playbook_out(book) for book in loaded.playbooks.values()],
+    )
+
+
+@router.get("/playbooks/{kind}", response_model=PlaybookOut)
+async def get_playbook(request: Request, kind: str, principal: PrincipalDep) -> PlaybookOut:
+    """How to work one kind of item: ordered steps, the check between them,
+    when to stop, and when to hand it to a person with what evidence."""
+    book = _playbooks(request).get(kind)
+    if book is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No playbook for kind {kind!r}. Kinds: {', '.join(agent_work.KINDS)}.",
+        )
+    return _playbook_out(book)

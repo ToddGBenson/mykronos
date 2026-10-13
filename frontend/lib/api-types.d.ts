@@ -3013,7 +3013,7 @@ export interface paths {
         put?: never;
         /**
          * Groom Finding
-         * @description Build and open (or update) a dev-ready story for one finding (spec 17 §7.2).
+         * @description Retired (D-161): always 410. Kept so callers learn where work went.
          */
         post: operations["groom_finding_api_triage__finding_id__groom_post"];
         delete?: never;
@@ -3033,12 +3033,7 @@ export interface paths {
         put?: never;
         /**
          * Groom Combination
-         * @description Build and open (or update) a dev-ready story for a detected toxic
-         *     combination (spec 17 §7.2). Repo-scoped in the path — unlike a finding, a
-         *     `combination_id` alone names no repository, since combinations are
-         *     detected fresh from a repo's current pool rather than stored (spec 08 §2
-         *     stage 3): finding the one this id refers to means re-detecting over that
-         *     repo's findings, the same computation the Findings tab already runs.
+         * @description Retired (D-161): always 410. Kept so callers learn where work went.
          */
         post: operations["groom_combination_api_triage_repos__repo_id__combinations__combination_id__groom_post"];
         delete?: never;
@@ -3134,6 +3129,75 @@ export interface paths {
          *     is in `unknown`, never shown as an empty list.
          */
         get: operations["work_api_agent_work_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/scorecard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Scorecard
+         * @description An agent's track record, per model family and per instance (spec 36 §6).
+         *
+         *     Readable by any principal: it is the record a delegation rests on (spec
+         *     34 §5), and an agent deciding whether its own work is trusted should read
+         *     the same numbers the operator does. It carries counts, never rationales or
+         *     notes.
+         *
+         *     Every metric names its source and its denominator. One the existing
+         *     records cannot support is `unavailable` with the reason, never zero.
+         */
+        get: operations["scorecard_api_agent_scorecard_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/playbooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Playbooks
+         * @description Every playbook, one per kind of work item, in band order (spec 36 §5).
+         */
+        get: operations["list_playbooks_api_agent_playbooks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/playbooks/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Playbook
+         * @description How to work one kind of item: ordered steps, the check between them,
+         *     when to stop, and when to hand it to a person with what evidence.
+         */
+        get: operations["get_playbook_api_agent_playbooks__kind__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5992,6 +6056,55 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** PlaybookEscalationOut */
+        PlaybookEscalationOut: {
+            /** When */
+            when: string[];
+            /** Evidence */
+            evidence: string[];
+        };
+        /** PlaybookOut */
+        PlaybookOut: {
+            /** Kind */
+            kind: string;
+            /** Version */
+            version: string;
+            /** Ref */
+            ref: string;
+            /** Purpose */
+            purpose: string;
+            /** Steps */
+            steps: components["schemas"]["PlaybookStepOut"][];
+            /** Stop When */
+            stop_when: string[];
+            escalate: components["schemas"]["PlaybookEscalationOut"];
+            /** Never */
+            never: string[];
+        };
+        /** PlaybookSetOut */
+        PlaybookSetOut: {
+            /** Version */
+            version: string;
+            /** Playbooks */
+            playbooks: components["schemas"]["PlaybookOut"][];
+        };
+        /** PlaybookStepOut */
+        PlaybookStepOut: {
+            /** Id */
+            id: string;
+            /** Do */
+            do: string;
+            /** Check */
+            check: string;
+            /** Routes */
+            routes: string[];
+            /** Outside */
+            outside: string[];
+            /** If Found */
+            if_found: string;
+            /** Then */
+            then: string;
+        };
         /** PoActionOut */
         PoActionOut: {
             /** Story Id */
@@ -7730,6 +7843,102 @@ export interface components {
              */
             scanned_by: "concourse" | "github_actions" | "none";
         };
+        /** ScorecardDelegationOut */
+        ScorecardDelegationOut: {
+            /** Delegation Id */
+            delegation_id: string;
+            /** Duty */
+            duty: string;
+            /** Agreed */
+            agreed: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Window */
+            window: number;
+            /** Threshold */
+            threshold: number;
+            /** Below Threshold */
+            below_threshold: boolean | null;
+            /** Suspended At */
+            suspended_at: string | null;
+            /** Suspended Reason */
+            suspended_reason: string | null;
+        };
+        /** ScorecardDutyOut */
+        ScorecardDutyOut: {
+            /** Duty */
+            duty: string;
+            /** Requests */
+            requests: number;
+            /** By State */
+            by_state: {
+                [key: string]: number;
+            };
+            rejected: components["schemas"]["ScorecardMetricOut"];
+            needs_info: components["schemas"]["ScorecardMetricOut"];
+        };
+        /** ScorecardGroupOut */
+        ScorecardGroupOut: {
+            /** Family */
+            family: string;
+            /** Instance */
+            instance: string | null;
+            /** Actor */
+            actor: string;
+            /** Instances */
+            instances: string[];
+            /** Metrics */
+            metrics: components["schemas"]["ScorecardMetricOut"][];
+            /** Requests By Duty */
+            requests_by_duty: components["schemas"]["ScorecardDutyOut"][];
+            /** Delegations */
+            delegations: components["schemas"]["ScorecardDelegationOut"][];
+        };
+        /** ScorecardMetricOut */
+        ScorecardMetricOut: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Source */
+            source: string;
+            /** Value */
+            value: number | null;
+            /** Denominator */
+            denominator: number | null;
+            /** Denominator Label */
+            denominator_label: string;
+            /** Rate */
+            rate: number | null;
+            /** Breakdown */
+            breakdown: {
+                [key: string]: number;
+            };
+            /** Note */
+            note: string;
+        };
+        /** ScorecardOut */
+        ScorecardOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Agreement Window */
+            agreement_window: number;
+            /** Suspend Below Agreement */
+            suspend_below_agreement: number;
+            /** Policy Version */
+            policy_version: string;
+            /** Families */
+            families: components["schemas"]["ScorecardGroupOut"][];
+            /** Instances */
+            instances: components["schemas"]["ScorecardGroupOut"][];
+            /** Unattributed Dispositions */
+            unattributed_dispositions: number | null;
+            /** Unknown */
+            unknown: components["schemas"]["WorkUnknownOut"][];
+        };
         /**
          * Severity
          * @enum {string}
@@ -8626,6 +8835,8 @@ export interface components {
             actions: components["schemas"]["WorkActionOut"][];
             /** Caveats */
             caveats: components["schemas"]["WorkCaveatOut"][];
+            /** Playbook */
+            playbook: string;
         };
         /** WorkPreconditionOut */
         WorkPreconditionOut: {
@@ -12413,6 +12624,13 @@ export interface operations {
                     "application/json": components["schemas"]["GroomResult"];
                 };
             };
+            /** @description Retired (D-161). File the story in TheHub. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -12444,6 +12662,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GroomResult"];
                 };
+            };
+            /** @description Retired (D-161). File the story in TheHub. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -12629,6 +12854,91 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkQueueOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scorecard_api_agent_scorecard_get: {
+        parameters: {
+            query?: {
+                /** @description Only this model family, e.g. claude-opus-5.5. */
+                family?: string | null;
+                /** @description Only this agent instance id. */
+                instance?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScorecardOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_playbooks_api_agent_playbooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookSetOut"];
+                };
+            };
+        };
+    };
+    get_playbook_api_agent_playbooks__kind__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookOut"];
                 };
             };
             /** @description Validation Error */

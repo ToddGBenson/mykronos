@@ -9,7 +9,7 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
-    mykronos resync-templates [--capability sast ...] [--repos owner/repo ...]
+    mykronos resync-templates [--capability sast ...] [--repo owner/repo ...]
     mykronos self-check
     mykronos host-controls <evidence.json> [--ports-baseline FILE] [--record-ports]
     mykronos briefing [--json]
@@ -77,14 +77,15 @@ from mykronos.lake import (
     WriteAheadBuffer,
     carry_forward,
     compact,
-    reconcile_absences,
 )
+from mykronos.lake.maintenance import reconcile_after_linking
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.migrate_assets import migrate_assets
 from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.rekey_containers import rekey_containers
+from mykronos.repair_build_path_fixed import repair_build_path_fixed
 from mykronos.reprocess import reprocess
 from mykronos.rescore_sscs import rescore_sscs
 from mykronos.schemas import Capability
@@ -307,6 +308,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     rekey.add_argument("--repo", default=None, help="Limit to one repository.")
+
+    repair = sub.add_parser(
+        "repair-build-path-fixed",
+        help=(
+            "Supersede `fixed` findings that only moved while stored under a "
+            "Concourse build dir (TheHub #60734)"
+        ),
+    )
+    repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report every group, its counts and its pairs, and write nothing. Do this first.",
+    )
+    repair.add_argument("--repo", default=None, help="Limit to one repository.")
 
     assets = sub.add_parser(
         "migrate-assets",
@@ -657,7 +672,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if drifted_rows and not args.apply else 0
 
         if args.command == "reconcile-absences":
-            outcome = reconcile_absences(catalog)
+            # Links first, as the scheduled job does (TheHub #60734).
+            linked = reconcile_after_linking(catalog)
+            outcome = linked.closed
+            if linked.carried.carried:
+                print(f"Carried forward first: {linked.carried.summary()}")
             print(f"Closed {outcome.total_fixed} absent finding(s).")
             for repo, capability in outcome.insufficient_history:
                 print(f"  skipped {repo}/{capability}: fewer than 2 qualifying scans")
@@ -959,7 +978,11 @@ def main(argv: list[str] | None = None) -> int:
             # against that repository's pipeline, the Actions ones against the
             # single generated-workflow identity (B-59988). Handing both sides
             # one scope is what `parity` exists to not do.
-            par_pipeline = pipeline_name_for(repo)
+            # `args.repo`, not `repo`: the bare name is bound only by the
+            # `rotate-token` loop above, so here it raised UnboundLocalError on
+            # every run that got this far - mypy cannot see it, because the
+            # name is assigned somewhere in the same function.
+            par_pipeline = pipeline_name_for(args.repo)
             concourse_stages = coverage(
                 par_capabilities, reconcile(par_pipeline, concourse.jobs, last_scan)
             )
@@ -1154,6 +1177,29 @@ def main(argv: list[str] | None = None) -> int:
                 print("Dry run - nothing was written.")
             else:
                 print("Run `compact` to make the re-derived findings queryable.")
+            return 0
+
+        if args.command == "repair-build-path-fixed":
+            repaired = repair_build_path_fixed(
+                catalog, repo_full_name=args.repo, dry_run=args.dry_run
+            )
+            for group in repaired.groups:
+                print(
+                    f"{group.asset_id} {group.file_path} [{group.rule_id}] "
+                    f"fixed={len(group.fixed)} before={group.before} "
+                    f"after={group.after} moved={group.moved}"
+                )
+                print(f"   message: {group.title[:110]}")
+                for old_id, new_id, old_line, new_line in group.pairs:
+                    print(
+                        f"   SUPERSEDE {old_id[:10]} (line {old_line}) -> "
+                        f"{new_id[:10]} (old line {new_line})"
+                    )
+                if group.reason:
+                    left = ", ".join(f[:10] for f in group.fixed)
+                    print(f"   LEFT FIXED {left}: {group.reason}")
+            print(repaired.summary())
+            print("Dry run - nothing was written." if args.dry_run else "Written.")
             return 0
 
         if args.command == "rekey-containers":

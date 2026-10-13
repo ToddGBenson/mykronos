@@ -188,9 +188,9 @@ class Settings(BaseSettings):
     digest_enabled: bool = Field(
         default=False,
         description=(
-            "Off unless a deployment opts in, on the same principle as "
-            "`routing_enabled`: this one messages people, and doing that the "
-            "moment the platform is upgraded is not its decision to make."
+            "Off unless a deployment opts in: this one messages people, and "
+            "doing that the moment the platform is upgraded is not its "
+            "decision to make."
         ),
     )
 
@@ -253,28 +253,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    finding_routing_interval_seconds: int = Field(
-        default=86_400,
-        ge=1,
-        description=(
-            "How often to file dev-ready stories for open findings Patchwork "
-            "will not fix (spec 19 §4). Daily rather than on ingestion: "
-            "`needs_human_judgment` findings are batched deliberately, since "
-            "filing one issue per medium finding the instant it lands floods "
-            "a tracker with backlog noise — the same reasoning `classify()` "
-            "already applies to not auto-fixing them."
-        ),
-    )
-    routing_enabled: bool = Field(
-        default=False,
-        description=(
-            "Whether the auto-routing sweep runs (spec 19 §4). Off by "
-            "default: it opens GitHub issues unprompted, and a platform that "
-            "starts filing issues in somebody's tracker the moment it is "
-            "upgraded has made a decision that was not its to make. Turn it "
-            "on deliberately, per deployment."
-        ),
-    )
     stale_draft_sweep_interval_seconds: int = Field(
         default=21_600,
         ge=1,
@@ -355,8 +333,8 @@ class Settings(BaseSettings):
         default="",
         description=(
             "Perimeter token for the whole host, presented as X-Hub-Token, a "
-            "hub_token cookie, or ?_token= — the same scheme and the same "
-            "value as the Hub's HUB_API_TOKEN, so one credential opens both. "
+            "hub_token cookie, or ?_token= — the same scheme as the Hub's "
+            "HUB_API_TOKEN but a different value (D-131; see `hub_api_token`). "
             "Empty disables the gate, which is correct on a laptop and wrong "
             "the moment this is reachable from the internet. It is a "
             "perimeter, not an authorisation model: admin and viewer are "
@@ -386,6 +364,17 @@ class Settings(BaseSettings):
         description=(
             "Who may approve which governed actions (spec 34 §3). At the repo root "
             "and reviewed in a pull request, like the Oracle policy."
+        ),
+    )
+
+    agent_playbooks_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "agent-playbooks-v1.yaml",
+        description=(
+            "How an agent works each kind of item on its queue (spec 36 §5). At "
+            "the repo root and reviewed in a pull request like the approval "
+            "policy. A setting rather than a module-relative path for the reason "
+            "`governance_policy_path` gives: from an installed wheel that path is "
+            "the standard library, not the repository."
         ),
     )
 
@@ -503,7 +492,7 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "governance-policy-v1.yaml",
         description=(
-            "Per-control governance weights (spec 26 §4). A setting rather "
+            "Per-control governance weights (spec 30 §3). A setting rather "
             "than a bare module-relative path, and the distinction is not "
             "cosmetic: `Path(__file__).parents[2]` is the repository root "
             "from a checkout and `/usr/local/lib/python3.13` from an "
@@ -521,7 +510,7 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "stride-map-v1.yaml",
         description=(
-            "CWE-to-STRIDE taxonomy (spec 27 §3). Same packaging trap as "
+            "CWE-to-STRIDE taxonomy (spec 28 §2). Same packaging trap as "
             "`governance_policy_path`, and softer consequences by design - "
             "its loader treats absence as a real state rather than an error - "
             "but it was absent for the same wrong reason rather than the "

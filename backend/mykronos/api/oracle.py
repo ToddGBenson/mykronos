@@ -25,7 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, s
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos.adminauth import AdminDep, PrincipalDep
+from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.api.refusals import CapabilityRefusedError
 from mykronos.dashboard import DashboardQueries
@@ -508,9 +508,14 @@ async def decisions_for_repo(
 
 @router.post("/decisions/{decision_id}/override", response_model=OverrideResult)
 async def override_decision(
-    request: Request, decision_id: str, body: OverrideRequest, actor: AdminDep
+    request: Request, decision_id: str, body: OverrideRequest, principal: HumanDep
 ) -> OverrideResult:
     """Record a human overriding a recommendation (spec 09 §6).
+
+    A person only (`HumanDep`), not any writer. A recorded override clears the
+    deploy floor (D-048), so an agent credential admitted here could ship past
+    a `no_go` without the `deploy_override` duty a person must approve
+    (spec 34 §6.3).
 
     The decision itself is never rewritten — spec 09 §10 needs past decisions
     to stay reproducible. The override is recorded *alongside* it, so the
@@ -537,6 +542,7 @@ async def override_decision(
             ),
         )
 
+    actor = principal.actor
     accepted = body.accepted_recommendation or "go"
     override = {
         "overridden_by": actor,
