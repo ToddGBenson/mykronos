@@ -38,14 +38,12 @@ import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
-from mykronos import briefing_sources
-from mykronos import ci_repeat, grants
+from mykronos import briefing_sources, ci_repeat, grants
 from mykronos import host_controls as host_controls_module
 from mykronos.analysers import read_languages
 from mykronos.auth import TokenRegistry

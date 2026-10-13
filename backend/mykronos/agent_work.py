@@ -173,6 +173,7 @@ def _by_id(path: str, repo: str, repo_ids: dict[str, str]) -> str | None:
 def _lane_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
     items = []
     for lane in briefing.stalled:
+        last = lane.last_success.isoformat() if lane.last_success else "never"
         path = _by_id(lane.action.path, lane.repo_full_name, repo_ids)
         actions = (
             []
@@ -209,7 +210,7 @@ def _lane_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
                         detail=(
                             f"{lane.consecutive_failures}"
                             f"{'+' if lane.streak_capped else ''} consecutive failure(s); "
-                            f"last success {lane.last_success.isoformat() if lane.last_success else 'never'}"
+                            f"last success {last}"
                         ),
                     )
                 ],
@@ -242,13 +243,13 @@ def _ci_items(briefing: Briefing) -> list[WorkItem]:
                 ],
             )
         )
-    for job in briefing.paused:
+    for paused in briefing.paused:
         items.append(
             WorkItem(
-                item_id=f"ci_job_paused:{job.pipeline}/{job.job}",
+                item_id=f"ci_job_paused:{paused.pipeline}/{paused.job}",
                 kind="ci_job_paused",
                 band=BAND_PLATFORM,
-                title=f"{job.pipeline}/{job.job} is paused",
+                title=f"{paused.pipeline}/{paused.job} is paused",
                 summary=(
                     "Somebody switched this job off. The build that was running when it "
                     "stopped is usually why; read it before unpausing."
@@ -257,8 +258,8 @@ def _ci_items(briefing: Briefing) -> list[WorkItem]:
                 evidence=[
                     Evidence(
                         source="concourse",
-                        ref=job.build_url or f"{job.pipeline}/{job.job}",
-                        detail=f"last status {job.last_status}",
+                        ref=paused.build_url or f"{paused.pipeline}/{paused.job}",
+                        detail=f"last status {paused.last_status}",
                     )
                 ],
             )
@@ -429,7 +430,9 @@ def _approval_items(requests: list[dict[str, Any]]) -> tuple[list[WorkItem], lis
                     summary=str(req.get("last_rationale") or ""),
                     done_when="The request is decided.",
                     evidence=[
-                        Evidence(source="approval_requests", ref=str(req["id"]), detail="needs_info")
+                        Evidence(
+                            source="approval_requests", ref=str(req["id"]), detail="needs_info"
+                        )
                     ],
                     actions=[
                         ActionRef(
@@ -611,7 +614,10 @@ def _finding_actions(row: dict[str, Any], principal: Principal) -> list[ActionRe
                 label="Request a false-positive disposition",
                 method="POST",
                 path=f"/api/dashboard/findings/{finding_id}/disposition-requests",
-                effect="Freezes the evidence and asks someone independent. It stays open until decided.",
+                effect=(
+                    "Freezes the evidence and asks someone independent. "
+                    "It stays open until decided."
+                ),
                 governed_by="finding_disposition",
             )
         )
@@ -755,7 +761,9 @@ def build(
     ]
 
     if approval_requests is None:
-        queue.unknown.append(Unknown("approval_requests", "Your approval requests could not be read."))
+        queue.unknown.append(
+            Unknown("approval_requests", "Your approval requests could not be read.")
+        )
     else:
         approval_items, approval_waiting = _approval_items(approval_requests)
         items += approval_items
