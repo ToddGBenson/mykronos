@@ -82,7 +82,10 @@ class TestTheShippedFile:
         assert tuple(loaded.playbooks) == agent_work.KINDS
 
     def test_the_setting_points_at_it(self) -> None:
-        assert Settings().agent_playbooks_path.resolve() == SHIPPED.resolve()
+        # The default, not `Settings()`: an environment or `.env` may override it.
+        factory = Settings.model_fields["agent_playbooks_path"].default_factory
+        assert factory is not None
+        assert Path(factory()).resolve() == SHIPPED.resolve()  # type: ignore[call-arg]
 
     def test_every_route_a_playbook_names_exists(self, client) -> None:
         served = _app_routes(client.app)
