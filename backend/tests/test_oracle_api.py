@@ -299,6 +299,31 @@ class TestOverride:
         )
         assert response.status_code == 403
 
+    def test_agents_cannot_override(
+        self, client, oracle_auth, admin_auth, seeded, run_compaction, catalog
+    ) -> None:
+        """A recorded override clears the deploy floor (D-048), so an agent
+        that could record one would deploy past a no_go without the
+        deploy_override duty a person approves (spec 34 §6.3)."""
+        decision_id = self._decision_id(client, oracle_auth, run_compaction)
+        agent = client.post(
+            "/api/agents/credentials",
+            json={"family": "claude-opus-5.5"},
+            headers=admin_auth,
+        ).json()
+        response = client.post(
+            f"/api/oracle/decisions/{decision_id}/override",
+            json={"reason": "the agent is sure"},
+            headers={"Authorization": f"Bearer {agent['token']}"},
+        )
+        assert response.status_code == 403
+        run_compaction()
+        (override,) = catalog.query(
+            "SELECT human_override FROM risk_decisions WHERE decision_id = ?",
+            [decision_id],
+        )[0]
+        assert not override
+
     def test_the_override_is_audited(
         self, client, oracle_auth, admin_auth, seeded, run_compaction
     ) -> None:

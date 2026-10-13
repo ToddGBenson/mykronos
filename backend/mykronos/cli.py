@@ -978,7 +978,11 @@ def main(argv: list[str] | None = None) -> int:
             # against that repository's pipeline, the Actions ones against the
             # single generated-workflow identity (B-59988). Handing both sides
             # one scope is what `parity` exists to not do.
-            par_pipeline = pipeline_name_for(repo)
+            # `args.repo`, not `repo`: the bare name is bound only by the
+            # `rotate-token` loop above, so here it raised UnboundLocalError on
+            # every run that got this far - mypy cannot see it, because the
+            # name is assigned somewhere in the same function.
+            par_pipeline = pipeline_name_for(args.repo)
             concourse_stages = coverage(
                 par_capabilities, reconcile(par_pipeline, concourse.jobs, last_scan)
             )
