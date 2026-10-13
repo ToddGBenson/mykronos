@@ -256,6 +256,6 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | §2 work queue, §3 caveats | In this pull request |
-| 2 | §4 MCP server (#319) | After phase 1 merges |
+| 2 | §4 MCP server (#319) | In review: `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). Not built: `pipeline()` and `coverage()`, which have no route yet (#318) |
 | 3 | §5 playbooks | After phase 1 merges |
 | 4 | §6 track record: `GET /api/agent/scorecard` | In this pull request; two §6 items are reported `unavailable` with the reason (§6) |
