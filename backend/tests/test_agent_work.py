@@ -198,9 +198,12 @@ class TestAFrozenFindingSaysSo:
 
 
 class TestCaveats:
-    def test_dast_identity_is_unstable(self) -> None:
+    def test_a_dast_identity_is_its_route(self) -> None:
         [item] = _build(triage_rows=[_finding(capability="dast")]).items
-        assert "identity_unstable" in _caveats(item)
+        assert "identity_is_the_route" in _caveats(item)
+        # #440 made DAST identity stable; the old warning would steer an
+        # agent away from dispositions that do stick.
+        assert "identity_unstable" not in _caveats(item)
 
     def test_a_container_fix_is_a_package_not_an_image(self) -> None:
         [item] = _build(triage_rows=[_finding(capability="containers")]).items

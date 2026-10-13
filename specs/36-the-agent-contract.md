@@ -22,7 +22,7 @@ knew and did not say:
 | What the agent got wrong | What the platform knew |
 |---|---|
 | Treated an open count as "nobody fixed it" | The lane was failing, so nothing *could* close (`briefing.stalled`) |
-| Dispositioned DAST findings that reappeared under new ids | DAST finding identity is not stable (#274) |
+| Treated a DAST finding's URL as its identity | Since #440 the identity is the route; the URL is evidence in `raw_finding_json.instance.uri` |
 | Recommended pulling an image to fix container CVEs | `fixed_version` names a patched *package*, not a patched image |
 | Reported an atlas version as the running one | `version_basis` said `declared_floor` |
 | Read "true_positive" as a judgement | `classify()` derives it from severity alone |
@@ -134,7 +134,7 @@ improve.
 | Code | On | Meaning |
 |---|---|---|
 | `lane_frozen` | `triage` | The finding's lane is stalled. Nothing done to it will be observed until the lane runs. |
-| `identity_unstable` | `triage`, DAST | DAST findings get a new id each scan (#274). A disposition will not follow the finding. |
+| `identity_is_the_route` | `triage`, DAST | The identity is the route (#440): one disposition covers every URL on it. The scanned URL is in `raw_finding_json.instance.uri`. |
 | `fix_is_a_package` | `triage`, containers | A fixed version is a patched package, not a patched image. Compare digests before recommending a pull. |
 | `declared_version` | `triage`, atlas | The version is the declared floor or pin, not the resolved one. The running version may differ. |
 | `severity_only_triage` | `triage` | The `true_positive` label comes from severity alone; nothing read the code. |
@@ -213,8 +213,6 @@ a delegation across every family it trusts, not on a family.
   finding is a reopen. If someone dispositioned it again first, the outcome is `superseded`. Who reopened
   it is in `breakdown` (`human`, `self`, `another_agent`). `accepted_risk` dispositions are counted as
   `not_measurable`, because an acceptance ends through the acceptance sweep, which writes no audit entry.
-  DAST findings get a new id on every scan (#274), so a disposition can stand here while the alert
-  returns under another id.
 - `claims.lapsed_open` is a lower bound. `triage_state` keeps one claim per finding and claims are not
   audited, so a released or re-claimed claim leaves no trace. A claim's `by` is the handle the caller
   typed, and it is matched to the agent's actor name, which is the handle the work queue treats as the
