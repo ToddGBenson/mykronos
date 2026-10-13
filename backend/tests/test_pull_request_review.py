@@ -98,6 +98,7 @@ class TestTheChangeClassIsComputed:
         [
             ("approval-policy-v1.yaml", "governance"),
             ("oracle-policy-v1.yaml", "governance"),
+            ("agent-playbooks-v1.yaml", "governance"),
             (".github/workflows/ci.yml", "governance"),
             ("deploy/concourse/pipelines/mykronos.yml", "governance"),
             ("backend/mykronos/approvals/engine.py", "governance"),
