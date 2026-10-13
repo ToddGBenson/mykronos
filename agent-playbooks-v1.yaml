@@ -752,8 +752,8 @@ playbooks:
         do: >-
           Read the whole record, including the raw scanner output, and apply
           the item's caveats: a lane_frozen finding cannot close until its lane
-          runs; DAST identity is unstable, so read the target from the raw
-          finding's instance URI and parameter; a container fixed_version is a
+          runs; a DAST finding's identity is its route, so read the URL
+          actually scanned from the raw finding's instance URI and parameter; a container fixed_version is a
           patched package, not a patched image; an atlas version may be the
           declared floor; 'true_positive' came from severity alone.
         check: >-
@@ -809,7 +809,6 @@ playbooks:
     escalate:
       when:
         - "A critical finding is real and no fix is possible soon."
-        - "The finding's DAST identity changed under a pending request."
       evidence:
         - "The finding record, the raw scanner output you relied on, and your reasoning."
     never:
