@@ -3170,6 +3170,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent/playbooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Playbooks
+         * @description Every playbook, one per kind of work item, in band order (spec 36 §5).
+         */
+        get: operations["list_playbooks_api_agent_playbooks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/playbooks/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Playbook
+         * @description How to work one kind of item: ordered steps, the check between them,
+         *     when to stop, and when to hand it to a person with what evidence.
+         */
+        get: operations["get_playbook_api_agent_playbooks__kind__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals": {
         parameters: {
             query?: never;
@@ -6020,6 +6061,55 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** PlaybookEscalationOut */
+        PlaybookEscalationOut: {
+            /** When */
+            when: string[];
+            /** Evidence */
+            evidence: string[];
+        };
+        /** PlaybookOut */
+        PlaybookOut: {
+            /** Kind */
+            kind: string;
+            /** Version */
+            version: string;
+            /** Ref */
+            ref: string;
+            /** Purpose */
+            purpose: string;
+            /** Steps */
+            steps: components["schemas"]["PlaybookStepOut"][];
+            /** Stop When */
+            stop_when: string[];
+            escalate: components["schemas"]["PlaybookEscalationOut"];
+            /** Never */
+            never: string[];
+        };
+        /** PlaybookSetOut */
+        PlaybookSetOut: {
+            /** Version */
+            version: string;
+            /** Playbooks */
+            playbooks: components["schemas"]["PlaybookOut"][];
+        };
+        /** PlaybookStepOut */
+        PlaybookStepOut: {
+            /** Id */
+            id: string;
+            /** Do */
+            do: string;
+            /** Check */
+            check: string;
+            /** Routes */
+            routes: string[];
+            /** Outside */
+            outside: string[];
+            /** If Found */
+            if_found: string;
+            /** Then */
+            then: string;
+        };
         /** PoActionOut */
         PoActionOut: {
             /** Story Id */
@@ -8750,6 +8840,8 @@ export interface components {
             actions: components["schemas"]["WorkActionOut"][];
             /** Caveats */
             caveats: components["schemas"]["WorkCaveatOut"][];
+            /** Playbook */
+            playbook: string;
         };
         /** WorkPreconditionOut */
         WorkPreconditionOut: {
@@ -12787,6 +12879,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScorecardOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_playbooks_api_agent_playbooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookSetOut"];
+                };
+            };
+        };
+    };
+    get_playbook_api_agent_playbooks__kind__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybookOut"];
                 };
             };
             /** @description Validation Error */

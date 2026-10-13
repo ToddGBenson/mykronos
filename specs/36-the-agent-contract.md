@@ -79,6 +79,7 @@ WorkItem
   actions[]              {label, method, path, governed_by, effect}
   done_when              what the platform will observe when this is finished
   caveats[]              {code, detail}: see §3
+  playbook               <kind>@<version>: how to work it, see §5
 ```
 
 **`unknown` is not an empty list.** A source that could not be read appears there and nowhere else. A queue
@@ -169,6 +170,51 @@ The six times TheHub's scanning stopped become branches of `lane_stalled`: read 
 first, then token, branch, red `unit`, Actions disabled, billing. That knowledge stops living in one agent's
 memory file.
 
+### 5.1 As built
+
+**The file.** `agent-playbooks-v1.yaml`, loaded through the `agent_playbooks_path` setting and copied into
+the backend image beside the other reviewed files. `version` is quoted text (`"1.0"`), and each item's
+`playbook` is `<kind>@<version>`.
+
+```
+playbooks.<kind>
+  purpose              what the item means and what "done" is
+  steps[]              ordered
+    id                 stable slug
+    do                 what to do
+    check              what to confirm before moving on
+    routes[]           "METHOD /path" this step reads or calls
+    outside[]          evidence outside the API (a gh command, a build log)
+    if_found           for a diagnostic branch: what it means when the check finds the cause
+    then               continue | repair | escalate | stop
+  stop_when[]
+  escalate             {when[], evidence[]}
+  never[]              what this kind of item tempts an agent to do that it must not
+```
+
+**The order in `lane_stalled`** differs from the list above in one place, and on purpose: it reads the
+failure first, then checks for a quiet repository (a silent lane in a repository nobody pushed to is idle,
+not stalled, and most lanes are commit-triggered), then billing, Actions disabled, a red upstream quality
+lane, the wrong branch or a pinned commit, the ingestion token, and a host or Docker restart. Billing and
+disabled Actions come before the token because they are read straight off the annotation and stop every job
+at once. `ci_job_failing` follows the same order for a single job.
+
+**The kinds are one list.** `agent_work.KINDS` names every kind `build` can emit. `WorkItem` refuses a
+kind outside it; `mykronos.playbooks` refuses a file missing a kind or naming one that does not exist, and an
+unknown key anywhere (a misspelt `stop_when` would otherwise load as a playbook with no stop conditions).
+
+**The routes are checked.** `tests/test_playbooks.py` walks the app's routes and fails on any route a
+playbook names that the app does not serve, naming the playbook and step. Renaming a route without updating
+the playbook that sends agents to it fails CI.
+
+**Read routes.** `GET /api/agent/playbooks` (all, in band order) and `GET /api/agent/playbooks/{kind}` (404
+for an unknown kind), for any principal. A file that will not load answers 503 on these and on
+`/api/agent/work`, rather than a queue whose items name playbooks nobody can read.
+
+**What the file does not do.** It grants nothing: the routes it names enforce their own rules. It is not in
+`approval-policy-v1.yaml`'s `governance` change class (that pattern is `*-policy-v1.yaml`), so a change to it
+is reviewed at the `production` tier.
+
 ## 6. The track record — `GET /api/agent/scorecard` (phase 4)
 
 Computed per model family and per instance from records that already exist. No new events and no new
@@ -253,7 +299,7 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | §2 work queue, §3 caveats | In this pull request |
-| 2 | §4 MCP server (#319) | In review: `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). Not built: `pipeline()` and `coverage()`, which have no route yet (#318) |
-| 3 | §5 playbooks | After phase 1 merges |
-| 4 | §6 track record: `GET /api/agent/scorecard` | In this pull request; two §6 items are reported `unavailable` with the reason (§6) |
+| 1 | §2 work queue, §3 caveats | Merged (#799) |
+| 2 | §4 MCP server (#319) | Merged (#803): `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). Not built: `pipeline()` and `coverage()`, which have no route yet (#318) |
+| 3 | §5 playbooks | Built (§5.1): `agent-playbooks-v1.yaml`, `mykronos.playbooks`, `GET /api/agent/playbooks[/{kind}]`, `WorkItem.playbook` |
+| 4 | §6 track record: `GET /api/agent/scorecard` | Merged (#802); two §6 items are reported `unavailable` with the reason (§6) |
