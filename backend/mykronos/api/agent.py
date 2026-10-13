@@ -246,3 +246,109 @@ async def work(
         probe_interval_seconds=int(settings.exposure_probe_interval_seconds),
     )
     return WorkQueueOut.model_validate(dataclasses.asdict(queue))
+
+
+# -- The track record (spec 36 §6, phase 4) -----------------------------------
+#
+# Kept to its own section, below the work queue, so the two grow without
+# touching each other. The computation is `mykronos.agent_scorecard`; this is
+# only the read and the response shape.
+
+
+class ScorecardMetricOut(BaseModel):
+    #: Stable; branch on this.
+    name: str
+    #: computed | no_data | unavailable. `no_data`: the source was read and
+    #: the denominator is zero. `unavailable`: it could not be derived; `note`
+    #: says why. Neither is zero.
+    status: str
+    source: str
+    value: int | None
+    denominator: int | None
+    denominator_label: str
+    rate: float | None
+    breakdown: dict[str, int]
+    note: str
+
+
+class ScorecardDutyOut(BaseModel):
+    duty: str
+    requests: int
+    by_state: dict[str, int]
+    rejected: ScorecardMetricOut
+    needs_info: ScorecardMetricOut
+
+
+class ScorecardDelegationOut(BaseModel):
+    delegation_id: str
+    duty: str
+    agreed: int
+    reviewed: int
+    window: int
+    threshold: float
+    below_threshold: bool | None
+    suspended_at: datetime | None
+    suspended_reason: str | None
+
+
+class ScorecardGroupOut(BaseModel):
+    family: str
+    #: Null on a family's aggregate.
+    instance: str | None
+    actor: str
+    instances: list[str]
+    metrics: list[ScorecardMetricOut]
+    requests_by_duty: list[ScorecardDutyOut]
+    #: The delegations this group's approvals were made under, with the
+    #: agreement that suspends them (spec 34 §5.2).
+    delegations: list[ScorecardDelegationOut]
+
+
+class ScorecardOut(BaseModel):
+    generated_at: datetime
+    agreement_window: int
+    suspend_below_agreement: float
+    policy_version: str
+    families: list[ScorecardGroupOut]
+    instances: list[ScorecardGroupOut]
+    #: Disposition audit entries that name no actor kind: written before
+    #: spec 34 §1, or by a CLI or script. No agent's record includes them.
+    unattributed_dispositions: int | None
+    #: Sources that could not be read. Not the same as an empty record.
+    unknown: list[WorkUnknownOut]
+
+
+@router.get("/scorecard", response_model=ScorecardOut)
+async def scorecard(
+    request: Request,
+    principal: PrincipalDep,
+    family: Annotated[
+        str | None, Query(description="Only this model family, e.g. claude-opus-5.5.")
+    ] = None,
+    instance: Annotated[
+        str | None, Query(description="Only this agent instance id.")
+    ] = None,
+) -> ScorecardOut:
+    """An agent's track record, per model family and per instance (spec 36 §6).
+
+    Readable by any principal: it is the record a delegation rests on (spec
+    34 §5), and an agent deciding whether its own work is trusted should read
+    the same numbers the operator does. It carries counts, never rationales or
+    notes.
+
+    Every metric names its source and its denominator. One the existing
+    records cannot support is `unavailable` with the reason, never zero.
+    """
+    # Imported here rather than at the top so this section touches nothing
+    # above it: the work queue and its playbooks change that block.
+    from mykronos import agent_scorecard
+    from mykronos.approvals.policy import cached_policy
+
+    state = request.app.state
+    policy = cached_policy(state.settings.approval_policy_path)
+    now = utcnow()
+    gathered = await asyncio.to_thread(
+        agent_scorecard.gather, state.db, state.catalog, policy, now=now
+    )
+    card = agent_scorecard.compute(gathered, policy, now=now, family=family, instance=instance)
+    return ScorecardOut.model_validate(dataclasses.asdict(card))
