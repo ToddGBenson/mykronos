@@ -150,7 +150,7 @@ services:
   # maintainers never rebuilt, this weekly build is Debian 13 with 18. The
   # digest is what keeps it exact (D-114) - move both pins together.
   zap:
-    image: ghcr.io/zaproxy/zaproxy:weekly@sha256:0c31b03932ea159a6f80c96cabb2cc9b417a148f460922ffcece8121f22779b5
+    image: ghcr.io/zaproxy/zaproxy:weekly@sha256:4ec932d24ee6fa7181333a719d519cdebf92df541058d48041ce3358528cd0ea
     # Loopback only. The API below runs with no key and accepts any caller,
     # and ZAP's API can load and run scripts, so a LAN-reachable port is code
     # execution on this container. The DAST lane (.github/workflows/
