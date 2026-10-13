@@ -44,6 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
+from mykronos import briefing_sources
 from mykronos import ci_repeat, grants
 from mykronos import host_controls as host_controls_module
 from mykronos.analysers import read_languages
@@ -1349,24 +1350,8 @@ def main(argv: list[str] | None = None) -> int:
             # open however well the defect was fixed — and nothing else in
             # the platform says so. On 2026-09-01 that was 115 DAST findings
             # against headers that had already shipped and were being served.
-            with db.session() as session:
-                default_branches = {
-                    str(name): str(branch or "")
-                    for name, branch in session.execute(
-                        select(RepoOnboarding.github_repo_full_name, RepoOnboarding.default_branch)
-                    ).all()
-                }
-                # How each repository's scans are dispatched (#278). The
-                # stalled-lane section printed `POST .../scan` for every one of
-                # them without ever reading this, and that request answers 503
-                # on a Concourse-scanned repository unless the deployment holds
-                # an API token -- which is most of this estate.
-                scanned_by = {
-                    str(name): str(how or "")
-                    for name, how in session.execute(
-                        select(RepoOnboarding.github_repo_full_name, RepoOnboarding.scanned_by)
-                    ).all()
-                }
+            # Both from the onboarding ledger, not the lake (#278, B-046).
+            default_branches, scanned_by = briefing_sources.onboarding_maps(db)
             # Languages are read from GitHub, so the terminal briefing needs a
             # client to report B-051's gap. Without one it reports nothing
             # there, which is the honest degradation: not knowing what a
@@ -1429,144 +1414,10 @@ def main(argv: list[str] | None = None) -> int:
                     "No GitHub client for the briefing language read"
                 )
 
-            # Paused CI jobs (#401). Read here rather than in `build()` for the
-            # same reason languages are: the briefing builds from the lake, and
-            # a paused job leaves no trace in it — no scan runs, nothing to
-            # distinguish it from a capability nobody enabled. Four security
-            # lanes were off for thirty-two days behind exactly that gap.
-            #
-            # `None` on any failure, which renders as "could not ask" rather
-            # than as "nothing is paused". Those must not look the same.
-            paused_jobs: list[briefing_report.PausedLane] | None = None
-            try:
-                ci_client = ConcourseClient(
-                    settings.concourse_url,
-                    team=settings.concourse_team,
-                    external_url=settings.concourse_external_url,
-                )
-                if ci_client.configured:
-                    found = ci_client.paused_jobs()
-                    paused_jobs = (
-                        None
-                        if found is None
-                        else [
-                            briefing_report.PausedLane(
-                                pipeline=pipeline,
-                                job=job.name,
-                                last_status=job.status,
-                                last_finished_at=job.finished_at,
-                                build_url=job.build_url,
-                            )
-                            for pipeline, job in found
-                        ]
-                    )
-            except Exception:  # noqa: BLE001 - a briefing must not die on CI
-                logging.getLogger(__name__).debug("Could not read paused CI jobs")
-
-            # Failing CI jobs nobody paused (#306). Read beside the paused
-            # sweep because it is the same call to the same endpoint; kept a
-            # separate list because the two mean different things and the
-            # rendering says different things about them.
-            #
-            # `netassess-ingest` had one success in ten builds over five weeks
-            # and appeared in none of the briefing's five sections, because
-            # every one of them keys on a lane being switched off or on a
-            # finding — and a failing evidence lane is neither.
-            failing_jobs: list[briefing_report.FailingLane] | None = None
-            try:
-                ci_client = ConcourseClient(
-                    settings.concourse_url,
-                    team=settings.concourse_team,
-                    external_url=settings.concourse_external_url,
-                )
-                if ci_client.configured:
-                    bad = ci_client.failing_jobs()
-                    failing_jobs = (
-                        None
-                        if bad is None
-                        else [
-                            briefing_report.FailingLane(
-                                pipeline=pipeline,
-                                job=job.name,
-                                last_status=job.status,
-                                last_finished_at=job.finished_at,
-                                build_url=job.build_url,
-                            )
-                            for pipeline, job in bad
-                        ]
-                    )
-            except Exception:  # noqa: BLE001 - a briefing must not die on CI
-                logging.getLogger(__name__).debug("Could not read failing CI jobs")
-
-            # Job health (#409). Read here rather than in `build()` for the
-            # same reason as the rest: the briefing builds from the lake, and
-            # `job_runs` is in the operational database. The assessment itself
-            # belongs to `platform_health`, which the API surface already uses
-            # -- a second copy of "is this job late" is a second thing to keep
-            # in step.
-            #
-            # `None` on failure, which renders as "could not read" rather than
-            # as "everything is running". The acceptance sweep failed for four
-            # days with its record sitting correct and unread.
-            unhealthy_jobs: list[Any] | None = None
-            try:
-                from mykronos import platform_health
-                from mykronos.db.models import JobRun
-                from mykronos.schemas import utcnow as _utcnow
-
-                now = _utcnow()
-                with db.session() as session:
-                    job_rows = list(
-                        session.execute(select(JobRun).order_by(JobRun.name)).scalars()
-                    )
-                assessed = [platform_health.assess_job(r, now=now) for r in job_rows]
-                unhealthy_jobs = [
-                    j for j in assessed if j.status not in ("ok", "disabled")
-                ]
-            except Exception:  # noqa: BLE001 - a briefing must not die on this
-                logging.getLogger(__name__).debug("Could not read job health")
-
-            # Ingestion tokens the rotation sweep defers to a person (#263).
-            # Read here for the same reason as job health: it lives in the
-            # operational database, not the lake. `None` on failure so the
-            # page says "could not read" rather than "nothing waiting" --
-            # which is the whole complaint, since the one deferral this
-            # platform had was visible only in 30 hours of container logs.
-            tokens: list[briefing_report.TokenDelivery] | None = None
-            try:
-                from mykronos.jobs import deliveries_awaiting_operator
-
-                tokens = deliveries_awaiting_operator(db)
-            except Exception:  # noqa: BLE001 - a briefing must not die on this
-                logging.getLogger(__name__).debug("Could not read token deliveries")
-
-            # Toxic combinations (`mykronos.toxic`): the same detection and
-            # severity the Oracle's risk decision uses. `None` on failure, so
-            # the page says "could not be computed" rather than "none".
-            toxic_combinations: list[dict[str, Any]] | None = None
-            toxic_coverage: dict[str, Any] | None = None
-            try:
-                from mykronos import toxic
-
-                with db.session() as session:
-                    toxic_found = toxic.detect(catalog, session=session)
-                order = {s: i for i, s in enumerate(reversed(toxic.SEVERITIES))}
-                toxic_found.sort(key=lambda c: (order.get(c.severity, 9), c.repo_full_name))
-                toxic_combinations = [c.to_dict() for c in toxic_found]
-                toxic_coverage = toxic.coverage(catalog)
-            except Exception:  # noqa: BLE001 - a briefing must not die on this
-                logging.getLogger(__name__).debug("Could not compute toxic combinations")
-
-            # Public endpoints (`mykronos.exposure`): the last anonymous probe
-            # of every registered public URL. `None` on failure, so the page
-            # says "could not be read" rather than "nothing exposed".
-            exposure_rows: list[dict[str, Any]] | None = None
-            try:
-                from mykronos import exposure as exposure_report
-
-                exposure_rows = exposure_report.summary(db)
-            except Exception:  # noqa: BLE001 - a briefing must not die on this
-                logging.getLogger(__name__).debug("Could not read public endpoints")
+            # Everything else outside the lake: CI, job health, tokens, toxic
+            # combinations and exposure. Each is `None` when it could not be
+            # read, which renders as "could not ask" rather than "nothing".
+            operational = briefing_sources.gather(settings, db, catalog)
 
             report = briefing_report.build(
                 catalog,
@@ -1575,13 +1426,13 @@ def main(argv: list[str] | None = None) -> int:
                 concourse_token=bool(settings.concourse_api_token),
                 languages=languages,
                 sast_tools=sast_tools,
-                paused_jobs=paused_jobs,
-                failing_jobs=failing_jobs,
-                unhealthy_jobs=unhealthy_jobs,
-                tokens=tokens,
-                toxic_combinations=toxic_combinations,
-                toxic_coverage=toxic_coverage,
-                exposure=exposure_rows,
+                paused_jobs=operational.paused_jobs,
+                failing_jobs=operational.failing_jobs,
+                unhealthy_jobs=operational.unhealthy_jobs,
+                tokens=operational.tokens,
+                toxic_combinations=operational.toxic_combinations,
+                toxic_coverage=operational.toxic_coverage,
+                exposure=operational.exposure,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))
