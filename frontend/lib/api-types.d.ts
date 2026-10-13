@@ -3142,6 +3142,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent/scorecard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Scorecard
+         * @description An agent's track record, per model family and per instance (spec 36 §6).
+         *
+         *     Readable by any principal: it is the record a delegation rests on (spec
+         *     34 §5), and an agent deciding whether its own work is trusted should read
+         *     the same numbers the operator does. It carries counts, never rationales or
+         *     notes.
+         *
+         *     Every metric names its source and its denominator. One the existing
+         *     records cannot support is `unavailable` with the reason, never zero.
+         */
+        get: operations["scorecard_api_agent_scorecard_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals": {
         parameters: {
             query?: never;
@@ -7729,6 +7757,102 @@ export interface components {
              * @enum {string}
              */
             scanned_by: "concourse" | "github_actions" | "none";
+        };
+        /** ScorecardDelegationOut */
+        ScorecardDelegationOut: {
+            /** Delegation Id */
+            delegation_id: string;
+            /** Duty */
+            duty: string;
+            /** Agreed */
+            agreed: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Window */
+            window: number;
+            /** Threshold */
+            threshold: number;
+            /** Below Threshold */
+            below_threshold: boolean | null;
+            /** Suspended At */
+            suspended_at: string | null;
+            /** Suspended Reason */
+            suspended_reason: string | null;
+        };
+        /** ScorecardDutyOut */
+        ScorecardDutyOut: {
+            /** Duty */
+            duty: string;
+            /** Requests */
+            requests: number;
+            /** By State */
+            by_state: {
+                [key: string]: number;
+            };
+            rejected: components["schemas"]["ScorecardMetricOut"];
+            needs_info: components["schemas"]["ScorecardMetricOut"];
+        };
+        /** ScorecardGroupOut */
+        ScorecardGroupOut: {
+            /** Family */
+            family: string;
+            /** Instance */
+            instance: string | null;
+            /** Actor */
+            actor: string;
+            /** Instances */
+            instances: string[];
+            /** Metrics */
+            metrics: components["schemas"]["ScorecardMetricOut"][];
+            /** Requests By Duty */
+            requests_by_duty: components["schemas"]["ScorecardDutyOut"][];
+            /** Delegations */
+            delegations: components["schemas"]["ScorecardDelegationOut"][];
+        };
+        /** ScorecardMetricOut */
+        ScorecardMetricOut: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Source */
+            source: string;
+            /** Value */
+            value: number | null;
+            /** Denominator */
+            denominator: number | null;
+            /** Denominator Label */
+            denominator_label: string;
+            /** Rate */
+            rate: number | null;
+            /** Breakdown */
+            breakdown: {
+                [key: string]: number;
+            };
+            /** Note */
+            note: string;
+        };
+        /** ScorecardOut */
+        ScorecardOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Agreement Window */
+            agreement_window: number;
+            /** Suspend Below Agreement */
+            suspend_below_agreement: number;
+            /** Policy Version */
+            policy_version: string;
+            /** Families */
+            families: components["schemas"]["ScorecardGroupOut"][];
+            /** Instances */
+            instances: components["schemas"]["ScorecardGroupOut"][];
+            /** Unattributed Dispositions */
+            unattributed_dispositions: number | null;
+            /** Unknown */
+            unknown: components["schemas"]["WorkUnknownOut"][];
         };
         /**
          * Severity
@@ -12629,6 +12753,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkQueueOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scorecard_api_agent_scorecard_get: {
+        parameters: {
+            query?: {
+                /** @description Only this model family, e.g. claude-opus-5.5. */
+                family?: string | null;
+                /** @description Only this agent instance id. */
+                instance?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScorecardOut"];
                 };
             };
             /** @description Validation Error */

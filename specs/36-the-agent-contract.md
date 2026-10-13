@@ -169,17 +169,78 @@ The six times TheHub's scanning stopped become branches of `lane_stalled`: read 
 first, then token, branch, red `unit`, Actions disabled, billing. That knowledge stops living in one agent's
 memory file.
 
-## 6. The track record (phase 4)
+## 6. The track record — `GET /api/agent/scorecard` (phase 4)
 
-Computed per agent family and per instance from records that already exist. No new events are needed:
+Computed per model family and per instance from records that already exist. No new events and no new
+tables: every number is a read over `approval_requests`, `approval_decisions`, `audit_log`,
+`triage_state` and finding status in the lake (`mykronos/agent_scorecard.py`). Any principal may read it,
+because it is the record a delegation (spec 34 §5) rests on, and an agent should read the same numbers
+the operator does. It carries counts, never rationales or review notes.
 
-- dispositions overturned when sampled (`ApprovalDecision.sample_*`),
-- the agent's pull requests rejected or closed unmerged,
-- findings it reported fixed that reopened (`regression`),
-- claims that lapsed with no disposition (`worklist`),
-- `needs_info` answers per request.
+**An agent is grouped as its records say.** Approvals, requests and audit entries each snapshot the
+agent's `family` and `instance` when it acted, so a revoked credential cannot rewrite its record. A record
+with no family is shown under `(unrecorded)`, never dropped. `family` and `instance` filter the
+response; a family's aggregate always covers all its instances.
 
-A delegation (spec 34 §5) is then granted against a published record rather than on trust, and sampling and
+**Every metric carries its source, its denominator, and one of three states.** `computed` has a non-zero
+denominator. `no_data` means the source was read and the denominator is zero, so an agent never sampled
+has no agreement rate rather than 100% or 0%. `unavailable` means the source could not be read or no
+record supports the number, and `note` says which. Neither of the last two is a zero. A source that
+fails to read is also named in `unknown`.
+
+| Metric | Value / denominator | Source |
+|---|---|---|
+| `approver.verdicts` | rejections / decisions as an approver, with every verdict in `breakdown` | `approval_decisions`, `approver_kind = agent` |
+| `approver.sampled` | sampled / decisions made under a delegation | same |
+| `approver.sample_reviewed` | reviewed by a person / sampled; `awaiting_review` is the queue | same |
+| `approver.overturned` | `sample_verdict = disagree` / reviewed samples | same |
+| `approver.agreement` | `agree` / reviewed samples, all time | same |
+| `approver.agreement_window` | `agree` / the newest `agreement_window` reviewed samples, against `suspend_below_agreement` | same, in `sampling._agreement`'s order |
+| `requester.rejected` | rejected / decided (approved + rejected), every state in `breakdown` | `approval_requests`, `requester_kind = agent` |
+| `requester.needs_info` | requests answered `needs_info` at least once / requests made | `approval_requests` + `approval_decisions` |
+| `dispositions.reopened` | reopened / `false_positive` and `suppressed` dispositions the agent applied | `audit_log` `finding.status` (`actor_kind = agent`) and `finding.reopened` |
+| `claims.lapsed_open` | lapsed claims on a finding still `open` / claims recorded under the agent's actor | `triage_state` and lake `findings.status` |
+
+`requests_by_duty` repeats `rejected` and `needs_info` for each duty, so `pull_request_merge` rejections
+appear separately. A pending request past its expiry counts as `expired`, because the engine only marks
+it lazily. Each group also lists the delegations its approvals were made under, with the agreement figure
+from `sampling.delegation_stats`. That per-delegation figure is the one that suspends: suspension acts on
+a delegation across every family it trusts, not on a family.
+
+**Limits of what is derived:**
+
+- `dispositions.reopened` counts a disposition as reopened only when the next status event on its
+  finding is a reopen. If someone dispositioned it again first, the outcome is `superseded`. Who reopened
+  it is in `breakdown` (`human`, `self`, `another_agent`). `accepted_risk` dispositions are counted as
+  `not_measurable`, because an acceptance ends through the acceptance sweep, which writes no audit entry.
+  DAST findings get a new id on every scan (#274), so a disposition can stand here while the alert
+  returns under another id.
+- `claims.lapsed_open` is a lower bound. `triage_state` keeps one claim per finding and claims are not
+  audited, so a released or re-claimed claim leaves no trace. A claim's `by` is the handle the caller
+  typed, and it is matched to the agent's actor name, which is the handle the work queue treats as the
+  agent's own.
+- `unattributed_dispositions` counts the `finding.status` entries that name no actor kind: entries
+  written before spec 34 §1, or by a CLI or script. No agent's record includes them.
+
+**Two items from the original list cannot be derived. Each is reported `unavailable` with its reason on
+every group:**
+
+- `findings.reported_fixed_reopened`: no principal reports a finding fixed. `fixed` is an observation the
+  reconciler makes after two successful scans miss a finding, and the status route refuses it from
+  anyone. When a fixed finding comes back, compaction reopens it and only logs a count
+  (`CompactionResult.reopened`), so nothing records which finding reopened or which change claimed to fix
+  it. `dispositions.reopened` is the measurable version.
+- `pull_requests.closed_unmerged`: the platform records an approval request for each head commit, not
+  what happened to the pull request on GitHub, so nothing stores a pull request closed without merging.
+  Every GitHub action also comes from one shared account (spec 34 §1.2), so a close could not be
+  attributed to an agent even if it were stored. Rejected `pull_request_merge` requests are measured.
+  Requests the platform opens itself for unclaimed pull requests are `automation`, so they appear on no
+  agent's record.
+
+Closing either gap would need a new record: a per-finding reopen event from compaction, or the PR
+stamp job recording a close. This phase adds neither.
+
+A delegation is then granted against a published record rather than on trust, and sampling and
 suspension (`suspend_below_agreement`) already turn a falling record into consequences.
 
 ## 7. What this spec does not do
@@ -197,4 +258,4 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 | 1 | §2 work queue, §3 caveats | In this pull request |
 | 2 | §4 MCP server (#319) | After phase 1 merges |
 | 3 | §5 playbooks | After phase 1 merges |
-| 4 | §6 track record | After phase 1 merges |
+| 4 | §6 track record: `GET /api/agent/scorecard` | In this pull request; two §6 items are reported `unavailable` with the reason (§6) |
