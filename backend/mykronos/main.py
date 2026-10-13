@@ -70,7 +70,6 @@ from mykronos.jobs import (
     purge_orphaned_learnings,
     reconcile_installations,
     rotate_ingestion_tokens,
-    route_open_findings,
     score_portfolio,
     sweep_acceptances,
     sweep_governance,
@@ -591,14 +590,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
             )
 
-        async def _routing() -> None:
-            await route_open_findings(
-                app.state.db,
-                app.state.catalog,
-                app.state.knowledge,
-                app.state.github_factory,
-            )
-
         async def _timeout_audit() -> None:
             # Live Concourse history against the committed caps (TheHub
             # #60729). A finding notifies; unread history raises, so this
@@ -720,14 +711,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             *(
                 [("digest", settings.weekly_digest_interval_seconds, _digest)]
                 if settings.digest_enabled
-                else []
-            ),
-            # Off unless a deployment opts in (`routing_enabled`): this
-            # one opens issues in somebody's tracker, and doing that the
-            # moment the platform is upgraded is not its decision to make.
-            *(
-                [("routing", settings.finding_routing_interval_seconds, _routing)]
-                if settings.routing_enabled
                 else []
             ),
         ):

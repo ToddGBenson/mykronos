@@ -31,6 +31,11 @@ GITHUB_API = "https://api.github.com"
 #: `secrets` were both missing from the original spec and are both mandatory:
 #: without them the installer cannot commit a workflow file or provision the
 #: ingestion secret.
+#:
+#: Every entry is earned by a method in `METHOD_PERMISSIONS` below, at exactly
+#: this level, and `tests/test_github_permissions.py` holds the two in step
+#: (D-161). `issues` is `read`: the platform reads a backlog's issues
+#: (`po_issues`) and writes none, since TheHub owns work items (D-133).
 REQUIRED_PERMISSIONS = {
     "contents": "write",
     "workflows": "write",
@@ -38,12 +43,63 @@ REQUIRED_PERMISSIONS = {
     "pull_requests": "write",
     "checks": "write",
     "actions": "write",
-    # Spent only by the i2i process opening/updating a groomed story (spec
-    # 17 §7.2) — deliberately distinct from `pull_requests`, since an issue
-    # is a work item, not a repository content change.
-    "issues": "write",
+    "issues": "read",
     "metadata": "read",
 }
+
+#: What each `GitHubClient` method spends, as `(permission, level)` pairs.
+#:
+#: The permission set is reviewable only against its call sites, so they are
+#: listed here rather than inferred (D-161). A method missing from this map,
+#: a write the REST client sends that is not declared here at `write`, or a
+#: `REQUIRED_PERMISSIONS` entry no method earns, each fails a test. Adding a
+#: write therefore means declaring its permission here first, and the operator
+#: then has to grant it on the App.
+#:
+#: `get_installation` is empty because it authenticates as the App (a JWT),
+#: not as an installation. `project_field_values` needs
+#: `organization_projects`, which no installation on a user account can hold;
+#: it is declared so the test sees it, and `po_issues` falls back to labels.
+METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "get_repo": (("metadata", "read"),),
+    "get_file": (("contents", "read"),),
+    "create_branch": (("contents", "write"),),
+    # `workflows: write` only when a change touches `.github/workflows/`.
+    "commit_files": (("contents", "write"), ("workflows", "write")),
+    "list_tree": (("contents", "read"),),
+    "languages": (("metadata", "read"),),
+    "installation_repositories": (("metadata", "read"),),
+    "find_open_pull_request": (("pull_requests", "read"),),
+    "create_pull_request": (("pull_requests", "write"),),
+    "update_pull_request": (("pull_requests", "write"),),
+    "get_pull_request": (("pull_requests", "read"),),
+    "list_open_pull_requests": (("pull_requests", "read"),),
+    "pull_request_files": (("pull_requests", "read"),),
+    "compare": (("contents", "read"),),
+    "list_commits": (("contents", "read"),),
+    "get_checks_summary": (("checks", "read"),),
+    # The closing comment goes through the issues API, which accepts
+    # `pull_requests: write` for a pull request.
+    "close_pull_request": (("pull_requests", "write"),),
+    "get_actions_public_key": (("secrets", "read"),),
+    "put_actions_secret": (("secrets", "write"),),
+    "create_check_run": (("checks", "write"),),
+    "update_check_run": (("checks", "write"),),
+    "get_branch_protection": (("administration", "read"),),
+    "get_rulesets": (("administration", "read"),),
+    "get_installation": (),
+    "dispatch_workflow": (("actions", "write"),),
+    "list_workflows": (("actions", "read"),),
+    "latest_workflow_runs": (("actions", "read"),),
+    "set_workflow_state": (("actions", "write"),),
+    "issue_state": (("issues", "read"),),
+    "list_issues": (("issues", "read"),),
+    "project_field_values": (("organization_projects", "read"),),
+}
+
+#: Declared in `METHOD_PERMISSIONS` but never required: no App installed on a
+#: user account can be granted it (see `po_issues._project_gates`).
+UNGRANTABLE_PERMISSIONS = frozenset({"organization_projects"})
 
 #: Permissions that unlock a capability without being required for one
 #: (spec 30 §1.2). Deliberately separate from the set above, and the
@@ -80,16 +136,6 @@ class PermissionDeniedError(GitHubError):
     Raised separately because this is the D-008 failure mode: it means the App
     is registered wrong, and no amount of retrying will help.
     """
-
-
-@dataclass(frozen=True)
-class IssueRef:
-    """What `create_issue`/`update_issue` need to hand back (spec 17 §7.2) —
-    enough to record on a `TriageStory` and link to from the dashboard,
-    nothing more. Not a full issue model: nothing here reads an issue back."""
-
-    number: int
-    url: str
 
 
 @dataclass(frozen=True)
@@ -396,8 +442,6 @@ class GitHubClient(Protocol):
         self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
     ) -> None: ...
 
-    async def delete_actions_secret(self, repo_full_name: str, name: str) -> None: ...
-
     async def pull_request_files(
         self, repo_full_name: str, number: int
     ) -> list[PullRequestFile]:
@@ -538,49 +582,6 @@ class GitHubClient(Protocol):
         caller never looks up a numeric id first. GitHub returns 204 with no
         body."""
 
-    async def create_issue(
-        self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
-    ) -> IssueRef:
-        """Open an i2i story as a GitHub issue (spec 17 §7.2).
-
-        Issue creation, not pull-request creation, and not a merge — an
-        issue is a work item, not a repository content change. Patchwork's
-        structural "never merges" guarantee (spec 08 §3, enforced by the
-        protocol having no merge method at all) is untouched either
-        direction: this method crosses neither line."""
-
-    async def update_issue(
-        self,
-        repo_full_name: str,
-        number: int,
-        *,
-        title: str | None = None,
-        body: str | None = None,
-        labels: list[str] | None = None,
-    ) -> None:
-        """Re-grooming the same finding updates this issue rather than
-        opening a second one (spec 17 §7.2) — the caller looks the issue up
-        by `TriageStory.id`, this just applies the new content to it."""
-
-    async def comment_on_issue(self, repo_full_name: str, number: int, body: str) -> None:
-        """Say something new on an existing issue without rewriting it (#432).
-
-        Distinct from `update_issue` on purpose. Editing the body replaces
-        what the issue said; a disposition — fixed, dismissed, accepted — is
-        an event with a date, and the record of when the platform learned it
-        is the point. Closing an issue with no comment leaves a reader no way
-        to tell a resolution from a tidy-up."""
-
-    async def close_issue(
-        self, repo_full_name: str, number: int, *, reason: str = "completed"
-    ) -> None:
-        """Close an issue whose finding is settled (#432).
-
-        `reason` is GitHub's `state_reason`: `completed` for a finding a scan
-        confirmed fixed, `not_planned` for one dispositioned as a false
-        positive. An acceptance is never closed here — see
-        `groom.OPEN_DISPOSITIONS`."""
-
     async def issue_state(self, repo_full_name: str, number: int) -> str | None:
         """`open`, `closed`, or `None` if the issue is gone.
 
@@ -683,7 +684,6 @@ class FakeGitHubClient:
         #: actually read rather than only that a PR was opened.
         self.pull_request_bodies: dict[int, str] = {}
         self._next_pr_number = 1
-        self._next_issue_number = 1
         self.installations: dict[int, dict[str, Any]] = {}
         #: (owner, project number) -> `owner/repo` -> issue number -> the
         #: gate field's option name. Readable only with
@@ -927,11 +927,6 @@ class FakeGitHubClient:
         self._require("secrets", "write", "Creating an Actions secret")
         self._repo(repo_full_name).secrets[name] = encrypted_value
 
-    async def delete_actions_secret(self, repo_full_name: str, name: str) -> None:
-        self.calls.append(("delete_actions_secret", f"{repo_full_name}:{name}"))
-        self._require("secrets", "write", "Deleting an Actions secret")
-        self._repo(repo_full_name).secrets.pop(name, None)
-
     async def create_check_run(
         self,
         repo_full_name: str,
@@ -1055,61 +1050,6 @@ class FakeGitHubClient:
             )
         repo.workflow_states[workflow_file] = "active" if enabled else "disabled_manually"
 
-    async def create_issue(
-        self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
-    ) -> IssueRef:
-        self.calls.append(("create_issue", f"{repo_full_name}:{title}"))
-        self._require("issues", "write", "Opening an issue")
-        repo = self._repo(repo_full_name)
-        number = self._next_issue_number
-        self._next_issue_number += 1
-        repo.issues.append(
-            {
-                "number": number,
-                "title": title,
-                "body": body,
-                "labels": list(labels or []),
-                "state": "open",
-            }
-        )
-        return IssueRef(number=number, url=f"https://github.com/{repo_full_name}/issues/{number}")
-
-    async def update_issue(
-        self,
-        repo_full_name: str,
-        number: int,
-        *,
-        title: str | None = None,
-        body: str | None = None,
-        labels: list[str] | None = None,
-    ) -> None:
-        self.calls.append(("update_issue", f"{repo_full_name}#{number}"))
-        self._require("issues", "write", "Updating an issue")
-        repo = self._repo(repo_full_name)
-        issue = next((i for i in repo.issues if i["number"] == number), None)
-        if issue is None:
-            raise GitHubError(f"Issue #{number} not found on {repo_full_name}", status=404)
-        if title is not None:
-            issue["title"] = title
-        if body is not None:
-            issue["body"] = body
-        if labels is not None:
-            issue["labels"] = list(labels)
-
-    async def comment_on_issue(self, repo_full_name: str, number: int, body: str) -> None:
-        self.calls.append(("comment_on_issue", f"{repo_full_name}#{number}"))
-        self._require("issues", "write", "Commenting on an issue")
-        self._issue(repo_full_name, number).setdefault("comments", []).append(body)
-
-    async def close_issue(
-        self, repo_full_name: str, number: int, *, reason: str = "completed"
-    ) -> None:
-        self.calls.append(("close_issue", f"{repo_full_name}#{number}"))
-        self._require("issues", "write", "Closing an issue")
-        issue = self._issue(repo_full_name, number)
-        issue["state"] = "closed"
-        issue["state_reason"] = reason
-
     async def issue_state(self, repo_full_name: str, number: int) -> str | None:
         self.calls.append(("issue_state", f"{repo_full_name}#{number}"))
         self._require("issues", "read", "Reading an issue")
@@ -1169,13 +1109,6 @@ class FakeGitHubClient:
                 status=404,
             )
         return {repo: dict(values) for repo, values in project.items()}
-
-    def _issue(self, repo_full_name: str, number: int) -> dict[str, Any]:
-        repo = self._repo(repo_full_name)
-        issue = next((i for i in repo.issues if i["number"] == number), None)
-        if issue is None:
-            raise GitHubError(f"Issue #{number} not found on {repo_full_name}", status=404)
-        return issue
 
 
 # ---------------------------------------------------------------------------
@@ -1738,17 +1671,6 @@ class RestGitHubClient:
             json={"encrypted_value": encrypted_value, "key_id": key_id},
         )
 
-    async def delete_actions_secret(self, repo_full_name: str, name: str) -> None:
-        response = await self._request(
-            "DELETE", f"/repos/{repo_full_name}/actions/secrets/{name}"
-        )
-        # 404 is success for our purposes: the secret is gone either way.
-        if response.status_code not in (204, 404):
-            raise GitHubError(
-                f"Deleting secret {name} failed: {response.text[:200]}",
-                status=response.status_code,
-            )
-
     async def create_check_run(
         self,
         repo_full_name: str,
@@ -1899,50 +1821,6 @@ class RestGitHubClient:
         verb = "enable" if enabled else "disable"
         await self._json(
             "PUT", f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/{verb}"
-        )
-
-    async def create_issue(
-        self, repo_full_name: str, title: str, body: str, *, labels: list[str] | None = None
-    ) -> IssueRef:
-        item = await self._json(
-            "POST",
-            f"/repos/{repo_full_name}/issues",
-            json={"title": title, "body": body, "labels": list(labels or [])},
-        )
-        return IssueRef(number=int(item["number"]), url=str(item["html_url"]))
-
-    async def update_issue(
-        self,
-        repo_full_name: str,
-        number: int,
-        *,
-        title: str | None = None,
-        body: str | None = None,
-        labels: list[str] | None = None,
-    ) -> None:
-        payload: dict[str, Any] = {}
-        if title is not None:
-            payload["title"] = title
-        if body is not None:
-            payload["body"] = body
-        if labels is not None:
-            payload["labels"] = list(labels)
-        if not payload:
-            return
-        await self._json("PATCH", f"/repos/{repo_full_name}/issues/{number}", json=payload)
-
-    async def comment_on_issue(self, repo_full_name: str, number: int, body: str) -> None:
-        await self._json(
-            "POST", f"/repos/{repo_full_name}/issues/{number}/comments", json={"body": body}
-        )
-
-    async def close_issue(
-        self, repo_full_name: str, number: int, *, reason: str = "completed"
-    ) -> None:
-        await self._json(
-            "PATCH",
-            f"/repos/{repo_full_name}/issues/{number}",
-            json={"state": "closed", "state_reason": reason},
         )
 
     async def issue_state(self, repo_full_name: str, number: int) -> str | None:

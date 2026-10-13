@@ -29,7 +29,6 @@ import { WorklistKeys } from "@/components/worklist";
 import { FilterSelect } from "@/components/filter-select";
 
 import { DispositionForm } from "@/components/disposition";
-import { GroomButton } from "@/components/groom-button";
 import { RemediationAction } from "@/components/remediation-action";
 import {
   CAPABILITY_META,
@@ -193,7 +192,7 @@ export function OpenFindings({
       <Filters repoId={repoId} page={page} query={query} href={href} />
 
       {page.toxic_combinations.length > 0 ? (
-        <ToxicCombinations repoId={repoId} combinations={page.toxic_combinations} />
+        <ToxicCombinations combinations={page.toxic_combinations} />
       ) : null}
 
       {page.groups.length === 0 ? (
@@ -452,10 +451,8 @@ function Filters({
  * is made of.
  */
 function ToxicCombinations({
-  repoId,
   combinations,
 }: {
-  repoId: string;
   combinations: ToxicCombination[];
 }) {
   return (
@@ -496,11 +493,6 @@ function ToxicCombinations({
             <p className="mt-1 max-w-prose text-[14px] leading-relaxed text-ink-2">
               {plain(combination.rationale)}
             </p>
-            <div className="mt-1.5">
-              <GroomButton
-                url={`/api/triage/repos/${repoId}/combinations/${combination.combination_id}/groom`}
-              />
-            </div>
           </li>
         ))}
       </ul>
@@ -827,12 +819,6 @@ export function OccurrenceDisposition({
         <Label>Remediation</Label>
         <div className="mt-2">
           <RemediationAction key={findingId} findingId={findingId} />
-        </div>
-      </div>
-      <div className="mt-3 border-t border-rule-soft pt-3">
-        <Label>i2i</Label>
-        <div className="mt-2">
-          <GroomButton url={`/api/triage/${findingId}/groom`} />
         </div>
       </div>
     </div>
