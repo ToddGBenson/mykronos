@@ -501,8 +501,7 @@ def _disposition_metric(own: list[StatusEvent], outcomes: dict[int, str]) -> Met
         note=(
             "`not_measurable` counts accepted_risk dispositions: an acceptance ends through "
             "the acceptance sweep, which writes no audit entry, so its reopening cannot be "
-            "observed. A DAST finding gets a new id each scan (#274), so a disposition of "
-            "one can stand here while the same alert comes back under another id."
+            "observed."
         ),
     )
 

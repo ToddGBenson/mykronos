@@ -211,9 +211,9 @@ the playbook that sends agents to it fails CI.
 for an unknown kind), for any principal. A file that will not load answers 503 on these and on
 `/api/agent/work`, rather than a queue whose items name playbooks nobody can read.
 
-**What the file does not do.** It grants nothing: the routes it names enforce their own rules. It is not in
-`approval-policy-v1.yaml`'s `governance` change class (that pattern is `*-policy-v1.yaml`), so a change to it
-is reviewed at the `production` tier.
+**What the file does not do.** It grants nothing: the routes it names enforce their own rules. It is in
+`approval-policy-v1.yaml`'s `governance` change class (#805), so only a person approves a change to it: a file
+that tells agents when to escalate is not one an agent should approve edits to.
 
 ## 6. The track record — `GET /api/agent/scorecard` (phase 4)
 
