@@ -78,8 +78,8 @@ from mykronos.lake import (
     WriteAheadBuffer,
     carry_forward,
     compact,
-    reconcile_absences,
 )
+from mykronos.lake.maintenance import reconcile_after_linking
 from mykronos.main import _build_github_factory as _github_factory
 from mykronos.migrate_assets import migrate_assets
 from mykronos.notify import SlackNotifier
@@ -658,7 +658,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if drifted_rows and not args.apply else 0
 
         if args.command == "reconcile-absences":
-            outcome = reconcile_absences(catalog)
+            # Links first, as the scheduled job does (TheHub #60734).
+            linked = reconcile_after_linking(catalog)
+            outcome = linked.closed
+            if linked.carried.carried:
+                print(f"Carried forward first: {linked.carried.summary()}")
             print(f"Closed {outcome.total_fixed} absent finding(s).")
             for repo, capability in outcome.insufficient_history:
                 print(f"  skipped {repo}/{capability}: fewer than 2 qualifying scans")

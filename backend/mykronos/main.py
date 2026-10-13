@@ -79,10 +79,9 @@ from mykronos.knowledge import KnowledgeStore, default_store_dir
 from mykronos.lake import (
     Catalog,
     WriteAheadBuffer,
-    carry_forward,
     compact,
-    reconcile_absences,
 )
+from mykronos.lake.maintenance import carry_forward_exclusively, reconcile_after_linking
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
@@ -424,7 +423,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def _absences() -> None:
             # In a thread: it rewrites Parquet partitions and would otherwise
             # block ingestion for the duration.
-            await asyncio.to_thread(reconcile_absences, app.state.catalog)
+            #
+            # Carry-forward first, in the same thread and under one lock
+            # (`lake/maintenance.py`, TheHub #60734): an exact link withdraws a
+            # re-keyed finding as `superseded`, and on two independent timers
+            # absence could close the same row as `fixed` first.
+            result = await asyncio.to_thread(reconcile_after_linking, app.state.catalog)
+            if result.carried.carried:
+                logger.info("Carry-forward before absences: %s", result.carried.summary())
 
         async def _carry_forward() -> None:
             # In a thread, for the same reason as absences. Runs before it in
@@ -432,7 +438,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # timers: a finding withdrawn as `superseded` here is one the
             # absence reconciler will not later close as `fixed`, and `fixed`
             # is the number this platform is most careful about.
-            result = await asyncio.to_thread(carry_forward, app.state.catalog)
+            result = await asyncio.to_thread(carry_forward_exclusively, app.state.catalog)
             if result.carried or result.stranded:
                 logger.info("Carry-forward: %s", result.summary())
 
