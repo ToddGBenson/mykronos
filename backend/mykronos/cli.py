@@ -85,6 +85,7 @@ from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.rekey_containers import rekey_containers
+from mykronos.repair_build_path_fixed import repair_build_path_fixed
 from mykronos.reprocess import reprocess
 from mykronos.rescore_sscs import rescore_sscs
 from mykronos.schemas import Capability
@@ -307,6 +308,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     rekey.add_argument("--repo", default=None, help="Limit to one repository.")
+
+    repair = sub.add_parser(
+        "repair-build-path-fixed",
+        help=(
+            "Supersede `fixed` findings that only moved while stored under a "
+            "Concourse build dir (TheHub #60734)"
+        ),
+    )
+    repair.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report every group, its counts and its pairs, and write nothing. Do this first.",
+    )
+    repair.add_argument("--repo", default=None, help="Limit to one repository.")
 
     assets = sub.add_parser(
         "migrate-assets",
@@ -1158,6 +1173,29 @@ def main(argv: list[str] | None = None) -> int:
                 print("Dry run - nothing was written.")
             else:
                 print("Run `compact` to make the re-derived findings queryable.")
+            return 0
+
+        if args.command == "repair-build-path-fixed":
+            repaired = repair_build_path_fixed(
+                catalog, repo_full_name=args.repo, dry_run=args.dry_run
+            )
+            for group in repaired.groups:
+                print(
+                    f"{group.asset_id} {group.file_path} [{group.rule_id}] "
+                    f"fixed={len(group.fixed)} before={group.before} "
+                    f"after={group.after} moved={group.moved}"
+                )
+                print(f"   message: {group.title[:110]}")
+                for old_id, new_id, old_line, new_line in group.pairs:
+                    print(
+                        f"   SUPERSEDE {old_id[:10]} (line {old_line}) -> "
+                        f"{new_id[:10]} (old line {new_line})"
+                    )
+                if group.reason:
+                    left = ", ".join(f[:10] for f in group.fixed)
+                    print(f"   LEFT FIXED {left}: {group.reason}")
+            print(repaired.summary())
+            print("Dry run - nothing was written." if args.dry_run else "Written.")
             return 0
 
         if args.command == "rekey-containers":
