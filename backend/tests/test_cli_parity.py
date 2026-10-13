@@ -8,6 +8,7 @@ reached the comparison.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,12 +19,14 @@ from tests.conftest import REPO
 from tests.test_onboarding import onboard
 
 
-class _Concourse:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    def status_for(self, repo: str) -> PipelineStatus:
-        return PipelineStatus(repo_full_name=repo, pipeline=None, url=None)
+def _concourse(*args: Any, **kwargs: Any) -> SimpleNamespace:
+    """`ConcourseClient.status_for` is synchronous, unlike `ActionsClient`'s.
+    Not a class with a `def status_for`: test_async_contracts matches doubles
+    by method name, and would read one as a sync stand-in for the async
+    Actions method."""
+    return SimpleNamespace(
+        status_for=lambda repo: PipelineStatus(repo_full_name=repo, pipeline=None, url=None)
+    )
 
 
 class _Actions:
@@ -44,7 +47,7 @@ def test_parity_reaches_a_verdict(
 ) -> None:
     assert onboard(client, admin_auth).status_code in (200, 201)
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
-    monkeypatch.setattr(cli, "ConcourseClient", _Concourse)
+    monkeypatch.setattr(cli, "ConcourseClient", _concourse)
     monkeypatch.setattr(cli, "ActionsClient", _Actions)
     monkeypatch.setattr(cli, "_github_factory", lambda _settings: _Factory())
 
