@@ -25,7 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, s
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos.adminauth import AdminDep, HumanDep, PrincipalDep
+from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.api.refusals import CapabilityRefusedError
 from mykronos.dashboard import DashboardQueries
