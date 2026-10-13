@@ -704,9 +704,13 @@ $concourseEnv = Join-Path $here "..\concourse\.env"
 $vaultToken = if (Test-Path $concourseEnv) { Read-EnvValue $concourseEnv "CONCOURSE_VAULT_TOKEN" } else { $null }
 $slackResolved = @()
 if ($vaultToken) {
+    # `-e VAULT_TOKEN` with no value forwards it from this process's
+    # environment, so the token is never in docker's command line.
+    $prior = $env:VAULT_TOKEN
+    $env:VAULT_TOKEN = $vaultToken
     foreach ($name in $slackFromVault.Keys) {
         try {
-            $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+            $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
                 mykronos-vault vault read -field=value $slackFromVault[$name] 2>$null
             if ($LASTEXITCODE -eq 0 -and $value) {
                 Set-Item -Path "env:$name" -Value (($value -join "").Trim())
@@ -715,6 +719,7 @@ if ($vaultToken) {
         } catch { }
         $value = $null
     }
+    $env:VAULT_TOKEN = $prior
 }
 if ($slackResolved.Count -eq $slackFromVault.Count) {
     Write-Host "Slack bot token and channel resolve from Vault (concourse/main)." -ForegroundColor DarkGray

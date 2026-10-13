@@ -275,12 +275,13 @@ if (-not $hubAnthropicKey) {
 # Only presence is checked, so applying the pipeline still tells you whether
 # alerts will work.
 $slackReady = $false
+$prior = $env:VAULT_TOKEN
 try {
-    $probe = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 `
-        -e "VAULT_TOKEN=$(Read-EnvValue $stackEnv 'CONCOURSE_VAULT_TOKEN')" `
+    $env:VAULT_TOKEN = Read-EnvValue $stackEnv 'CONCOURSE_VAULT_TOKEN'
+    $probe = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
         mykronos-vault vault read -format=json concourse/main/slack-bot-token 2>$null
     if ($LASTEXITCODE -eq 0 -and $probe) { $slackReady = $true }
-} catch { }
+} catch { } finally { $env:VAULT_TOKEN = $prior }
 if ($slackReady) {
     Write-Host "Slack alerts resolve from Vault (concourse/main/slack-bot-token)." -ForegroundColor DarkGray
 } else {
@@ -387,12 +388,18 @@ function Test-VaultSecret {
     } else {
         @("concourse/main/$Pipeline/$Name", "concourse/main/$Name")
     }
-    foreach ($p in $paths) {
-        # Only presence is read; the value never leaves the container.
-        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
-            mykronos-vault vault read -format=json $p 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { return $true }
-    }
+    # `-e VAULT_TOKEN` with no value forwards it from this process's
+    # environment, so the token is never in docker's command line.
+    $prior = $env:VAULT_TOKEN
+    $env:VAULT_TOKEN = $vaultToken
+    try {
+        foreach ($p in $paths) {
+            # Only presence is read; the value never leaves the container.
+            docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
+                mykronos-vault vault read -format=json $p 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return $true }
+        }
+    } finally { $env:VAULT_TOKEN = $prior }
     return $false
 }
 
