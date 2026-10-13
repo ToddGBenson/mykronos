@@ -91,6 +91,14 @@ jobs:
       # `functional/conftest.py` already defaults to exactly these two.
       PROXIED_BACKEND: http://backend:8100
       PROXIED_FRONTEND: http://frontend:3100
+      # The demo stack's perimeter-gate token: the value `MYKRONOS_GATE_TOKEN`
+      # has in `deploy/demo/docker-compose.yml`, which is public by design (the
+      # demo holds nothing but seeded data, and every demo token is a literal
+      # there). One place in this file, read through the environment and never
+      # interpolated into a logged command; `test_demo_healthcheck.py` holds it
+      # equal to the compose value. Since #753 every frontend path but
+      # `/api/healthz` answers 401 without it (TheHub #60735).
+      DEMO_GATE_TOKEN: demo-gate-token-not-a-secret
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -320,9 +328,49 @@ jobs:
           # nothing cannot close anything: 115 DAST findings stayed open here
           # against an application that had already been fixed, because the
           # evidence of the fix was thrown away every run.
-          zap_api "/JSON/spider/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" >/dev/null
+          # Through the gate, or the scan is of the gate (TheHub #60735). The
+          # functional suite carries its own `hub_token` cookie, but the
+          # spider's requests are ZAP's and carried nothing: measured against
+          # the demo stack, every one of the spider's 15 requests answered 401,
+          # and the site tree stopped at 31 URLs. With this rule the same
+          # spider reached 143 URLs, 335 responses 200 and none 401.
+          #
+          # Here, after the functional suite, deliberately: the suite's
+          # anonymous tests go through this proxy too, and a header added to
+          # every request would sign them in.
+          curl -fsS --max-time 60 -x "$ZAP_PROXY" -G "http://zap/JSON/replacer/action/addRule/" \
+            --data-urlencode "description=perimeter-gate" \
+            --data-urlencode "enabled=true" \
+            --data-urlencode "matchType=REQ_HEADER" \
+            --data-urlencode "matchRegex=false" \
+            --data-urlencode "matchString=X-Hub-Token" \
+            --data-urlencode "replacement=${DEMO_GATE_TOKEN}" >/dev/null
+
+          SPIDER_ID=$(zap_api "/JSON/spider/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["scan"])')
           SPIDER_OK=1
           poll "/JSON/spider/view/status/" 600 || SPIDER_OK=0
+
+          # A spider that only ever saw the gate's 401 is an empty scan that
+          # looks like a clean one, and uploading it would let absence
+          # reconciliation close every real DAST finding. So no report: the
+          # upload then records a failed scan, which closes nothing, and the
+          # last step turns the job red.
+          SPIDER_STATUS=$(zap_api "/JSON/spider/view/fullResults/?scanId=${SPIDER_ID}" | python -c '
+          import json, sys, collections
+          seen = collections.Counter(
+              str(u.get("statusCode"))
+              for block in json.load(sys.stdin)["fullResults"]
+              for u in block.get("urlsInScope", [])
+          )
+          ok = sum(n for code, n in seen.items() if code.startswith("2"))
+          print(ok, seen.get("401", 0))' || echo "unknown unknown")
+          read -r SPIDER_2XX SPIDER_401 <<< "$SPIDER_STATUS"
+          echo "Spider responses: ${SPIDER_2XX} 2xx, ${SPIDER_401} 401."
+          if [ "$SPIDER_2XX" = "0" ]; then
+            echo "::error::The spider got no 2xx response from the dashboard (${SPIDER_401} x 401): it scanned the perimeter gate, not the application. Not writing a report."
+            exit 1
+          fi
 
           # Non-fatal, and this is the same lesson as the report itself: this
           # is a progress line, and under `bash -e` a progress line that fails
@@ -443,6 +491,13 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f "$COMPOSE" down -v --remove-orphans
+
+      - name: Fail if the scan could not get past the gate
+        # Last, for the same reason as the step below.
+        if: steps.zap.outcome == 'failure'
+        run: |
+          echo "::error::The DAST scan did not complete; see 'Spider, and scan'."
+          exit 1
 
       - name: Fail if the functional suite failed
         # Last, so both ScanRuns are recorded first. Failing earlier would
