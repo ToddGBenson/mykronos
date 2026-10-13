@@ -47,6 +47,25 @@ BAND_ACCEPTANCE = 4
 BAND_TOKEN = 5
 BAND_FINDING = 6
 
+#: Every kind of work item `build` can emit, in band order (spec 36 §2.2).
+#:
+#: The single source of the list. `agent-playbooks-v1.yaml` must hold exactly
+#: one playbook per entry and `mykronos.playbooks` refuses a file that does
+#: not; `WorkItem` refuses a kind not named here, so a new item kind cannot
+#: reach an agent without a playbook being written for it first (spec 36 §5).
+KINDS: tuple[str, ...] = (
+    "lane_stalled",
+    "ci_job_failing",
+    "ci_job_paused",
+    "platform_job_unhealthy",
+    "toxic_combination",
+    "public_exposure",
+    "approval_needs_info",
+    "acceptance_attention",
+    "token_delivery",
+    "triage",
+)
+
 #: An acceptance this close to `expires_at` is surfaced before it lapses.
 ACCEPTANCE_LEAD_DAYS = 14
 
@@ -106,6 +125,17 @@ class WorkItem:
     preconditions: list[Precondition] = field(default_factory=list)
     actions: list[ActionRef] = field(default_factory=list)
     caveats: list[Caveat] = field(default_factory=list)
+    #: `<kind>@<version>` of the playbook that says how to work this item
+    #: (spec 36 §5), stamped by `build`. Read it from
+    #: `GET /api/agent/playbooks/{kind}`.
+    playbook: str = ""
+
+    def __post_init__(self) -> None:
+        if self.kind not in KINDS:
+            raise ValueError(
+                f"Work item kind {self.kind!r} is not in agent_work.KINDS; add it there "
+                "and write its playbook in agent-playbooks-v1.yaml."
+            )
 
 
 @dataclass
@@ -738,11 +768,13 @@ def build(
     repo_ids: dict[str, str],
     now: datetime,
     probe_interval_seconds: int,
+    playbook_version: str,
 ) -> WorkQueue:
     """The queue for one principal. `None` for any input means it was not read.
 
     `repo_ids` maps each full name to its onboarding id, which is what every
-    repository-scoped route takes.
+    repository-scoped route takes. `playbook_version` is the loaded
+    `agent-playbooks-v1.yaml`'s version; every item names its playbook with it.
     """
     now = _aware(now)
     queue = WorkQueue(
@@ -792,5 +824,7 @@ def build(
             )
         )
 
+    for item in items:
+        item.playbook = f"{item.kind}@{playbook_version}"
     queue.items = sorted(items, key=_sort_key)
     return queue

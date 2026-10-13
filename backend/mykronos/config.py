@@ -389,6 +389,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    agent_playbooks_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "agent-playbooks-v1.yaml",
+        description=(
+            "How an agent works each kind of item on its queue (spec 36 §5). At "
+            "the repo root and reviewed in a pull request like the approval "
+            "policy. A setting rather than a module-relative path for the reason "
+            "`governance_policy_path` gives: from an installed wheel that path is "
+            "the standard library, not the repository."
+        ),
+    )
+
     reviewer_model: str = Field(
         default="claude-opus-5",
         description=(

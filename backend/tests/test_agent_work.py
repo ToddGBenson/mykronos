@@ -86,6 +86,7 @@ def _build(
     inputs.setdefault("acceptances", [])
     inputs.setdefault("approval_requests", [])
     inputs.setdefault("repo_ids", {REPO: REPO_ID})
+    inputs.setdefault("playbook_version", "1.0")
     return agent_work.build(
         briefing or _briefing(),
         principal,
