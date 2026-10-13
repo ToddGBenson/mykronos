@@ -566,9 +566,11 @@ def _finding_caveats(row: dict[str, Any], *, lane_frozen: bool) -> list[Caveat]:
     if capability == "dast":
         caveats.append(
             Caveat(
-                "identity_unstable",
-                "DAST findings get a new id each scan (#274); a disposition will not "
-                "follow the finding to its next id.",
+                "identity_is_the_route",
+                "Since #440 a DAST finding's identity is its route: the query string "
+                "is dropped and ephemeral ids are templated, so one disposition covers "
+                "every URL on that route. The URL actually scanned is in "
+                "raw_finding_json.instance.uri; read it before judging.",
             )
         )
     if capability == "containers":
