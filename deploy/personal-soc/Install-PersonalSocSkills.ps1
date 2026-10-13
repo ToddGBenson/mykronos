@@ -33,6 +33,14 @@
     from the repository is not deleted from the install. A stale reference
     lingers until somebody removes it by hand. That is the right way round -
     a leftover file is a nuisance, and a deleted ledger is a loss.
+
+    STATE LIVES OUTSIDE THE CHECKOUT (#60737). The installed SHA used to be
+    written to deploy\personal-soc\.installed-skills, a tracked file, so
+    every install dirtied the tree and PipelineSource.ps1 then (correctly)
+    refused set-pipeline. It now defaults to
+    %LOCALAPPDATA%\mykronos\personal-soc\installed-skills. The old in-repo
+    file is read once: if the new file is absent and the old one exists, its
+    SHA is copied across, so an upgrade does not reinstall or lose its place.
 #>
 
 [CmdletBinding()]
@@ -41,7 +49,9 @@ param(
     [string]$Bucket = "personal-soc-releases",
     [string]$SkillRoot = (Join-Path $env:USERPROFILE ".claude\skills"),
     [switch]$Once,
-    [int]$IntervalSeconds = 300
+    [int]$IntervalSeconds = 300,
+    # Host state, not configuration - kept out of the working tree (#60737).
+    [string]$StateFile = (Join-Path $env:LOCALAPPDATA "mykronos\personal-soc\installed-skills")
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,8 +81,31 @@ $creds = "{0}:{1}" -f
     [System.Uri]::EscapeDataString((Read-EnvValue $stackEnv "MINIO_ROOT_PASSWORD"))
 $env:MC_HOST_psoc = "{0}://{1}@{2}" -f $uri.Scheme, $creds, $uri.Authority
 
-$stateFile = Join-Path $here ".installed-skills"
+# Where the state used to live. Read once by Get-InstalledSkills, never written.
+$legacyStateFile = Join-Path $here ".installed-skills"
 $script:failures = 0
+
+function Set-InstalledSkills {
+    param([string]$Path, [string]$Sha)
+    New-Item -ItemType Directory -Force -Path (Split-Path $Path -Parent) | Out-Null
+    Set-Content -Path $Path -Value $Sha -NoNewline -Encoding ASCII
+}
+
+function Get-InstalledSkills {
+    param([string]$Path, [string]$LegacyPath)
+    # One-time migration from the tracked in-repo file. Only a well-formed SHA
+    # is carried over; anything else falls through to "nothing installed",
+    # which costs one reinstall and nothing more.
+    if (-not (Test-Path $Path) -and $LegacyPath -and (Test-Path $LegacyPath)) {
+        $old = (Get-Content $LegacyPath -Raw).Trim()
+        if ($old -match '^[0-9a-f]{40}$') {
+            Set-InstalledSkills -Path $Path -Sha $old
+            Write-Host "skills state migrated from $LegacyPath to $Path ($old)" -ForegroundColor DarkGray
+        }
+    }
+    if (Test-Path $Path) { return (Get-Content $Path -Raw).Trim() }
+    return ""
+}
 
 function Get-Pointer {
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "psoc-ptr-$(Get-Random)"
@@ -93,7 +126,7 @@ function Invoke-Cycle {
         return
     }
 
-    $current = if (Test-Path $stateFile) { (Get-Content $stateFile -Raw).Trim() } else { "" }
+    $current = Get-InstalledSkills -Path $StateFile -LegacyPath $legacyStateFile
     if ($current -eq $requested) { Write-Verbose "skills already at $requested"; return }
 
     Write-Host "skills: $current -> $requested" -ForegroundColor Cyan
@@ -146,7 +179,7 @@ function Invoke-Cycle {
             $survived | ForEach-Object { Write-Host "  preserved $($_.Name) in $($_.Directory.Name)" -ForegroundColor DarkGray }
         }
 
-        Set-Content -Path $stateFile -Value $requested -NoNewline -Encoding ASCII
+        Set-InstalledSkills -Path $StateFile -Sha $requested
 
         $ack = Join-Path $work "ack"
         [System.IO.File]::WriteAllText($ack, $requested)
@@ -158,6 +191,10 @@ function Invoke-Cycle {
 }
 
 try {
+    # Migrate at start-up, not only when a new bundle is published, so the
+    # legacy SHA is carried across on the first run whatever the pointer says.
+    Get-InstalledSkills -Path $StateFile -LegacyPath $legacyStateFile | Out-Null
+
     if ($Once) {
         Invoke-Cycle
         # Explicit: mc leaves a non-zero exit code behind on the ordinary
