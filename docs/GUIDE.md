@@ -93,12 +93,12 @@ export MYKRONOS_GITHUB_APP_KEY_HOST_PATH=/absolute/path/to/app.pem
 docker compose --env-file ../../backend/.env up -d
 ```
 
-**The trap, and it is silent.** The GitHub App private key is bind-mounted from
-the host and the compose file defaults it to `/dev/null`. Call compose without
-that variable and the container starts, reports healthy, serves every page — and
-every GitHub operation fails with `InvalidKeyError: Could not parse the provided
-public key`. Recreating *any* service can recreate the backend as a dependency,
-so this bites when you meant to touch only the frontend.
+**The trap.** The GitHub App private key is bind-mounted from the host. Call
+compose without that variable and it refuses to start (`set it in backend/.env`).
+It used to default to `/dev/null`, and then the container started, reported
+healthy, served every page, and failed every GitHub operation with
+`InvalidKeyError`. Recreating *any* service can recreate the backend as a
+dependency, so export it even when you meant to touch only the frontend.
 
 Check it landed:
 
@@ -117,7 +117,7 @@ it was sealed do not retry on their own.
    Actions-scanned repository this opens an install pull request that adds the
    generated workflows; the capability is *pending* until it merges, and the
    platform distinguishes "nothing enabled" from "waiting on an install PR".
-3. **Mint an ingestion token.** `mykronos mint-token owner/repo --capability sast`.
+3. **Mint an ingestion token.** `mykronos mint-token owner/repo --grant sast`.
    Shown once, only its hash is stored. This is what CI authenticates with.
 4. **Fill in the risk profile.** The Risk Decision tab proposes what it can
    evidence and, for the rest, says exactly what would settle each field. Until
