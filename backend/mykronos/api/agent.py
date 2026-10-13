@@ -38,19 +38,19 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 _ACCEPTANCE_STATES = ("active", "review_due", "premise_failed")
 
 
-class EvidenceOut(BaseModel):
+class WorkEvidenceOut(BaseModel):
     source: str
     ref: str
     detail: str
 
 
-class PreconditionOut(BaseModel):
+class WorkPreconditionOut(BaseModel):
     description: str
     met: bool | None
     blocked_by: str | None
 
 
-class ActionOut(BaseModel):
+class WorkActionOut(BaseModel):
     label: str
     method: str
     path: str
@@ -60,7 +60,7 @@ class ActionOut(BaseModel):
     governed_by: str | None
 
 
-class CaveatOut(BaseModel):
+class WorkCaveatOut(BaseModel):
     #: Stable; branch on this. See spec 36 §3.
     code: str
     detail: str
@@ -76,20 +76,20 @@ class WorkItemOut(BaseModel):
     repo_full_name: str
     severity: str | None
     weight: int
-    evidence: list[EvidenceOut]
-    preconditions: list[PreconditionOut]
-    actions: list[ActionOut]
-    caveats: list[CaveatOut]
+    evidence: list[WorkEvidenceOut]
+    preconditions: list[WorkPreconditionOut]
+    actions: list[WorkActionOut]
+    caveats: list[WorkCaveatOut]
 
 
-class WaitingOut(BaseModel):
+class WorkWaitingOut(BaseModel):
     kind: str
     ref: str
     repo_full_name: str
     detail: str
 
 
-class UnknownOut(BaseModel):
+class WorkUnknownOut(BaseModel):
     source: str
     detail: str
 
@@ -101,9 +101,9 @@ class WorkQueueOut(BaseModel):
     #: Ordered. Work from the top.
     items: list[WorkItemOut]
     #: Needs no action. Listed so it is not mistaken for work.
-    waiting: list[WaitingOut]
+    waiting: list[WorkWaitingOut]
     #: Sources that could not be read. Not the same as nothing to report.
-    unknown: list[UnknownOut]
+    unknown: list[WorkUnknownOut]
 
 
 def _repo_ids(db: Any) -> dict[str, str]:
