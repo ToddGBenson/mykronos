@@ -2,14 +2,14 @@
 # EXECUTED. The story's own bar: "a guard that has only ever been observed
 # passing is not known to work". So run it, in every state it claims to refuse.
 #
-# Throwaway repos under $env:TEMP. Nothing touches a real checkout, no network,
+# Throwaway repos under the OS temp dir. Nothing touches a real checkout, no network,
 # no Concourse.
 $ErrorActionPreference = 'Stop'
 $guard = Join-Path $PSScriptRoot 'PipelineSource.ps1'
 if (-not (Test-Path $guard)) { throw "PipelineSource.ps1 not found beside this script" }
 . $guard
 
-$root = Join-Path $env:TEMP ("guardprobe-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+$root = Join-Path ([System.IO.Path]::GetTempPath()) ("guardprobe-" + [guid]::NewGuid().ToString('N').Substring(0,8))
 $originDir = Join-Path $root 'origin.git'
 $workDir   = Join-Path $root 'work'
 New-Item -ItemType Directory -Path $root -Force | Out-Null

@@ -30,6 +30,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-159 — The deploy refuses only what the gate refuses](decisions/D-159-the-deploy-refuses-only-what-the-gate-refuses.md)
 - [D-160 — A Concourse build-dir path is stripped, and the findings stored under it are re-keyed, not fixed](decisions/D-160-a-concourse-build-path-is-re-keyed-not-fixed.md)
 - [D-161 — The GitHub App holds `issues: read` and writes no issues; its permission set is pinned to its call sites](decisions/D-161-the-github-app-holds-issues-read-and-writes-no-issues.md)
+- [D-162 — Backend tests run on every pull request as `backend-tests`, advisory until two weeks of runs show they are steady](decisions/D-162-backend-tests-run-on-every-pull-request-and-are-advisory-until-shown-steady.md)
 
 <!-- decisions-index:end -->
 
