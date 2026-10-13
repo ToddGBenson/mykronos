@@ -2215,6 +2215,11 @@ export interface paths {
          * Override Decision
          * @description Record a human overriding a recommendation (spec 09 §6).
          *
+         *     A person only (`HumanDep`), not any writer. A recorded override clears the
+         *     deploy floor (D-048), so an agent credential admitted here could ship past
+         *     a `no_go` without the `deploy_override` duty a person must approve
+         *     (spec 34 §6.3).
+         *
          *     The decision itself is never rewritten — spec 09 §10 needs past decisions
          *     to stay reproducible. The override is recorded *alongside* it, so the
          *     history shows both what the risk decision said and what the human did
