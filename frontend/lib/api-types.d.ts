@@ -3116,6 +3116,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent/work": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Work
+         * @description What needs doing, in order, and what could not be read (spec 36 §2).
+         *
+         *     Platform problems come first because a dead lane freezes every finding in
+         *     it. Each item cites where it came from, names the approval duty its
+         *     actions will meet, says what "done" will look like, and carries the
+         *     caveats the platform knows about its kind. A source that could not be read
+         *     is in `unknown`, never shown as an empty list.
+         */
+        get: operations["work_api_agent_work_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals": {
         parameters: {
             query?: never;
@@ -8543,6 +8569,109 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** WorkActionOut */
+        WorkActionOut: {
+            /** Label */
+            label: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Effect */
+            effect: string;
+            /** Governed By */
+            governed_by: string | null;
+        };
+        /** WorkCaveatOut */
+        WorkCaveatOut: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string;
+        };
+        /** WorkEvidenceOut */
+        WorkEvidenceOut: {
+            /** Source */
+            source: string;
+            /** Ref */
+            ref: string;
+            /** Detail */
+            detail: string;
+        };
+        /** WorkItemOut */
+        WorkItemOut: {
+            /** Item Id */
+            item_id: string;
+            /** Kind */
+            kind: string;
+            /** Band */
+            band: number;
+            /** Title */
+            title: string;
+            /** Summary */
+            summary: string;
+            /** Done When */
+            done_when: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Severity */
+            severity: string | null;
+            /** Weight */
+            weight: number;
+            /** Evidence */
+            evidence: components["schemas"]["WorkEvidenceOut"][];
+            /** Preconditions */
+            preconditions: components["schemas"]["WorkPreconditionOut"][];
+            /** Actions */
+            actions: components["schemas"]["WorkActionOut"][];
+            /** Caveats */
+            caveats: components["schemas"]["WorkCaveatOut"][];
+        };
+        /** WorkPreconditionOut */
+        WorkPreconditionOut: {
+            /** Description */
+            description: string;
+            /** Met */
+            met: boolean | null;
+            /** Blocked By */
+            blocked_by: string | null;
+        };
+        /** WorkQueueOut */
+        WorkQueueOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Actor */
+            actor: string;
+            /** Actor Kind */
+            actor_kind: string;
+            /** Items */
+            items: components["schemas"]["WorkItemOut"][];
+            /** Waiting */
+            waiting: components["schemas"]["WorkWaitingOut"][];
+            /** Unknown */
+            unknown: components["schemas"]["WorkUnknownOut"][];
+        };
+        /** WorkUnknownOut */
+        WorkUnknownOut: {
+            /** Source */
+            source: string;
+            /** Detail */
+            detail: string;
+        };
+        /** WorkWaitingOut */
+        WorkWaitingOut: {
+            /** Kind */
+            kind: string;
+            /** Ref */
+            ref: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Detail */
+            detail: string;
+        };
         /**
          * WorkflowState
          * @description One capability's workflow, as GitHub currently has it (spec 32 §6).
@@ -12466,6 +12595,40 @@ export interface operations {
                     "application/json": {
                         [key: string]: number;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    work_api_agent_work_get: {
+        parameters: {
+            query?: {
+                /** @description Narrow the queue to one repository, by onboarding id. */
+                repo_id?: string | null;
+                /** @description How many ranked findings to include. */
+                findings?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkQueueOut"];
                 };
             };
             /** @description Validation Error */

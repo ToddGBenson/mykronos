@@ -25,6 +25,7 @@ from mykronos.adminauth import (
     current_principal,
 )
 from mykronos.api import refusals
+from mykronos.api.agent import router as agent_router
 from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
 from mykronos.api.dashboard import router as dashboard_router
@@ -790,6 +791,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(triage_router)
     app.include_router(webhooks_router)
     app.include_router(agents_router)
+    app.include_router(agent_router)
     app.include_router(approvals_router)
     app.include_router(risk_acceptances_router)
     # A refused upload is a 403 and a notification (B-062).
