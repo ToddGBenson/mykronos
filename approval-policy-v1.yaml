@@ -104,6 +104,7 @@ duties:
     change_classes:
       governance:
         - "*-policy-v1.yaml"          # approval, oracle and governance policy
+        - "agent-playbooks-v1.yaml"   # how agents act (spec 36 §5): an agent must not approve its own instructions
         - ".gitleaksignore"
         - ".github/**"                # CI definitions and CODEOWNERS
         - "deploy/concourse/**"       # the pipelines themselves
