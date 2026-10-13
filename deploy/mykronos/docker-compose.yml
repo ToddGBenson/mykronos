@@ -10,8 +10,9 @@
 #   docker compose --env-file ../../backend/.env up -d
 #
 # The tunnel's ingress already splits this hostname by path: /api, /webhooks,
-# /healthz and the docs to 8100, everything else to 3100. Both ports are
-# published on 127.0.0.1 only; cloudflared reaches them there.
+# /healthz and the docs to 8100, everything else to 3100. The frontend is
+# published on 127.0.0.1 only; the backend on all interfaces, because Concourse
+# task containers reach it by host IP (see its `ports:` below).
 
 name: mykronos
 

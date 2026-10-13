@@ -355,8 +355,8 @@ class Settings(BaseSettings):
         default="",
         description=(
             "Perimeter token for the whole host, presented as X-Hub-Token, a "
-            "hub_token cookie, or ?_token= — the same scheme and the same "
-            "value as the Hub's HUB_API_TOKEN, so one credential opens both. "
+            "hub_token cookie, or ?_token= — the same scheme as the Hub's "
+            "HUB_API_TOKEN but a different value (D-131; see `hub_api_token`). "
             "Empty disables the gate, which is correct on a laptop and wrong "
             "the moment this is reachable from the internet. It is a "
             "perimeter, not an authorisation model: admin and viewer are "
@@ -503,7 +503,7 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "governance-policy-v1.yaml",
         description=(
-            "Per-control governance weights (spec 26 §4). A setting rather "
+            "Per-control governance weights (spec 30 §3). A setting rather "
             "than a bare module-relative path, and the distinction is not "
             "cosmetic: `Path(__file__).parents[2]` is the repository root "
             "from a checkout and `/usr/local/lib/python3.13` from an "
@@ -521,7 +521,7 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "stride-map-v1.yaml",
         description=(
-            "CWE-to-STRIDE taxonomy (spec 27 §3). Same packaging trap as "
+            "CWE-to-STRIDE taxonomy (spec 28 §2). Same packaging trap as "
             "`governance_policy_path`, and softer consequences by design - "
             "its loader treats absence as a real state rather than an error - "
             "but it was absent for the same wrong reason rather than the "

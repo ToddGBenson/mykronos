@@ -9,7 +9,7 @@
     mykronos list-tokens
     mykronos purge-tokens
     mykronos compact
-    mykronos resync-templates [--capability sast ...] [--repos owner/repo ...]
+    mykronos resync-templates [--capability sast ...] [--repo owner/repo ...]
     mykronos self-check
     mykronos host-controls <evidence.json> [--ports-baseline FILE] [--record-ports]
     mykronos briefing [--json]

@@ -20,6 +20,11 @@ uses its own `mka_` credential (`POST /api/agents/credentials`).
 | | medium, low | a person, or a delegated agent |
 | `pull_request_merge` | governance | a person |
 | | production, routine | a person, or a delegated agent |
+| `finding_disposition` | critical | a person |
+| | high | a person, or a delegated agent of a *different* model family |
+| `incident_action` | irreversible | a person |
+| | reversible | a person, or a delegated agent (break-glass) |
+| `deploy_override` | any | a person |
 | `delegation_grant` | any | a person, requested by a person |
 
 The requester never approves their own request. An agent's sub-agents are in

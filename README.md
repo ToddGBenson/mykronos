@@ -86,14 +86,15 @@ the method does not exist.
 ## Running it
 
 ```bash
-# The stack: API, dashboard, Vault, Concourse, ZAP.
+# The platform: API and dashboard. Concourse and Vault are a separate stack in
+# deploy/concourse; ZAP runs as a pipeline task, not a service.
 cd deploy/mykronos
-docker compose --env-file ../../backend/.env up -d
 
 # The one thing that is not obvious: the GitHub App key is bind-mounted from
-# the host, and compose defaults it to /dev/null. deploy.ps1 resolves it; if
-# you call compose directly, export it first or GitHub auth fails silently.
+# the host. deploy.ps1 resolves it; if you call compose directly, export it
+# first, or compose refuses to start.
 export MYKRONOS_GITHUB_APP_KEY_HOST_PATH=/path/to/app.pem
+docker compose --env-file ../../backend/.env up -d
 ```
 
 ```bash
