@@ -3013,7 +3013,7 @@ export interface paths {
         put?: never;
         /**
          * Groom Finding
-         * @description Build and open (or update) a dev-ready story for one finding (spec 17 §7.2).
+         * @description Retired (D-161): always 410. Kept so callers learn where work went.
          */
         post: operations["groom_finding_api_triage__finding_id__groom_post"];
         delete?: never;
@@ -3033,12 +3033,7 @@ export interface paths {
         put?: never;
         /**
          * Groom Combination
-         * @description Build and open (or update) a dev-ready story for a detected toxic
-         *     combination (spec 17 §7.2). Repo-scoped in the path — unlike a finding, a
-         *     `combination_id` alone names no repository, since combinations are
-         *     detected fresh from a repo's current pool rather than stored (spec 08 §2
-         *     stage 3): finding the one this id refers to means re-detecting over that
-         *     repo's findings, the same computation the Findings tab already runs.
+         * @description Retired (D-161): always 410. Kept so callers learn where work went.
          */
         post: operations["groom_combination_api_triage_repos__repo_id__combinations__combination_id__groom_post"];
         delete?: never;
@@ -12629,6 +12624,13 @@ export interface operations {
                     "application/json": components["schemas"]["GroomResult"];
                 };
             };
+            /** @description Retired (D-161). File the story in TheHub. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -12660,6 +12662,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GroomResult"];
                 };
+            };
+            /** @description Retired (D-161). File the story in TheHub. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

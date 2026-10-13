@@ -1278,8 +1278,7 @@ class DashboardQueries:
     def _fix_stages(self, repo_full_name: str) -> dict[str, str]:
         """finding_id -> the stage Patchwork last reached for it (spec 08 §7).
 
-        The same read `jobs.route_open_findings` makes, for the same reason:
-        what Patchwork *did* is the only honest answer to "is this fixable",
+        What Patchwork *did* is the only honest answer to "is this fixable",
         since a fixer cannot decide without the file content and this query
         layer has no business fetching one.
         """
