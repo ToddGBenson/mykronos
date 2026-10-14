@@ -256,6 +256,9 @@ class StalledLane:
     #: lane and unremarkable for a weekly one.
     days_since_run: float = 0.0
     usual_gap_days: float = 0.0
+    #: The lane's most recent run, so a reader can open what it said
+    #: (`/api/dashboard/scan-runs/{id}`, TheHub #60761); empty if unknown.
+    last_scan_run_id: str = ""
     #: For a **blocked** lane, the upstream capability whose failure is
     #: holding it; empty otherwise.
     blocked_by: str = ""
@@ -997,8 +1000,9 @@ def stalled_lanes(
 
     rows = catalog.query(
         f"""
-        SELECT repo_full_name, capability, scan_status, detail, ran_at FROM (
-            SELECT repo_full_name, capability, scan_status,
+        SELECT repo_full_name, capability, scan_status, detail, ran_at,
+               scan_run_id FROM (
+            SELECT repo_full_name, capability, scan_status, scan_run_id,
                    coalesce(detail, '') AS detail,
                    coalesce(completed_at, started_at) AS ran_at,
                    row_number() OVER (
@@ -1012,10 +1016,12 @@ def stalled_lanes(
     )
 
     by_lane: dict[tuple[str, str], list[tuple[str, str, Any]]] = {}
-    for repo, capability, scan_status, detail, at in rows:
+    newest_run: dict[tuple[str, str], str] = {}
+    for repo, capability, scan_status, detail, at, run_id in rows:
         by_lane.setdefault((str(repo), str(capability)), []).append(
             (str(scan_status), str(detail), at)
         )
+        newest_run.setdefault((str(repo), str(capability)), str(run_id or ""))
 
     open_counts = _open_by_capability(catalog)
     moved = _repo_moved_since(catalog)
@@ -1080,6 +1086,7 @@ def stalled_lanes(
                 usual_gap_days=round(gap, 1),
                 scanned_by=(scanned_by or {}).get(repo, ""),
                 concourse_token=concourse_token,
+                last_scan_run_id=newest_run.get((repo, capability), ""),
             )
         )
 

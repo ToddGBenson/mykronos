@@ -2526,6 +2526,11 @@ class DashboardQueries:
                     # a box showing "70% succeeded" says nothing about what
                     # the most recent failure actually was.
                     "detail": recent.get(str(capability), [{}])[0].get("detail"),
+                    # The run that detail came from, so a box can open it
+                    # (TheHub #60761) rather than only summarise it.
+                    "last_scan_run_id": recent.get(str(capability), [{}])[0].get(
+                        "scan_run_id"
+                    ),
                     # Same commit, disagreeing status (spec 19 §1.3) — a
                     # flake, not a regression. Two rows is enough to say so;
                     # a longer streak would only change how loudly, not
@@ -2565,8 +2570,10 @@ class DashboardQueries:
         """
         rows = self.catalog.query(
             """
-            SELECT capability, commit_sha, scan_status, detail, completed_at FROM (
+            SELECT capability, commit_sha, scan_status, detail, completed_at,
+                   scan_run_id FROM (
                 SELECT capability, commit_sha, scan_status, detail, completed_at,
+                       scan_run_id,
                        row_number() OVER (
                            PARTITION BY capability
                            -- `ingested_at` and `scan_run_id` break the tie
@@ -2588,9 +2595,10 @@ class DashboardQueries:
             [repo_full_name, per_capability],
         )
         by_capability: dict[str, list[dict[str, Any]]] = {}
-        for capability, commit_sha, scan_status, detail, completed_at in rows:
+        for capability, commit_sha, scan_status, detail, completed_at, run_id in rows:
             by_capability.setdefault(str(capability), []).append(
                 {
+                    "scan_run_id": run_id,
                     "commit_sha": commit_sha,
                     "scan_status": str(scan_status),
                     "detail": detail,

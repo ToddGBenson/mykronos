@@ -242,7 +242,21 @@ def _lane_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
                             f"{'+' if lane.streak_capped else ''} consecutive failure(s); "
                             f"last success {last}"
                         ),
-                    )
+                    ),
+                    *(
+                        [
+                            Evidence(
+                                source="scan_run",
+                                ref=f"/api/dashboard/scan-runs/{lane.last_scan_run_id}",
+                                detail=(
+                                    "the lane's most recent run: its outcome, what it "
+                                    "changed, and the raw tool output it archived"
+                                ),
+                            )
+                        ]
+                        if lane.last_scan_run_id
+                        else []
+                    ),
                 ],
                 actions=actions,
             )

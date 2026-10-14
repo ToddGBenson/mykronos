@@ -93,6 +93,7 @@ from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
 from mykronos.maturity import mean_time_to_fix, throughput, trend_series
 from mykronos.pull_requests import open_pull_requests
+from mykronos.scan_run_report import ScanRunReport
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
 logger = logging.getLogger(__name__)
@@ -2590,6 +2591,8 @@ class StalledLaneOut(BaseModel):
     open_findings: int
     days_since_run: float
     usual_gap_days: float
+    #: The lane's most recent run, for `/scan-runs/{id}`; empty if unknown.
+    last_scan_run_id: str = ""
     #: Why no dispatch is offered, empty when one is (#278). A UI renders the
     #: action below as a button; where this is set, that action is a read and
     #: this is the sentence to show instead of pretending otherwise.
@@ -3576,6 +3579,105 @@ async def scan_run_trend(
             repo_full_name, capability, days=days, points=points
         ),
     }
+
+
+def _scan_run_report(request: Request) -> ScanRunReport:
+    settings = request.app.state.settings
+    return ScanRunReport(
+        request.app.state.catalog, settings.raw_dir, settings.datalake_dir
+    )
+
+
+@router.get("/repos/{repo_id}/scan-runs")
+async def repo_scan_runs(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    capability: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> dict[str, Any]:
+    """A repository's recent scan runs, newest first (TheHub #60761).
+
+    The list a run id is found in. Each row links to
+    `/api/dashboard/scan-runs/{scan_run_id}`.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    return {
+        "repo_full_name": repo_full_name,
+        "runs": _scan_run_report(request).lane_runs(
+            repo_full_name, capability, limit=limit
+        ),
+    }
+
+
+@router.get("/scan-runs/{scan_run_id}")
+async def scan_run_detail(
+    request: Request, scan_run_id: str, principal: PrincipalDep
+) -> dict[str, Any]:
+    """One scan run: what ran, what it found, and what it changed (TheHub #60761).
+
+    The run's metadata (lane, tool and version, commit, start and finish,
+    outcome, the count it reported), then `changes` against the previous run
+    on the same lane (repository, capability, branch, tool):
+
+    - `new`: findings first seen in this run. Always exact.
+    - `still_reported`: findings this run is the latest sighting of, first
+      seen earlier.
+    - `not_reported`: findings the previous run was the latest sighting of,
+      so this run did not report them; `closed` is how many have since been
+      closed as fixed (spec 05 §5 waits for two missed scans). Null when the
+      run did not complete (`observed` false), because a failed scan's
+      silence is not evidence.
+
+    The last two are exact while `exact` is true (this is the newest run on
+    its lane) and lower bounds otherwise: a finding records only its first
+    and latest run. Each is `{total, by_severity}`.
+
+    `raw_files` lists what ingest archived for the run; download one from
+    `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (admin only).
+    """
+    report = _scan_run_report(request).report(scan_run_id)
+    if report is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No scan run {scan_run_id}."
+        )
+    return report
+
+
+@router.get("/scan-runs/{scan_run_id}/raw/{filename}")
+async def scan_run_raw_file(
+    request: Request, scan_run_id: str, filename: str, principal: PrincipalDep
+) -> FileResponse:
+    """One raw tool output archived for a scan run, byte for byte (TheHub #60761).
+
+    Admin-only: `may_see_raw_output`, the gate the SBOM and every finding's
+    raw JSON sit behind (spec 12 §5). Only a file the run's `raw_files` lists
+    can be served, so the name cannot reach outside that run's archive.
+    """
+    if not principal.may_see_raw_output:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Downloading raw tool output requires the 'admin' role; you "
+                f"have '{principal.role.value}'."
+            ),
+        )
+    report = _scan_run_report(request)
+    if not report.exists(scan_run_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No scan run {scan_run_id}."
+        )
+    path = report.raw_file(scan_run_id, filename)
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Scan run {scan_run_id} has no archived file {filename!r}. Its "
+                "`raw_files` lists what it has; a file missing from that list "
+                "was never uploaded or has been pruned by retention (spec 05 §7)."
+            ),
+        )
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
 
 
 @router.get("/findings/{finding_id}", response_model=FindingOut)
