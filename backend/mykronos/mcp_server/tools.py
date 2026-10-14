@@ -49,6 +49,7 @@ TOOL_NAMES = frozenset(
         "findings",
         "finding",
         "lane_health",
+        "scan_run",
         # write, governed
         "claim",
         "disposition",
@@ -132,6 +133,9 @@ RepoId = Annotated[
     ),
 ]
 FindingId = Annotated[str, Field(min_length=1, description="The finding's finding_id.")]
+ScanRunId = Annotated[
+    str, Field(min_length=1, description="The run's scan_run_id, e.g. from a work item.")
+]
 DryRun = Annotated[
     bool,
     Field(
@@ -421,6 +425,21 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         except ApiError as exc:
             unknown.append({"source": "ci", "detail": str(_refused(exc))})
         return {"repo_id": repo_id, "scan_health": health, "ci": ci, "unknown": unknown}
+
+    @server.tool(annotations=_READ)
+    async def scan_run(scan_run_id: ScanRunId) -> dict[str, Any]:
+        """One scan run: its outcome, tool and commit, and what it changed
+        against the previous run on its lane (TheHub #60761).
+
+        GET /api/dashboard/scan-runs/{id}. A `lane_stalled` work item cites
+        its lane's latest run as evidence; this reads it. `changes.new` is
+        exact; the other counts are lower bounds unless `exact` is true, and
+        `not_reported` is null for a run that did not complete. The raw files
+        it lists are admin-only to download, so they are named, not served.
+        """
+        path = f"/api/dashboard/scan-runs/{_segment(scan_run_id)}"
+        result: dict[str, Any] = await _call(api, "GET", path)
+        return result
 
     # -- write --------------------------------------------------------------
 
