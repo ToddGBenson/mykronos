@@ -149,6 +149,40 @@ def _snapshot(principal: Principal) -> dict[str, Any]:
 
 # -- Independence (spec 34 §2) ------------------------------------------------
 
+#: Model-name prefixes and the lineage they belong to. `different_family` exists
+#: so a reviewer does not share the requester's blind spots, and two versions of
+#: one vendor's model share most of them: it compared the recorded strings, so
+#: `claude-opus-5` reviewing `claude-opus-5.5` passed as a different family.
+_LINEAGE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claude", "anthropic"),
+    ("gpt", "openai"),
+    ("chatgpt", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("gemini", "google"),
+    ("gemma", "google"),
+    ("llama", "meta"),
+    ("mistral", "mistral"),
+    ("mixtral", "mistral"),
+    ("codestral", "mistral"),
+)
+
+
+def model_lineage(model: str | None) -> str:
+    """The lineage a model id belongs to: its vendor family, not its version.
+
+    An unrecognised id falls back to its first dash-separated word, which still
+    treats `foo-1` and `foo-2` as one lineage - the conservative direction for
+    a rule whose failure is letting a model review its own kind.
+    """
+    name = (model or "").strip().lower()
+    for prefix, lineage in _LINEAGE_PREFIXES:
+        if name == prefix or name.startswith(prefix + "-"):
+            return lineage
+    return name.split("-", 1)[0]
+
+
 
 def independence_violations(
     *,
@@ -201,9 +235,13 @@ def independence_violations(
         Independence.DIFFERENT_FAMILY in rules
         and approver.is_agent
         and requester_kind == "agent"
-        and approver.provenance.get("family") == requester_provenance.get("family")
+        and model_lineage(approver.provenance.get("family"))
+        == model_lineage(requester_provenance.get("family"))
     ):
-        failed.append("different_family: the approver runs the requester's model family.")
+        failed.append(
+            "different_family: the approver runs the requester's model family "
+            f"({model_lineage(approver.provenance.get('family'))})."
+        )
 
     if Independence.HUMAN in rules and not approver.is_human:
         failed.append("human: this tier must be approved by a person.")
