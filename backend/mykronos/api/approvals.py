@@ -193,6 +193,14 @@ def _require_writer(principal: Any) -> None:
 @router.post("", response_model=RequestOut, status_code=status.HTTP_201_CREATED)
 async def create(request: Request, body: CreateRequest, principal: PrincipalDep) -> RequestOut:
     _require_writer(principal)
+    policy = _policy(request)
+    if body.duty not in policy.duties:
+        # Checked here, not left to create_request: there the lookup raises
+        # PolicyError, which no handler maps, so a typo answered 500.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"No duty '{body.duty}' in approval policy {policy.version}.",
+        )
     route = dedicated_route(body.duty)
     if route is not None:
         raise HTTPException(
@@ -203,7 +211,7 @@ async def create(request: Request, body: CreateRequest, principal: PrincipalDep)
     try:
         row = create_request(
             request.app.state.db,
-            _policy(request),
+            policy,
             duty=body.duty,
             subject_ref=body.subject_ref,
             requested_by=principal,
