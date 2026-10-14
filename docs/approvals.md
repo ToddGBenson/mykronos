@@ -85,6 +85,14 @@ approval queue below is what calls it. Starting a review is not choosing the
 reviewer, so the queue may: the platform picks the model, the instructions and
 the evidence.
 
+Before you delegate, read the reviewer's shadow record:
+`GET /api/approvals/shadow-reviews` sets each shadow verdict beside what a
+person decided. `counts` and `agreement` cover only tiers an agent could be
+delegated. On a human-only tier (governance) the reviewer is told to reject so
+a person decides, so those verdicts are listed with `delegable: false` and
+counted in `not_delegable` instead. `by_tier` gives the figures per
+`duty:tier`; judge a delegation on the tiers it would cover.
+
 `scripts/enable-agent-reviewer.ps1` does all three steps for
 `pull_request_merge`, production and routine only (D-149):
 

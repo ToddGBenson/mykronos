@@ -583,6 +583,55 @@ class TestShadowMode:
         assert by_id[disputed["id"]]["agree"] is False
         assert by_id[disputed["id"]]["human_verdicts"] == ["approve"]
 
+    def test_a_human_only_tier_is_listed_but_never_scored(
+        self, client, admin_auth, tiered, shadow
+    ) -> None:
+        """TheHub #60760. On a tier no agent may approve, the reviewer is told
+        to reject so a person decides. Scored, every one the operator approved
+        read as a disagreement against a delegation that could never cover it."""
+        author = _mint(client, admin_auth)
+        delegable = _request(client, _bearer(author["token"]))
+        shadow(answer=APPROVE)
+        _review(client, _bearer(author["token"]), delegable)
+        _human_decides(client, admin_auth, delegable, "approve")
+
+        human_only = _request(client, _bearer(author["token"]), tier="critical")
+        shadow(answer={**APPROVE, "verdict": "reject"})
+        done = reviewer.shadow_sweep(
+            client.app.state.db, _policy(client), client.app.state.settings, limit=5
+        )
+        assert [o.request_id for o in done] == [human_only["id"]]
+        _human_decides(client, admin_auth, human_only, "approve")
+
+        report = client.get("/api/approvals/shadow-reviews", headers=admin_auth).json()
+
+        assert report["counts"] == {"agree": 1, "disagree": 0, "undecided": 0}
+        assert report["agreement"] == 1.0
+        assert report["not_delegable"] == 1
+        assert report["by_tier"]["risk_acceptance:critical"] == {
+            "agree": 0, "disagree": 1, "undecided": 0, "delegable": False, "agreement": 0.0,
+        }
+        assert report["by_tier"]["risk_acceptance:medium"]["agreement"] == 1.0
+        assert report["by_tier"]["risk_acceptance:medium"]["delegable"] is True
+        by_id = {row["request_id"]: row for row in report["reviews"]}
+        assert by_id[human_only["id"]]["delegable"] is False
+        assert by_id[human_only["id"]]["agree"] is False, "the row still says what happened"
+
+    def test_without_a_policy_every_verdict_counts_as_before(
+        self, client, admin_auth, tiered, shadow
+    ) -> None:
+        author = _mint(client, admin_auth)
+        request = _request(client, _bearer(author["token"]), tier="critical")
+        shadow(answer={**APPROVE, "verdict": "reject"})
+        reviewer.shadow_sweep(
+            client.app.state.db, _policy(client), client.app.state.settings, limit=5
+        )
+        _human_decides(client, admin_auth, request, "approve")
+
+        report = reviewer.shadow_report(client.app.state.db)
+
+        assert report["counts"]["disagree"] == 1 and report["not_delegable"] == 0
+
     def test_needs_info_is_never_agreement(self, client, admin_auth, tiered, shadow) -> None:
         """Asking is not deciding; counting it as agreement would flatter a
         reviewer that never commits."""

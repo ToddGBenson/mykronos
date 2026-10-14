@@ -117,8 +117,15 @@ Write-Host '  reviewer key: present in backend\.env (not shown)' -ForegroundColo
 
 # The track record the trust rests on: shadow verdicts beside yours.
 $shadow = Invoke-Api '/api/approvals/shadow-reviews'
-$judged = $shadow.counts.agree + $shadow.counts.disagree
-Write-Host ("  reviewer mode now: {0}; shadow record: {1} agree, {2} disagree, {3} undecided{4}" -f $shadow.mode, $shadow.counts.agree, $shadow.counts.disagree, $shadow.counts.undecided, $(if ($judged) { " (agreement $([math]::Round(100 * $shadow.agreement))%)" } else { ' - no judged reviews yet' })) -ForegroundColor DarkGray
+# Only the tiers this script delegates (TheHub #60760): on governance the
+# reviewer rejects by rule so a person decides, which says nothing about them.
+$agree = 0; $disagree = 0; $undecided = 0
+foreach ($t in $Tiers) {
+  $row = if ($shadow.by_tier) { $shadow.by_tier."${Duty}:$t" } else { $null }
+  if ($row) { $agree += $row.agree; $disagree += $row.disagree; $undecided += $row.undecided }
+}
+$judged = $agree + $disagree
+Write-Host ("  reviewer mode now: {0}; shadow record on {1} {2}: {3} agree, {4} disagree, {5} undecided{6}" -f $shadow.mode, $Duty, ($Tiers -join '+'), $agree, $disagree, $undecided, $(if ($judged) { " (agreement $([math]::Round(100 * $agree / $judged))%)" } else { ' - no judged reviews on these tiers yet' })) -ForegroundColor DarkGray
 
 # -- 2. The delegation ----------------------------------------------------------------------
 $active = @(@(Invoke-Api '/api/approvals/delegations') | Where-Object {
