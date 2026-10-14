@@ -114,7 +114,37 @@ class TestCrossRepoWrites:
         assert "repo_full_name" in on_batch.text and "repo_full_name" in on_finding.text
         assert buffer.count_sealed() == 0
 
-    def test_findings_against_another_repos_scan_run_stay_the_tokens_own(
+    def test_findings_cannot_be_filed_into_another_repos_scan_run(
+        self,
+        client: TestClient,
+        auth: dict[str, str],
+        victim_auth: dict[str, str],
+        settings: Settings,
+        catalog,
+        run_compaction,
+        buffer,
+    ) -> None:
+        """Even stamped with A's name, findings carrying B's scan_run_id are
+        counted in B's run report, which keys on the run id alone (#828).
+        So the batch is refused, and B's run reports nothing new."""
+        from mykronos.scan_run_report import ScanRunReport
+
+        assert post_scan(
+            client, victim_auth, repo_full_name=VICTIM, scan_run_id=VICTIM_RUN
+        ).status_code == 200
+        run_compaction()
+
+        response = post_findings(client, auth, [finding_payload()], scan_run_id=VICTIM_RUN)
+
+        assert response.status_code == 409, response.text
+        assert VICTIM not in response.text, "the refusal must not name the other repo"
+        assert buffer.count_sealed() == 0
+        run_compaction()
+        report = ScanRunReport(catalog, settings.raw_dir, settings.datalake_dir).report(VICTIM_RUN)
+        assert report is not None
+        assert catalog.query("SELECT count(*) FROM findings") == [(0,)]
+
+    def test_a_run_registered_but_not_yet_compacted_is_still_protected(
         self,
         client: TestClient,
         auth: dict[str, str],
@@ -122,12 +152,29 @@ class TestCrossRepoWrites:
         catalog,
         run_compaction,
     ) -> None:
-        """Knowing a victim's scan_run_id does not let you file into its repo."""
-        assert post_scan(client, victim_auth, repo_full_name=VICTIM, scan_run_id=VICTIM_RUN)
-        post_findings(client, auth, [finding_payload()], scan_run_id=VICTIM_RUN)
+        """Compaction runs every five minutes; the window before it is when
+        a live CI log has just printed the id."""
+        post_scan(client, victim_auth, repo_full_name=VICTIM, scan_run_id=VICTIM_RUN)
+
+        hijack = post_scan(client, auth, scan_run_id=VICTIM_RUN, scan_status="failure")
+        findings = post_findings(client, auth, [finding_payload()], scan_run_id=VICTIM_RUN)
         run_compaction()
 
-        assert catalog.query("SELECT DISTINCT repo_full_name FROM findings") == [(REPO,)]
+        assert hijack.status_code == 409
+        assert findings.status_code == 409
+        assert catalog.query(
+            "SELECT repo_full_name, scan_status FROM scan_runs WHERE scan_run_id = ?",
+            [VICTIM_RUN],
+        ) == [(VICTIM, "success")]
+
+    def test_findings_for_an_unregistered_run_id_are_still_accepted(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        """The ownership check refuses a foreign run, not an unknown one:
+        an uploader that posts findings before its ScanRun must keep working."""
+        response = post_findings(client, auth, [], scan_run_id="never-registered")
+
+        assert response.status_code == 200
 
     def test_a_scan_run_id_cannot_be_taken_over_by_another_repos_token(
         self,
