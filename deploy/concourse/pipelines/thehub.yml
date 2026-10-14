@@ -5607,6 +5607,9 @@ jobs:
                 # Built to a tarball, not pushed: see the note on the job.
                 # --cleanup between builds, because kaniko builds into its own
                 # root filesystem and the next build would start on top of it.
+                # --ignore-path=/busybox, because on Concourse that cleanup also
+                # deletes /busybox: build 2 built one image, then the loop's
+                # next `sed` was "not found" (2026-10-14).
                 TAB=$(printf '\t')
                 while IFS="$TAB" read -r current candidate context args; do
                   [ -n "$candidate" ] || continue
@@ -5621,7 +5624,8 @@ jobs:
                     --no-push \
                     --tar-path "images/$name.tar" \
                     --single-snapshot \
-                    --cleanup
+                    --cleanup \
+                    --ignore-path=/busybox
                 done < refresh/plan.tsv
 
       - task: scan
