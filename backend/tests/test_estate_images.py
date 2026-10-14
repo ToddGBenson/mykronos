@@ -247,7 +247,7 @@ class TestThisEstate:
             "pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless",
             "registry:3",
             "postgres:15",
-            "ghcr.io/zaproxy/zaproxy:weekly@sha256:0c31b03932ea159a6f80c96cabb2cc9b417a148f460922ffcece8121f22779b5",
+            "ghcr.io/zaproxy/zaproxy:weekly@sha256:4ec932d24ee6fa7181333a719d519cdebf92df541058d48041ce3358528cd0ea",
         ],
     )
     def test_the_images_427_names_are_now_in_scope(self, reference: str) -> None:

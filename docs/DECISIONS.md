@@ -5785,6 +5785,12 @@ resource measurement D-114 asks for comes from `demo-and-dast`'s own peak
 sampling on the first run. Moving the pin is a deliberate edit to both lines,
 and nothing moves it automatically.
 
+**2026-10-13: both pins move to the 2026-10-08 weekly, `sha256:4ec932d2…`.**
+Trivy 0.73.0 (HIGH and CRITICAL, from the local copies) found 356 in the old
+digest and 269 in the new: **87 cleared, 0 introduced**, 3 critical in each. Of
+the 60 high findings MyKronos held open on `zaproxy/zaproxy`, 24 are gone in
+the new build. Moved by an agent working the briefing.
+
 ## D-129 — Artifact storage moves from MinIO to SILO, its maintained fork
 
 **2026-09-25.** **Status:** Decided by the operator, implemented

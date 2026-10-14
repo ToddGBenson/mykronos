@@ -207,7 +207,7 @@ resources:
     # image in the mykronos repository, and the same test still asserts the two
     # agree.
     source: { repository: ghcr.io/zaproxy/zaproxy, tag: weekly }
-    version: { digest: "sha256:0c31b03932ea159a6f80c96cabb2cc9b417a148f460922ffcece8121f22779b5" }
+    version: { digest: "sha256:4ec932d24ee6fa7181333a719d519cdebf92df541058d48041ce3358528cd0ea" }
 
   # The `playwright` image resource went with `functional-dast` (#59100): its
   # only consumer was the proxied functional suite, which drove the demo
