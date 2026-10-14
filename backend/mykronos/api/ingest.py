@@ -27,6 +27,7 @@ from datetime import datetime, time
 from pathlib import Path
 from typing import Annotated, Any
 
+import duckdb
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -219,6 +220,61 @@ def _require_repo(token: Resolution, repo_full_name: str) -> None:
                 f"This token is scoped to {token.repo_full_name} and cannot write {repo_full_name}."
             ),
         )
+
+
+def _require_own_scan_run(request: Request, token: Resolution, scan_run_id: str) -> None:
+    """Refuse a `scan_run_id` that another repository already registered.
+
+    The client chooses the id (D-002) and CI logs print it, so without this a
+    token for A could re-post B's id: `/scan-run` upserts on the id alone and
+    re-attributed B's run to A, and findings carrying it were counted in B's
+    run report, which keys on the id alone. The repository comes from the
+    token (spec 05 §4); this makes that true of the run a write lands in too.
+
+    An id nobody has registered is allowed — an uploader may post findings
+    before its ScanRun. The other repository is not named in the refusal.
+    """
+    owner = _scan_run_owner(request, scan_run_id)
+    if owner is not None and owner != token.repo_full_name:
+        logger.warning(
+            "Refused a write from %s to scan run %s, which belongs to another repository.",
+            scrub(token.repo_full_name),
+            scrub(scan_run_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"scan_run_id {scan_run_id!r} is registered to a different repository. "
+                "Generate a fresh id for this run."
+            ),
+        )
+
+
+def _scan_run_owner(request: Request, scan_run_id: str) -> str | None:
+    """The repository that registered a scan run, compacted or still buffered."""
+    try:
+        rows = request.app.state.catalog.query(
+            "SELECT repo_full_name FROM scan_runs WHERE scan_run_id = ? LIMIT 1",
+            [scan_run_id],
+        )
+    except duckdb.Error:
+        # Fails open: an unreadable lake must not stop ingestion, whose 200 is
+        # the durability guarantee. The buffer is still checked below.
+        logger.warning("Could not read scan_runs to check ownership", exc_info=True)
+        rows = []
+    if rows:
+        return str(rows[0][0])
+
+    buffer = request.app.state.buffer
+    for segment in buffer.sealed_segments("scan_runs"):
+        try:
+            pending = buffer.read_segment(segment)
+        except OSError:
+            continue  # consumed by compaction since it was listed
+        for row in pending:
+            if row.get("scan_run_id") == scan_run_id:
+                return str(row.get("repo_full_name") or "")
+    return None
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -426,6 +482,7 @@ async def ingest_scan_run(
     """
     _require_repo(token, submission.repo_full_name)
     _require_capability(token, submission.capability.value)
+    _require_own_scan_run(request, token, submission.scan_run_id)
 
     row = submission.model_dump(mode="python")
     row["capability"] = submission.capability.value
@@ -486,6 +543,7 @@ async def ingest_findings(
     """
     capability = batch.capability.value
     _require_capability(token, capability)
+    _require_own_scan_run(request, token, batch.scan_run_id)
 
     now = utcnow()
     rows: list[dict[str, Any]] = []
