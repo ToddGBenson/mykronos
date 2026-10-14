@@ -184,18 +184,25 @@ if ($shadow.mode -eq 'live') {
   $concourseEnv = Join-Path $RepoPath 'deploy\concourse\.env'
   $vaultLine = if (Test-Path -LiteralPath $concourseEnv) { Select-String -LiteralPath $concourseEnv -Pattern '^CONCOURSE_VAULT_TOKEN=' | Select-Object -First 1 }
   $vaultToken = if ($vaultLine) { $vaultLine.Line.Substring('CONCOURSE_VAULT_TOKEN='.Length).Trim().Trim('"') } else { '' }
+  # `-e VAULT_TOKEN` with no value forwards it from this process's
+  # environment, so the token is never in docker's command line (#817); the
+  # caller's own VAULT_TOKEN is restored after the loop.
+  $priorVaultToken = $env:VAULT_TOKEN
+  if ($vaultToken) { $env:VAULT_TOKEN = $vaultToken }
   foreach ($name in $slackFromVault.Keys) {
     $value = $null
     if ($vaultToken) {
-      $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+      $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
         mykronos-vault vault read -field=value $slackFromVault[$name] 2>$null
     }
     if ($LASTEXITCODE -ne 0 -or -not $value) {
+      $env:VAULT_TOKEN = $priorVaultToken
       Stop-Here "Could not read $($slackFromVault[$name]) from Vault, and recreating the backend without it would stop Slack notifications. Is Vault sealed? deploy\concourse\vault-unseal.ps1. Nothing was changed."
     }
     $passed[$name] = ($value -join '').Trim()
     $value = $null
   }
+  $env:VAULT_TOKEN = $priorVaultToken
   Write-Host '  App key path and Slack token/channel resolved for compose (not shown)' -ForegroundColor DarkGray
 
   $text = [IO.File]::ReadAllText($envFile)
