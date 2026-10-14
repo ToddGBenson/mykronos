@@ -150,3 +150,22 @@ def test_cli_plan_then_decide(tmp_path: Path) -> None:
     document = json.loads(verdict.read_text(encoding="utf-8"))
     assert document["verdict"] == "improved"
     assert len(document["images"]) == 2
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+THEHUB_PIPELINE = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "thehub.yml"
+
+
+def test_the_kaniko_build_loop_keeps_its_own_shell_tools() -> None:
+    """Kaniko's --cleanup deletes the container's filesystem after each build,
+    and on Concourse that includes /busybox: build 2 (2026-10-14) built the
+    first image, then the loop's next `sed` was "not found". A loop of builds
+    must tell kaniko to leave /busybox alone."""
+    import yaml
+
+    config = yaml.safe_load(THEHUB_PIPELINE.read_text(encoding="utf-8"))
+    job = next(j for j in config["jobs"] if j["name"] == "image-refresh")
+    build = next(s for s in job["plan"] if s.get("task") == "build")
+    script = build["config"]["run"]["args"][-1]
+    assert "--cleanup" in script
+    assert "--ignore-path=/busybox" in script
