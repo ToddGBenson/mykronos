@@ -187,8 +187,14 @@ if ($shadow.mode -eq 'live') {
   foreach ($name in $slackFromVault.Keys) {
     $value = $null
     if ($vaultToken) {
-      $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
-        mykronos-vault vault read -field=value $slackFromVault[$name] 2>$null
+      # `-e VAULT_TOKEN` with no value forwards it from this process's
+      # environment, so the token is never in docker's command line.
+      $prior = $env:VAULT_TOKEN
+      $env:VAULT_TOKEN = $vaultToken
+      try {
+        $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
+          mykronos-vault vault read -field=value $slackFromVault[$name] 2>$null
+      } finally { $env:VAULT_TOKEN = $prior }
     }
     if ($LASTEXITCODE -ne 0 -or -not $value) {
       Stop-Here "Could not read $($slackFromVault[$name]) from Vault, and recreating the backend without it would stop Slack notifications. Is Vault sealed? deploy\concourse\vault-unseal.ps1. Nothing was changed."
