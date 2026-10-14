@@ -59,6 +59,10 @@ dev = [
     "pytest-cov>=6.0",
     "types-PyYAML>=6.0",
     "types-defusedxml>=0.7",
+    # Validates the SARIF export against the published 2.1.0 schema
+    # (tests/data, TheHub #60762). Already installed through `mcp`; named here
+    # so a test does not depend on another package's dependency list.
+    "jsonschema>=4.0",
     "ruff>=0.7",
     "mypy>=1.13",
     # The MCP server's tests and types run on every lane that installs `dev`,
