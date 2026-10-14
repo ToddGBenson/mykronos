@@ -14,6 +14,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+#: The largest value the lake's INTEGER columns hold (`lake/tables.py`).
+#:
+#: A submitted integer above it used to be a 200 and then a NULL in Parquet:
+#: compaction reads the buffer with `ignore_errors`, so the value was dropped
+#: rather than the row. Spec 05 §4 says malformed data is a 422, not a partial
+#: ingest, so every wire field bound for an INTEGER column carries this bound.
+LAKE_INT_MAX = 2**31 - 1
+
 # --------------------------------------------------------------------------
 # Enums — spec 05 §3
 # --------------------------------------------------------------------------
@@ -156,13 +164,13 @@ class ScanRunSubmission(BaseModel):
     tool_version: str = Field(default="", max_length=100)
     commit_sha: str = Field(min_length=1, max_length=64)
     branch: str = Field(min_length=1, max_length=255)
-    pr_number: int | None = None
+    pr_number: int | None = Field(default=None, le=LAKE_INT_MAX)
     triggered_by: TriggeredBy
     github_workflow_run_id: str = Field(default="", max_length=64)
     started_at: datetime
     completed_at: datetime | None = None
     scan_status: ScanStatus = ScanStatus.SUCCESS
-    finding_count: int = Field(default=0, ge=0)
+    finding_count: int = Field(default=0, ge=0, le=LAKE_INT_MAX)
     raw_output_ref: str | None = Field(default=None, max_length=512)
     #: A one-line summary an adapter had something specific to say (spec 19
     #: §1.2) — "3 of 10 test(s) failed", not a log dump. The full output is
@@ -203,8 +211,8 @@ class FindingSubmission(BaseModel):
     cvss_score: float | None = Field(default=None, ge=0.0, le=10.0)
 
     file_path: str | None = Field(default=None, max_length=2000)
-    line_start: int | None = Field(default=None, ge=0)
-    line_end: int | None = Field(default=None, ge=0)
+    line_start: int | None = Field(default=None, ge=0, le=LAKE_INT_MAX)
+    line_end: int | None = Field(default=None, ge=0, le=LAKE_INT_MAX)
 
     symbol: str | None = Field(
         default=None,
@@ -325,7 +333,7 @@ class InsiderRiskSubmission(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    pr_number: int = Field(ge=1)
+    pr_number: int = Field(ge=1, le=LAKE_INT_MAX)
     commit_sha: str = Field(min_length=1, max_length=64)
     author_login: str = Field(
         min_length=1,
