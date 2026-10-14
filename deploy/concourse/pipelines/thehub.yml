@@ -5530,14 +5530,29 @@ jobs:
   - name: image-refresh
     public: true
     serial_groups: [worker]
+    # Every terminal state reports to TheHub, as every job here does
+    # (TheHub's test_no_job_is_silent). `demo` because demo is the only
+    # environment this job can change.
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: image_refresh, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: image-refresh }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: image_refresh, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: image-refresh }
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: image_refresh, STATUS: errored, TARGET_ENV: demo }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: image_refresh, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: daily
         trigger: true
