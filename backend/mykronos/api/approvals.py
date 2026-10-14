@@ -384,10 +384,14 @@ async def shadow_reviews(request: Request, principal: PrincipalDep) -> dict[str,
     """The reviewer's shadow verdicts beside what a person decided (spec 34 §4.3).
 
     The track record a delegation should rest on: how often the reviewer and the
-    operator agreed, and every case where they did not. Ordered before
+    operator agreed, and every case where they did not. `counts` and `agreement`
+    cover only tiers an agent could be delegated; `by_tier` breaks them down per
+    `duty:tier`, and human-only tiers are counted in `not_delegable`. Ordered before
     `/{request_id}` so the literal path is not read as a request id.
     """
-    report = await asyncio.to_thread(reviewer.shadow_report, request.app.state.db)
+    report = await asyncio.to_thread(
+        reviewer.shadow_report, request.app.state.db, _policy(request)
+    )
     report["mode"] = reviewer.mode(request.app.state.settings)
     return report
 

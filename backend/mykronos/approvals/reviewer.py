@@ -560,13 +560,35 @@ def shadow_sweep(
     return outcomes
 
 
-def shadow_report(db: Any) -> dict[str, Any]:
+def _delegable(policy: ApprovalPolicy | None, duty: Any, tier: Any) -> bool:
+    """Whether an agent could ever approve at this duty and tier.
+
+    Unknown (no policy, or a duty or tier the policy no longer has) counts as
+    delegable, which is how every verdict was counted before this existed.
+    """
+    if policy is None:
+        return True
+    found = policy.duties.get(str(duty))
+    level = found.tiers.get(str(tier)) if found is not None else None
+    return level is None or level.admits(ActorKind.AGENT.value) is not None
+
+
+def shadow_report(db: Any, policy: ApprovalPolicy | None = None) -> dict[str, Any]:
     """Every shadow verdict beside what a person decided (spec 34 §5.2).
 
     `agree` is only judged once a person has decided: a request still pending,
     or one that expired, has no human verdict to compare with. A `needs_info`
     shadow verdict agrees with nothing, deliberately - asking is not deciding,
     and counting it as agreement would flatter a reviewer that never commits.
+
+    `counts` and `agreement` cover only tiers an agent could be delegated
+    (TheHub #60760). On a human-only tier - governance - the reviewer's
+    instructions require it to reject so a person decides, so its verdict
+    there is procedural: scored, every one the operator approves read as a
+    disagreement and argued against a delegation that would never cover that
+    tier. Those rows are still listed, marked `delegable: false`, and counted
+    in `not_delegable`. `by_tier` gives the same figures per `duty:tier`, so a
+    delegation can be judged on exactly the tiers it would cover.
     """
     with db.session() as session:
         entries = list(
@@ -595,18 +617,26 @@ def shadow_report(db: Any) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     counts = {"agree": 0, "disagree": 0, "undecided": 0}
+    not_delegable = 0
+    by_tier: dict[str, dict[str, Any]] = {}
     for entry in entries:
         detail = dict(entry.detail or {})
         request = requests.get(entry.entity_id)
         state = request.state if request is not None else "unknown"
         human = humans.get(entry.entity_id, [])
         final = _FINAL_VERDICT.get(state)
-        if final is None:
-            agree = None
-            counts["undecided"] += 1
+        agree = None if final is None else detail.get("verdict") == final
+        outcome = "undecided" if agree is None else ("agree" if agree else "disagree")
+        delegable = _delegable(policy, detail.get("duty"), detail.get("tier"))
+        if delegable:
+            counts[outcome] += 1
         else:
-            agree = detail.get("verdict") == final
-            counts["agree" if agree else "disagree"] += 1
+            not_delegable += 1
+        tier_counts = by_tier.setdefault(
+            f"{detail.get('duty')}:{detail.get('tier')}",
+            {"agree": 0, "disagree": 0, "undecided": 0, "delegable": delegable},
+        )
+        tier_counts[outcome] += 1
         rows.append(
             {
                 "request_id": entry.entity_id,
@@ -620,11 +650,20 @@ def shadow_report(db: Any) -> dict[str, Any]:
                 "state": state,
                 "human_verdicts": human,
                 "agree": agree,
+                "delegable": delegable,
             }
         )
-    judged = counts["agree"] + counts["disagree"]
+    for tier_counts in by_tier.values():
+        tier_counts["agreement"] = _agreement(tier_counts)
     return {
         "counts": counts,
-        "agreement": round(counts["agree"] / judged, 3) if judged else None,
+        "agreement": _agreement(counts),
+        "not_delegable": not_delegable,
+        "by_tier": by_tier,
         "reviews": rows,
     }
+
+
+def _agreement(counts: dict[str, Any]) -> float | None:
+    judged = counts["agree"] + counts["disagree"]
+    return round(counts["agree"] / judged, 3) if judged else None
