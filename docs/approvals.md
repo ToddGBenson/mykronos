@@ -96,7 +96,12 @@ the evidence.
   30-day expiry. Run it again after the one-hour cooling-off and it shows you
   the proposal and approves it with your decision;
 - it sets `MYKRONOS_REVIEWER_MODE=live`, recreates the backend on the image it
-  already runs, and checks that the backend reports `live`.
+  already runs, and checks that the backend reports `live`. The recreate
+  passes what `deploy.ps1` passes besides `backend/.env`: the GitHub App key
+  path, and the Slack token and channel read from Vault. If either cannot be
+  resolved (a sealed Vault, say) it stops before changing anything, because a
+  plain `docker compose up` refuses to start without the key and silently
+  drops Slack.
 
 Fresh-context independence is not something a caller can assert: the
 reviewer's credential is minted by the platform with `platform_started` set,
