@@ -149,6 +149,17 @@ class TestTheTierIsComputedNotClaimed:
         assert response.status_code == 409
         assert "No adapter" in response.json()["detail"]
 
+    def test_an_unknown_duty_is_the_callers_mistake(self, client, admin_auth) -> None:
+        """A duty the policy does not name is bad input, not a server fault:
+        it used to escape as an uncaught PolicyError and answer 500."""
+        response = client.post(
+            "/api/approvals",
+            json={"duty": "no_such_duty", "subject_ref": "x"},
+            headers=admin_auth,
+        )
+        assert response.status_code == 422
+        assert "No duty 'no_such_duty'" in response.json()["detail"]
+
 
 class TestNobodyApprovesTheirOwnWork:
     def test_an_agent_cannot_approve_its_own_request(self, client, admin_auth, tiered) -> None:
