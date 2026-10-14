@@ -25,7 +25,10 @@
     3. The reviewer is live. MYKRONOS_REVIEWER_MODE=live in backend\.env, and
        the backend container recreated on the image it is already running.
        Only after the delegation is active: switching first would stop the
-       shadow reviews with nothing in their place.
+       shadow reviews with nothing in their place. The recreate passes what
+       deploy.ps1 passes besides backend\.env - the GitHub App key path and
+       the Slack token and channel from Vault - and stops before touching
+       anything if it cannot resolve them.
 
   How fresh-context independence is proven: the reviewer's credential is
   minted by the platform with `platform_started` set, a flag no API-minted
@@ -163,6 +166,38 @@ if ($active.Count -gt 0) {
 if ($shadow.mode -eq 'live') {
   Write-Host '  reviewer is already live' -ForegroundColor DarkGray
 } else {
+  # What deploy.ps1 hands compose besides --env-file, resolved before the mode
+  # is written so a refusal leaves backend\.env as it was. Without the App key
+  # path compose refuses to start the backend; without the two Slack values it
+  # starts and silently stops notifying, because they come from Vault, not
+  # from backend\.env. Values are never printed.
+  $passed = [ordered]@{}
+  $keyPath = Read-EnvValue 'MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH'
+  if (-not ($keyPath -and (Test-Path -LiteralPath $keyPath))) {
+    Stop-Here "MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH in $envFile does not name a file, and compose will not start the backend without it. Nothing was changed."
+  }
+  $passed['MYKRONOS_GITHUB_APP_KEY_HOST_PATH'] = (Resolve-Path -LiteralPath $keyPath).Path
+  $slackFromVault = [ordered]@{
+    'MYKRONOS_SLACK_BOT_TOKEN' = 'concourse/main/slack-bot-token'
+    'MYKRONOS_SLACK_CHANNEL'   = 'concourse/main/slack-alert-channel'
+  }
+  $concourseEnv = Join-Path $RepoPath 'deploy\concourse\.env'
+  $vaultLine = if (Test-Path -LiteralPath $concourseEnv) { Select-String -LiteralPath $concourseEnv -Pattern '^CONCOURSE_VAULT_TOKEN=' | Select-Object -First 1 }
+  $vaultToken = if ($vaultLine) { $vaultLine.Line.Substring('CONCOURSE_VAULT_TOKEN='.Length).Trim().Trim('"') } else { '' }
+  foreach ($name in $slackFromVault.Keys) {
+    $value = $null
+    if ($vaultToken) {
+      $value = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
+        mykronos-vault vault read -field=value $slackFromVault[$name] 2>$null
+    }
+    if ($LASTEXITCODE -ne 0 -or -not $value) {
+      Stop-Here "Could not read $($slackFromVault[$name]) from Vault, and recreating the backend without it would stop Slack notifications. Is Vault sealed? deploy\concourse\vault-unseal.ps1. Nothing was changed."
+    }
+    $passed[$name] = ($value -join '').Trim()
+    $value = $null
+  }
+  Write-Host '  App key path and Slack token/channel resolved for compose (not shown)' -ForegroundColor DarkGray
+
   $text = [IO.File]::ReadAllText($envFile)
   $nl = if ($text -match "`r`n") { "`r`n" } else { "`n" }
   if ($text -match '(?m)^MYKRONOS_REVIEWER_MODE=.*$') {
@@ -178,12 +213,19 @@ if ($shadow.mode -eq 'live') {
   # (:latest) is retired, and a deploy is not what this script is for.
   $image = (docker inspect -f '{{.Config.Image}}' mykronos-backend).Trim()
   if ($LASTEXITCODE -ne 0 -or -not $image) { Stop-Here 'Could not read the running backend image. Redeploy with deploy\mykronos\deploy.ps1 to pick up the new mode.' }
-  $env:MYKRONOS_IMAGE_BACKEND = $image
+  $passed['MYKRONOS_IMAGE_BACKEND'] = $image
+  # Through this process's environment, which compose prefers over
+  # --env-file, and out of it as soon as compose has read them.
+  foreach ($name in $passed.Keys) { Set-Item -Path "env:$name" -Value $passed[$name] }
   Push-Location (Join-Path $RepoPath 'deploy\mykronos')
   try {
     docker compose --env-file $envFile up -d --no-deps backend
     if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed' }
-  } finally { Pop-Location; Remove-Item Env:MYKRONOS_IMAGE_BACKEND -ErrorAction SilentlyContinue }
+  } finally {
+    Pop-Location
+    foreach ($name in $passed.Keys) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
+    $passed.Clear()
+  }
   Done "recreated mykronos-backend on $image"
 
   $deadline = (Get-Date).AddMinutes(3)
@@ -194,6 +236,10 @@ if ($shadow.mode -eq 'live') {
   $mode = (Invoke-Api '/api/approvals/shadow-reviews').mode
   if ($mode -ne 'live') { Stop-Here "The backend reports reviewer mode '$mode', not live. Check that the container was recreated (not just restarted)." }
   Done 'verified: the backend reports reviewer mode live'
+  # Names only: the same three things a raw compose recreate loses.
+  $kept = docker exec mykronos-backend sh -c 'for k in MYKRONOS_SLACK_BOT_TOKEN MYKRONOS_SLACK_CHANNEL; do [ -n "$(printenv $k)" ] || echo "$k"; done; [ -s /secrets/github-app.pem ] || echo github-app.pem'
+  if ($kept) { Stop-Here "The backend is live but came up without: $($kept -join ', '). Redeploy with deploy\mykronos\deploy.ps1." }
+  Done 'verified: the GitHub App key and the Slack token and channel reached the backend'
 }
 
 Write-Host "`nThe reviewer now approves production and routine PRs the delegation covers; governance still comes to you." -ForegroundColor Cyan
