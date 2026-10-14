@@ -345,7 +345,11 @@ function DashboardTab({
             {scanHealthError ? (
               <p className="px-3 py-2 text-[13px] text-critical">{scanHealthError}</p>
             ) : (
-              <ScanHealthBoxes capabilities={boxes} health={scanHealth?.capabilities ?? []} />
+              <ScanHealthBoxes
+                repoId={repoId}
+                capabilities={boxes}
+                health={scanHealth?.capabilities ?? []}
+              />
             )}
           </div>
 
@@ -532,7 +536,11 @@ async function TestHarnessTab({
       <Section title="Test health" detail="pass/fail, most recent run">
         {scanHealth.ok ? (
           boxes.length > 0 ? (
-            <ScanHealthBoxes capabilities={boxes} health={scanHealth.data.capabilities} />
+            <ScanHealthBoxes
+              repoId={repoId}
+              capabilities={boxes}
+              health={scanHealth.data.capabilities}
+            />
           ) : (
             <p className="px-3 py-3 text-[13px] text-ink-3">
               Nothing to show until unit, functional, or qa is enabled.

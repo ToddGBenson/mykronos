@@ -197,6 +197,17 @@ class TestAFrozenFindingSaysSo:
         assert finding.preconditions == []
         assert "lane_frozen" not in _caveats(finding)
 
+    def test_a_stalled_lane_links_its_latest_run(self) -> None:
+        """TheHub #60761: the run's outcome and raw output are one read away."""
+        lane = _lane("dast")
+        lane.last_scan_run_id = "run-9"
+        [item] = _build(_briefing(stalled=[lane])).items
+        assert "/api/dashboard/scan-runs/run-9" in {e.ref for e in item.evidence}
+
+    def test_a_lane_with_no_known_run_offers_no_link(self) -> None:
+        [item] = _build(_briefing(stalled=[_lane("dast")])).items
+        assert all(e.source != "scan_run" for e in item.evidence)
+
 
 class TestCaveats:
     def test_a_dast_identity_is_its_route(self) -> None:

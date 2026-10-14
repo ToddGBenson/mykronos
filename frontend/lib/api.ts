@@ -434,6 +434,8 @@ export type ScanHealth = {
     peak_findings: number;
     /** The most recent run's own one-line message, if it had one (spec 19 §1.2). */
     detail: string | null;
+    /** That run's id, for `/repos/{repoId}/scan-runs/{id}` (TheHub #60761). */
+    last_scan_run_id?: string | null;
     /** Same commit, disagreeing status, on the last two runs (spec 19 §1.3). */
     flaky: boolean;
     /**
@@ -450,6 +452,65 @@ export type ScanHealth = {
     coverage_at: string | null;
   }[];
 };
+
+/** `{total, by_severity}`: one bucket of a scan run's changes. */
+export type SeverityBucket = {
+  total: number;
+  by_severity: Record<Severity, number>;
+  /** On `not_reported` only: how many have since been closed as fixed. */
+  closed?: number;
+};
+
+/**
+ * One scan run (TheHub #60761). Hand-typed for the same reason `ScanHealth`
+ * is: the endpoint returns a row shaped in Python, so its OpenAPI schema is an
+ * open object. The route's docstring is the contract.
+ */
+export type ScanRun = {
+  scan_run_id: string;
+  repo_full_name: string;
+  capability: string;
+  tool_name: string | null;
+  tool_version: string | null;
+  commit_sha: string | null;
+  branch: string | null;
+  pr_number: number | null;
+  triggered_by: string | null;
+  github_workflow_run_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  scan_status: string;
+  finding_count: number | null;
+  detail: string | null;
+  line_coverage: number | null;
+  branch_coverage: number | null;
+  previous_scan_run_id: string | null;
+  next_scan_run_id: string | null;
+  /** True for the newest run on its lane; the counts are lower bounds otherwise. */
+  exact: boolean;
+  /** False when the run did not complete: its silence is not evidence. */
+  observed: boolean;
+  changes: {
+    new: SeverityBucket;
+    still_reported: SeverityBucket;
+    not_reported: SeverityBucket | null;
+  };
+  raw_files: { filename: string; bytes: number }[];
+};
+
+export type ScanRunRow = Pick<
+  ScanRun,
+  | "scan_run_id"
+  | "capability"
+  | "tool_name"
+  | "branch"
+  | "commit_sha"
+  | "started_at"
+  | "completed_at"
+  | "scan_status"
+  | "finding_count"
+  | "detail"
+>;
 
 /**
  * One bucket of a lane's pass rate over time (spec 19 §1.1). Hand-typed for

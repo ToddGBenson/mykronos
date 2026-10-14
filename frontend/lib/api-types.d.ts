@@ -1219,6 +1219,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/scan-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Scan Runs
+         * @description A repository's recent scan runs, newest first (TheHub #60761).
+         *
+         *     The list a run id is found in. Each row links to
+         *     `/api/dashboard/scan-runs/{scan_run_id}`.
+         */
+        get: operations["repo_scan_runs_api_dashboard_repos__repo_id__scan_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/scan-runs/{scan_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Scan Run Detail
+         * @description One scan run: what ran, what it found, and what it changed (TheHub #60761).
+         *
+         *     The run's metadata (lane, tool and version, commit, start and finish,
+         *     outcome, the count it reported), then `changes` against the previous run
+         *     on the same lane (repository, capability, branch, tool):
+         *
+         *     - `new`: findings first seen in this run. Always exact.
+         *     - `still_reported`: findings this run is the latest sighting of, first
+         *       seen earlier.
+         *     - `not_reported`: findings the previous run was the latest sighting of,
+         *       so this run did not report them; `closed` is how many have since been
+         *       closed as fixed (spec 05 §5 waits for two missed scans). Null when the
+         *       run did not complete (`observed` false), because a failed scan's
+         *       silence is not evidence.
+         *
+         *     The last two are exact while `exact` is true (this is the newest run on
+         *     its lane) and lower bounds otherwise: a finding records only its first
+         *     and latest run. Each is `{total, by_severity}`.
+         *
+         *     `raw_files` lists what ingest archived for the run; download one from
+         *     `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (not viewers).
+         */
+        get: operations["scan_run_detail_api_dashboard_scan_runs__scan_run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Scan Run Raw File
+         * @description One raw tool output archived for a scan run, byte for byte (TheHub #60761).
+         *
+         *     Withheld from viewers: `may_see_raw_output` (admin or agent), the gate
+         *     the SBOM and every finding's raw JSON sit behind (spec 12 §5). Only a
+         *     file the run's `raw_files` lists can be served, so the name cannot reach
+         *     outside that run's archive.
+         */
+        get: operations["scan_run_raw_file_api_dashboard_scan_runs__scan_run_id__raw__filename__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/findings/{finding_id}": {
         parameters: {
             query?: never;
@@ -8151,6 +8239,11 @@ export interface components {
             /** Usual Gap Days */
             usual_gap_days: number;
             /**
+             * Last Scan Run Id
+             * @default
+             */
+            last_scan_run_id: string;
+            /**
              * Dispatch Refusal
              * @default
              */
@@ -10451,6 +10544,107 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_scan_runs_api_dashboard_repos__repo_id__scan_runs_get: {
+        parameters: {
+            query?: {
+                capability?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_run_detail_api_dashboard_scan_runs__scan_run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_run_raw_file_api_dashboard_scan_runs__scan_run_id__raw__filename__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scan_run_id: string;
+                filename: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

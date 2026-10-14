@@ -56,6 +56,7 @@ EXPECTED_TOOLS = {
     "findings",
     "finding",
     "lane_health",
+    "scan_run",
     "claim",
     "disposition",
     "accept",
@@ -215,6 +216,7 @@ EVERY_TOOL_CALL: list[tuple[str, dict[str, Any]]] = [
     ("findings", {"repo_id": "r1", "status": "fixed"}),
     ("finding", {"finding_id": "f1"}),
     ("lane_health", {"repo_id": "r1"}),
+    ("scan_run", {"scan_run_id": "run-1"}),
     ("claim", {"finding_id": "f1"}),
     ("disposition", {"finding_id": "f1", "status": "false_positive", "reason": "x"}),
     ("accept", ACCEPT_ARGS),
@@ -352,6 +354,14 @@ async def test_lane_health_composes_both_routes() -> None:
     assert out["scan_health"] == {"lanes": [{"capability": "sast"}]}
     assert out["ci"]["pipeline"] == "acme-api"
     assert out["unknown"] == []
+
+
+async def test_scan_run_reads_one_run_and_cannot_become_another_path() -> None:
+    fake = FakeMykronos()
+    await _call(fake, "scan_run", {"scan_run_id": "run-1"})
+    await _call(fake, "scan_run", {"scan_run_id": "../../agents/whoami"})
+    assert fake.calls[0] == ("GET", "/api/dashboard/scan-runs/run-1")
+    assert all(path.startswith("/api/dashboard/scan-runs/") for _, path in fake.calls)
 
 
 async def test_lane_health_reports_an_unreadable_ci_half_as_unknown() -> None:

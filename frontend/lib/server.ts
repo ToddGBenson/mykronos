@@ -28,6 +28,8 @@ import {
   type RiskDecision,
   type RiskProfile,
   type ScanHealth,
+  type ScanRun,
+  type ScanRunRow,
   type ScanRunTrend,
   type ShadowModeReport,
   type SscsPage,
@@ -686,6 +688,38 @@ export async function getThreatIntel(): Promise<Result<ThreatIntelEntry[]>> {
       return { ok: false, error: describe(response, "Could not load threat intelligence") };
     }
     return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getScanRun(scanRunId: string): Promise<Result<ScanRun>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/scan-runs/{scan_run_id}",
+      { params: { path: { scan_run_id: scanRunId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load the scan run") };
+    return { ok: true, data: data as ScanRun };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getScanRuns(
+  repoId: string,
+  capability?: string,
+): Promise<Result<{ repo_full_name: string; runs: ScanRunRow[] }>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/scan-runs",
+      {
+        params: { path: { repo_id: repoId }, query: { capability, limit: 20 } },
+        cache: "no-store",
+      },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load scan runs") };
+    return { ok: true, data: data as { repo_full_name: string; runs: ScanRunRow[] } };
   } catch (error) {
     return failure(error);
   }

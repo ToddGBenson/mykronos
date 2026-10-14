@@ -12,6 +12,8 @@
  * no failing run disagrees, because there is no run.
  */
 
+import Link from "next/link";
+
 import { CAPABILITY_META, Label, RelativeTime } from "@/components/primitives";
 import type { ScanHealth } from "@/lib/api";
 
@@ -35,9 +37,12 @@ function tone(row: Row | undefined, capability: string) {
 }
 
 export function ScanHealthBoxes({
+  repoId,
   capabilities,
   health,
 }: {
+  /** Links each box to its latest run (TheHub #60761). */
+  repoId: string;
   /** Everything enabled for this repo, plus anything that has reported. */
   capabilities: string[];
   health: Row[];
@@ -101,6 +106,17 @@ export function ScanHealthBoxes({
                   ) : (
                     "never run"
                   )}
+                  {row.last_scan_run_id ? (
+                    <>
+                      {" · "}
+                      <Link
+                        className="underline"
+                        href={`/repos/${repoId}/scan-runs/${encodeURIComponent(row.last_scan_run_id)}`}
+                      >
+                        open run
+                      </Link>
+                    </>
+                  ) : null}
                   {/* The most recent run's own message (spec 19 §1.2) — a
                       failed lane says why, not just that. */}
                   {row.detail ? (
