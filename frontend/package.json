@@ -6,7 +6,8 @@
     "dev": "next dev --port 3100",
     "build": "next build",
     "start": "next start --port 3100",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run"
   },
   "dependencies": {
     "next": "16.4.0",
@@ -24,7 +25,8 @@
     "eslint-config-next": "16.4.0",
     "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "4.1.11"
   },
   "overrides": {
     "sharp": "^0.35.5",
