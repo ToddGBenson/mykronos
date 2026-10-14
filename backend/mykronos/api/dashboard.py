@@ -3634,7 +3634,7 @@ async def scan_run_detail(
     and latest run. Each is `{total, by_severity}`.
 
     `raw_files` lists what ingest archived for the run; download one from
-    `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (admin only).
+    `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (not viewers).
     """
     report = _scan_run_report(request).report(scan_run_id)
     if report is None:
@@ -3650,16 +3650,18 @@ async def scan_run_raw_file(
 ) -> FileResponse:
     """One raw tool output archived for a scan run, byte for byte (TheHub #60761).
 
-    Admin-only: `may_see_raw_output`, the gate the SBOM and every finding's
-    raw JSON sit behind (spec 12 §5). Only a file the run's `raw_files` lists
-    can be served, so the name cannot reach outside that run's archive.
+    Withheld from viewers: `may_see_raw_output` (admin or agent), the gate
+    the SBOM and every finding's raw JSON sit behind (spec 12 §5). Only a
+    file the run's `raw_files` lists can be served, so the name cannot reach
+    outside that run's archive.
     """
     if not principal.may_see_raw_output:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"Downloading raw tool output requires the 'admin' role; you "
-                f"have '{principal.role.value}'."
+                f"Raw tool output is withheld from the '{principal.role.value}' "
+                "role (spec 12 §5): it can quote secrets. An admin or an agent "
+                "can download it."
             ),
         )
     report = _scan_run_report(request)

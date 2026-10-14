@@ -177,7 +177,7 @@ export default async function ScanRunPage({
 
       <Section
         title="Raw tool output"
-        detail="exactly what the tool wrote, archived on ingest · admin only"
+        detail="exactly what the tool wrote, archived on ingest · withheld from viewers"
       >
         {run.raw_files.length ? (
           <ul className="flex flex-col divide-y divide-rule-soft">

@@ -434,8 +434,9 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         GET /api/dashboard/scan-runs/{id}. A `lane_stalled` work item cites
         its lane's latest run as evidence; this reads it. `changes.new` is
         exact; the other counts are lower bounds unless `exact` is true, and
-        `not_reported` is null for a run that did not complete. The raw files
-        it lists are admin-only to download, so they are named, not served.
+        `not_reported` is null for a run that did not complete. `raw_files`
+        names what was archived; fetch one from
+        GET /api/dashboard/scan-runs/{id}/raw/{filename} with this credential.
         """
         path = f"/api/dashboard/scan-runs/{_segment(scan_run_id)}"
         result: dict[str, Any] = await _call(api, "GET", path)

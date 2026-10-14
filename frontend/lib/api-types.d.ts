@@ -1271,7 +1271,7 @@ export interface paths {
          *     and latest run. Each is `{total, by_severity}`.
          *
          *     `raw_files` lists what ingest archived for the run; download one from
-         *     `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (admin only).
+         *     `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (not viewers).
          */
         get: operations["scan_run_detail_api_dashboard_scan_runs__scan_run_id__get"];
         put?: never;
@@ -1293,9 +1293,10 @@ export interface paths {
          * Scan Run Raw File
          * @description One raw tool output archived for a scan run, byte for byte (TheHub #60761).
          *
-         *     Admin-only: `may_see_raw_output`, the gate the SBOM and every finding's
-         *     raw JSON sit behind (spec 12 §5). Only a file the run's `raw_files` lists
-         *     can be served, so the name cannot reach outside that run's archive.
+         *     Withheld from viewers: `may_see_raw_output` (admin or agent), the gate
+         *     the SBOM and every finding's raw JSON sit behind (spec 12 §5). Only a
+         *     file the run's `raw_files` lists can be served, so the name cannot reach
+         *     outside that run's archive.
          */
         get: operations["scan_run_raw_file_api_dashboard_scan_runs__scan_run_id__raw__filename__get"];
         put?: never;

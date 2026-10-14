@@ -161,7 +161,7 @@ class TestRawOutput:
     def test_a_viewer_is_refused(
         self, client, admin_auth, viewer_auth, run_compaction
     ) -> None:
-        """spec 12 §5: raw output is admin-only, as the SBOM is."""
+        """spec 12 §5: raw output is withheld from viewers, as the SBOM is."""
         self._archive(client, admin_auth, run_compaction)
 
         response = client.get(
@@ -169,6 +169,20 @@ class TestRawOutput:
         )
 
         assert response.status_code == 403
+
+    def test_an_agent_downloads_it_too(self, client, admin_auth, run_compaction) -> None:
+        """`may_see_raw_output` is admin or agent; only viewers are refused."""
+        self._archive(client, admin_auth, run_compaction)
+        minted = client.post(
+            "/api/agents/credentials", json={"family": "claude-opus-5.5"}, headers=admin_auth
+        ).json()
+
+        response = client.get(
+            "/api/dashboard/scan-runs/run-1/raw/results.sarif",
+            headers={"Authorization": f"Bearer {minted['token']}"},
+        )
+
+        assert response.status_code == 200, response.text
 
     def test_a_file_the_run_does_not_list_is_404(
         self, client, admin_auth, run_compaction
