@@ -495,6 +495,27 @@ class TestMalformedBodies:
 
         assert response.status_code < 500, response.text[:200]
 
+    def test_a_deeply_nested_invalid_finding_is_4xx(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        """The same depth with one bad field: the 422 body echoes the
+        offending finding back, and echoing it must not be what fails."""
+        depth = 5_000
+        nested = '{"a":' * depth + "1" + "}" * depth
+        body = (
+            '{"scan_run_id": "run-1", "capability": "sast", "findings": [{'
+            '"rule_id": "R", "title": "t", "severity": "nonsense", '
+            f'"raw_finding_json": {nested}}}]}}'
+        ).encode()
+
+        response = client.post(
+            "/api/ingest/findings",
+            content=body,
+            headers={**auth, "Content-Type": "application/json"},
+        )
+
+        assert 400 <= response.status_code < 500, (response.status_code, response.text[:200])
+
     @pytest.mark.parametrize(
         "body",
         [
