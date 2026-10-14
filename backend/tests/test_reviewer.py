@@ -299,6 +299,23 @@ class TestRefusedBeforeAnythingIsSpent:
         assert "different_family" in response.json()["detail"]
         assert fake.messages.calls == []
 
+    def test_another_version_of_the_same_model_is_the_same_family(
+        self, client, admin_auth, tiered, model
+    ) -> None:
+        """`different_family` exists so the reviewer does not share the
+        requester's blind spots. claude-opus-5 reviewing claude-opus-5.5 does:
+        the family is the model lineage, not the version string."""
+        _delegate(client, tiers=("high",))
+        fake = model(answer=APPROVE)
+        author = _mint(client, admin_auth, family="claude-opus-5.5")
+        request = _request(client, _bearer(author["token"]), tier="high")
+
+        response = _review(client, _bearer(author["token"]), request)
+
+        assert response.status_code == 409
+        assert "different_family" in response.json()["detail"]
+        assert fake.messages.calls == []
+
     def test_without_an_api_key(self, client, admin_auth, tiered, monkeypatch) -> None:
         _delegate(client)
         monkeypatch.setattr(client.app.state.settings, "reviewer_api_key", "")
