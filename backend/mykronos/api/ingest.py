@@ -722,7 +722,9 @@ async def ingest_raw_output(
 
     settings = request.app.state.settings
     safe_name = Path(filename).name  # strip any directory component
-    if not safe_name or safe_name.startswith("."):
+    # A control character is never part of a tool's output name, and a NUL
+    # reached `write_bytes` as a ValueError: a 500 for a malformed request.
+    if not safe_name or safe_name.startswith(".") or any(ord(ch) < 32 for ch in safe_name):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="filename must be a plain file name.",
