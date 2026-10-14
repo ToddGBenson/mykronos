@@ -17,7 +17,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -29,6 +29,7 @@ from mykronos import (
     cvss,
     finding_disposition,
     finding_record,
+    findings_export,
     governance,
     guidance,
     incident,
@@ -3309,6 +3310,116 @@ async def repo_findings(
         findings=[FindingOut.model_validate(f) for f in findings],
         raw_output_included=principal.may_see_raw_output,
     )
+
+
+@router.get(
+    "/repos/{repo_id}/findings/export",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "text/csv": {},
+                "application/sarif+json": {},
+                "text/html": {},
+            }
+        }
+    },
+)
+async def repo_findings_export(
+    request: Request,
+    repo_id: str,
+    principal: PrincipalDep,
+    export_format: Annotated[
+        Literal["csv", "sarif", "html"], Query(alias="format")
+    ] = "csv",
+    capability: Annotated[Capability | None, Query()] = None,
+    severity: Annotated[Severity | None, Query()] = None,
+    finding_status: Annotated[FindingStatus | None, Query()] = None,
+    rule_id: Annotated[str | None, Query(max_length=200)] = None,
+    first_seen_after: Annotated[datetime | None, Query()] = None,
+    first_seen_before: Annotated[datetime | None, Query()] = None,
+    pr_number: Annotated[int | None, Query(ge=1)] = None,
+    commit_sha: Annotated[str | None, Query(min_length=7, max_length=64)] = None,
+) -> Response:
+    """One repository's findings as CSV, SARIF 2.1.0 or a printable report
+    (TheHub #60762).
+
+    The filters are the findings list's, and mean the same. Worst first. At
+    most 20,000 rows; a larger result says it is partial (`X-Mykronos-Truncated`,
+    and in each format) rather than stopping silently.
+
+    - `format=csv`: one row per finding, columns in this order, which is
+      stable (new columns are only ever appended): finding_id, repo_full_name,
+      capability, tool, rule_id, title, severity, status, cvss_score, cwe_ids
+      (`;`-separated), file_path, line_start, line_end, symbol, package_name,
+      package_version, owner, due_at, first_seen_at, last_seen_at,
+      resolved_at, accepted_reason_code, accepted_until, disposition_reason,
+      disposition_by, superseded_by. A cell a spreadsheet would read as a
+      formula is prefixed with `'`.
+    - `format=sarif`: SARIF 2.1.0, one run per tool, for GitHub code scanning
+      or any SARIF viewer. A finding a person closed as a false positive,
+      suppressed or accepted is a suppressed result whose justification is
+      the reason recorded with that decision. Fixed findings are `kind: pass`;
+      filter to `finding_status=open` for an upload of live alerts only.
+    - `format=html`: a self-contained report to print to PDF, with the
+      generation time, the latest scanned commit, the filters, and the
+      repository's open findings by severity at the top.
+
+    **No raw tool output in any export, for any role** (spec 12 §5): an
+    export leaves the platform, so it carries the normalised finding only.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    rows, total = _queries(request).findings(
+        repo_full_name,
+        capability=capability.value if capability else None,
+        severity=severity.value if severity else None,
+        finding_status=finding_status.value if finding_status else None,
+        rule_id=rule_id,
+        first_seen_after=first_seen_after,
+        first_seen_before=first_seen_before,
+        pr_number=pr_number,
+        commit_sha=commit_sha,
+        limit=findings_export.EXPORT_LIMIT,
+        include_raw=False,
+    )
+    with request.app.state.db.session() as session:
+        export = findings_export.collect(
+            rows,
+            total,
+            catalog=request.app.state.catalog,
+            session=session,
+            repo_full_name=repo_full_name,
+            filters={
+                "capability": capability.value if capability else None,
+                "severity": severity.value if severity else None,
+                "status": finding_status.value if finding_status else None,
+                "rule_id": rule_id,
+                "first_seen_after": first_seen_after,
+                "first_seen_before": first_seen_before,
+                "pr_number": pr_number,
+                "commit_sha": commit_sha,
+            },
+            generated_at=utcnow(),
+        )
+
+    stem = f"{repo_full_name.replace('/', '-')}-findings-{export.generated_at:%Y%m%d}"
+    headers = {"X-Mykronos-Truncated": "true" if export.truncated else "false"}
+    if export_format == "csv":
+        headers["Content-Disposition"] = f'attachment; filename="{stem}.csv"'
+        return Response(
+            findings_export.to_csv(export), media_type="text/csv", headers=headers
+        )
+    if export_format == "sarif":
+        headers["Content-Disposition"] = f'attachment; filename="{stem}.sarif"'
+        return Response(
+            json.dumps(findings_export.to_sarif(export), default=str),
+            media_type="application/sarif+json",
+            headers=headers,
+        )
+    # Inline, so a browser opens it ready to print. Scanner text is escaped,
+    # and the policy forbids every script and remote load besides.
+    headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+    return Response(findings_export.to_html(export), media_type="text/html", headers=headers)
 
 
 @router.get("/repos/{repo_id}/open-findings", response_model=OpenFindingsPage)

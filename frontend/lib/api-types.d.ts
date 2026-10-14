@@ -1142,6 +1142,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/findings/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Findings Export
+         * @description One repository's findings as CSV, SARIF 2.1.0 or a printable report
+         *     (TheHub #60762).
+         *
+         *     The filters are the findings list's, and mean the same. Worst first. At
+         *     most 20,000 rows; a larger result says it is partial (`X-Mykronos-Truncated`,
+         *     and in each format) rather than stopping silently.
+         *
+         *     - `format=csv`: one row per finding, columns in this order, which is
+         *       stable (new columns are only ever appended): finding_id, repo_full_name,
+         *       capability, tool, rule_id, title, severity, status, cvss_score, cwe_ids
+         *       (`;`-separated), file_path, line_start, line_end, symbol, package_name,
+         *       package_version, owner, due_at, first_seen_at, last_seen_at,
+         *       resolved_at, accepted_reason_code, accepted_until, disposition_reason,
+         *       disposition_by, superseded_by. A cell a spreadsheet would read as a
+         *       formula is prefixed with `'`.
+         *     - `format=sarif`: SARIF 2.1.0, one run per tool, for GitHub code scanning
+         *       or any SARIF viewer. A finding a person closed as a false positive,
+         *       suppressed or accepted is a suppressed result whose justification is
+         *       the reason recorded with that decision. Fixed findings are `kind: pass`;
+         *       filter to `finding_status=open` for an upload of live alerts only.
+         *     - `format=html`: a self-contained report to print to PDF, with the
+         *       generation time, the latest scanned commit, the filters, and the
+         *       repository's open findings by severity at the top.
+         *
+         *     **No raw tool output in any export, for any role** (spec 12 §5): an
+         *     export leaves the platform, so it carries the normalised finding only.
+         */
+        get: operations["repo_findings_export_api_dashboard_repos__repo_id__findings_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/open-findings": {
         parameters: {
             query?: never;
@@ -10431,6 +10476,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_findings_export_api_dashboard_repos__repo_id__findings_export_get: {
+        parameters: {
+            query?: {
+                format?: "csv" | "sarif" | "html";
+                capability?: components["schemas"]["Capability"] | null;
+                severity?: components["schemas"]["Severity"] | null;
+                finding_status?: components["schemas"]["FindingStatus"] | null;
+                rule_id?: string | null;
+                first_seen_after?: string | null;
+                first_seen_before?: string | null;
+                pr_number?: number | null;
+                commit_sha?: string | null;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                    "application/sarif+json": unknown;
+                    "text/html": unknown;
                 };
             };
             /** @description Validation Error */

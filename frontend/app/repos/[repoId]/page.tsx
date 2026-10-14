@@ -647,15 +647,61 @@ async function FindingsTab({
   }
 
   return (
-    <OpenFindings
-      repoId={repoId}
-      page={findings.data}
-      query={query}
-      fixByRule={fixByRule}
-      detail={
-        query.finding ? <FindingDisposition findingId={query.finding} /> : undefined
-      }
-    />
+    <div className="flex flex-col gap-2">
+      <ExportLinks repoId={repoId} query={query} />
+      <OpenFindings
+        repoId={repoId}
+        page={findings.data}
+        query={query}
+        fixByRule={fixByRule}
+        detail={
+          query.finding ? <FindingDisposition findingId={query.finding} /> : undefined
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * The findings shown, exported (TheHub #60762): CSV for a spreadsheet or a
+ * ticket import, SARIF for GitHub code scanning, and a report to print to PDF.
+ * Severity, capability, status and rule carry over (status defaults to open,
+ * as the tab does). The tab's other filters have no export equivalent, and
+ * when one is set the links say so rather than imply the file matches.
+ */
+function ExportLinks({ repoId, query }: { repoId: string; query: FindingsQuery }) {
+  const params = new URLSearchParams();
+  if (query.severity) params.set("severity", query.severity);
+  if (query.capability) params.set("capability", query.capability);
+  params.set("finding_status", query.status ?? "open");
+  if (query.rule_id) params.set("rule_id", query.rule_id);
+  const unexported = [
+    query.kev_only && "KEV",
+    query.min_epss && "EPSS",
+    query.triage && "triage",
+    query.fixable && "fixable",
+    query.owner && "owner",
+  ].filter(Boolean);
+  const href = (format: string) =>
+    `/api/repos/${repoId}/findings/export?format=${format}&${params.toString()}`;
+  return (
+    <div className="flex flex-wrap items-baseline gap-3 font-mono text-[12px] text-ink-3">
+      <span>Export these findings:</span>
+      <a className="underline" href={href("csv")}>
+        CSV
+      </a>
+      <a className="underline" href={href("sarif")}>
+        SARIF
+      </a>
+      <a className="underline" href={href("html")} target="_blank" rel="noopener">
+        printable report
+      </a>
+      {unexported.length ? (
+        <span className="text-high">
+          ({unexported.join(", ")} filter not applied to exports)
+        </span>
+      ) : null}
+    </div>
   );
 }
 
