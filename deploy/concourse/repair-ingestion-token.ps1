@@ -195,14 +195,38 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok "GitHub Actions secret $($reader.Secret) set."
 
 if ($reader.VaultPath) {
-    # `printf %s` and `value=-` on stdin: NO trailing newline. A CRLF inside
-    # an Authorization header is a 401 nothing in the logs explains.
-    $write = "printf %s '$token' | vault write $($reader.VaultPath) value=-"
-    docker exec -e VAULT_TOKEN=$vaultToken $VaultContainer sh -c $write | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Rotated, but the Vault write FAILED. Re-run this script." }
+    # The new token goes in on stdin with `value=-`, written straight to the
+    # process so there is NO trailing newline (a PowerShell pipe would add
+    # one; a CRLF inside an Authorization header is a 401 nothing in the logs
+    # explains). It used to be `sh -c "printf %s '<token>' | ..."`, which put
+    # it in docker.exe's argv here and in sh's in the Vault container. The
+    # Vault token rides on the child's environment and `-e VAULT_TOKEN`
+    # forwards it by name, so neither is ever on a command line.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = 'docker'
+    foreach ($a in @('exec', '-i', '-e', 'VAULT_TOKEN', $VaultContainer,
+                     'vault', 'write', $reader.VaultPath, 'value=-')) {
+        $psi.ArgumentList.Add($a)
+    }
+    $psi.Environment['VAULT_TOKEN'] = $vaultToken
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Write($token)
+    $proc.StandardInput.Close()
+    $null = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { throw "Rotated, but the Vault write FAILED. Re-run this script." }
 
-    $readBack = docker exec -e VAULT_TOKEN=$vaultToken $VaultContainer `
-        sh -c "vault read -field=value $($reader.VaultPath)"
+    $prior = $env:VAULT_TOKEN
+    $env:VAULT_TOKEN = $vaultToken
+    try {
+        $readBack = docker exec -e VAULT_TOKEN $VaultContainer `
+            vault read -field=value $reader.VaultPath
+    } finally { $env:VAULT_TOKEN = $prior }
     if ($readBack -ne $token) {
         throw "Vault read-back does not match what was written - suspect a stray newline."
     }

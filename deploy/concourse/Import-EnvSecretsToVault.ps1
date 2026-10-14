@@ -102,9 +102,10 @@ function Read-EnvValue {
 # of the same gitignored file vault-unseal.ps1 reads its unseal keys from.
 #
 # Read into a variable and never printed, never passed as a command-line
-# argument where the container's process list would show it: it goes in as an
-# environment variable on the docker exec, the same way vault-unseal.ps1 hands
-# over an unseal key.
+# argument. `-e "VAULT_TOKEN=$token"` would be exactly that: the token in
+# docker.exe's own argv, on this host. It is set on the child's environment
+# (or this process's, for the length probe) and forwarded by name with
+# `-e VAULT_TOKEN`, as vault-secret.ps1 does.
 $initFile = Join-Path $PSScriptRoot "vault\init.json"
 if (-not (Test-Path $initFile)) {
     throw "Missing $initFile - that is where the root token lives. Vault cannot be written without it."
@@ -117,10 +118,11 @@ function Write-VaultValue {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = 'docker'
     foreach ($a in @('exec', '-e', 'VAULT_ADDR=http://127.0.0.1:8200',
-                     '-e', "VAULT_TOKEN=$token",
+                     '-e', 'VAULT_TOKEN',
                      '-i', $Container, 'vault', 'kv', 'put', $Path, 'value=-')) {
         $psi.ArgumentList.Add($a)
     }
+    $psi.Environment['VAULT_TOKEN'] = $token
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -140,8 +142,12 @@ function Write-VaultValue {
 
 function Get-VaultLength {
     param([string]$Path)
-    $json = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$token" `
-        $Container vault kv get -format=json $Path 2>$null
+    $prior = $env:VAULT_TOKEN
+    $env:VAULT_TOKEN = $token
+    try {
+        $json = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
+            $Container vault kv get -format=json $Path 2>$null
+    } finally { $env:VAULT_TOKEN = $prior }
     if ($LASTEXITCODE -ne 0) { return $null }
     return ($json | ConvertFrom-Json).data.value.Length
 }

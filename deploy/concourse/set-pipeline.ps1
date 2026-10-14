@@ -110,13 +110,19 @@ function Test-VaultSecret {
     } else {
         @("concourse/main/$Pipeline/$Name", "concourse/main/$Name")
     }
-    foreach ($path in $paths) {
-        # Only presence is read. The value never leaves the container, never
-        # reaches this process, and therefore never reaches the terminal.
-        docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e "VAULT_TOKEN=$vaultToken" `
-            mykronos-vault vault read -format=json $path 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { return $true }
-    }
+    # `-e VAULT_TOKEN` with no value forwards it from this process's
+    # environment, so the token is never in docker's command line.
+    $prior = $env:VAULT_TOKEN
+    $env:VAULT_TOKEN = $vaultToken
+    try {
+        foreach ($path in $paths) {
+            # Only presence is read. The value never leaves the container, never
+            # reaches this process, and therefore never reaches the terminal.
+            docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
+                mykronos-vault vault read -format=json $path 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return $true }
+        }
+    } finally { $env:VAULT_TOKEN = $prior }
     return $false
 }
 
