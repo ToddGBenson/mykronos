@@ -242,11 +242,11 @@ class TestThisEstate:
     @pytest.mark.parametrize(
         "reference",
         [
-            "hashicorp/vault:2.1.1",
+            "hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55",
             "concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48",
             "pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless",
             "registry:3",
-            "postgres:15",
+            "postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c",
             "ghcr.io/zaproxy/zaproxy:weekly@sha256:4ec932d24ee6fa7181333a719d519cdebf92df541058d48041ce3358528cd0ea",
         ],
     )

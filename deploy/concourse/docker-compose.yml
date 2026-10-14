@@ -108,8 +108,16 @@ x-worker: &worker
 
 
 services:
+  # 15.19, pinned by digest (2026-10-14): `postgres:15` floated, so the estate
+  # scan read whatever Docker Hub's 15 was that day while the container kept
+  # running the 15.18 / Debian 13.6 build it was created from (14 critical,
+  # 141 high in Trivy against 2 and 85 here, none new). Major 15 on purpose:
+  # 16 needs a dump-and-restore of this volume. Not alpine either, which
+  # would drop gosu but changes the libc under every existing text index.
+  # gosu 1.19 is still Go 1.24.6 (CVE-2026-78669 and friends); upstream has
+  # not rebuilt it, so those findings stay until it does.
   concourse-db:
-    image: postgres:15
+    image: postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
     container_name: mykronos-concourse-db
     restart: unless-stopped
     environment:
@@ -234,8 +242,13 @@ services:
   # 2.0's breaking changes are an SDK docker-helper move and enterprise
   # features; none touches file storage, KV or unseal. Verified on a copy of
   # this volume: 2.1.1 unsealed with the existing keys and read every path.
+  #
+  # 2.1.2, pinned by digest (2026-10-14): a patch release on Alpine 3.24.2,
+  # which clears the two high OpenSSL findings (CVE-2026-14456) and takes the
+  # OS layer from 7 medium / 12 low to 1 / 0. bin/vault is still Go 1.26.8,
+  # so CVE-2026-78669 stays until HashiCorp ships a build on Go >= 1.26.9.
   vault:
-    image: hashicorp/vault:2.1.1
+    image: hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55
     container_name: mykronos-vault
     restart: unless-stopped
     command: server
