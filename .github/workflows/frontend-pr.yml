@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   frontend:
-    name: npm ci, build, lint
+    name: npm ci, build, lint, test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -66,7 +66,13 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      # Last, and not optional. #510 reached this step green.
+      # Not optional. #510 reached this step green.
       - name: npm run lint
         working-directory: frontend
         run: npm run lint
+
+      # The perimeter gate's runtime tests (vitest): proxy.ts is the only lock
+      # on the public dashboard, and none of the three steps above runs it.
+      - name: npm test
+        working-directory: frontend
+        run: npm test
