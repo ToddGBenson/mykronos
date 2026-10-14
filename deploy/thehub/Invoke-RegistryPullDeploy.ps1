@@ -382,11 +382,17 @@ function Invoke-Cycle {
         # read from object storage, and "whatever was in the bucket" reaching
         # a command line is exactly the shape of input that deserves checking
         # twice rather than trusting the writer.
-        if ($requested -notmatch '^[0-9a-f]{40}$') {
+        #
+        # Demo may also carry `+p<YYYYMMDD>`: the same commit on a newer
+        # snapshot of its patched images, published by the image-refresh lane.
+        # Never prod, whose image dates move only by a reviewed compose change.
+        $shaPattern = if ($environment -eq "demo") { '^[0-9a-f]{40}(\+p\d{8})?$' } else { '^[0-9a-f]{40}$' }
+        if ($requested -notmatch $shaPattern) {
             Write-Host "$environment.requested is not a commit SHA ('$requested') - ignoring." -ForegroundColor Red
             $script:failures++
             continue
         }
+        $requestedSha, $requestedDate = $requested -split '\+p', 2
 
         # The deploy script's own state file is the authority on what is
         # running. Reading MinIO's `.deployed` instead would let a failed
@@ -471,10 +477,11 @@ function Invoke-Cycle {
         # where the volumes would actually be deleted.
         $rebuild = @{}
         if ($environment -eq "demo") { $rebuild["Rebuild"] = $true }
+        if ($requestedDate) { $rebuild["PatchDate"] = $requestedDate }
 
         $deployError = $null
         try {
-            & $deployScript -Environment $environment -Sha $requested -TimeoutMinutes 12 @rebuild
+            & $deployScript -Environment $environment -Sha $requestedSha -TimeoutMinutes 12 @rebuild
             $deployExit = $LASTEXITCODE
         } catch {
             $deployError = $_.Exception.Message

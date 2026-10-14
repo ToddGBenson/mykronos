@@ -180,6 +180,12 @@ EXPLAINED_DIVERGENCE = {
         "Concourse job to perform. TheHub's copy should follow, and until it "
         "does this is the difference"
     ),
+    "image-refresh": (
+        "ours only: the daily rebuild of TheHub's patched third-party images. "
+        "It gates nothing and is gated by nothing -- it is clock-triggered and "
+        "redeploys demo only on a strictly better Trivy verdict. TheHub's "
+        "read-only mirror gains it on the next export after set-pipeline"
+    ),
     "insider": (
         "ours deleted it (#60653, operator option A, 2026-10-11): a one-user "
         "Hub has no second human for insider risk to model, and #60571 found "

@@ -73,7 +73,14 @@ param(
     # compose file and seed_demo.py rather than inherited from the last run.
     # Demo only, and refused for prod at the point of destruction rather than
     # only here.
-    [switch]$Rebuild
+    [switch]$Rebuild,
+
+    # The package snapshot of the demo's patched third-party images
+    # (postgres, redis): their tags end -p<this>. Set by the image-refresh
+    # lane after a strictly better Trivy verdict; absent, the date
+    # docker-compose.demo.yml pins is used. Demo only - production's dates
+    # are literal in its compose file and move by a reviewed change.
+    [string]$PatchDate
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,6 +112,23 @@ if ($Sha -notmatch '^[0-9a-f]{40}$') {
                  "deploys a commit; it does not run commands." -f $Sha)
     exit 64
 }
+if ($PatchDate -and ($PatchDate -notmatch '^\d{8}$' -or $Environment -ne "demo")) {
+    Write-Error "PatchDate '$PatchDate' is not YYYYMMDD, or this is not demo."
+    exit 64
+}
+
+# What is deployed is the commit AND the image snapshot, so both go in the
+# state file the poller compares with. Recording only the SHA would make a
+# `<sha>+p<date>` request look undeployed forever and redeploy every minute.
+$identity = if ($PatchDate) { "$Sha+p$PatchDate" } else { $Sha }
+
+# Compose reads this for the demo's patched images. Cleared when absent, so a
+# plain-SHA deploy goes back to the date the compose file pins.
+function Set-PatchDate([string]$Date) {
+    if ($Date) { $env:THEHUB_DEMO_PATCH_DATE = $Date }
+    else { Remove-Item Env:THEHUB_DEMO_PATCH_DATE -ErrorAction SilentlyContinue }
+}
+Set-PatchDate $PatchDate
 
 $envFile = Join-Path $here ".env"
 if (-not (Test-Path $envFile)) { throw "Missing $envFile" }
@@ -429,6 +453,17 @@ if ($Rebuild) { Invoke-Wipe }
 
 Invoke-ComposeUp -ImageRef $image
 
+# A compose file that does not read THEHUB_DEMO_PATCH_DATE ignores it and runs
+# the pinned images, and acknowledging `+p<date>` then would be a lie the
+# image-refresh lane reports as a refresh. Checked on what is running.
+if ($PatchDate) {
+    $running = docker compose --project-name $project --file $composeFile ps --format '{{.Image}}'
+    if (-not ($running | Where-Object { $_ -like "*-p$PatchDate" })) {
+        throw ("No container in $project runs a -p$PatchDate image. Does $composeFile " +
+               "read THEHUB_DEMO_PATCH_DATE? Pull TheHub's compose change first.")
+    }
+}
+
 Write-Host "Waiting for $Environment to become healthy..." -ForegroundColor Cyan
 $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 $healthy = $false
@@ -466,8 +501,8 @@ if ($healthy) {
         }
     }
 
-    Set-Content -Path $stateFile -Value $Sha -Encoding ASCII
-    Write-Host "$Environment is serving $Sha" -ForegroundColor Green
+    Set-Content -Path $stateFile -Value $identity -Encoding ASCII
+    Write-Host "$Environment is serving $identity" -ForegroundColor Green
     exit 0
 }
 
@@ -495,8 +530,11 @@ if ($Rebuild) {
 }
 
 Write-Host "Rolling back to $previous..." -ForegroundColor Yellow
+# The previous identity may carry its own +p<date>; restore that snapshot too.
+$previousSha, $previousDate = $previous -split '\+p', 2
+Set-PatchDate $previousDate
 try {
-    Invoke-ComposeUp -ImageRef "${registry}/thehub:${previous}"
+    Invoke-ComposeUp -ImageRef "${registry}/thehub:${previousSha}"
 } catch {
     # Both the deploy and the rollback failed. Say so precisely - "rollback
     # failed" and "deploy failed" send somebody to two different places.
