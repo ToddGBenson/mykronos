@@ -222,7 +222,7 @@ try {
         # because the new backend still accepts what the old one sends. v7 is
         # safe in both directions anyway — it omits `cwe_ids` when empty — but
         # the rule stands for the next field somebody adds.
-        "mykronos-ref: v13",
+        "mykronos-ref: v14",
         # The branch the pipeline scans, which every upload now reports rather
         # than each one naming the default branch as a literal (PS-6). One
         # place to change if this pipeline is ever pointed somewhere else.
