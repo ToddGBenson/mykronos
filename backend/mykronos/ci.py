@@ -1561,6 +1561,16 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # verdict reaches Atlas through deploy_stage_events and Slack rather than
     # through a capability.
     ((THEHUB,), "cicd-drift", "audits pipeline drift and publishes a memo, uploads no findings"),
+    # Rebuilds the patched third-party images on today's packages and Trivies
+    # them against what compose pins, to decide whether demo moves. Its scans
+    # are a comparison, not the estate's record: `containers` uploads the
+    # findings for the images that actually run, and a second upload of the
+    # same images would double-count them.
+    (
+        (THEHUB,),
+        "image-refresh",
+        "rebuilds patched images and compares Trivy reports, uploads no findings",
+    ),
     # [#59326] Grades the TIP of TheHub's develop as it landed, on a 30-minute
     # clock, and reports a three-valued verdict -- green / red / INDETERMINATE
     # -- through `deploy_stage_events` and Slack. It deliberately uploads no

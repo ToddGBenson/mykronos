@@ -47,6 +47,9 @@ REQUIRED_MODULES: tuple[str, ...] = (
     # reports, which is the lane going quietly back to scanning four of
     # fifteen.
     "mykronos.estate_images",
+    # TheHub's `image-refresh` lane plans the patched-image rebuilds and
+    # decides whether demo moves with it.
+    "mykronos.image_refresh",
 )
 
 #: Repository scripts a pipeline fetches by raw URL at `${MYKRONOS_REF}`
