@@ -440,6 +440,22 @@ def propose(
         )
     with db.session() as session:
         kev = _kev_listed(session, {m.rule_id for m in matched})
+        claimed = _covered_by(
+            session,
+            {m.finding_id for m in matched},
+            statuses=("pending_approval", *LIVE),
+            exclude=renews.id if renews else None,
+        )
+    if claimed and len(claimed) == len({m.finding_id for m in matched}):
+        # Every finding is already accepted, or waiting to be. A second
+        # record changes nothing but the count: on 2026-10-15 an agent filed
+        # five container acceptances twice, half an hour apart, while the
+        # first five were still pending, and both sets were approved.
+        holders = sorted({r.id[:8] for r in claimed.values()})
+        raise RiskAcceptanceError(
+            "Every finding in this scope is already covered by risk acceptance "
+            f"{', '.join(holders)}. Renew or revoke that record instead of filing another."
+        )
     if kev and policy.risk_acceptance.refuse_kev_listed:
         raise RiskAcceptanceError(
             f"KEV-listed CVEs cannot be accepted, only mitigated: {', '.join(kev[:10])}."
@@ -585,6 +601,34 @@ register_dedicated_route("risk_acceptance", "/api/risk-acceptances")
 # -- Revocation, renewal, the sweep ---------------------------------------------
 
 
+def _covered_by(
+    session: Session,
+    finding_ids: set[str],
+    *,
+    statuses: tuple[str, ...] = LIVE,
+    exclude: str | None = None,
+) -> dict[str, RiskAcceptance]:
+    """Which other record covers each of these findings, if any.
+
+    Where several do, the one that runs longest: it is the date a finding's
+    `accepted_until` should carry once the others are gone.
+    """
+    if not finding_ids:
+        return {}
+    out: dict[str, RiskAcceptance] = {}
+    rows = session.execute(
+        select(RiskAcceptance).where(RiskAcceptance.status.in_(statuses))
+    ).scalars()
+    for other in rows:
+        if other.id == exclude:
+            continue
+        for fid in set(other.covered_finding_ids or []) & finding_ids:
+            held = out.get(fid)
+            if held is None or (other.expires_at or date.max) > (held.expires_at or date.max):
+                out[fid] = other
+    return out
+
+
 def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> int:
     if not (revoked_by.is_human and revoked_by.may_write):
         raise RiskAcceptanceError("Only a person may revoke a risk acceptance.")
@@ -621,9 +665,19 @@ def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> in
     if not was_live or not ids:
         return 0
     catalog = _catalog()
+    for (until, code), kept in restamp.items():
+        # The remaining record's date, not the revoked one's, now holds.
+        update_findings(
+            catalog,
+            locate_findings(catalog, kept),
+            "accepted_until = ?, accepted_reason_code = ?",
+            [until, code],
+            only_if_status="accepted_risk",
+        )
+    reopen = [fid for fid in ids if fid not in holders]
     return update_findings(
         catalog,
-        locate_findings(catalog, ids),
+        locate_findings(catalog, reopen),
         "status = 'open', resolved_at = NULL, accepted_until = NULL, accepted_reason_code = NULL",
         [],
         only_if_status="accepted_risk",

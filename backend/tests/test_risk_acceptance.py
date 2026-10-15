@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from mykronos import risk_acceptance as ra
 from mykronos.db.models import AuditLogEntry, RiskAcceptance, ThreatIntelMatch
