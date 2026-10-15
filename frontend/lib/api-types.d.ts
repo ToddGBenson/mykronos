@@ -3725,6 +3725,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/repo-read/posture-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Posture Summary
+         * @description Open-finding counts for the token's repository, per capability.
+         *
+         *     Counts are rows with status `open`, keyed on `asset_id` - the same count
+         *     the portfolio shows.
+         */
+        get: operations["posture_summary_api_repo_read_posture_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repo-read/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tokens */
+        get: operations["tokens_api_repo_read_tokens_get"];
+        put?: never;
+        /** Mint */
+        post: operations["mint_api_repo_read_tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/repo-read/tokens/{token_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke */
+        post: operations["revoke_api_repo_read_tokens__token_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -4048,6 +4106,23 @@ export interface components {
             unactionable: number;
             /** Rules */
             rules: components["schemas"]["RuleGuidanceOut"][];
+        };
+        /** CapabilityPosture */
+        CapabilityPosture: {
+            /**
+             * Open By Severity
+             * @description Open findings at each severity, every severity present.
+             */
+            open_by_severity: {
+                [key: string]: number;
+            };
+            /** Open Total */
+            open_total: number;
+            /**
+             * Last Successful Scan At
+             * @description Newest successful scan run for this capability. Null when it has never scanned successfully, in which case its zero counts measured nothing.
+             */
+            last_successful_scan_at: string | null;
         };
         /** CapabilityStateOut */
         CapabilityStateOut: {
@@ -5920,6 +5995,25 @@ export interface components {
              */
             dry_run: boolean;
         };
+        /** MintReadTokenRequest */
+        MintReadTokenRequest: {
+            /**
+             * Repo Full Name
+             * @description `owner/repo` the token may read.
+             */
+            repo_full_name: string;
+            /**
+             * Label
+             * @description Who holds it, and why.
+             * @default
+             */
+            label: string;
+            /**
+             * Ttl Days
+             * @default 90
+             */
+            ttl_days: number;
+        };
         /** MintRequest */
         MintRequest: {
             /**
@@ -5957,6 +6051,23 @@ export interface components {
             instance: string;
             /** Lineage */
             lineage: string[];
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
+        /** MintedReadTokenOut */
+        MintedReadTokenOut: {
+            /**
+             * Token
+             * @description Shown once. Only its hash is stored.
+             */
+            token: string;
+            /** Token Id */
+            token_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
             /**
              * Expires At
              * Format: date-time
@@ -7167,6 +7278,20 @@ export interface components {
              */
             overdue_findings: number;
         };
+        /** PostureSummaryOut */
+        PostureSummaryOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Capabilities */
+            capabilities: {
+                [key: string]: components["schemas"]["CapabilityPosture"];
+            };
+        };
         /** PracticeOut */
         PracticeOut: {
             /** Practice Id */
@@ -7614,6 +7739,31 @@ export interface components {
              * @default 0
              */
             files_unparseable: number;
+        };
+        /** ReadTokenOut */
+        ReadTokenOut: {
+            /** Token Id */
+            token_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Label */
+            label: string;
+            /** Minted By */
+            minted_by: string;
+            /**
+             * Minted At
+             * Format: date-time
+             */
+            minted_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Active */
+            active: boolean;
         };
         /** RecordGap */
         RecordGap: {
@@ -14161,6 +14311,112 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    posture_summary_api_repo_read_posture_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostureSummaryOut"];
+                };
+            };
+        };
+    };
+    tokens_api_repo_read_tokens_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadTokenOut"][];
+                };
+            };
+        };
+    };
+    mint_api_repo_read_tokens_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MintReadTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MintedReadTokenOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_api_repo_read_tokens__token_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: boolean;
                     };
                 };
             };

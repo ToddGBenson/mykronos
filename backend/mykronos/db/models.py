@@ -381,6 +381,40 @@ class AgentCredential(Base):
     platform_started: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class RepoReadToken(Base):
+    """A read-only credential that answers for one repository's posture.
+
+    A service that wants to know how its own repository stands - "how many
+    open dependency findings do I have?" - had two credentials to choose from,
+    and both were wrong. Its ingestion token can *write* findings, and the
+    viewer token reads every repository. This one does neither: it is
+    accepted by exactly one route, which returns counts for the repository
+    the token was minted for and nothing else.
+
+    It does not resolve to a `Principal`. That is the scope, not a detail: a
+    principal of any role passes every `PrincipalDep` route, and no route
+    checks a repo-scoped role per repository, so a token that became a
+    principal would read the whole estate.
+
+    Only the SHA-256 is stored; the plaintext exists once, at minting.
+    """
+
+    __tablename__ = "repo_read_tokens"
+
+    token_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Stable handle for revocation and listing; the hash is never shown.
+    token_id: Mapped[str] = mapped_column(String(36), index=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    minted_by: Mapped[str] = mapped_column(String(255), default="")
+    minted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: Defaults to the moment of creation, so a row written without an expiry
+    #: is already expired: it fails closed, as `AgentCredential` does.
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
 class ApprovalRequest(Base):
     """One governed action awaiting a second party (spec 34 §4).
 
