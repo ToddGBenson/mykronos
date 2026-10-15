@@ -270,3 +270,62 @@ def test_the_cli_prints_json(tmp_path: Path, capsys: Any) -> None:
     path.write_text(json.dumps(bundle), encoding="utf-8")
     assert inbox.main(["review_inbox.py", "build", str(path)]) == 0
     assert json.loads(capsys.readouterr().out)["counts"] == {inbox.AGREE: 1}
+
+
+# -- Duplicate risk acceptances ------------------------------------------------------
+#
+# On 2026-10-15 an agent session filed the same five container acceptances
+# twice, half an hour apart; the inbox recommended AGREE on all ten and the
+# operator approved both sets.
+
+
+def pending_ra(request_id: str, created: str, **ev: Any) -> dict[str, Any]:
+    entry = ra_request(**ev)
+    entry["request"] = entry["request"] | {"id": request_id, "created_at": created}
+    return entry
+
+
+def by_id(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {i["request_id"]: i for i in result["offered"]}
+
+
+def test_the_second_of_two_identical_pending_acceptances_is_check() -> None:
+    first = pending_ra("req-first", "2026-10-15T02:02:00")
+    second = pending_ra("req-second", "2026-10-15T02:38:00")
+    # The API lists newest first; which one is "earlier" must not depend on that.
+    items = by_id(build([second, first]))
+    assert items["req-first"]["recommendation"] == inbox.AGREE
+    assert items["req-second"]["recommendation"] == inbox.CHECK
+    assert "same scope as pending request req-firs" in items["req-second"]["why"]
+
+
+def test_an_acceptance_an_active_one_already_covers_is_check() -> None:
+    scope = {"capability": "containers", "image": "img", "rule_ids": ["CVE-1"]}
+    active = [{"id": "active-1", "repo": "o/r", "status": "active", "scope": scope,
+               "expires_at": "2027-01-01T00:00:00"}]
+    item = only(build([pending_ra("req-1", "2026-10-15T02:00:00")], acceptances=active))
+    assert item["recommendation"] == inbox.CHECK
+    assert "active acceptance active-1 already covers" in item["why"]
+
+
+def test_a_renewal_of_the_active_acceptance_is_not_a_duplicate() -> None:
+    scope = {"capability": "containers", "image": "img", "rule_ids": ["CVE-1"]}
+    active = [{"id": "active-1", "repo": "o/r", "status": "active", "scope": scope,
+               "expires_at": "2027-01-01T00:00:00"}]
+    renewal = pending_ra("req-1", "2026-10-15T02:00:00", renews_id="active-1")
+    assert only(build([renewal], acceptances=active))["recommendation"] == inbox.AGREE
+
+
+def test_a_different_rule_set_is_not_a_duplicate() -> None:
+    other = {"capability": "containers", "image": "img", "rule_ids": ["CVE-2"]}
+    items = build(
+        [pending_ra("req-a", "2026-10-15T02:00:00"),
+         pending_ra("req-b", "2026-10-15T02:01:00", scope=other)]
+    )
+    assert {i["recommendation"] for i in items["offered"]} == {inbox.AGREE}
+
+
+def test_rule_order_does_not_hide_a_duplicate() -> None:
+    a = {"capability": "containers", "image": "img", "rule_ids": ["CVE-1", "CVE-2"]}
+    b = {"capability": "containers", "image": "img", "rule_ids": ["CVE-2", "CVE-1"]}
+    assert inbox.scope_key("o/r", a) == inbox.scope_key("o/r", b)

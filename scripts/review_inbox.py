@@ -117,6 +117,51 @@ def _reviewer_lines(review: dict[str, Any] | None, tier: str) -> tuple[list[str]
 
 
 
+def scope_key(repo: Any, scope: dict[str, Any] | None) -> str:
+    """What a risk acceptance covers, as one comparable string.
+
+    Two acceptances with the same key cover the same findings: approving both
+    double-counts them and leaves two records to renew and revoke. The other
+    agent session filed the same five container acceptances twice on
+    2026-10-15, half an hour apart, and both sets were approved.
+    """
+    scope = scope or {}
+    normal = {
+        k: sorted(map(str, v)) if isinstance(v, list) else v
+        for k, v in scope.items()
+        if v not in (None, [], "")
+    }
+    return json.dumps([repo, normal], sort_keys=True, default=str)
+
+
+def _flag(item: dict[str, Any], reason: str) -> None:
+    # An AGREE's reason no longer holds; any other reason still does.
+    item["why"] = reason if item["recommendation"] == AGREE else f"{reason}; {item['why']}"
+    item["recommendation"] = CHECK
+    item["lines"] = [*item.get("lines", []), f"  DUPLICATE: {reason}"]
+
+
+def _flag_duplicates(items: list[dict[str, Any]], acceptances: list[dict[str, Any]]) -> None:
+    """Flag a pending acceptance whose scope an active one, or an earlier
+    pending one, already covers. A renewal of that active record is not one."""
+    active = {
+        scope_key(a.get("repo"), a.get("scope")): str(a.get("id"))
+        for a in acceptances
+        if a.get("status") == "active"
+    }
+    seen: dict[str, str] = {}
+    pending = [i for i in items if i.get("kind") == "risk_acceptance" and i.get("offer")]
+    for item in sorted(pending, key=lambda i: str(i.get("created_at") or "")):
+        key = item["scope_key"]
+        holder = active.get(key)
+        if holder and holder != str(item.get("renews_id")):
+            _flag(item, f"active acceptance {holder[:8]} already covers this scope")
+        elif key in seen:
+            _flag(item, f"same scope as pending request {seen[key][:8]}, filed earlier")
+        else:
+            seen[key] = str(item.get("request_id"))
+
+
 def _pr_item(
     req: dict[str, Any],
     ev: dict[str, Any],
@@ -311,6 +356,8 @@ def _risk_item(
         "why": why,
         "approve_rationale": rationale,
         "full_text": ev.get("justification") or "",
+        "scope_key": scope_key(ev.get("repo"), scope),
+        "renews_id": ev.get("renews_id"),
     }
 
 
@@ -372,6 +419,7 @@ def _item(
         "requester_statement": req.get("requester_statement") or "",
         "evidence_digest": entry.get("evidence_digest") or req.get("evidence_digest"),
         "expires_at": req.get("expires_at"),
+        "created_at": req.get("created_at"),
     }
     rationale = str(item.get("approve_rationale", ""))
     if len(rationale) < MIN_RATIONALE_CHARS:
@@ -407,6 +455,7 @@ def build(bundle: dict[str, Any]) -> dict[str, Any]:
     shadow = {r.get("request_id"): r for r in bundle.get("shadow") or []}
     prs = {int(k): v for k, v in (bundle.get("prs") or {}).items()}
     items = [_item(e, operator, shadow, prs, now) for e in bundle.get("requests") or []]
+    _flag_duplicates(items, list(bundle.get("acceptances") or []))
 
     order = {AGREE: 0, CHECK: 1, WAIT: 2}
     offered = sorted(
