@@ -461,6 +461,20 @@ def decide(
     if problem:
         raise ApprovalError(problem)
     now = utcnow()
+    # A late decision is refused, and the request is marked expired on its
+    # chain in a transaction of its own. Marking it inside the decision's
+    # transaction and then raising rolled the mark back: the request stayed
+    # `pending` in every inbox, and its chain never said it had ended.
+    with db.session() as session:
+        late = session.get(ApprovalRequest, request_id)
+        expired_at: datetime | None = None
+        if late is not None and late.state == "pending" and late.expires_at <= now:
+            late.state = "expired"
+            _append_event(session, late.id, "expired", "platform", {})
+            expired_at = late.expires_at
+    if expired_at is not None:
+        raise ApprovalError(f"Request {request_id} expired at {expired_at}.")
+
     with db.session() as session:
         request = session.get(ApprovalRequest, request_id)
         if request is None:
@@ -468,8 +482,7 @@ def decide(
         if request.state != "pending":
             raise ApprovalError(f"Request {request_id} is {request.state}, not pending.")
         if request.expires_at <= now:
-            request.state = "expired"
-            _append_event(session, request.id, "expired", "platform", {})
+            # Unreachable unless the expiry moved between the two sessions.
             raise ApprovalError(f"Request {request_id} expired at {request.expires_at}.")
         if evidence_digest != request.evidence_digest:
             raise ApprovalError(
