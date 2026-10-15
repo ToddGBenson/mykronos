@@ -48,7 +48,7 @@ def _write_report(tmp_path: Path) -> bytes:
 def test_a_coloured_failure_log_is_a_parseable_failed_suite(tmp_path: Path) -> None:
     result = normalize(_write_report(tmp_path), _context())
 
-    assert result.status is not ScanStatus.PARTIAL_FAILURE, result.warnings
+    assert result.scan_status is ScanStatus.FAILURE, result.warnings
     assert any("1 of 2 test(s) failed" in w for w in result.warnings), result.warnings
 
 
