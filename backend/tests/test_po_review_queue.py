@@ -178,6 +178,7 @@ class TestPendingDecisions:
         item = next(i for i in body["pending"] if i["id"] == mine)
         assert item["evidence_digest"] == digest
         assert item["repo_full_name"] == REPO
+        assert item["repo_id"] == repo_id
         # The repository's own tab is where it is decided in place.
         assert item["decide_link"] == f"/repos/{repo_id}?tab=product-owner&view=approvals"
         # The claim is carried, and carried as the requester's.
@@ -360,7 +361,13 @@ class TestReviewPacket:
         self, client: TestClient, admin_auth: dict[str, str]
     ) -> None:
         request_id, digest = pr_request(client)
-        checks = [{"claim": "the new test fails without the change", "holds": False, "note": "it passes on main"}]
+        checks = [
+            {
+                "claim": "the new test fails without the change",
+                "holds": False,
+                "note": "it passes on main",
+            }
+        ]
         shadow_review(client, request_id, verdict="reject", rationale="Claim fails.", checks=checks)
 
         body = client.get(f"{QUEUE}/{request_id}", headers=admin_auth).json()

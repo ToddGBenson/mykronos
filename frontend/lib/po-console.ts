@@ -161,3 +161,41 @@ export async function getPoEstate(): Promise<Result<PoEstate>> {
     return failure(error, "Could not load the estate roll-up");
   }
 }
+
+export type ReviewQueue = Json<"/api/dashboard/product-owner/review-queue">;
+export type ReviewQueueItem = ReviewQueue["pending"][number];
+export type MergeRow = ReviewQueue["ready_to_merge"][number];
+export type ReviewPacket = Json<"/api/dashboard/product-owner/review-queue/{request_id}">;
+
+/** The operator's queue across the estate (D-163). Read-only. */
+export async function getReviewQueue(): Promise<Result<ReviewQueue>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/product-owner/review-queue",
+      { cache: "no-store" },
+    );
+    return data
+      ? { ok: true, data }
+      : { ok: false, error: refused(response, "Could not load the review queue") };
+  } catch (error) {
+    return failure(error, "Could not load the review queue");
+  }
+}
+
+/** One request's review packet: claim, frozen evidence and verdict, kept apart. */
+export async function getReviewPacket(requestId: string): Promise<Result<ReviewPacket>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/product-owner/review-queue/{request_id}",
+      { params: { path: { request_id: requestId } }, cache: "no-store" },
+    );
+    if (response?.status === 404) {
+      return { ok: false, error: `No approval request ${requestId}.` };
+    }
+    return data
+      ? { ok: true, data }
+      : { ok: false, error: refused(response, "Could not load the review packet") };
+  } catch (error) {
+    return failure(error, "Could not load the review packet");
+  }
+}
