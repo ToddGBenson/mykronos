@@ -97,7 +97,7 @@ class TestTheDockerfile:
         fails rather than shipping it."""
         body = _run_body()
         assert re.search(r"rm -rf /zap/webswing(?![\w/-])", body)
-        assert re.search(r"\[ -e /zap/webswing \][^;]*exit 1", body)
+        assert re.search(r"\[ -e /zap/webswing \]; then [^;]*; exit 1", body)
 
     def test_the_jre_zap_runs_on_is_kept(self) -> None:
         """Dropping the JDK must not take the headless JRE with it."""
