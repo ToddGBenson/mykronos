@@ -131,7 +131,10 @@ def test_the_api_report_is_uploaded_with_the_frontend_report() -> None:
 
 def test_the_api_scan_runs_before_the_upload_whatever_came_before() -> None:
     step = _step("zap_api")
-    assert step.get("if") == "always()"
+    # Runs whatever the dashboard scan did; skips only a cancelled or
+    # unseeded run (test_demo_and_dast_cancelled_run.py).
+    assert "!cancelled()" in str(step.get("if"))
+    assert "zap" not in str(step.get("if"))
     assert step.get("continue-on-error") is True
     api = _index(lambda s: s.get("id") == "zap_api")
     upload = _index(lambda s: s.get("name") == "Upload the DAST result")

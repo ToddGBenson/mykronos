@@ -108,8 +108,12 @@ def test_it_is_gated_like_the_functional_suite_and_never_stops_the_scan() -> Non
     assert step.get("if") == functional.get("if")
     assert step.get("continue-on-error") is True
     # The scans still run whatever the browser suite did.
+    # (Not `always()` since the cancelled-run fix: they skip a cancelled or
+    # unseeded run, but nothing about the suites' outcomes gates them.)
     for step_id in ("zap", "zap_api"):
-        assert next(s for s in _steps() if s.get("id") == step_id).get("if") == "always()"
+        cond = str(next(s for s in _steps() if s.get("id") == step_id).get("if"))
+        assert "!cancelled()" in cond
+        assert "e2e" not in cond and "functional" not in cond
 
 
 def test_it_installs_chromium_with_its_system_dependencies() -> None:
@@ -168,7 +172,7 @@ def test_the_junit_joins_the_functional_upload_rather_than_making_a_second() -> 
     ]
     functional = next(s for s in uploads if s["with"]["capability"] == "functional")
     assert functional["with"]["results-path"] == "${{ runner.temp }}/functional"
-    assert functional.get("if") == "always()"
+    assert "!cancelled()" in str(functional.get("if"))
 
 
 def test_traces_stay_out_of_the_uploaded_directories() -> None:

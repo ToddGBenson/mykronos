@@ -212,6 +212,7 @@ jobs:
           fi
 
       - name: Seed
+        id: seed
         run: |
           set -euo pipefail
           # Through the container rather than the published port: minting an
@@ -381,7 +382,12 @@ jobs:
         id: zap
         # `always()`: a failed functional suite still leaves a site tree worth
         # scanning, and a failed *upload* must not skip this at all.
-        if: always()
+        # Not `always()`, which also runs on cancellation: a newer Delivery
+        # cancelled run 38676875040 mid-Seed and this scanned a half-seeded
+        # stack that then uploaded as a successful scan. Unseeded or
+        # cancelled, it is skipped, the report directory stays empty, and
+        # the upload records a failed run that closes nothing.
+        if: ${{ !cancelled() && steps.seed.outcome == 'success' }}
         continue-on-error: true
         env:
           ACTIVE: ${{ github.event_name == 'schedule' || inputs.active_scan }}
@@ -525,7 +531,12 @@ jobs:
         # `always()` and `continue-on-error`, like the scan above: a failure
         # here must not cost the dashboard's report, and the job still goes
         # red at the end (`Fail if the API scan did not complete`).
-        if: always()
+        # Not `always()`, which also runs on cancellation: a newer Delivery
+        # cancelled run 38676875040 mid-Seed and this scanned a half-seeded
+        # stack that then uploaded as a successful scan. Unseeded or
+        # cancelled, it is skipped, the report directory stays empty, and
+        # the upload records a failed run that closes nothing.
+        if: ${{ !cancelled() && steps.seed.outcome == 'success' }}
         continue-on-error: true
         env:
           ACTIVE: ${{ github.event_name == 'schedule' || inputs.active_scan }}
@@ -680,7 +691,9 @@ jobs:
       # silently cost the DAST scan as well as its own result. Reporting is
       # the fragile half and must never be able to prevent the work.
       - name: Upload the functional result
-        if: always()
+        # `!cancelled()`, not `always()`: a failed step still reports (as a
+        # failed or partial run); a cancelled run reports nothing.
+        if: ${{ !cancelled() }}
         uses: ./actions/upload-results
         with:
           capability: functional
@@ -694,7 +707,9 @@ jobs:
           mykronos-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Upload the DAST result
-        if: always()
+        # `!cancelled()`, not `always()`: a failed step still reports (as a
+        # failed or partial run); a cancelled run reports nothing.
+        if: ${{ !cancelled() }}
         uses: ./actions/upload-results
         with:
           capability: dast
