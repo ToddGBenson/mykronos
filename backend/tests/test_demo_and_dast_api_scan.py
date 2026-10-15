@@ -10,10 +10,14 @@ upload, and a failure that turns the job red instead of a silent empty scan.
 
 from __future__ import annotations
 
+import logging
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -170,3 +174,122 @@ def test_a_missing_dashboard_report_still_cannot_read_as_a_whole_run() -> None:
     guard = run.index('if [ ! -s "$RUNNER_TEMP/dast/zap.json" ]; then')
     assert '> "$RUNNER_TEMP/dast/zap.json"' in run[guard : run.index("fi", guard)]
     assert guard < run.index("docker run")
+
+
+# --- What ZAP actually sent: the backend's own access log -----------------
+#
+# A scan whose every request the perimeter gate or the admin check refused is
+# a scan of the gate, and its report looks exactly like a clean API. The
+# signal is the demo backend's uvicorn access log, read for the window of the
+# scan -- not a request the step makes itself, which would only prove that the
+# step's own headers work, not ZAP's.
+
+BACKEND_DOCKERFILE = ROOT / "backend" / "Dockerfile"
+
+
+def _access_log_counter() -> str:
+    """The Python the step pipes the backend's log through, verbatim."""
+    run = _api_run()
+    start = run.index("<<'PY'\n", run.index("docker logs")) + len("<<'PY'\n")
+    end = run.index("\nPY\n", start)
+    return run[start:end]
+
+
+def _uvicorn_lines(requests: list[tuple[str, str, int]], *, colours: bool) -> str:
+    """Lines formatted by uvicorn's own access formatter, as the demo logs them."""
+    from uvicorn.logging import AccessFormatter
+
+    formatter = AccessFormatter(
+        fmt='%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        use_colors=colours,
+    )
+    lines = []
+    for method, path, status in requests:
+        record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            0,
+            '%s - "%s %s HTTP/%s" %d',
+            ("172.18.0.5:41234", method, path, "1.1", status),
+            None,
+        )
+        lines.append(formatter.format(record))
+    # The rest of a real log, which must not count.
+    lines.append("INFO:     Application startup complete.")
+    return "\n".join(lines) + "\n"
+
+
+def _count(log: str, tmp_path: Path) -> tuple[int, ...]:
+    path = tmp_path / "backend.log"
+    path.write_text(log, encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, "-", str(path)],
+        input=_access_log_counter(),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return tuple(int(x) for x in out)
+
+
+def test_the_demo_backend_writes_an_access_log() -> None:
+    """The signal exists: the image runs uvicorn at info with the access log
+    on, and the demo compose file does not override the command."""
+    dockerfile = BACKEND_DOCKERFILE.read_text(encoding="utf-8")
+    cmd = dockerfile[dockerfile.index('CMD ["python", "-m", "uvicorn"') :]
+    cmd = cmd[: cmd.index("]") + 1]
+    assert '"--log-level", "info"' in cmd
+    assert "access-log" not in cmd
+    backend = yaml.safe_load(DEMO.read_text(encoding="utf-8"))["services"]["backend"]
+    assert "command" not in backend and "entrypoint" not in backend
+
+
+def test_the_step_reads_the_backends_log_for_the_scans_window() -> None:
+    run = _api_run()
+    started = run.index("STARTED=")
+    scan = run.index("docker run")
+    logs = run.index("docker logs")
+    assert started < scan < logs < run.index('cp "$WRK/zap-api.json"')
+    log_call = run[logs : run.index("\n", logs)]
+    assert '--since "$STARTED"' in log_call
+    assert "mykronos-demo-backend-1" in log_call
+
+
+@pytest.mark.parametrize("colours", [False, True], ids=["plain", "coloured"])
+def test_the_counter_reads_uvicorns_own_format(colours: bool, tmp_path: Path) -> None:
+    log = _uvicorn_lines(
+        [
+            ("GET", "/api/repos", 200),
+            ("POST", "/api/risk-acceptances?x=%27", 201),
+            ("GET", "/api/dashboard/summary", 401),
+            ("DELETE", "/api/agents/abc", 403),
+            ("PUT", "/api/triage/1", 422),
+            # Not the API: the healthcheck and the step's own document fetch.
+            ("GET", "/healthz", 200),
+            ("GET", "/openapi.json", 200),
+        ],
+        colours=colours,
+    )
+    # total /api/ responses, 2xx, 401+403
+    assert _count(log, tmp_path) == (5, 2, 2)
+
+
+def test_a_scan_that_only_met_the_gate_counts_no_success(tmp_path: Path) -> None:
+    log = _uvicorn_lines([("GET", f"/api/r{i}", 401) for i in range(40)], colours=False)
+    assert _count(log, tmp_path) == (40, 0, 40)
+
+
+def test_an_empty_log_counts_nothing(tmp_path: Path) -> None:
+    assert _count("", tmp_path) == (0, 0, 0)
+
+
+def test_no_success_or_a_refused_majority_fails_the_step() -> None:
+    run = _api_run()
+    guard = run.index('if [ "$API_2XX" -eq 0 ]')
+    condition = run[guard : run.index("\n", guard)]
+    assert "API_DENIED * 2" in condition and '-gt "$API_TOTAL"' in condition
+    assert "broken " in run[guard : run.index("fi", guard)]
+    # Counts that could not be read are no success, not a pass.
+    assert '|| SENT="0 0 0"' in run
+    assert guard < run.index('cp "$WRK/zap-api.json"')
