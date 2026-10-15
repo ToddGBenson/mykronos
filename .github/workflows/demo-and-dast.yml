@@ -466,6 +466,11 @@ jobs:
             echo "The dashboard scan wrote no report." > "$RUNNER_TEMP/dast/zap.json"
           fi
 
+          # Written first, replaced only by a finished report at the end, so
+          # a timeout or a cancel-in-progress -- which run none of this
+          # script's logic -- still leaves the run partial.
+          echo "The API scan did not complete: interrupted before its report was written." > "$RUNNER_TEMP/dast/zap-api.json"
+
           # A failed API scan must not read as a clean API. The frontend's
           # report alone, uploaded as the whole `zap` run, would let absence
           # reconciliation close every API finding after two runs. So the
@@ -522,6 +527,10 @@ jobs:
           export ZAP_AUTH_HEADER_SITE=backend
           # The start of the window the access-log check below reads.
           STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # `|| RC=$?`, not `RC=$?` on the next line: GitHub runs this under
+          # `bash -e`, which ends the step on ZAP's exit 3 before a bare
+          # `RC=$?` is reached, and `broken` below never writes the marker.
+          RC=0
           docker run --rm --name mykronos-demo-zap-api \
             --network mykronos-demo_default \
             -v "$WRK:/zap/wrk:rw" \
@@ -530,8 +539,8 @@ jobs:
               -t openapi.json -f openapi \
               -O "${PROXIED_BACKEND}" \
               -J zap-api.json -I "${MODE[@]}" \
-              -z "-config scanner.maxScanDurationInMins=20 -config replacer.full_list(0).description=perimeter-gate -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=X-Hub-Token -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=${DEMO_GATE_TOKEN}"
-          RC=$?
+              -z "-config scanner.maxScanDurationInMins=20 -config replacer.full_list(0).description=perimeter-gate -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=X-Hub-Token -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=${DEMO_GATE_TOKEN}" \
+            || RC=$?
 
           # 0, 1 and 2 are "scanned, and here is what it found" (pass, FAIL,
           # WARN). 3 is an error -- including importing no URLs at all.

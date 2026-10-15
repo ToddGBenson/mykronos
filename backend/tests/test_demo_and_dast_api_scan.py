@@ -376,7 +376,7 @@ def test_a_zap_error_leaves_the_failure_marker(tmp_path: Path, zap_rc: int) -> N
     rc, dast = _run_step(tmp_path, zap_rc)
     assert rc != 0
     report = dast / "zap-api.json"
-    assert report.is_file(), "a failed API scan left no marker: the upload reads the run as complete"
+    assert report.is_file(), "a failed API scan left no marker: the upload reads it as complete"
     assert "did not complete" in report.read_text(encoding="utf-8")
 
 
