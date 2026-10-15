@@ -169,6 +169,23 @@ describe("exemptions", () => {
 });
 
 describe("following a ?_token= link", () => {
+  it("lets a fresh link replace a stale cookie after the token is rotated", async () => {
+    // The cookie lives a day; a rotation inside that day left the old value in
+    // the browser, it was read before the link, and the new link was refused.
+    const response = await proxy(
+      request(`/findings?_token=${TOKEN}`, { headers: { cookie: "hub_token=rotated-out" } }),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("set-cookie") ?? "").toContain(`hub_token=${TOKEN}`);
+  });
+
+  it("does not let a right cookie carry a wrong link through", async () => {
+    await expectRefused(
+      await proxy(request("/?_token=nope", { headers: { cookie: `hub_token=${TOKEN}` } })),
+    );
+  });
+
   it("sets an HttpOnly, lax cookie and redirects to the URL without the token", async () => {
     const response = await proxy(request(`/findings?severity=high&_token=${TOKEN}&repo=2`));
 
