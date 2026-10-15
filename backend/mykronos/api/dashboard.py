@@ -3418,7 +3418,7 @@ async def repo_findings_export(
         )
     # Inline, so a browser opens it ready to print. Scanner text is escaped,
     # and the policy forbids every script and remote load besides.
-    headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+    headers["Content-Security-Policy"] = findings_export.HTML_CSP
     return Response(findings_export.to_html(export), media_type="text/html", headers=headers)
 
 

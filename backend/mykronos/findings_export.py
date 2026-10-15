@@ -21,7 +21,9 @@ the platform hiding something.
 
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
 import html
 import io
 import json
@@ -377,6 +379,17 @@ font-size:11px;word-break:break-all}
 @media print{body{margin:0}tr{break-inside:avoid}}
 """
 
+
+#: The report's Content-Security-Policy. Its one stylesheet is the constant
+#: above, so a hash admits exactly it and nothing injected beside it - not
+#: `'unsafe-inline'` (ZAP 10055-6). frame-ancestors, form-action and base-uri
+#: do not fall back to default-src, so each is named (ZAP 10055-13).
+HTML_CSP = (
+    "default-src 'none'; "
+    "style-src 'sha256-"
+    + base64.b64encode(hashlib.sha256(_CSS.encode("utf-8")).digest()).decode("ascii")
+    + "'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'"
+)
 
 def to_html(export: Export) -> str:
     e = html.escape
