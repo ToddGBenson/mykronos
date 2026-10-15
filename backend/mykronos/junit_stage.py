@@ -37,12 +37,25 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 import xml.etree.ElementTree as ET
 
 #: Enough of the tail to see what failed, bounded so one runaway log cannot
 #: push a multi-megabyte document at the ingestion API.
 MAX_LOG_CHARS = 4000
+
+#: Terminal colour and cursor sequences (CSI), removed whole.
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+#: What XML 1.0 forbids outright: C0 controls other than tab, LF and CR, and
+#: the two non-characters. ElementTree escapes `<` and `&` but writes these
+#: through, and one ESC from `next build`'s colours made the frontend lane's
+#: report unparseable -- a broken scan instead of a failed build (frontend 390).
+_XML_ILLEGAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def _xml_safe(text: str) -> str:
+    return _XML_ILLEGAL.sub("", _ANSI.sub("", text))
 
 
 def build(suite_name: str, cases: list[tuple[str, int, str | None]]) -> ET.ElementTree:
@@ -57,7 +70,7 @@ def build(suite_name: str, cases: list[tuple[str, int, str | None]]) -> ET.Eleme
         if log_path:
             path = pathlib.Path(log_path)
             if path.exists():
-                body = path.read_text(errors="replace")[-MAX_LOG_CHARS:]
+                body = _xml_safe(path.read_text(errors="replace"))[-MAX_LOG_CHARS:]
         failure = ET.SubElement(case, "failure", message=f"{name} exited {code}")
         failure.text = body
     suite.set("failures", str(failures))
