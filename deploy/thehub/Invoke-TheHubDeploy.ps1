@@ -339,6 +339,40 @@ function Invoke-Seed {
     Write-Host "  seeded" -ForegroundColor DarkGray
 }
 
+# -- Production touches the backend and nothing else (TheHub #364) ----------
+#
+# Demo is rebuilt whole, so `up -d --remove-orphans` over the project is right
+# there. Production is a long-lived stack - its Postgres, Redis, backups and
+# staging profile share the project - and a whole-project `up` would recreate
+# any of them whose config drifted, and remove whatever compose now calls an
+# orphan, as a side effect of changing the backend's image. #364 itself began
+# with exactly that: a dependency recreated without --no-deps took the backend
+# with it. So prod recreates ONE service, never builds, never follows deps.
+#
+# And prod runs the DIGEST, not the tag. The tag is what the pointer names and
+# what is pulled; the digest is what the tag meant at that moment. THEHUB_IMAGE
+# reaches the container (TheHub #364), so build_provenance then reports
+# `pinned_by_digest`, which no local `compose build` can imitate.
+function Get-ProdService {
+    $service = Read-EnvValue $envFile "THEHUB_PROD_SERVICE" -Optional
+    if (-not $service) { $service = "backend" }
+    if ($service -notmatch '^[a-z0-9][a-z0-9_-]*$') {
+        throw "THEHUB_PROD_SERVICE '$service' is not a compose service name."
+    }
+    return $service
+}
+
+function Resolve-DigestRef {
+    param([string]$ImageRef)
+    $repo = $ImageRef.Substring(0, $ImageRef.LastIndexOf(':'))
+    $digests = docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' $ImageRef 2>$null
+    $match = @($digests | Where-Object { $_ -and $_.Trim().StartsWith("$repo@sha256:") }) | Select-Object -First 1
+    if (-not $match) {
+        throw "Pulled $ImageRef but the registry gave it no digest under $repo; refusing to run production on a tag."
+    }
+    return $match.Trim()
+}
+
 function Invoke-ComposeUp {
     param([string]$ImageRef)
 
@@ -350,6 +384,20 @@ function Invoke-ComposeUp {
     $expected = docker image inspect --format '{{.Id}}' $ImageRef 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $expected) {
         throw "Pulled $ImageRef but could not read its image ID."
+    }
+
+    if ($Environment -eq "prod") {
+        $pinned = Resolve-DigestRef -ImageRef $ImageRef
+        $service = Get-ProdService
+        $env:THEHUB_IMAGE = $pinned
+        Write-Host "  prod: recreating $service only, from $pinned" -ForegroundColor DarkGray
+        docker compose --project-name $project --file $composeFile up -d --no-deps --no-build $service
+        if ($LASTEXITCODE -ne 0) { throw "docker compose up failed for $project/$service" }
+        Assert-RunningImage -Expected $expected -ImageRef $pinned
+        Write-Host ("  NOT PERSISTENT: THEHUB_IMAGE=$pinned is set for this process only. " +
+            "Unless production's .env carries the same pin, the next deploy.sh or " +
+            "bare 'docker compose up' returns it to the local build.") -ForegroundColor Yellow
+        return
     }
 
     $env:THEHUB_IMAGE = $ImageRef
