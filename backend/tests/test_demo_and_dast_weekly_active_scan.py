@@ -50,3 +50,14 @@ def test_a_delivery_cannot_cancel_the_weekly_scan() -> None:
     assert "github.event_name == 'schedule'" in group, (
         "the weekly run and post-Delivery runs share one cancel-in-progress group"
     )
+
+
+def test_a_delivery_cannot_cancel_a_manual_active_scan() -> None:
+    # 2026-10-15: the first manual active scan (run 38675775486) was cancelled
+    # 7 minutes in by the next post-Delivery run, because the group split only
+    # `schedule` from everything else. Any active run -- scheduled or asked
+    # for -- queues apart from the passive post-Delivery runs.
+    group = _workflow()["concurrency"]["group"]
+    assert "inputs.active_scan" in group, (
+        "a dispatched active scan shares the post-Delivery cancel-in-progress group"
+    )
