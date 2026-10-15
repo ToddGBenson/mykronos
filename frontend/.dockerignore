@@ -3,3 +3,5 @@ node_modules
 .env.local
 openapi.json
 Dockerfile
+test-results
+playwright-report
