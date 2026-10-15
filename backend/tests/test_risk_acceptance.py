@@ -243,36 +243,46 @@ class TestRevocation:
         assert response.json()["findings_reopened"] == 2
         assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "open"
 
-
     def test_revoking_a_duplicate_keeps_findings_another_live_record_covers(
         self, client, admin_auth, lake
     ) -> None:
         """2026-10-14: five records were re-filed with corrected justifications
-        and both sets approved. Revoking the superseded set reopened the 19
-        findings the corrected set still covers, and a duplicate could only be
-        cleaned up by undoing the decision the person had just made."""
-        # Both proposed while the findings were still open, then both approved.
+        and both sets approved (proposing a duplicate is refused since #846,
+        but those pairs exist). Revoking the superseded set must not reopen
+        the findings the corrected set still covers, and their accepted_until
+        must move to the surviving record's date."""
         superseded = _propose(client, _agent(client, admin_auth)).json()
-        corrected = _propose(
-            client,
-            _agent(client, admin_auth),
-            justification="Corrected: Debian has not published a fix for these packages.",
-        ).json()
-        assert corrected.get("risk_acceptance"), corrected
         _approve(client, admin_auth, superseded)
-        _approve(client, admin_auth, corrected)
+        old_id = superseded["risk_acceptance"]["id"]
+        later = date.today() + timedelta(days=80)
+        with client.app.state.db.session() as session:
+            old = session.get(RiskAcceptance, old_id)
+            twin = RiskAcceptance(
+                **{
+                    c.key: getattr(old, c.key)
+                    for c in inspect(RiskAcceptance).mapper.column_attrs
+                    if c.key != "id"
+                }
+            )
+            twin.id = "corrected-" + old_id[:24]
+            twin.expires_at = later
+            session.add(twin)
+            session.flush()
+            twin_id = twin.id
 
         response = client.post(
-            f"/api/risk-acceptances/{superseded['risk_acceptance']['id']}/revoke",
+            f"/api/risk-acceptances/{old_id}/revoke",
             json={"reason": "Superseded by the corrected record."},
             headers=admin_auth,
         )
         assert response.status_code == 200, response.text
         assert response.json()["findings_reopened"] == 0
-        assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "accepted_risk"
+        state, until, _ = _statuses(client)[("CVE-2026-1", IMAGE)]
+        assert state == "accepted_risk"
+        assert str(until)[:10] == later.isoformat()
 
         response = client.post(
-            f"/api/risk-acceptances/{corrected['risk_acceptance']['id']}/revoke",
+            f"/api/risk-acceptances/{twin_id}/revoke",
             json={"reason": "The vendor shipped a fix."},
             headers=admin_auth,
         )
