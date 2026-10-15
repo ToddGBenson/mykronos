@@ -158,6 +158,8 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/product-owner/trace": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/product-owner/fleet": PRINCIPAL,
     "GET /api/dashboard/product-owner/estate": PRINCIPAL,
+    "GET /api/dashboard/product-owner/review-queue": PRINCIPAL,
+    "GET /api/dashboard/product-owner/review-queue/{request_id}": PRINCIPAL,
     # -- exposure ----------------------------------------------------------
     "GET /api/exposure": PRINCIPAL,
     "POST /api/exposure/endpoints": PRINCIPAL,
