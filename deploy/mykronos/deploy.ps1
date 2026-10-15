@@ -389,9 +389,23 @@ if ($verdict.State -eq "unjudged" -and $GateWaitMinutes -gt 0) {
     $waitStart = Get-Date
     $deadline = $waitStart.AddMinutes($GateWaitMinutes)
     $lastReport = 0
-    while ($verdict.State -eq "unjudged" -and (Get-Date) -lt $deadline) {
+    $missed = 0
+    # "unasked" here is one poll that went unanswered, not an unreachable
+    # platform: the first ask, above, was answered. On 2026-10-15 a single poll
+    # 40 minutes into the wait took longer than its 10 s timeout, the loop
+    # ended on it, and 9a2eec4 shipped as COULD NOT ASK while its gate was
+    # minutes from deciding. A miss keeps waiting; only a deadline that passes
+    # on a miss still reads as "could not ask".
+    while ($verdict.State -in @("unjudged", "unasked") -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 30
         $verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
+        if ($verdict.State -eq "unasked") {
+            $missed++
+            if ($missed -eq 1 -or $missed % 10 -eq 0) {
+                Write-Host "  a poll went unanswered ($missed so far): $($verdict.Reason) Still waiting." -ForegroundColor DarkYellow
+            }
+            continue
+        }
         $waitedMinutes = [int][math]::Floor(((Get-Date) - $waitStart).TotalMinutes)
         if ($verdict.State -eq "unjudged" -and $waitedMinutes -ge $lastReport + 5) {
             $lastReport = $waitedMinutes
