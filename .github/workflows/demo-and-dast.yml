@@ -158,7 +158,10 @@ jobs:
           MYKRONOS_IMAGE_FRONTEND: ghcr.io/${{ env.OWNER }}/mykronos-frontend:${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
-          docker compose -f "$COMPOSE" pull --quiet
+          # `--ignore-buildable`: ZAP is built from deploy/zap/Dockerfile (its
+          # FROM is the pin), and its local tag is in no registry. `up` builds
+          # it, pulling the pinned base as part of the build.
+          docker compose -f "$COMPOSE" pull --quiet --ignore-buildable
           docker compose -f "$COMPOSE" up -d
 
       - name: Start the resource sampler
@@ -580,13 +583,28 @@ jobs:
           }
 
           # One ZAP pin (D-128): the image compose's `zap` service names,
-          # read from the compose file rather than repeated here.
-          ZAP_IMAGE=$(docker compose -f "$COMPOSE" config --format json \
-            | python -c 'import json,sys; print(json.load(sys.stdin)["services"]["zap"]["image"])' \
-            || echo "")
-          case "$ZAP_IMAGE" in
-            *@sha256:*) echo "ZAP image: ${ZAP_IMAGE}" ;;
-            *) broken "compose's ZAP image '${ZAP_IMAGE}' is not digest-pinned; not scanning with an unpinned scanner." ;;
+          # read from the compose file rather than repeated here. Compose
+          # builds it from deploy/zap/Dockerfile, so what must be digest-pinned
+          # is every FROM in that build; a service that pulled instead would
+          # need its own `image:` pinned. Prints "OK <image>", or the
+          # references that are not pinned.
+          ZAP_CHECK=$(docker compose -f "$COMPOSE" config --format json \
+            | python -c '
+          import json, os, re, sys
+          zap = json.load(sys.stdin)["services"]["zap"]
+          build = zap.get("build")
+          if build:
+              path = os.path.join(build["context"], build.get("dockerfile") or "Dockerfile")
+              text = open(path, encoding="utf-8").read()
+              refs = re.findall(r"(?im)^[ \t]*FROM[ \t]+(?:--[^ \t]+[ \t]+)*([^ \t\r\n]+)", text)
+          else:
+              refs = [zap["image"]]
+          unpinned = [ref for ref in refs if "@sha256:" not in ref] if refs else ["(no FROM)"]
+          print(" ".join(unpinned) if unpinned else "OK " + zap["image"])
+          ' || echo "")
+          case "$ZAP_CHECK" in
+            "OK "*) ZAP_IMAGE="${ZAP_CHECK#OK }"; echo "ZAP image: ${ZAP_IMAGE}, built from a digest-pinned base" ;;
+            *) broken "compose's ZAP is not digest-pinned (${ZAP_CHECK:-unreadable}); not scanning with an unpinned scanner." ;;
           esac
 
           # Fetched here rather than by ZAP, so an unreachable or gated-off
@@ -627,7 +645,7 @@ jobs:
           # `bash -e`, which ends the step on ZAP's exit 3 before a bare
           # `RC=$?` is reached, and `broken` below never writes the marker.
           RC=0
-          docker run --rm --name mykronos-demo-zap-api \
+          docker run --rm --name mykronos-demo-zap-api --pull never \
             --network mykronos-demo_default \
             -v "$WRK:/zap/wrk:rw" \
             -e ZAP_AUTH_HEADER -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \

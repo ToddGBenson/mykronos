@@ -56,8 +56,10 @@ if ($Down) {
     return
 }
 
+# `--ignore-buildable`: ZAP is built from deploy/zap/Dockerfile, not pulled,
+# and its local tag exists in no registry. `up` builds it.
 Write-Host "Pulling the published images..." -ForegroundColor Cyan
-Invoke-Compose @("pull", "--quiet") 2>&1 | Out-Null
+Invoke-Compose @("pull", "--quiet", "--ignore-buildable") 2>&1 | Out-Null
 
 Write-Host "Building the demo environment from IaC..." -ForegroundColor Cyan
 Invoke-Compose @("up", "-d")

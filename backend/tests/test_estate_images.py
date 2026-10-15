@@ -247,7 +247,8 @@ class TestThisEstate:
             "pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless",
             "registry:3",
             "postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c",
-            "ghcr.io/zaproxy/zaproxy:weekly@sha256:4ec932d24ee6fa7181333a719d519cdebf92df541058d48041ce3358528cd0ea",
+            # Not ZAP: the demo builds it from deploy/zap/Dockerfile now, and
+            # the lane builds and scans that (test_zap_image.py).
         ],
     )
     def test_the_images_427_names_are_now_in_scope(self, reference: str) -> None:
