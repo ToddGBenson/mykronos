@@ -181,6 +181,19 @@ same round. Until `scripts/move-decisions-to-files.py` has run, PRs opened
 before D-149 still append to the log itself and conflict with each other the
 old way; the union merge covers them.
 
+## The review queue in the dashboard
+
+`/product-owner/review-queue` (D-163) lists every pending request across the
+estate, soonest expiry first, with the platform's summary of its evidence,
+the requester's claim labelled as a claim, and the platform reviewer's latest
+verdict as advice. Beneath them it lists approved pull requests that are
+still open, with whether GitHub still has them at the approved head. Each
+request opens a review packet: the claim, the frozen evidence (with whether
+it still hashes to its digest) and the reviewer's per-claim checks, kept
+apart. A request for an onboarded repository is decided there, through the
+same engine call as the repository tab; anything else is decided through
+`POST /api/approvals/{id}/decisions`. The queue itself only reads.
+
 ## Recording a decision
 
 Write `docs/decisions/D-nnn-<slug>.md` (next free number across the log and the
