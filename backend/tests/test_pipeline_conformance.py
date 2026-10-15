@@ -411,6 +411,61 @@ def test_the_checker_can_actually_fail(tmp_path: Path) -> None:
     assert any("PS-7" in problem and "sast" in problem for problem in problems), problems
 
 
+def _ensured_scan(*, optional: bool) -> dict:
+    """A one-job pipeline: a scanner with an `ensure:` upload of its output."""
+    results: dict = {"name": "results"}
+    if optional:
+        results["optional"] = True
+    return {
+        "jobs": [
+            {
+                "name": "cloud-posture",
+                "plan": [
+                    {"get": "source", "trigger": True, "passed": ["unit"]},
+                    {
+                        "task": "scan",
+                        "timeout": "10m",
+                        "config": {"outputs": [{"name": "results"}]},
+                        "ensure": {
+                            "task": "upload",
+                            "timeout": "10m",
+                            "config": {"inputs": [{"name": "source"}, results]},
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+
+
+def test_an_ensure_upload_survives_a_scanner_that_never_started(tmp_path: Path) -> None:
+    """PS-3's `ensure:` premise only holds once the scanner task has started.
+
+    Concourse creates a task's output volume when the task *runs*. A task that
+    fails before that -- `thehub/cloud-posture` builds 2-18, 2026-09-24 to
+    2026-10-10, each "failed to interpolate task config: undefined vars:
+    azure-client-id, ..." -- leaves no `results` at all, and an upload that
+    requires it errors "missing inputs: results" instead of reporting the
+    failed scan. `cloud` stayed `never_reported` for three weeks of red
+    builds: L0003's failure, through the hook written to prevent it.
+
+    `optional: true` lets the upload run, and `adapters/registry.py` reports
+    a missing results path as a failed scan, which is the honest answer.
+    """
+    required = tmp_path / "required.yml"
+    required.write_text(yaml.safe_dump(_ensured_scan(optional=False)), encoding="utf-8")
+    problems, _ = checker.check_pipeline(required)
+    assert any(
+        "PS-3" in problem and "cloud-posture" in problem and "`results`" in problem
+        for problem in problems
+    ), problems
+
+    optional = tmp_path / "optional.yml"
+    optional.write_text(yaml.safe_dump(_ensured_scan(optional=True)), encoding="utf-8")
+    problems, _ = checker.check_pipeline(optional)
+    assert not [problem for problem in problems if "PS-3" in problem], problems
+
+
 # ---------------------------------------------------------------------------
 # The `set-pipeline` job, and the vars that make it safe (#355)
 # ---------------------------------------------------------------------------
