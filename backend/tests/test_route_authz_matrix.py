@@ -71,6 +71,8 @@ HUMAN = "human"
 INGEST = "ingest-token"
 #: HMAC over the body with the webhook secret.
 HMAC = "hmac"
+#: `require_read_token`: one repository's read token (`mkr_`), counts only.
+READ_TOKEN = "repo-read-token"
 
 ROUTES: dict[str, str] = {
     # -- ingestion (per-repo token) ----------------------------------------
@@ -212,6 +214,11 @@ ROUTES: dict[str, str] = {
     "GET /api/agents/whoami": PRINCIPAL,
     "GET /api/agents/credentials": PRINCIPAL,
     "POST /api/agents/credentials/{instance}/revoke": HUMAN,
+    # -- repo read tokens --------------------------------------------------
+    "GET /api/repo-read/posture-summary": READ_TOKEN,
+    "POST /api/repo-read/tokens": HUMAN,
+    "GET /api/repo-read/tokens": HUMAN,
+    "POST /api/repo-read/tokens/{token_id}/revoke": HUMAN,
     "GET /api/agent/work": PRINCIPAL,
     "GET /api/agent/scorecard": PRINCIPAL,
     "GET /api/agent/playbooks": PRINCIPAL,
@@ -323,6 +330,12 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]
             headers=_bearer(ADMIN_TOKEN),
         )
         assert minted.status_code == 201, minted.text
+        read = client.post(
+            "/api/repo-read/tokens",
+            json={"repo_full_name": REPO, "label": "authz-matrix"},
+            headers=_bearer(ADMIN_TOKEN),
+        )
+        assert read.status_code == 201, read.text
         yield {
             "app": app,
             "client": client,
@@ -330,6 +343,7 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]
             "viewer": _bearer(VIEWER_TOKEN),
             "token": _bearer(token),
             "agent": _bearer(minted.json()["token"]),
+            "read": _bearer(read.json()["token"]),
         }
 
 
@@ -377,6 +391,8 @@ def _derived_scheme(route: Any) -> str:
         return PRINCIPAL
     if "require_token" in names:
         return INGEST
+    if "require_read_token" in names:
+        return READ_TOKEN
     # No auth dependency. The webhook authenticates its body itself; anything
     # else with no dependency is public, and must be declared so.
     return HMAC if original.path.startswith("/webhooks/") else PUBLIC_SCHEME
@@ -494,6 +510,8 @@ VIEWER_DENIED = [k for k in MUTATING_ROUTES if k not in VIEWER_MAY_CALL]
 TOKEN_DENIED = [k for k in ALL if k not in INGESTION_TOKEN_MAY_CALL and k not in PUBLIC]
 TOKEN_ALLOWED = sorted(INGESTION_TOKEN_MAY_CALL)
 HUMAN_ONLY = [k for k in ALL if ROUTES[k] == HUMAN]
+READ_ALLOWED = [k for k in ALL if ROUTES[k] == READ_TOKEN]
+READ_DENIED = [k for k in ALL if ROUTES[k] != READ_TOKEN and k not in PUBLIC]
 
 
 def _say(response: Any) -> str:
@@ -607,6 +625,20 @@ class TestAnIngestionTokenReachesOnlyIngestion:
         response = _request(matrix, key, matrix["token"])
         assert response.status_code != 500, _say(response)
         assert response.status_code not in (401, 403), _say(response)
+
+
+class TestARepoReadTokenReachesOnlyItsSummary:
+    """Read-only and one repository: it opens nothing else, write or read."""
+
+    @pytest.mark.parametrize("key", READ_DENIED, ids=READ_DENIED)
+    def test_refused(self, matrix: dict[str, Any], key: str) -> None:
+        response = _request(matrix, key, matrix["read"])
+        assert response.status_code in (401, 403), _say(response)
+
+    @pytest.mark.parametrize("key", READ_ALLOWED, ids=READ_ALLOWED)
+    def test_its_own_route_answers(self, matrix: dict[str, Any], key: str) -> None:
+        response = _request(matrix, key, matrix["read"])
+        assert response.status_code == 200, _say(response)
 
 
 class TestAnAgentCannotTakeAPersonsDecision:

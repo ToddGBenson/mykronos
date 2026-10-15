@@ -404,7 +404,7 @@ class RepoReadToken(Base):
     token_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     #: Stable handle for revocation and listing; the hash is never shown.
     token_id: Mapped[str] = mapped_column(String(36), index=True, default=new_id)
-    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
     label: Mapped[str] = mapped_column(String(255), default="")
     minted_by: Mapped[str] = mapped_column(String(255), default="")
     minted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
