@@ -792,7 +792,23 @@ def _zap_pins() -> dict[str, str]:
         if image.startswith(f"{ZAP_IMAGE}:"):
             pins[f"deploy/demo/docker-compose.yml:{name}"] = image.split(":", 1)[1]
 
+    # The demo's ZAP is built from `deploy/zap/Dockerfile` rather than pulled,
+    # so its pin is that FROM line. Read every Dockerfile under deploy/, so a
+    # second derivative is compared too instead of being a pin nobody checks.
+    for dockerfile in sorted((REPO_ROOT / "deploy").rglob("Dockerfile")):
+        where = dockerfile.relative_to(REPO_ROOT).as_posix()
+        for match in re.finditer(
+            rf"(?im)^\s*FROM\s+{re.escape(ZAP_IMAGE)}:(\S+)", dockerfile.read_text(encoding="utf-8")
+        ):
+            pins[f"{where}:FROM"] = match.group(1)
+
     return pins
+
+
+def test_the_built_zap_is_one_of_the_pins_compared() -> None:
+    """Moving the demo's ZAP into a Dockerfile must not take it out of the
+    comparison: a pin the walker cannot see agrees with everything."""
+    assert "deploy/zap/Dockerfile:FROM" in _zap_pins()
 
 
 def test_the_estate_scans_with_one_zap() -> None:

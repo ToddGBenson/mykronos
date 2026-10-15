@@ -10,6 +10,7 @@ upload, and a failure that turns the job red instead of a silent empty scan.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -75,11 +76,16 @@ def test_the_api_scan_targets_the_ephemeral_backend_only() -> None:
 
 def test_the_api_scan_uses_the_zap_the_compose_file_pins() -> None:
     """One pin (D-128). The step reads the image from the compose file's
-    `zap` service, rather than naming a second tag that can drift."""
+    `zap` service, rather than naming a second tag that can drift. Compose
+    builds that image (`deploy/zap/Dockerfile`), so the pin it checks is the
+    build's FROM; and `--pull never`, so a missing build is an error rather
+    than a fetch of whatever a registry has under that name."""
     run = _api_run()
-    assert '"$COMPOSE" config' in run and '["services"]["zap"]["image"]' in run
+    assert '"$COMPOSE" config' in run and '["services"]["zap"]' in run
     assert "zaproxy/zaproxy:" not in run, "a second ZAP pin, which will drift from compose's"
     assert "@sha256:" in run, "the step does not refuse an image that is not digest-pinned"
+    assert "FROM" in run, "the step does not check the pin the image is built from"
+    assert "--pull never" in run
 
 
 def test_the_api_scan_follows_the_lanes_active_switch() -> None:
@@ -306,7 +312,7 @@ def test_no_success_or_a_refused_majority_fails_the_step() -> None:
 _DOCKER_STUB = r"""#!/usr/bin/env bash
 case "$1" in
   compose)
-    echo '{"services": {"zap": {"image": "ghcr.io/zaproxy/zaproxy:weekly@sha256:abc"}}}' ;;
+    cat "$STUB_COMPOSE_JSON" ;;
   run)
     # What the upload would find if the job died here.
     if [ -f "$RUNNER_TEMP/dast/zap-api.json" ]; then
@@ -334,7 +340,31 @@ echo '{"paths": {"/api/repos": {}}}' > "$out"
 """
 
 
-def _run_step(tmp_path: Path, zap_rc: int) -> tuple[int, Path]:
+PINNED = "ghcr.io/zaproxy/zaproxy:weekly@sha256:" + "a" * 64
+
+
+def _run_step(tmp_path: Path, zap_rc: int, base: str = PINNED) -> tuple[int, Path]:
+    # What `docker compose config --format json` prints for a service that
+    # builds: the context resolved to an absolute path.
+    context = tmp_path / "zap"
+    context.mkdir()
+    (context / "Dockerfile").write_text(
+        f"# a comment\nFROM {base}\nUSER zap\n", encoding="utf-8"
+    )
+    compose_json = tmp_path / "compose.json"
+    compose_json.write_text(
+        json.dumps(
+            {
+                "services": {
+                    "zap": {
+                        "image": "mykronos-zap:local",
+                        "build": {"context": context.as_posix(), "dockerfile": "Dockerfile"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     # The step calls `python`; point it at this interpreter. (A Windows
@@ -359,6 +389,7 @@ def _run_step(tmp_path: Path, zap_rc: int) -> tuple[int, Path]:
         "PUBLISHED_BACKEND": "http://127.0.0.1:8201",
         "ACTIVE": "false",
         "STUB_ZAP_RC": str(zap_rc),
+        "STUB_COMPOSE_JSON": compose_json.as_posix(),
     }
     # GitHub's default for `run:` on Linux: bash --noprofile --norc -eo pipefail {0}
     done = subprocess.run(
@@ -393,3 +424,17 @@ def test_a_completed_scan_replaces_the_marker_with_zaps_report(tmp_path: Path) -
     rc, dast = _run_step(tmp_path, 2)
     assert rc == 0
     assert (dast / "zap-api.json").read_text(encoding="utf-8").strip() == '{"site": []}'
+
+
+@pytest.mark.parametrize(
+    "base",
+    ["ghcr.io/zaproxy/zaproxy:weekly", "ghcr.io/zaproxy/zaproxy:stable"],
+)
+def test_a_zap_built_from_an_unpinned_base_is_refused(tmp_path: Path, base: str) -> None:
+    """The derivative is only as exact as its FROM. A tag there floats, and the
+    scan would no longer be comparable with its previous run (D-114)."""
+    rc, dast = _run_step(tmp_path, 0, base=base)
+    assert rc != 0
+    report = (dast / "zap-api.json").read_text(encoding="utf-8")
+    assert "not digest-pinned" in report
+    assert not (tmp_path / "runner" / "during-scan.json").exists(), "ZAP ran anyway"
