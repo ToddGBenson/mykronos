@@ -244,6 +244,42 @@ class TestRevocation:
         assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "open"
 
 
+    def test_revoking_a_duplicate_keeps_findings_another_live_record_covers(
+        self, client, admin_auth, lake
+    ) -> None:
+        """2026-10-14: five records were re-filed with corrected justifications
+        and both sets approved. Revoking the superseded set reopened the 19
+        findings the corrected set still covers, and a duplicate could only be
+        cleaned up by undoing the decision the person had just made."""
+        # Both proposed while the findings were still open, then both approved.
+        superseded = _propose(client, _agent(client, admin_auth)).json()
+        corrected = _propose(
+            client,
+            _agent(client, admin_auth),
+            justification="Corrected: Debian has not published a fix for these packages.",
+        ).json()
+        assert corrected.get("risk_acceptance"), corrected
+        _approve(client, admin_auth, superseded)
+        _approve(client, admin_auth, corrected)
+
+        response = client.post(
+            f"/api/risk-acceptances/{superseded['risk_acceptance']['id']}/revoke",
+            json={"reason": "Superseded by the corrected record."},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["findings_reopened"] == 0
+        assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "accepted_risk"
+
+        response = client.post(
+            f"/api/risk-acceptances/{corrected['risk_acceptance']['id']}/revoke",
+            json={"reason": "The vendor shipped a fix."},
+            headers=admin_auth,
+        )
+        assert response.json()["findings_reopened"] == 2
+        assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "open"
+
+
 class TestTheSweep:
     def _active(self, client, admin_auth) -> str:
         proposed = _propose(client, _agent(client, admin_auth)).json()
