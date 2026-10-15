@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from mykronos import risk_acceptance as ra
 from mykronos.db.models import AuditLogEntry, RiskAcceptance, ThreatIntelMatch
@@ -242,6 +242,69 @@ class TestRevocation:
         )
         assert response.json()["findings_reopened"] == 2
         assert _statuses(client)[("CVE-2026-1", IMAGE)][0] == "open"
+
+
+class TestDuplicates:
+    """On 2026-10-15 an agent filed five container acceptances twice, half an
+    hour apart, while the first five were still pending; both sets were
+    approved, and revoking either set would have reopened findings the other
+    still covered."""
+
+    def test_a_second_proposal_over_the_same_findings_is_refused(
+        self, client, admin_auth, lake
+    ) -> None:
+        agent = _agent(client, admin_auth)
+        first = _propose(client, agent)
+        assert first.status_code == 201, first.text
+        again = _propose(client, agent)
+        assert again.status_code == 409
+        held = first.json()["risk_acceptance"]["id"][:8]
+        assert f"already covered by risk acceptance {held}" in again.json()["detail"]
+
+    def test_a_proposal_that_adds_findings_is_not_a_duplicate(
+        self, client, admin_auth, lake
+    ) -> None:
+        agent = _agent(client, admin_auth)
+        narrow = {"capability": "containers", "image": IMAGE, "rule_ids": ["CVE-2026-1"]}
+        assert _propose(client, agent, scope=narrow).status_code == 201
+        assert _propose(client, agent).status_code == 201
+
+    def test_revoking_one_of_two_records_keeps_what_the_other_covers(
+        self, client, admin_auth, lake
+    ) -> None:
+        proposed = _propose(client, _agent(client, admin_auth)).json()
+        _approve(client, admin_auth, proposed)
+        first_id = proposed["risk_acceptance"]["id"]
+        later = date.today() + timedelta(days=90)
+        # The second record the fix above now refuses, as it was created
+        # before the fix: same findings, live, and running longer.
+        with client.app.state.db.session() as session:
+            first = session.get(RiskAcceptance, first_id)
+            values = {a.key: getattr(first, a.key) for a in inspect(RiskAcceptance).column_attrs}
+            values |= {"id": "second-record", "approval_request_id": None, "expires_at": later}
+            session.add(RiskAcceptance(**values))
+
+        response = client.post(
+            f"/api/risk-acceptances/{first_id}/revoke",
+            json={"reason": "A duplicate of second-record."},
+            headers=admin_auth,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["findings_reopened"] == 0
+        status, until, _ = _statuses(client)[("CVE-2026-1", IMAGE)]
+        assert status == "accepted_risk"
+        # The surviving record's date, not the revoked one's.
+        assert str(until)[:10] == later.isoformat()
+
+    def test_revoking_the_last_record_still_reopens(self, client, admin_auth, lake) -> None:
+        proposed = _propose(client, _agent(client, admin_auth)).json()
+        _approve(client, admin_auth, proposed)
+        response = client.post(
+            f"/api/risk-acceptances/{proposed['risk_acceptance']['id']}/revoke",
+            json={"reason": "The vendor shipped a fix."},
+            headers=admin_auth,
+        )
+        assert response.json()["findings_reopened"] == 2
 
 
 class TestTheSweep:
