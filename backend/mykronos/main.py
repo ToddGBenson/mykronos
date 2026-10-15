@@ -24,7 +24,7 @@ from mykronos.adminauth import (
     Role,
     current_principal,
 )
-from mykronos.api import refusals
+from mykronos.api import refusals, validation_errors
 from mykronos.api.agent import router as agent_router
 from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
@@ -785,6 +785,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(risk_acceptances_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
+    # A body with NaN in a constrained float is a 422, not a 500.
+    validation_errors.install(app)
 
     # Runs before routing: a request that cannot present the perimeter token
     # should not reach a handler at all, and should not be able to learn which
