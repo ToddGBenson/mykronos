@@ -39,7 +39,7 @@ groups:
   - name: gate
     jobs: [oracle-gate, promote]
   - name: build
-    jobs: [build, publish-backend, publish-frontend, containers]
+    jobs: [build, publish-backend, publish-frontend, containers, image-refresh]
   - name: runtime
     jobs: [demo-and-dast, remediate]
 
@@ -102,6 +102,16 @@ resources:
       days: [Sunday]
       start: 4:00 AM
       stop: 5:00 AM
+
+  # Nightly, for `image-refresh`: a window rather than an instant, like
+  # `weekly`, so a worker busy at 02:00 still picks it up.
+  - name: nightly
+    type: time
+    icon: clock-outline
+    source:
+      location: ((scan-timezone))
+      start: 2:00 AM
+      stop: 3:00 AM
 
   - name: source
     type: git
@@ -3167,6 +3177,215 @@ jobs:
                   jq -r '.errors[]' result.json | while read -r line; do
                     echo "::warning::Patchwork: $line"
                   done
+                fi
+
+  # == Out-of-band image builds ==============================================
+  #
+  # The third-party images this estate runs - Concourse (web and workers),
+  # its Postgres, the registry, Vault - and the ZAP scanner the DAST lane
+  # runs, rebuilt on the distribution's current packages, off the commit path.
+  #
+  # Why off the commit path. Until this job the only rebuild was ZAP's, inside
+  # `containers` on every commit, and its `apt-get upgrade` depends on the day:
+  # a commit could change what the scanner image contained without changing a
+  # line of it, and on 2026-10-15 a rename of that image put 87 HIGH it
+  # already carried on a commit's account (#858). The infrastructure images
+  # were never rebuilt at all, and their risk acceptances say so.
+  #
+  # What it does, nightly, per recipe (`x-mykronos-build` in
+  # deploy/concourse/docker-compose.yml and deploy/demo/docker-compose.yml):
+  #
+  #   plan     python -m mykronos.image_refresh plan --recipes mykronos
+  #   build    kaniko, to a tarball - nothing is pushed to find out
+  #   scan     Trivy HIGH/CRITICAL, the baseline against the candidate
+  #   decide   per (vulnerability, package): an image is published only when
+  #            it removes at least one and adds none (`outcome: improved`)
+  #   publish  crane, to <registry>/<publish>-p<date>, the vendor's own
+  #            repository path, so finding identity and the acceptances
+  #            recorded against it carry over
+  #
+  # It changes nothing that runs. A published date is evidence; adopting it is
+  # a reviewed change to the compose file's `image:` (and, for ZAP, dropping
+  # `build:`). One image that regresses holds back only itself, and a scan that
+  # wrote no report fails the job rather than reading as clean.
+  #
+  # What it cannot fix: the vendors' own statically linked Go binaries
+  # (Concourse's vrf and runc, Vault). `apk upgrade` replaces packages, so
+  # those findings and their acceptances stay; the verdict lists what each
+  # rebuild did remove.
+  - name: image-refresh
+    public: true
+    serial_groups: [worker-a]
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: image-refresh }
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored, JOB: image-refresh }
+    plan:
+      - get: nightly
+        attempts: *retry_fetch
+        trigger: true
+      - in_parallel:
+          - get: source
+            attempts: *retry_fetch
+          - get: python
+            attempts: *retry_fetch
+          - get: trivy
+            attempts: *retry_fetch
+
+      - task: plan
+        timeout: 10m
+        image: python
+        params:
+          REGISTRY: ((registry))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: refresh }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                pip install --quiet pyyaml
+                DATE=$(date -u +%Y%m%d)
+                printf '%s' "$DATE" > refresh/date
+                PYTHONPATH="$PWD/source/backend" python -m mykronos.image_refresh plan \
+                  --recipes mykronos --root source --date "$DATE" \
+                  --registry "$REGISTRY" --output refresh/plan.tsv
+                test -s refresh/plan.tsv || { echo "::error::no x-mykronos-build recipes found"; exit 1; }
+
+      - task: build
+        timeout: 120m
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gcr.io/kaniko-project/executor
+              tag: v1.23.2-debug
+          inputs: [{ name: source }, { name: refresh }]
+          outputs: [{ name: images }]
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                # To a tarball, not pushed: the registry has deletes disabled,
+                # so pushing to find out would grow it every night forever.
+                # `--cleanup` between builds, since kaniko builds into its own
+                # root; `--ignore-path=/busybox`, since on Concourse that
+                # cleanup otherwise deletes the shell this loop runs in
+                # (TheHub's image-refresh, 2026-10-14).
+                TAB=$(printf '\t')
+                while IFS="$TAB" read -r current candidate context args; do
+                  [ -n "$candidate" ] || continue
+                  name=$(printf '%s' "$candidate" | sed 's/[^A-Za-z0-9._-]/_/g')
+                  echo "Building $candidate from $context"
+                  # $args is a deliberate word list of --build-arg=K=V flags.
+                  /kaniko/executor \
+                    --context "source/$context" \
+                    --dockerfile "source/$context/Dockerfile" \
+                    $args \
+                    --destination "$candidate" \
+                    --no-push \
+                    --tar-path "images/$name.tar" \
+                    --single-snapshot \
+                    --cleanup \
+                    --ignore-path=/busybox
+                done < refresh/plan.tsv
+
+      - task: scan
+        timeout: 120m
+        image: trivy
+        config:
+          platform: linux
+          inputs: [{ name: refresh }, { name: images }]
+          outputs: [{ name: reports }]
+          run:
+            path: sh
+            args:
+              - -ec
+              - |
+                # A scan that writes nothing leaves no report, and `decide`
+                # turns a missing report into `failed` - never into "clean".
+                # `--insecure` is the LAN registry's plain HTTP, for a baseline
+                # that is already an adopted derivative.
+                safe() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'; }
+                TAB=$(printf '\t')
+                while IFS="$TAB" read -r current candidate context args; do
+                  [ -n "$candidate" ] || continue
+                  echo "Scanning $current"
+                  trivy image --insecure "$current" --scanners vuln \
+                    --severity CRITICAL,HIGH --format json \
+                    --output "reports/$(safe "$current").json" \
+                    --exit-code 0 --quiet --parallel 1 --timeout 30m || true
+                  echo "Scanning $candidate"
+                  trivy image --input "images/$(safe "$candidate").tar" --scanners vuln \
+                    --severity CRITICAL,HIGH --format json \
+                    --output "reports/$(safe "$candidate").json" \
+                    --exit-code 0 --quiet --parallel 1 --timeout 30m || true
+                done < refresh/plan.tsv
+
+      - task: decide
+        timeout: 10m
+        image: python
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: refresh }, { name: reports }]
+          outputs: [{ name: verdict }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                pip install --quiet pyyaml
+                PYTHONPATH="$PWD/source/backend" python -m mykronos.image_refresh decide \
+                  --plan refresh/plan.tsv --reports reports --output verdict/verdict.json \
+                  --publish-list verdict/publish.txt
+                cp refresh/date refresh/plan.tsv verdict/
+                # Failed is fatal: a missing report is not a clean image. A
+                # regression is not, here: it holds back its own image, the
+                # rest publish, and `publish` turns the job red afterwards.
+                if grep -q '"outcome": "failed"' verdict/verdict.json; then
+                  echo "::error::a scan produced no usable report; nothing is published"
+                  exit 1
+                fi
+
+      - task: publish
+        timeout: 30m
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gcr.io/go-containerregistry/crane
+              tag: debug
+          inputs: [{ name: verdict }, { name: images }]
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                if [ ! -s verdict/publish.txt ]; then
+                  echo "No image improved; nothing to publish."
+                else
+                  while read -r candidate; do
+                    [ -n "$candidate" ] || continue
+                    name=$(printf '%s' "$candidate" | sed 's/[^A-Za-z0-9._-]/_/g')
+                    /ko-app/crane push --insecure "images/$name.tar" "$candidate"
+                    echo "published $candidate"
+                  done < verdict/publish.txt
+                  echo "Adopt one by pinning its -p$(cat verdict/date) tag in compose, by review."
+                fi
+                # A regression held its own image back above; it still turns
+                # the job red, so it is seen rather than skipped every night.
+                if grep -q '"outcome": "regressed"' verdict/verdict.json; then
+                  echo "::error::a rebuild introduces a HIGH/CRITICAL; that image was not published"
+                  exit 1
                 fi
 
   # -- Functional tests and proxy-first DAST (PIP-2, PIP-3) ---------------

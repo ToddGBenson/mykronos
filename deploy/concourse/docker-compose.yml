@@ -49,6 +49,15 @@ name: mykronos-concourse
 # the version running and a new patch release arrives by review.
 x-worker: &worker
   image: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
+  # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
+  # the distribution's fixes, published as <registry>/<publish>-p<date> only
+  # when strictly better. Declared, not adopted: `image:` stays the vendor's
+  # until a reviewed change pins a published date.
+  x-mykronos-build:
+    context: ../images/apk-upgrade
+    base: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
+    publish: concourse/concourse:8.3.1
+    refresh_arg: APK_REFRESH
   restart: unless-stopped
   command: worker
   # A worker runs the container runtime. This is the privilege that
@@ -118,6 +127,18 @@ services:
   # not rebuilt it, so those findings stay until it does.
   concourse-db:
     image: postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+    # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
+    # the distribution's fixes, published as <registry>/<publish>-p<date> only
+    # when strictly better. Declared, not adopted: `image:` stays the vendor's
+    # until a reviewed change pins a published date.
+    x-mykronos-build:
+      context: ../images/apt-upgrade
+      base: postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+      # library/: identity drops the registry host but adds library/ only
+      # without one, so this is what keeps findings (and acceptances) keyed
+      # to the vendor image.
+      publish: library/postgres:15.19
+      refresh_arg: APT_REFRESH
     container_name: mykronos-concourse-db
     restart: unless-stopped
     environment:
@@ -149,6 +170,8 @@ services:
   # the pipelines address it as S3, and renaming would orphan the container.
   minio:
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless
+    # No x-mykronos-build: distroless, so there is no package manager to
+    # upgrade with. SILO moves only by a new upstream release.
     container_name: mykronos-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -206,6 +229,16 @@ services:
   # level is `debug`; `info` matches what v2 actually logged.
   registry:
     image: registry:3
+    # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
+    # the distribution's fixes, published as <registry>/<publish>-p<date> only
+    # when strictly better. Declared, not adopted: `image:` stays the vendor's
+    # until a reviewed change pins a published date.
+    x-mykronos-build:
+      context: ../images/apk-upgrade
+      # The digest this host runs (2026-10-15); `image:` itself is unpinned.
+      base: registry:3@sha256:852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696
+      publish: library/registry:3
+      refresh_arg: APK_REFRESH
     container_name: mykronos-registry
     restart: unless-stopped
     environment:
@@ -249,6 +282,16 @@ services:
   # so CVE-2026-78669 stays until HashiCorp ships a build on Go >= 1.26.9.
   vault:
     image: hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55
+    # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
+    # the distribution's fixes, published as <registry>/<publish>-p<date> only
+    # when strictly better. Declared, not adopted: `image:` stays the vendor's
+    # until a reviewed change pins a published date.
+    x-mykronos-build:
+      context: ../images/apk-upgrade
+      base: hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55
+      publish: hashicorp/vault:2.1.2
+      refresh_arg: APK_REFRESH
+      args: { RUN_AS: vault }
     container_name: mykronos-vault
     restart: unless-stopped
     command: server
@@ -321,6 +364,15 @@ services:
   # `command: web` says what it is.
   concourse:
     image: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
+    # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
+    # the distribution's fixes, published as <registry>/<publish>-p<date> only
+    # when strictly better. Declared, not adopted: `image:` stays the vendor's
+    # until a reviewed change pins a published date.
+    x-mykronos-build:
+      context: ../images/apk-upgrade
+      base: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
+      publish: concourse/concourse:8.3.1
+      refresh_arg: APK_REFRESH
     container_name: mykronos-concourse
     restart: unless-stopped
     command: web
