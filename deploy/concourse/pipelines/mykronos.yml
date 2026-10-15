@@ -1064,7 +1064,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }, { name: contract }]
-          # PS-1. Three exit codes leave this task as files, because the thing
+          # PS-1. Four exit codes leave this task as files, because the thing
           # that can report them to Mykronos cannot run here: node:slim has no
           # python and the uploader is a python package. Splitting the verdict
           # from the reporting is what lets `ensure` below report a build that
@@ -1109,17 +1109,23 @@ jobs:
                 npm run lint 2>&1 | tee /tmp/lint.txt
                 rc_lint=${PIPESTATUS[0]}
 
+                # The perimeter gate's runtime tests (vitest). proxy.ts is the only
+                # lock on the public dashboard, and neither a lint nor a build says
+                # whether it still refuses a wrong token.
+                npm test 2>&1 | tee /tmp/test.txt
+                rc_test=${PIPESTATUS[0]}
+
                 npm run build 2>&1 | tee /tmp/build.txt
                 rc_build=${PIPESTATUS[0]}
 
-                for pair in "contract:$rc_contract" "lint:$rc_lint" "build:$rc_build"; do
+                for pair in "contract:$rc_contract" "lint:$rc_lint" "test:$rc_test" "build:$rc_build"; do
                   echo "${pair#*:}" > "../../verdict/${pair%%:*}.rc"
                 done
-                cp /tmp/contract.txt /tmp/lint.txt /tmp/build.txt ../../verdict/ 2>/dev/null || true
+                cp /tmp/contract.txt /tmp/lint.txt /tmp/test.txt /tmp/build.txt ../../verdict/ 2>/dev/null || true
 
-                [ "$rc_contract" -eq 0 ] && [ "$rc_lint" -eq 0 ] && [ "$rc_build" -eq 0 ]
+                [ "$rc_contract" -eq 0 ] && [ "$rc_lint" -eq 0 ] && [ "$rc_test" -eq 0 ] && [ "$rc_build" -eq 0 ]
 
-        # PS-3: reported whether the three commands above passed, failed, or
+        # PS-3: reported whether the four commands above passed, failed, or
         # never got as far as writing a verdict.
         ensure:
           task: report
@@ -1154,6 +1160,7 @@ jobs:
                     --out results/frontend.xml --suite frontend \
                     --case "contract:$(rc_of contract):verdict/contract.txt" \
                     --case "lint:$(rc_of lint):verdict/lint.txt" \
+                    --case "test:$(rc_of test):verdict/test.txt" \
                     --case "build:$(rc_of build):verdict/build.txt"
 
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
