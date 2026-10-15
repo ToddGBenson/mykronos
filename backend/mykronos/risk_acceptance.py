@@ -650,16 +650,18 @@ def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> in
             entity_id=record_id,
             reason=reason.strip(),
         )
-        ids = list(record.covered_finding_ids or [])
-        # A finding another live record still covers stays accepted. Revoking
-        # one of two records over the same findings used to reopen them all,
-        # while the other record went on saying they were accepted.
-        holders = _covered_by(session, set(ids), exclude=record_id) if was_live else {}
-        # Plain values: the stamp below runs after this session has closed.
-        restamp: dict[tuple[Any, str], list[str]] = {}
-        for fid, other in holders.items():
-            code = reason_code_for(other.deviation_type, other.compensating_controls or [])
-            restamp.setdefault((other.expires_at, code), []).append(fid)
+        # A finding another live record still covers stays accepted. Two
+        # records can cover the same findings - a corrected re-filing approved
+        # beside the one it supersedes - and revoking the stale one must not
+        # undo the decision that still stands.
+        still_covered: set[str] = set()
+        for other in session.execute(
+            select(RiskAcceptance.covered_finding_ids).where(
+                RiskAcceptance.status.in_(LIVE), RiskAcceptance.id != record_id
+            )
+        ).scalars():
+            still_covered.update(other or [])
+        ids = [i for i in (record.covered_finding_ids or []) if i not in still_covered]
     if not was_live or not ids:
         return 0
     catalog = _catalog()

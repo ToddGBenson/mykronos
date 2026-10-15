@@ -2812,6 +2812,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/product-owner/review-queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review Queue
+         * @description What is waiting on a person: pending decisions and approved pull requests.
+         */
+        get: operations["review_queue_api_dashboard_product_owner_review_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/product-owner/review-queue/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review Packet
+         * @description One request in full: claim, frozen evidence and the reviewer's verdict, apart.
+         */
+        get: operations["review_packet_api_dashboard_product_owner_review_queue__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repos/-/capabilities": {
         parameters: {
             query?: never;
@@ -6634,6 +6674,113 @@ export interface components {
             /** Policy Version */
             policy_version: string | null;
         };
+        /** PoMergeRowOut */
+        PoMergeRowOut: {
+            /** Request Id */
+            request_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Number */
+            number: number | null;
+            /** Title */
+            title: string;
+            /** Approved Head Sha */
+            approved_head_sha: string;
+            /** Approved At */
+            approved_at: string | null;
+            /** Approvers */
+            approvers: string[];
+            /** Check Posted */
+            check_posted: boolean;
+            /** Github State */
+            github_state: string;
+            /** Github Error */
+            github_error: string | null;
+            /** Ready */
+            ready: boolean;
+        };
+        /** PoQueueCountsOut */
+        PoQueueCountsOut: {
+            /** Pending */
+            pending: number;
+            /** Unreviewed */
+            unreviewed: number;
+            /** Overdue */
+            overdue: number;
+            /** Ready To Merge */
+            ready_to_merge: number;
+        };
+        /** PoQueueDecisionOut */
+        PoQueueDecisionOut: {
+            /** Approver */
+            approver: string;
+            /** Approver Kind */
+            approver_kind: string;
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Created At */
+            created_at: string | null;
+        };
+        /** PoQueueItemOut */
+        PoQueueItemOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** Summary */
+            summary: string;
+            /** Repo Full Name */
+            repo_full_name: string | null;
+            /** Repo Id */
+            repo_id: string | null;
+            /** Decide Link */
+            decide_link: string | null;
+            /** Requested By */
+            requested_by: string;
+            /** Requester Kind */
+            requester_kind: string;
+            /** Requester Claim */
+            requester_claim: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Created At */
+            created_at: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Overdue */
+            overdue: boolean;
+            reviewer: components["schemas"]["PoQueueReviewOut"] | null;
+            /** Decisions */
+            decisions: components["schemas"]["PoQueueDecisionOut"][];
+        };
+        /**
+         * PoQueueReviewOut
+         * @description The platform reviewer's latest verdict on a request (spec 34 §4.3).
+         */
+        PoQueueReviewOut: {
+            /** Verdict */
+            verdict: string;
+            /** Rationale */
+            rationale: string;
+            /** Model */
+            model: string | null;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Counts */
+            counts: boolean;
+            /** Delegable */
+            delegable: boolean;
+            /** Checks */
+            checks?: {
+                [key: string]: unknown;
+            }[];
+        };
         /** PoRetroOut */
         PoRetroOut: {
             /** Repo Full Name */
@@ -6688,6 +6835,72 @@ export interface components {
             unread: string[];
             /** Failed Gates */
             failed_gates: string[];
+        };
+        /** PoReviewPacketOut */
+        PoReviewPacketOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Tier */
+            tier: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** Summary */
+            summary: string;
+            /** Repo Full Name */
+            repo_full_name: string | null;
+            /** Repo Id */
+            repo_id: string | null;
+            /** Decide Link */
+            decide_link: string | null;
+            /** Requested By */
+            requested_by: string;
+            /** Requester Kind */
+            requester_kind: string;
+            /** Requester Claim */
+            requester_claim: string;
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Created At */
+            created_at: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Overdue */
+            overdue: boolean;
+            reviewer: components["schemas"]["PoQueueReviewOut"] | null;
+            /** Decisions */
+            decisions: components["schemas"]["PoQueueDecisionOut"][];
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Digest Verified */
+            digest_verified: boolean;
+            /** Review Instructions */
+            review_instructions: string | null;
+            /** Needs */
+            needs: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** PoReviewQueueOut */
+        PoReviewQueueOut: {
+            reviewer: components["schemas"]["PoReviewerStateOut"];
+            counts: components["schemas"]["PoQueueCountsOut"];
+            /** Pending */
+            pending: components["schemas"]["PoQueueItemOut"][];
+            /** Ready To Merge */
+            ready_to_merge: components["schemas"]["PoMergeRowOut"][];
+            /** Policy Version */
+            policy_version: string | null;
+        };
+        /** PoReviewerStateOut */
+        PoReviewerStateOut: {
+            /** Mode */
+            mode: string;
+            /** Agreement */
+            agreement: number | null;
         };
         /** PoRolesOut */
         PoRolesOut: {
@@ -12409,6 +12622,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoEstateOut"];
+                };
+            };
+        };
+    };
+    review_queue_api_dashboard_product_owner_review_queue_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoReviewQueueOut"];
+                };
+            };
+        };
+    };
+    review_packet_api_dashboard_product_owner_review_queue__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoReviewPacketOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

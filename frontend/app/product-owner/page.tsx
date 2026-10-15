@@ -40,7 +40,12 @@ export default async function ProductOwnerEstatePage() {
         <p className="max-w-prose text-[12px] text-ink-2">
           Every onboarded repository&rsquo;s declared process and sprint, read from its own{" "}
           <span className="font-mono">.sdlc/process.yaml</span> and from TheHub. Each row is
-          that repository&rsquo;s Product Owner tab; open it for the detail.
+          that repository&rsquo;s Product Owner tab; open it for the detail. Decisions waiting
+          on you across all of them are in the{" "}
+          <Link href="/product-owner/review-queue" className="text-accent hover:underline">
+            review queue
+          </Link>
+          .
         </p>
       </div>
       {rows.length === 0 ? (

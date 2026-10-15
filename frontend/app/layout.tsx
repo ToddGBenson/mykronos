@@ -65,6 +65,9 @@ const NAV: {
       // The work rather than the code (spec 35 §8.7): every repository's
       // declared process and sprint, one row each, linking to its tab.
       { label: "Product Owner", href: "/product-owner" },
+      // The operator's own question across that estate (D-163): which
+      // decisions are waiting on a person, and which approved PRs can merge.
+      { label: "Review queue", href: "/product-owner/review-queue" },
       // Last, and the only item about this platform rather than the estate it
       // watches. It reports on four repositories and had no page reporting on
       // itself; a job that stopped here is invisible in exactly the way a
