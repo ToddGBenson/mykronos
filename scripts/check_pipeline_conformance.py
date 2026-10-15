@@ -254,6 +254,36 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
                 f"capture the exit code, or move the upload into an `ensure:` hook"
             )
 
+        # PS-3, the half `ensure:` does not give you for free. A task's output
+        # volume exists only once the task starts; one that dies before that
+        # (an undefined var at interpolation, a lost worker) leaves no output,
+        # and a hook that *requires* it errors "missing inputs" rather than
+        # reporting the failed scan. thehub/cloud-posture did exactly this for
+        # three weeks. So a hook input that is the guarded task's output must
+        # be `optional: true`; the uploader reports a missing path as a failed
+        # scan (`adapters/registry.py`).
+        def unguarded(node: dict[str, Any], job_name: str = job_name) -> None:
+            hook = node.get("ensure")
+            if not (isinstance(hook, dict) and isinstance(hook.get("config"), dict)):
+                return
+            produced = {
+                output.get("name")
+                for output in (node.get("config") or {}).get("outputs") or []
+                if isinstance(output, dict)
+            }
+            for item in hook["config"].get("inputs") or []:
+                if not isinstance(item, dict) or item.get("optional"):
+                    continue
+                if item.get("name") in produced:
+                    problems.append(
+                        f"{name}:{job_name} PS-3 the `ensure:` hook `{hook.get('task')}` "
+                        f"requires `{item['name']}`, which `{node.get('task')}` only creates "
+                        f"once it starts — mark it `optional: true` so a scanner that never "
+                        f"started still reports"
+                    )
+
+        _walk(plan, unguarded)
+
         untimed: list[str] = []
 
         def visit(node: dict[str, Any], sink: list[str] = untimed) -> None:
