@@ -42,13 +42,23 @@ describe("reviewerStanding", () => {
   });
 
   it("marks a shadow verdict as counting for nothing", () => {
-    const standing = reviewerStanding({ verdict: "approve", counts: false });
+    const standing = reviewerStanding({ verdict: "approve", counts: false, delegable: true });
     expect(standing.word).toBe("approve (shadow: does not count)");
     expect(standing.tone).toBe("pass");
   });
 
   it("colours a rejection and a question differently from an approval", () => {
-    expect(reviewerStanding({ verdict: "reject", counts: false }).tone).toBe("critical");
-    expect(reviewerStanding({ verdict: "needs_info", counts: false }).tone).toBe("warn");
+    expect(reviewerStanding({ verdict: "reject", counts: false, delegable: true }).tone).toBe(
+      "critical",
+    );
+    expect(
+      reviewerStanding({ verdict: "needs_info", counts: false, delegable: true }).tone,
+    ).toBe("warn");
+  });
+
+  it("reads a reject on a human-only tier as advice, as review-inbox does (#841)", () => {
+    const standing = reviewerStanding({ verdict: "reject", counts: false, delegable: false });
+    expect(standing.tone).toBe("muted");
+    expect(standing.word).toMatch(/goes to a person/);
   });
 });

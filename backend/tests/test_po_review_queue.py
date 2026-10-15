@@ -44,6 +44,7 @@ def pr_request(
     state: str = "pending",
     statement: str = CLAIM,
     expires_in: timedelta = timedelta(days=7),
+    tier: str = "production",
 ) -> tuple[str, str]:
     evidence = {
         "subject_ref": f"{repo}#{number}@{head}",
@@ -51,15 +52,15 @@ def pr_request(
         "number": number,
         "title": "Tighten the parser",
         "head_sha": head,
-        "change_class": "production",
-        "files": [{"path": "backend/x.py", "class": "production", "patch": "+x"}],
+        "change_class": tier,
+        "files": [{"path": "backend/x.py", "class": tier, "patch": "+x"}],
     }
     digest = canonical_digest(evidence)
     now = utcnow()
     with client.app.state.db.session() as session:  # type: ignore[attr-defined]
         row = ApprovalRequest(
             duty="pull_request_merge",
-            tier="production",
+            tier=tier,
             subject_ref=evidence["subject_ref"],
             evidence=evidence,
             evidence_digest=digest,
@@ -104,6 +105,7 @@ def shadow_review(
     rationale: str,
     age: timedelta = timedelta(0),
     checks: list[dict[str, Any]] | None = None,
+    tier: str = "production",
 ) -> None:
     db = client.app.state.db  # type: ignore[attr-defined]
     with db.session() as session:
@@ -117,7 +119,7 @@ def shadow_review(
             rationale=rationale,
             checks=checks or [],
             duty="pull_request_merge",
-            tier="production",
+            tier=tier,
             model="claude-opus-5",
         )
         entry.created_at = utcnow() - age
@@ -220,6 +222,23 @@ class TestPendingDecisions:
         assert rows[unreviewed]["reviewer"] is None
         assert body["counts"]["pending"] == 2
         assert body["counts"]["unreviewed"] == 1
+
+    def test_a_reject_on_a_human_only_tier_is_marked_procedural(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """On governance the reviewer is told to reject so a person decides
+        (approval-policy-v1.yaml), so that reject is advice, not a finding: the
+        same rule as scripts/review_inbox.py (#841) and the shadow report's
+        `delegable`. The queue must not read it as a red flag."""
+        governance, _ = pr_request(client, number=1, tier="governance")
+        production, _ = pr_request(client, number=2)
+        shadow_review(
+            client, governance, verdict="reject", rationale="Goes to a person.", tier="governance"
+        )
+        shadow_review(client, production, verdict="reject", rationale="The test is missing.")
+        rows = {i["id"]: i for i in client.get(QUEUE, headers=admin_auth).json()["pending"]}
+        assert rows[governance]["reviewer"]["delegable"] is False
+        assert rows[production]["reviewer"]["delegable"] is True
 
     def test_a_decision_already_recorded_is_shown_with_its_approver(
         self, client: TestClient, admin_auth: dict[str, str]
