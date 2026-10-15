@@ -1429,6 +1429,9 @@ jobs:
         passed: [guard]
       - get: pwsh
         attempts: *retry_fetch
+      # The tests need pwsh; the uploader needs python. As in `lint`.
+      - get: python
+        attempts: *retry_fetch
       # PS-2, and D-151: this job's hooks report to Mykronos.
       - *preflight
       - task: run-tests
@@ -1438,13 +1441,31 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: notify }]
+          outputs: [{ name: notify }, { name: results }]
           run:
             path: bash
             args:
               - -ec
               - |
                 set -uo pipefail
+                # A FAILING report first, before anything that can fail. The
+                # harness below overwrites it with the real one when it gets
+                # that far; if apt, pwsh or the harness dies first, this is
+                # what uploads, and it says the suite did not finish rather
+                # than reading as a pass. A task that never starts at all
+                # leaves no `results`, which the uploader reports as a failed
+                # scan for the same reason.
+                cat > results/functional.xml <<'XML'
+                <?xml version="1.0" encoding="utf-8"?>
+                <testsuites>
+                  <testsuite name="personal-soc functional" tests="1" failures="1" errors="0" skipped="0">
+                    <testcase classname="personal-soc.functional" name="suite ran to completion">
+                      <failure message="the functional suite did not finish">This placeholder is written before the suite starts and replaced when it ends. It reached Mykronos, so run-tests died before writing a report: read the build log.</failure>
+                    </testcase>
+                  </testsuite>
+                </testsuites>
+                XML
+
                 # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
@@ -1455,26 +1476,90 @@ jobs:
                 $ErrorActionPreference = 'Stop'
                 $failed = 0
                 $passed = 0
+                # Every assertion is also a JUnit testcase, so what reaches
+                # Mykronos is the same list this log prints. Absolute, because
+                # the Find-DocDrift block below changes directory.
+                $report = Join-Path $PWD 'results/functional.xml'
+                $group = 'functional'
+                $cases = [System.Collections.Generic.List[object]]::new()
+                function Add-Case($what, $ok, $message, [switch]$Skipped) {
+                  $script:cases.Add([pscustomobject]@{
+                    Group = $script:group; Name = [string]$what; Ok = [bool]$ok
+                    Message = [string]$message; Skipped = [bool]$Skipped
+                  })
+                }
 
                 function Assert-Equal($actual, $expected, $what) {
                   if ($actual -eq $expected) {
                     $script:passed++
                     Write-Host ("  PASS  {0} (= {1})" -f $what, $expected)
+                    Add-Case $what $true ''
                   } else {
                     $script:failed++
-                    Write-Host ("::error:: FAIL  {0}: expected {1}, got {2}" -f $what, $expected, $actual)
+                    $msg = "expected {0}, got {1}" -f $expected, $actual
+                    Write-Host ("::error:: FAIL  {0}: {1}" -f $what, $msg)
+                    Add-Case $what $false $msg
                   }
                 }
                 function Assert-True($cond, $what) {
-                  if ($cond) { $script:passed++; Write-Host "  PASS  $what" }
-                  else { $script:failed++; Write-Host "::error:: FAIL  $what" }
+                  if ($cond) { $script:passed++; Write-Host "  PASS  $what"; Add-Case $what $true '' }
+                  else { $script:failed++; Write-Host "::error:: FAIL  $what"; Add-Case $what $false 'assertion was false' }
                 }
+
+                # Written to a temporary file and moved into place, so a writer
+                # that dies half way leaves the failing placeholder rather than
+                # half a document. XmlWriter escapes; the control characters it
+                # would refuse are stripped from messages first.
+                function Write-JUnit([string]$Path) {
+                  $clean = { param($s) [regex]::Replace([string]$s, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '') }
+                  $settings = [System.Xml.XmlWriterSettings]::new()
+                  $settings.Indent = $true
+                  $settings.Encoding = [System.Text.UTF8Encoding]::new($false)
+                  $tmp = "$Path.tmp"
+                  $w = [System.Xml.XmlWriter]::Create($tmp, $settings)
+                  try {
+                    $w.WriteStartDocument()
+                    $w.WriteStartElement('testsuites')
+                    $w.WriteStartElement('testsuite')
+                    $w.WriteAttributeString('name', 'personal-soc functional')
+                    $w.WriteAttributeString('tests', [string]$cases.Count)
+                    $w.WriteAttributeString('failures', [string]@($cases | Where-Object { -not $_.Ok -and -not $_.Skipped }).Count)
+                    $w.WriteAttributeString('errors', '0')
+                    $w.WriteAttributeString('skipped', [string]@($cases | Where-Object Skipped).Count)
+                    foreach ($c in $cases) {
+                      $w.WriteStartElement('testcase')
+                      $w.WriteAttributeString('classname', "personal-soc.$($c.Group)")
+                      $w.WriteAttributeString('name', (& $clean $c.Name))
+                      if ($c.Skipped) {
+                        $w.WriteStartElement('skipped')
+                        $w.WriteAttributeString('message', (& $clean $c.Message))
+                        $w.WriteEndElement()
+                      } elseif (-not $c.Ok) {
+                        $w.WriteStartElement('failure')
+                        $w.WriteAttributeString('message', (& $clean $c.Message))
+                        $w.WriteString((& $clean $c.Message))
+                        $w.WriteEndElement()
+                      }
+                      $w.WriteEndElement()
+                    }
+                    $w.WriteEndElement()
+                    $w.WriteEndElement()
+                    $w.WriteEndDocument()
+                  } finally { $w.Dispose() }
+                  Move-Item -Force $tmp $Path
+                }
+
+                # Anything that throws below - a script that moved, a fixture
+                # that no longer parses - is recorded as a failing case naming
+                # the error, rather than ending the run with no report.
+                try {
 
                 # ============================================================
                 # Compare-Assessment.ps1
                 # ============================================================
                 Write-Host ""
                 Write-Host "== Compare-Assessment =="
+                $group = 'Compare-Assessment'
 
                 $cmp = 'source/skills/network-assessment/scripts/Compare-Assessment.ps1'
                 $base = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/base') -Force
@@ -1524,6 +1609,7 @@ jobs:
                 # ============================================================
                 Write-Host ""
                 Write-Host "== Find-DocDrift =="
+                $group = 'Find-DocDrift'
 
                 $drift = (Resolve-Path 'source/skills/update-docs/scripts/Find-DocDrift.ps1').Path
                 $repo = New-Item -ItemType Directory -Path (Join-Path $PWD 'fx/repo') -Force
@@ -1587,7 +1673,19 @@ jobs:
                   Write-Host "  (unrecognised severity now scores $($so.score_current) - weakness addressed)"
                 }
 
+                } catch {
+                  $failed++
+                  $group = 'harness'
+                  $msg = "{0} {1}" -f $_.Exception.Message, $_.InvocationInfo.PositionMessage
+                  Write-Host "::error:: the suite aborted: $msg"
+                  Add-Case "suite aborted before every assertion ran" $false $msg
+                } finally {
+                  Set-Location (Split-Path (Split-Path $report))
+                }
+
                 # ============================================================
+                # Also in the report, as skipped cases: a green upload says
+                # what it covered, and the lake can see what it did not.
                 Write-Host ""
                 Write-Host "== not covered here, and why =="
                 Write-Host "  Invoke-BreachCheck.ps1   needs a paid HIBP key and a live endpoint;"
@@ -1597,9 +1695,15 @@ jobs:
                 Write-Host "  ServiceScan / ShareEnum /  cannot run on this worker at all - see the"
                 Write-Host "  VulnScan / WifiPosture     netassess-ingest note."
                 Write-Host "  Invoke-WeeklyNetworkScan"
+                $group = 'not-covered'
+                Add-Case 'Invoke-BreachCheck.ps1' $true 'needs a paid HIBP key and a live endpoint; exercised weekly by breach-check' -Skipped
+                Add-Case 'Get-ExternalExposure.ps1' $true 'exercised for real by the external-exposure job' -Skipped
+                Add-Case 'Windows-only discovery scripts' $true 'Invoke-NetDiscovery, ServiceScan, ShareEnum, VulnScan, WifiPosture and Invoke-WeeklyNetworkScan need the Windows ARP table and netsh; see netassess-ingest' -Skipped
 
+                Write-JUnit $report
                 Write-Host ""
                 Write-Host ("assertions: {0} passed, {1} failed" -f $passed, $failed)
+                Write-Host "report: results/functional.xml ($($cases.Count) case(s))"
                 if ($failed -gt 0) { exit 1 }
                 PS
 
@@ -1610,6 +1714,60 @@ jobs:
                     > notify/message.txt
                 fi
                 exit $rc
+
+        # PS-1 and PS-3. The suite above ran on every commit for its whole life
+        # and uploaded nothing, so `functional` for personal-soc read in the
+        # lake exactly like a capability nobody runs: green here, blind there.
+        #
+        # `ensure:`, as in `lint`, so a failing suite still reports - a sibling
+        # step would be skipped on exactly the build that matters. `results`
+        # is optional because the volume exists only once run-tests starts; a
+        # task that never started still reaches the uploader, which reports a
+        # missing results path as a failed scan. There is deliberately no "no
+        # report, skip the upload" check here: run-tests writes a failing
+        # placeholder first, and an absent one is itself the answer.
+        #
+        # No `|| true`. A refused upload - a 403 because `functional` is not
+        # granted to this repository - fails the job rather than leaving a
+        # green lane with an empty lake (check_capability_grants.py).
+        ensure:
+          task: upload
+          timeout: 10m
+          image: python
+          params:
+            MYKRONOS_URL: ((mykronos-url))
+            MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+            MYKRONOS_REF: ((mykronos-ref))
+          config:
+            platform: linux
+            inputs: [{ name: source }, { name: results, optional: true }]
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -euo pipefail
+                  if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                    echo "No ingestion token; skipping upload. The suite above still ran and still gated."
+                    exit 0
+                  fi
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  cd source
+                  python -m mykronos.upload \
+                    --capability functional --tool junit \
+                    --results-path ../results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch main \
+                    --workspace "$PWD" \
+                    --severity-threshold low --blocking false
 
   # -- Skill integrity (the AI check) --------------------------------------
   #
