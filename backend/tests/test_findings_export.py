@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -182,6 +185,32 @@ class TestHtml:
         assert SCRIPT not in response.text
         assert "&lt;script&gt;" in response.text
         assert "default-src 'none'" in response.headers["content-security-policy"]
+
+
+    def test_the_policy_admits_only_its_own_stylesheet(
+        self, client, admin_auth, exported
+    ) -> None:
+        """ZAP 10055-6 and 10055-13 (medium), first seen 2026-10-14 by the
+        API scan: `style-src 'unsafe-inline'` admits any injected <style>, and
+        frame-ancestors, form-action and base-uri do not fall back to
+        default-src. The page's one stylesheet is a constant, so a hash admits
+        exactly it."""
+        response = _export(client, admin_auth, exported, "html")
+        policy = response.headers["content-security-policy"]
+        directives = dict(
+            (d.split()[0], d.split()[1:]) for d in (p.strip() for p in policy.split(";")) if d
+        )
+
+        assert "'unsafe-inline'" not in policy
+        for name in ("frame-ancestors", "form-action", "base-uri"):
+            assert directives.get(name) == ["'none'"], (name, policy)
+        styles = re.findall(r"<style>(.*?)</style>", response.text, re.S)
+        assert styles, "the report lost its stylesheet"
+        for css in styles:
+            digest = base64.b64encode(hashlib.sha256(css.encode("utf-8")).digest()).decode()
+            assert f"'sha256-{digest}'" in directives["style-src"], "a <style> the policy blocks"
+        # A hash covers <style> elements only; an inline style="" would be blocked.
+        assert "style=" not in response.text
 
 
 @pytest.mark.parametrize("fmt", ["csv", "sarif", "html"])
