@@ -251,14 +251,15 @@ class TestRevocation:
         and both sets approved. Revoking the superseded set reopened the 19
         findings the corrected set still covers, and a duplicate could only be
         cleaned up by undoing the decision the person had just made."""
+        # Both proposed while the findings were still open, then both approved.
         superseded = _propose(client, _agent(client, admin_auth)).json()
-        _approve(client, admin_auth, superseded)
         corrected = _propose(
             client,
             _agent(client, admin_auth),
             justification="Corrected: Debian has not published a fix for these packages.",
         ).json()
         assert corrected.get("risk_acceptance"), corrected
+        _approve(client, admin_auth, superseded)
         _approve(client, admin_auth, corrected)
 
         response = client.post(
