@@ -57,9 +57,12 @@ on:
         default: false
 
 concurrency:
-  # The weekly active scan takes ~40 minutes; a Delivery landing meanwhile
-  # must not cancel it, so the two kinds of run queue separately.
-  group: demo-and-dast-${{ github.ref }}-${{ github.event_name == 'schedule' && 'weekly' || 'delivery' }}
+  # An active scan takes ~40 minutes; a Delivery landing meanwhile must not
+  # cancel it, so active runs -- weekly or dispatched with active_scan --
+  # queue apart from the passive post-Delivery runs. Splitting on `schedule`
+  # alone let the next Delivery cancel the first manual active scan
+  # (run 38675775486, 2026-10-15).
+  group: demo-and-dast-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.active_scan) && 'active' || 'delivery' }}
   cancel-in-progress: true
 
 permissions:
