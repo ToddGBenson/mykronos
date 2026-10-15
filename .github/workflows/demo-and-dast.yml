@@ -520,6 +520,8 @@ jobs:
           export ZAP_AUTH_HEADER=Authorization
           export ZAP_AUTH_HEADER_VALUE="Bearer ${DEMO_ADMIN_TOKEN}"
           export ZAP_AUTH_HEADER_SITE=backend
+          # The start of the window the access-log check below reads.
+          STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           docker run --rm --name mykronos-demo-zap-api \
             --network mykronos-demo_default \
             -v "$WRK:/zap/wrk:rw" \
@@ -535,6 +537,45 @@ jobs:
           # WARN). 3 is an error -- including importing no URLs at all.
           if [ "$RC" -ge 3 ] || [ ! -s "$WRK/zap-api.json" ]; then
             broken "zap-api-scan.py exited ${RC} against ${PROXIED_BACKEND}; no usable API report."
+          fi
+
+          # What ZAP actually got back. A scan whose requests the gate or the
+          # admin check refused is a scan of the gate, and its report looks
+          # exactly like a clean API -- the same trap the dashboard spider fell
+          # into. The headers are ZAP's to send, so the evidence is the
+          # backend's own uvicorn access log for the scan's window, not a
+          # request made from here. The image runs uvicorn at `info` with the
+          # access log on, and the demo compose file does not override that.
+          # Format, from uvicorn's AccessFormatter:
+          #   INFO:     172.18.0.5:41234 - "GET /api/repos HTTP/1.1" 200 OK
+          # Only `/api/` lines count: the healthcheck is `/healthz` and this
+          # step's own fetch was `/openapi.json`.
+          docker logs --since "$STARTED" mykronos-demo-backend-1 > "$WRK/backend.log" 2>&1 || true
+          SENT=$(python - "$WRK/backend.log" <<'PY'
+          import re
+          import sys
+          from collections import Counter
+
+          ANSI = re.compile(r"\x1b\[[0-9;]*m")
+          LINE = re.compile(r'"[A-Z]+ (/api/\S*) HTTP/[0-9.]+" (\d{3})')
+          try:
+              text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          except OSError:
+              text = ""
+          seen = Counter()
+          for raw in text.splitlines():
+              match = LINE.search(ANSI.sub("", raw))
+              if match:
+                  seen[match.group(2)] += 1
+          total = sum(seen.values())
+          ok = sum(n for code, n in seen.items() if code.startswith("2"))
+          print(total, ok, seen["401"] + seen["403"])
+          PY
+          ) || SENT="0 0 0"
+          read -r API_TOTAL API_2XX API_DENIED <<< "$SENT"
+          echo "The backend answered ZAP's /api/ requests: ${API_TOTAL} total, ${API_2XX} 2xx, ${API_DENIED} 401/403."
+          if [ "$API_2XX" -eq 0 ] || [ $((API_DENIED * 2)) -gt "$API_TOTAL" ]; then
+            broken "The API scan reached the gate, not the API: ${API_2XX} of ${API_TOTAL} /api/ responses were 2xx and ${API_DENIED} were 401/403. Not uploading it as a scan of the API."
           fi
           cp "$WRK/zap-api.json" "$RUNNER_TEMP/dast/zap-api.json"
           echo "API report written (zap-api-scan.py exit ${RC})."
