@@ -68,10 +68,10 @@ def test_the_api_scan_targets_the_ephemeral_backend_only() -> None:
 
 
 def test_the_api_scan_uses_the_zap_the_compose_file_pins() -> None:
-    """One pin (D-128). The step reads the image from the running ZAP
-    container compose started, rather than naming a second tag that can drift."""
+    """One pin (D-128). The step reads the image from the compose file's
+    `zap` service, rather than naming a second tag that can drift."""
     run = _api_run()
-    assert "mykronos-demo-zap-1" in run
+    assert '"$COMPOSE" config' in run and '["services"]["zap"]["image"]' in run
     assert "zaproxy/zaproxy:" not in run, "a second ZAP pin, which will drift from compose's"
     assert "@sha256:" in run, "the step does not refuse an image that is not digest-pinned"
 
@@ -158,3 +158,13 @@ def test_a_failed_api_scan_turns_the_job_red_last() -> None:
     assert "exit 1" in steps[fail[0]]["run"]
     teardown = _index(lambda s: s.get("name") == "Tear down")
     assert fail[0] > teardown
+
+
+def test_a_missing_dashboard_report_still_cannot_read_as_a_whole_run() -> None:
+    """`Spider, and scan` writes no report when it reached only the gate, so
+    the upload records a failed run. The API report beside it must not turn
+    that into a successful run holding only API findings."""
+    run = _api_run()
+    guard = run.index('if [ ! -s "$RUNNER_TEMP/dast/zap.json" ]; then')
+    assert '> "$RUNNER_TEMP/dast/zap.json"' in run[guard : run.index("fi", guard)]
+    assert guard < run.index("docker run")
