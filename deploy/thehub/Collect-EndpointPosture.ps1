@@ -210,8 +210,18 @@ function Write-Posture {
     #
     # Temp file then move, because the container reads this on a schedule and a
     # half-written document parses as a corrupt one.
+    #
+    # File.Replace, not Move-Item, once the target exists: the task runs under
+    # an S4U logon whose token creates files owned by BUILTIN\Administrators,
+    # which the bind mount surfaces as uid 0, and a moved-in file brings that
+    # owner with it. Replace (Win32 ReplaceFile) keeps the existing file's
+    # security descriptor. Move-Item only for the very first write.
     [System.IO.File]::WriteAllText($temp, ($posture | ConvertTo-Json -Depth 8))
-    Move-Item -Path $temp -Destination $target -Force
+    if (Test-Path $target) {
+        [System.IO.File]::Replace($temp, $target, [NullString]::Value)
+    } else {
+        Move-Item -Path $temp -Destination $target -Force
+    }
 
     $bits = @()
     if ($posture.defender.ok)  { $bits += "defender_rtp=$($posture.defender.value.realtime_protection)" }
