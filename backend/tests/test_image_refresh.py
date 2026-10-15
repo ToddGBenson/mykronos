@@ -276,7 +276,7 @@ def test_the_estate_recipes_keep_each_images_finding_identity() -> None:
 
     from mykronos.fingerprint import image_repository
 
-    recipes = ir.plan_mykronos(REPO_ROOT, "20261016", "192.168.0.14:5000")
+    recipes = ir.plan_mykronos(REPO_ROOT, "20261016", "registry.example:5000")
     assert recipes, "no x-mykronos-build recipes in the estate's compose files"
     for name in ir.MYKRONOS_COMPOSE_FILES:
         services = yaml.safe_load((REPO_ROOT / name).read_text(encoding="utf-8"))["services"]
@@ -288,7 +288,7 @@ def test_the_estate_recipes_keep_each_images_finding_identity() -> None:
             image = str(definition["image"])
             # An image compose builds is scanned as `<registry>/<name>:<sha>`
             # by the containers lane, so that is the identity to keep.
-            scanned = f"192.168.0.14:5000/{image}" if "build" in definition else image
+            scanned = f"registry.example:5000/{image}" if "build" in definition else image
             assert image_repository(candidate) == image_repository(scanned), (name, service)
 
 

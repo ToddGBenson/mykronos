@@ -195,7 +195,9 @@ def plan_mykronos(
             try:
                 relative = context.relative_to(root.resolve()).as_posix()
             except ValueError as exc:
-                raise ValueError(f"{where}: context {build['context']!r} leaves the repository") from exc
+                raise ValueError(
+                    f"{where}: context {build['context']!r} leaves the repository"
+                ) from exc
             if not (context / "Dockerfile").is_file():
                 raise ValueError(f"{where}: no Dockerfile in {relative}")
             args = [(str(k), str(v)) for k, v in (build.get("args") or {}).items()]

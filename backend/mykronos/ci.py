@@ -1728,9 +1728,10 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # them against what compose pins, to decide whether demo moves. Its scans
     # are a comparison, not the estate's record: `containers` uploads the
     # findings for the images that actually run, and a second upload of the
-    # same images would double-count them.
+    # same images would double-count them. MyKronos's job does the same for
+    # the estate's own images, out of band, and publishes rather than deploys.
     (
-        (THEHUB,),
+        (THEHUB, MYKRONOS),
         "image-refresh",
         "rebuilds patched images and compares Trivy reports, uploads no findings",
     ),
