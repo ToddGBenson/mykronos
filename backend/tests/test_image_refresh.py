@@ -175,27 +175,27 @@ def test_the_kaniko_build_loop_keeps_its_own_shell_tools() -> None:
 
 MYKRONOS_COMPOSE = """
 x-worker: &worker
-  image: concourse/concourse:8.3.1@sha256:aaa
+  image: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   x-mykronos-build:
     context: ../images/apk-upgrade
-    base: concourse/concourse:8.3.1@sha256:aaa
+    base: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     publish: concourse/concourse:8.3.1
     refresh_arg: APK_REFRESH
 services:
   concourse:
-    image: concourse/concourse:8.3.1@sha256:aaa
+    image: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: concourse/concourse:8.3.1@sha256:aaa
+      base: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       publish: concourse/concourse:8.3.1
       refresh_arg: APK_REFRESH
   worker-1:
     <<: *worker
   vault:
-    image: hashicorp/vault:2.1.2@sha256:bbb
+    image: hashicorp/vault:2.1.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: hashicorp/vault:2.1.2@sha256:bbb
+      base: hashicorp/vault:2.1.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       publish: hashicorp/vault:2.1.2
       refresh_arg: APK_REFRESH
       args: { RUN_AS: vault }
@@ -226,12 +226,12 @@ def test_mykronos_plan_publishes_under_the_vendor_path(tmp_path: Path) -> None:
     # Web and worker (through the YAML anchor) are one build.
     assert len(concourse.services) == 2
     # Before adoption the baseline is the vendor image the service runs.
-    assert concourse.current == "concourse/concourse:8.3.1@sha256:aaa"
+    assert concourse.current == "concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     # The context is resolved from the compose file to the repository root.
     assert concourse.context == "deploy/images/apk-upgrade"
     assert vault.build_args == (
         ("RUN_AS", "vault"),
-        ("BASE_IMAGE", "hashicorp/vault:2.1.2@sha256:bbb"),
+        ("BASE_IMAGE", "hashicorp/vault:2.1.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
         ("APK_REFRESH", "20261016"),
     )
 
@@ -339,3 +339,30 @@ def test_mykronos_image_refresh_never_pushes_to_find_out() -> None:
     # Nothing in the job deploys or touches what runs.
     text = yaml.safe_dump(job)
     assert "docker compose" not in text and "deploy.ps1" not in text
+
+
+def test_mykronos_plan_refuses_a_base_that_is_not_a_digest(tmp_path: Path) -> None:
+    """The Dockerfile is `FROM ${BASE_IMAGE}`, so the recipe's base IS the
+    image's version: checkov cannot see it (CKV_DOCKER_7), and only this
+    check stops a floating tag from being rebuilt and published."""
+    floating = MYKRONOS_COMPOSE.replace(
+        "base: hashicorp/vault:2.1.2@sha256:" + "b" * 64, "base: hashicorp/vault:2.1.2"
+    )
+    with pytest.raises(ValueError, match="vault: base .* is not pinned by digest"):
+        ir.plan_mykronos(_mykronos_tree(tmp_path, floating), "20261016", "r:5000")
+
+
+def test_mykronos_plan_refuses_a_missing_base(tmp_path: Path) -> None:
+    missing = MYKRONOS_COMPOSE.replace(
+        "      base: hashicorp/vault:2.1.2@sha256:" + "b" * 64 + "\n", ""
+    )
+    assert "base: hashicorp/vault" not in missing
+    with pytest.raises(ValueError, match="vault: base .* is not pinned by digest"):
+        ir.plan_mykronos(_mykronos_tree(tmp_path, missing), "20261016", "r:5000")
+
+
+def test_every_real_recipe_base_is_a_digest() -> None:
+    """The repository's own recipes, not a fixture: what the nightly job builds."""
+    root = Path(__file__).resolve().parents[2]
+    recipes = ir.plan_mykronos(root, "20261016", "r:5000")
+    assert recipes, "no x-mykronos-build recipes found"
