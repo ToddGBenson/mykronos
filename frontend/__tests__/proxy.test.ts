@@ -169,6 +169,35 @@ describe("exemptions", () => {
 });
 
 describe("following a ?_token= link", () => {
+  it("lets a fresh link replace a stale cookie after the token is rotated", async () => {
+    // The cookie lives a day; a rotation inside that day left the old value in
+    // the browser, it was read before the link, and the new link was refused.
+    const response = await proxy(
+      request(`/findings?_token=${TOKEN}`, { headers: { cookie: "hub_token=rotated-out" } }),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("set-cookie") ?? "").toContain(`hub_token=${TOKEN}`);
+  });
+
+  it("keeps a right cookie when an old link is followed, and never stores the wrong token", async () => {
+    // The mirror case: a bookmarked link from before the rotation must not
+    // lock out a browser that already holds the new token.
+    const response = await proxy(
+      request("/findings?_token=rotated-out", { headers: { cookie: `hub_token=${TOKEN}` } }),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).not.toContain("rotated-out");
+    expect(response.headers.get("set-cookie") ?? "").not.toContain("rotated-out");
+  });
+
+  it("refuses a wrong link with a wrong cookie", async () => {
+    await expectRefused(
+      await proxy(request("/?_token=nope", { headers: { cookie: "hub_token=also-nope" } })),
+    );
+  });
+
   it("sets an HttpOnly, lax cookie and redirects to the URL without the token", async () => {
     const response = await proxy(request(`/findings?severity=high&_token=${TOKEN}&repo=2`));
 

@@ -21,11 +21,17 @@ export async function proxy(request: NextRequest) {
   if (expected && !isExempt(request.nextUrl.pathname)) {
     const url = request.nextUrl;
     const fromLink = url.searchParams.get(TOKEN_QUERY);
-    const presented = presentedToken({
-      header: request.headers.get(TOKEN_HEADER),
-      cookie: request.cookies.get(TOKEN_COOKIE)?.value,
-      query: fromLink,
-    });
+    const header = request.headers.get(TOKEN_HEADER);
+    const cookie = request.cookies.get(TOKEN_COOKIE)?.value;
+    let presented = presentedToken({ header, cookie, query: fromLink });
+    // The cookie lives a day, so a rotation inside that day leaves the old
+    // value in the browser - and read before the link, it refused the new
+    // link until the person cleared their cookies. Without a header, a link
+    // that matches wins; a cookie that matches still covers an old link.
+    // Either way only a token equal to the expected one is ever stored.
+    if (!header && fromLink && cookie && (await tokensMatch(fromLink, expected))) {
+      presented = fromLink;
+    }
     if (!(await tokensMatch(presented, expected))) {
       // Terse and identical for absent, wrong and malformed, as the backend.
       return NextResponse.json(
