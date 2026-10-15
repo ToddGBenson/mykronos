@@ -293,3 +293,100 @@ def test_no_success_or_a_refused_majority_fails_the_step() -> None:
     # Counts that could not be read are no success, not a pass.
     assert '|| SENT="0 0 0"' in run
     assert guard < run.index('cp "$WRK/zap-api.json"')
+
+
+# -- The step, run --------------------------------------------------------------
+#
+# The tests above read the step. These run it, under the shell GitHub gives a
+# `run:` with no `shell:` (`bash -eo pipefail`), with `docker` and `curl`
+# stubbed on PATH. Reading it missed that `-e` killed the step on ZAP's exit
+# 3 before `RC=$?`, so the failure marker was never written and a failed API
+# scan uploaded as a clean one.
+
+_DOCKER_STUB = r"""#!/usr/bin/env bash
+case "$1" in
+  compose)
+    echo '{"services": {"zap": {"image": "ghcr.io/zaproxy/zaproxy:weekly@sha256:abc"}}}' ;;
+  run)
+    # What the upload would find if the job died here.
+    if [ -f "$RUNNER_TEMP/dast/zap-api.json" ]; then
+      cp "$RUNNER_TEMP/dast/zap-api.json" "$RUNNER_TEMP/during-scan.json"
+    fi
+    wrk=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "-v" ]; then wrk="${2%%:/zap/wrk*}"; fi
+      shift
+    done
+    if [ "$STUB_ZAP_RC" -lt 3 ]; then echo '{"site": []}' > "$wrk/zap-api.json"; fi
+    exit "$STUB_ZAP_RC" ;;
+  logs)
+    printf 'INFO:     172.18.0.5:1 - "GET /api/repos HTTP/1.1" 200 OK\n' ;;
+esac
+"""
+
+_CURL_STUB = r"""#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-o" ]; then out="$2"; fi
+  shift
+done
+echo '{"paths": {"/api/repos": {}}}' > "$out"
+"""
+
+
+def _run_step(tmp_path: Path, zap_rc: int) -> tuple[int, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (("docker", _DOCKER_STUB), ("curl", _CURL_STUB)):
+        stub = bin_dir / name
+        stub.write_text(body, encoding="utf-8", newline="\n")
+        stub.chmod(0o755)
+    runner_temp = tmp_path / "runner"
+    (runner_temp / "dast").mkdir(parents=True)
+    (runner_temp / "dast" / "zap.json").write_text('{"site": []}', encoding="utf-8")
+    script = tmp_path / "step.sh"
+    script.write_text(_api_run(), encoding="utf-8", newline="\n")
+    env = {
+        "PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin:{Path(sys.executable).parent.as_posix()}",
+        "RUNNER_TEMP": runner_temp.as_posix(),
+        "COMPOSE": "compose.yml",
+        "DEMO_GATE_TOKEN": "gate",
+        "DEMO_ADMIN_TOKEN": "admin",
+        "PROXIED_BACKEND": "http://backend:8100",
+        "PUBLISHED_BACKEND": "http://127.0.0.1:8201",
+        "ACTIVE": "false",
+        "STUB_ZAP_RC": str(zap_rc),
+    }
+    # GitHub's default for `run:` on Linux: bash --noprofile --norc -eo pipefail {0}
+    done = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", script.as_posix()],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return done.returncode, runner_temp / "dast"
+
+
+@pytest.mark.parametrize("zap_rc", [3, 125])
+def test_a_zap_error_leaves_the_failure_marker(tmp_path: Path, zap_rc: int) -> None:
+    rc, dast = _run_step(tmp_path, zap_rc)
+    assert rc != 0
+    report = dast / "zap-api.json"
+    assert report.is_file(), "a failed API scan left no marker: the upload reads the run as complete"
+    assert "did not complete" in report.read_text(encoding="utf-8")
+
+
+def test_a_job_killed_mid_scan_leaves_the_failure_marker(tmp_path: Path) -> None:
+    # A timeout or cancel-in-progress runs no script logic, so the marker
+    # has to be on disk before ZAP starts and replaced only on success.
+    _run_step(tmp_path, 0)
+    during = tmp_path / "runner" / "during-scan.json"
+    assert during.is_file(), "nothing marked the run partial while ZAP was running"
+    assert "did not complete" in during.read_text(encoding="utf-8")
+
+
+def test_a_completed_scan_replaces_the_marker_with_zaps_report(tmp_path: Path) -> None:
+    rc, dast = _run_step(tmp_path, 2)
+    assert rc == 0
+    assert (dast / "zap-api.json").read_text(encoding="utf-8").strip() == '{"site": []}'
