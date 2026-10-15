@@ -545,11 +545,19 @@ anchors:
   #
   # `unit` reports the start. `oracle-gate` reports success as its LAST step,
   # because it is the job whose success means every lane passed on this
-  # commit: `passed: [deploy-demo]`, which waits on the six scanning lanes,
-  # which wait on `unit` and `build`. Every job up to and including the gate
-  # reports failure from `on_failure:` and `on_error:`, LAST in each hook, so
-  # a red lane is a red check and not a check left in progress, and a refused
-  # report cannot stop the Slack alert or Hub report ahead of it.
+  # commit: `passed:` on the six scanning lanes, which wait on `unit` and
+  # `build`. Every job up to and including the gate reports failure from
+  # `on_failure:` and `on_error:`, LAST in each hook, so a red lane is a red
+  # check and not a check left in progress, and a refused report cannot stop
+  # the Slack alert or Hub report ahead of it.
+  #
+  # ONLY those jobs report (TheHub#349). `deploy-demo` used to, while the gate
+  # sat behind it. Since the gate no longer does, a `deploy-demo` report would
+  # race the gate's: the platform keeps the latest report per commit, so a
+  # demo failure landing before the gate's success would be overwritten green,
+  # and one landing after would turn a passed gate red. Which of the two you
+  # got would depend on timing. The demo lanes report to Slack, to TheHub,
+  # and to `mykronos briefing`, which names what they are blocking.
   #
   # This step can fail, on purpose. `--fail-with-body` turns a refused report
   # into a red step with Mykronos's reason in the log. So no `attempts:`
@@ -3497,26 +3505,42 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # `deploy-demo`, and not the six lanes directly (#59999). This edge
-        # read `passed: [deploy-demo]` until #59100 rewrote it as the six lanes
-        # `deploy-demo` was itself gated on, on the stated premise that Path B
-        # was retired and `deploy-demo` was gone. `deploy-demo` is not gone: it
-        # succeeded three times on 2026-09-17 (builds #89-#91), and it is the
-        # job `api-inventory` and `dast-demo` hang off.
+        # The six static lanes directly, and NOT `deploy-demo` (TheHub#349,
+        # operator decision: decouple and report).
         #
-        # With the premise false the rewrite goes back, and going back is
-        # strictly stronger rather than merely different: `deploy-demo` carries
-        # `passed:` on exactly these six lanes, so gating on it requires all
-        # six transitively AND requires that the version reached an
-        # environment. No lane is dropped from the set by this change, which
-        # is the judgement #59100 rightly said it was not entitled to move.
+        # This edge read `passed: [deploy-demo]` from #59999 until this change,
+        # on the reasoning that gating on `deploy-demo` required the six lanes
+        # transitively AND required that the version reached an environment.
+        # The first half is kept exactly: the list below is `deploy-demo`'s own
+        # `passed:` list, so no lane is dropped from what must pass before the
+        # gate speaks. The second half is what is removed, and it bought
+        # nothing the gate reads:
         #
-        # That last clause is the point of restoring it. #59100 recorded what
-        # the rewrite cost -- "DAST no longer precedes the gate at all" -- and
-        # gating on the six directly is what let Oracle score a build that had
-        # never been deployed anywhere. This puts `oracle-gate`, `api-inventory`
-        # and `dast-demo` back on one footing downstream of `deploy-demo`.
-        passed: [deploy-demo]
+        #   * `evaluate` posts a commit sha and a decision type, nothing else.
+        #     The verdict is the open findings first seen in a scan of this
+        #     commit (`introduced_by`) plus the repository's standing score. It
+        #     reads no demo URL, no deploy acknowledgement and no DAST report.
+        #   * `dast-demo` and `api-inventory` were SIBLINGS of this job behind
+        #     `deploy-demo`, never upstream of it. Concourse started all three
+        #     together, so "DAST precedes the gate" (#59100's worry) was never
+        #     true under the old edge either: the gate scored whatever had
+        #     reached the lake when it ran, which for a ZAP baseline against a
+        #     freshly deployed demo was almost always nothing.
+        #
+        # What the edge did cost: on 2026-09-10 `deploy-demo` failed on a CRLF
+        # in an acknowledgement file, and the gate and insider-risk sat dark
+        # for seven days while every security lane was healthy (TheHub#343,
+        # #349). A gate that cannot render a verdict is not a gate, and its
+        # absence was silent. `mykronos briefing` now reports "did not run
+        # because an upstream lane did not pass" as a state of its own, so the
+        # demo lanes that stay behind `deploy-demo` are not silent when it
+        # breaks either.
+        #
+        # Absent DAST is NOT read as a pass. `evaluate` prints, in every build,
+        # that demo DAST and the API inventory are not inputs to this verdict;
+        # those two lanes still run, upload and go red on their own, behind
+        # `deploy-demo`, where they genuinely belong.
+        passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -3608,6 +3632,15 @@ jobs:
 
                 echo "Introduced by ${SHORT}: ${NEW_CRITICAL} critical, ${NEW_HIGH} high."
 
+                # TheHub#349. Said in every build, pass or fail, so nobody
+                # reads this verdict as covering lanes it does not wait for.
+                # The gate runs on the six static lanes; the demo lanes run
+                # behind `deploy-demo` and report separately. Absent is not
+                # clean, and this line is what keeps the two apart.
+                echo "Not measured by this verdict for ${SHORT}: dast (dast-demo), api-inventory."
+                echo "Those run against demo after deploy-demo and report on their own;"
+                echo "this gate does not wait for them, and their absence is not a pass."
+
                 if [ "$INTRODUCED_BLOCKING" = "true" ]; then
                   # -- The gate can still be turned off, and it says so -----
                   #
@@ -3651,6 +3684,12 @@ jobs:
         params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: success }
 
   # == Stage 5: deliver to demo =============================================
+  #
+  # Beside the gate, not before it (TheHub#349). `oracle-gate` gates on the
+  # same six lanes this job does and does not wait for it, so a broken demo
+  # deploy stops only `api-inventory` and `dast-demo`, which genuinely need a
+  # running demo. No `report-check-run` here: see the `check_run` anchor for
+  # why a job beside the gate must not write the commit's check.
   - name: deploy-demo
     public: true
     on_success:
@@ -3663,16 +3702,12 @@ jobs:
           params: { <<: *slack_params, JOB: deploy-demo }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
-        - <<: *check_run
-          params: { <<: *check_params, JOB: deploy-demo, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: deploy-demo }
         - <<: *hub_report
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
-        - <<: *check_run
-          params: { <<: *check_params, JOB: deploy-demo, PHASE: end, CONCLUSION: failure }
     on_abort:
       do:
         - <<: *hub_report

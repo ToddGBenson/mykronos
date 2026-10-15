@@ -33,6 +33,7 @@ class OperationalInputs:
 
     paused_jobs: list[briefing_report.PausedLane] | None = None
     failing_jobs: list[briefing_report.FailingLane] | None = None
+    blocked_jobs: list[briefing_report.BlockedLane] | None = None
     unhealthy_jobs: list[Any] | None = None
     tokens: list[briefing_report.TokenDelivery] | None = None
     toxic_combinations: list[dict[str, Any]] | None = None
@@ -104,6 +105,27 @@ def gather(settings: Any, db: Any, catalog: Any) -> OperationalInputs:
                         build_url=job.build_url,
                     )
                     for pipeline, job in failing
+                ]
+            )
+            # Held back by a red or paused upstream (TheHub#349): the state
+            # the two lists above cannot hold, because it is neither.
+            blocked = ci_client.blocked_jobs()
+            found.blocked_jobs = (
+                None
+                if blocked is None
+                else [
+                    briefing_report.BlockedLane(
+                        pipeline=pipeline,
+                        job=held.job.name,
+                        blocked_by=held.blocked_by,
+                        root=held.root,
+                        root_state=held.root_state,
+                        since=held.root_since,
+                        last_status=held.job.status,
+                        last_finished_at=held.job.finished_at,
+                        build_url=held.root_build_url,
+                    )
+                    for pipeline, held in blocked
                 ]
             )
     except Exception:  # noqa: BLE001 - a briefing must not die on CI

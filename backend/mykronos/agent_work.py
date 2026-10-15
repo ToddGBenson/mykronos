@@ -264,6 +264,28 @@ def _lane_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
     return items
 
 
+def _held_behind(briefing: Briefing, pipeline: str, job: str) -> list[Evidence]:
+    """The lanes this red or paused job is stopping (TheHub#349).
+
+    Not an item of their own: the work is on the root, and an item per held
+    lane would send an agent to re-run jobs that cannot run. Attached as
+    evidence to the root's item instead, which is what its playbook asks to be
+    handed to a person ("what depends on the job").
+    """
+    return [
+        Evidence(
+            source="concourse",
+            ref=f"{held.pipeline}/{held.job}",
+            detail=(
+                f"did not run: behind {held.root} ({held.root_state})"
+                + ("" if held.blocked_by == held.root else f" via {held.blocked_by}")
+            ),
+        )
+        for held in sorted(briefing.blocked, key=lambda b: b.job)
+        if held.pipeline == pipeline and held.root == job
+    ]
+
+
 def _ci_items(briefing: Briefing) -> list[WorkItem]:
     items = []
     for job in briefing.failing:
@@ -283,7 +305,8 @@ def _ci_items(briefing: Briefing) -> list[WorkItem]:
                         source="concourse",
                         ref=job.build_url or f"{job.pipeline}/{job.job}",
                         detail=f"last status {job.last_status}",
-                    )
+                    ),
+                    *_held_behind(briefing, job.pipeline, job.job),
                 ],
             )
         )
@@ -304,7 +327,8 @@ def _ci_items(briefing: Briefing) -> list[WorkItem]:
                         source="concourse",
                         ref=paused.build_url or f"{paused.pipeline}/{paused.job}",
                         detail=f"last status {paused.last_status}",
-                    )
+                    ),
+                    *_held_behind(briefing, paused.pipeline, paused.job),
                 ],
             )
         )
@@ -759,9 +783,12 @@ def _finding_items(
 
 def _briefing_unknowns(briefing: Briefing) -> list[Unknown]:
     unknown = []
-    if briefing.failing_unknown or briefing.paused_unknown:
+    if briefing.failing_unknown or briefing.paused_unknown or briefing.blocked_unknown:
         unknown.append(
-            Unknown("concourse", "CI could not be asked which jobs are failing or paused.")
+            Unknown(
+                "concourse",
+                "CI could not be asked which jobs are failing, paused or held back.",
+            )
         )
     if briefing.jobs_unknown:
         unknown.append(Unknown("job_runs", "Scheduled-job health could not be read."))

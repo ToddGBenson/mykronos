@@ -40,6 +40,12 @@ It was `insider` until #60653 deleted that job (operator option A,
 2026-10-11); the transitive layer moved one edge up to `oracle-gate`, and
 `RETIRED_JOBS` keeps `insider` from returning half-wired.
 
+**`oracle-gate` no longer waits for the demo deploy** (TheHub#349, operator
+decision 2026-10-15: decouple and report). It gates on the six analysers
+directly, the same list `deploy-demo` gates on, so the set that must pass is
+unchanged; `deploy-demo`, `dast-demo` and `api-inventory` must now NOT precede
+it, and the two demo lanes must stay behind `deploy-demo`.
+
 * **The cross-repo check** -- our copy against the repository that owns it,
   over `gh`.
 
@@ -94,7 +100,11 @@ ANALYSERS = ("containers", "dependencies", "iac", "prompt-evals", "sast", "secre
 #: it is equally worth a failed test and a sentence of explanation here.
 REQUIRED_GATE: dict[str, dict[str, list[str]]] = {
     "deploy-demo": {"source": sorted(ANALYSERS)},
-    "oracle-gate": {"source": ["deploy-demo"]},
+    # The six lanes directly, beside `deploy-demo` and not behind it
+    # (TheHub#349, operator decision 2026-10-15: decouple and report). It was
+    # `["deploy-demo"]` from #59999; the set of analysers that must pass is
+    # unchanged, and the demo deploy is no longer a precondition of a verdict.
+    "oracle-gate": {"source": sorted(ANALYSERS)},
     "api-inventory": {"source": ["deploy-demo"]},
     "dast-demo": {"source": ["deploy-demo"]},
 }
@@ -133,7 +143,17 @@ RETIRED_DEPLOY_JOBS = ("deploy-prod",)
 #: nothing here promotes. If delivery ever returns to Concourse, #55167's
 #: reasoning (recorded above `oracle-gate` in the pipeline file) is the
 #: specification for rebuilding the gate.
-MUST_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", *ANALYSERS})
+#:
+#: `deploy-demo` left this set with TheHub#349: the gate reads findings by
+#: commit and nothing from a deployed demo, and the edge through it is what
+#: took the gate dark for seven days when a CRLF broke the demo deploy.
+MUST_PRECEDE_THE_DEEPEST_GATE = frozenset(ANALYSERS)
+
+#: Must NOT precede `oracle-gate` (TheHub#349). The demo lanes need a running
+#: demo; the gate does not, and a gate stuck behind a lane it reads nothing
+#: from cannot render a verdict, silently. Asserted on the transitive closure
+#: so the coupling cannot come back by a longer route either.
+MUST_NOT_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", "dast-demo", "api-inventory"})
 
 #: Differences between our copy and TheHub's that are deliberate, with the
 #: reason. Anything NOT in here fails the cross-repo check, which is the point:
@@ -185,6 +205,15 @@ EXPLAINED_DIVERGENCE = {
         "It gates nothing and is gated by nothing -- it is clock-triggered and "
         "redeploys demo only on a strictly better Trivy verdict. TheHub's "
         "read-only mirror gains it on the next export after set-pipeline"
+    ),
+    "oracle-gate": (
+        "ours gates on the six static lanes directly; TheHub's read-only mirror "
+        "still reads `passed: [deploy-demo]`. DECIDED 2026-10-15 by the "
+        "operator (TheHub#349, decouple and report): the gate reads findings by "
+        "commit and nothing from a deployed demo, and behind `deploy-demo` it "
+        "went dark for seven days. The mirror is re-exported after "
+        "set-pipeline, so it follows on the next export; until then this is "
+        "the difference"
     ),
     "insider": (
         "ours deleted it (#60653, operator option A, 2026-10-11): a one-user "
@@ -273,6 +302,36 @@ class TestTheCommittedGate:
             f"these can no longer stop `{DEEPEST_GATE}`: {missing}. "
             "A security scan that cannot stop anything is advisory decoration."
         )
+
+    def test_the_gate_does_not_wait_on_a_demo_deploy(self) -> None:
+        """TheHub#349: decouple. `oracle-gate` consumes findings by commit sha
+        and nothing a deployed demo produces; behind `deploy-demo` it went
+        dark for seven days on a CRLF in an acknowledgement file."""
+        behind = closure(committed_gates(), DEEPEST_GATE)
+        coupled = sorted(MUST_NOT_PRECEDE_THE_DEEPEST_GATE & behind)
+        assert not coupled, (
+            f"`{DEEPEST_GATE}` waits on {coupled} again. The gate reads no demo "
+            "state, so a broken demo deploy would silence it for nothing "
+            "(TheHub#349). If it has started reading DAST, make it say "
+            "'not measured' when DAST is absent rather than wait."
+        )
+
+    def test_the_demo_lanes_stay_behind_the_demo_deploy(self) -> None:
+        """The other half of #349: these two genuinely need a running demo."""
+        gate = committed_gates()
+        for job in ("dast-demo", "api-inventory"):
+            assert "deploy-demo" in closure(gate, job), f"`{job}` no longer waits for demo"
+
+    def test_the_gate_says_what_it_did_not_measure(self) -> None:
+        """Absence is not a pass. The gate's script prints, in every build,
+        that demo DAST and the API inventory are not inputs to its verdict."""
+        config = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+        job = next(j for j in config["jobs"] if j["name"] == DEEPEST_GATE)
+        task = next(s for s in job["plan"] if s.get("task") == "evaluate")
+        script = task["config"]["run"]["args"][-1]
+        assert "Not measured by this verdict" in script
+        assert "dast" in script and "api-inventory" in script
+        assert "their absence is not a pass" in script
 
     def test_no_job_here_deploys_production(self) -> None:
         """What replaces "these lanes gate the production deploy" (#59990).

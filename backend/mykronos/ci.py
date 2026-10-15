@@ -465,6 +465,144 @@ class JobStatus:
 
 
 @dataclass(frozen=True)
+class BlockedJob:
+    """A job that did not run because a job in its `passed:` did not pass.
+
+    The third state, beside "ran and failed" and "switched off" (TheHub#349,
+    mykronos#424). On 2026-09-10 `thehub/deploy-demo` failed on a CRLF in an
+    acknowledgement file and the four jobs behind it -- the risk gate among
+    them -- produced no build for seven days. None of them was failing and
+    none was paused, so neither of those lists could name them: their last
+    build was green, and green is what they showed.
+    """
+
+    job: JobStatus
+    #: The job in this job's own `passed:` list that is in the way.
+    blocked_by: str
+    #: Where the chain stops: `blocked_by` itself when it failed, errored or
+    #: is paused, or the job further up that stopped it when `blocked_by` is
+    #: blocked in turn. Repairing this one is what lets the rest run.
+    root: str
+    #: `failed`, `errored` or `paused` -- the root's state, not this job's.
+    root_state: str
+    #: When the root's last build ended. For a failure, the moment this job
+    #: stopped receiving versions. None for a root that has never built.
+    root_since: datetime | None = None
+    root_build_url: str | None = None
+
+
+def _epoch(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) and value else None
+
+
+def blocked_jobs_in(payload: list[object], pipeline_url: str) -> list[BlockedJob]:
+    """Every job in one pipeline held back by a `passed:` upstream that did not pass.
+
+    Read entirely from the job list Concourse already serves anonymously: each
+    job carries `inputs[].passed`, its `finished_build` and, while one is
+    pending or running, a `next_build`. No build log is read.
+
+    A job is reported when all of these hold:
+
+    * it is not itself failing, errored or paused (those have their own
+      sections, which say something different), and has no build pending;
+    * a job named in its `passed:` is failing or errored, and this job has not
+      STARTED a build since that failure ended -- or has never built at all.
+      A job that started after the failure ran on something else and is not
+      held back by it;
+    * or that upstream is paused, which starves everything behind it whatever
+      the timing;
+    * or that upstream is itself held back, in which case this job is behind
+      the same root.
+
+    A `passed:` name that is not a job in the pipeline is skipped rather than
+    guessed at; `fly set-pipeline` refuses one, so it cannot be live.
+    """
+    raws: dict[str, dict[str, object]] = {
+        str(raw["name"]): raw for raw in payload if isinstance(raw, dict) and raw.get("name")
+    }
+
+    def upstream(raw: dict[str, object]) -> list[str]:
+        names: set[str] = set()
+        inputs = raw.get("inputs")
+        for entry in inputs if isinstance(inputs, list) else []:
+            if isinstance(entry, dict) and isinstance(entry.get("passed"), list):
+                names.update(str(n) for n in entry["passed"])
+        return sorted(names)
+
+    def finished(raw: dict[str, object]) -> dict[str, object]:
+        build = raw.get("finished_build")
+        return build if isinstance(build, dict) else {}
+
+    def stopped(raw: dict[str, object]) -> str | None:
+        if raw.get("paused"):
+            return "paused"
+        status = finished(raw).get("status")
+        return str(status) if status in ConcourseClient.FAILED_STATUSES else None
+
+    def root_of(name: str) -> BlockedJob:
+        job = ConcourseClient._job(raws[name], pipeline_url)
+        return BlockedJob(
+            job=job,
+            blocked_by=name,
+            root=name,
+            root_state=stopped(raws[name]) or "",
+            root_since=job.finished_at,
+            root_build_url=job.build_url,
+        )
+
+    memo: dict[str, BlockedJob | None] = {}
+
+    def held(name: str, visiting: frozenset[str]) -> BlockedJob | None:
+        if name in memo:
+            return memo[name]
+        raw = raws[name]
+        if stopped(raw) or raw.get("next_build") or name in visiting:
+            return None
+        started = _epoch(finished(raw).get("start_time"))
+        ups = [u for u in upstream(raw) if u in raws]
+        found: BlockedJob | None = None
+        # Direct stops first: when one upstream is red and another is merely
+        # behind it, the red one is the job to name.
+        for u in ups:
+            state = stopped(raws[u])
+            if state == "paused":
+                found = root_of(u)
+                break
+            if state:
+                ended = _epoch(finished(raws[u]).get("end_time"))
+                if started is None or ended is None or started <= ended:
+                    found = root_of(u)
+                    break
+        if found is None:
+            for u in ups:
+                inner = held(u, visiting | {name})
+                if inner is not None:
+                    found = BlockedJob(
+                        job=inner.job,
+                        blocked_by=u,
+                        root=inner.root,
+                        root_state=inner.root_state,
+                        root_since=inner.root_since,
+                        root_build_url=inner.root_build_url,
+                    )
+                    break
+        if found is not None:
+            found = BlockedJob(
+                job=ConcourseClient._job(raw, pipeline_url),
+                blocked_by=found.blocked_by,
+                root=found.root,
+                root_state=found.root_state,
+                root_since=found.root_since,
+                root_build_url=found.root_build_url,
+            )
+        memo[name] = found
+        return found
+
+    return [b for name in raws if (b := held(name, frozenset())) is not None]
+
+
+@dataclass(frozen=True)
 class PipelineStatus:
     """What Concourse says about one repository's pipeline."""
 
@@ -731,6 +869,31 @@ class ConcourseClient:
                 job = self._job(raw, url)
                 if (job.status or "") in self.FAILED_STATUSES:
                     out.append((pipeline, job))
+        return out
+
+    def blocked_jobs(self) -> list[tuple[str, BlockedJob]] | None:
+        """Every job that did not run because a `passed:` upstream did not pass.
+
+        The state `failing_jobs` and `paused_jobs` cannot see, because it is
+        neither: TheHub's risk gate and insider-risk lane sat behind a failing
+        `deploy-demo` for seven days showing their last green build
+        (TheHub#349). `blocked_jobs_in` holds the rule; this sweeps every
+        visible pipeline with it.
+
+        `None` rather than `[]` when Concourse cannot be reached, for the same
+        reason as the two above: "nothing is held back" and "could not ask"
+        must not render the same.
+        """
+        names = self.pipelines()
+        if names is None:
+            return None
+        out: list[tuple[str, BlockedJob]] = []
+        for pipeline in names:
+            url = f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+            payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
+            if not isinstance(payload, list):
+                continue
+            out.extend((pipeline, blocked) for blocked in blocked_jobs_in(payload, url))
         return out
 
     def trigger_job(self, pipeline: str, job: str, *, token: str) -> bool:

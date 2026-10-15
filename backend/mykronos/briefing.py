@@ -644,6 +644,56 @@ class FailingLane:
 
 
 @dataclass
+class BlockedLane:
+    """A CI job that did not run because an upstream lane did not pass (TheHub#349).
+
+    The state neither `FailingLane` nor `PausedLane` can hold, because it is
+    neither. On 2026-09-10 `thehub/deploy-demo` failed on a CRLF in an
+    acknowledgement file, and the four jobs gated on it with `passed:` -- the
+    go/no-go gate and insider-risk among them -- produced no build for seven
+    days. They were not failing: their last build was green, and green is
+    what they showed. They were not paused. Nothing on this page named them,
+    and TheHub merged about thirty pull requests with its risk gate dark.
+
+    The fix is never on this lane. It is on `root`, which the failing or
+    paused section already names; this says what that one red lane is
+    costing, which is the part nobody could see.
+    """
+
+    pipeline: str
+    job: str
+    #: The job in this lane's own `passed:` list that is in the way.
+    blocked_by: str
+    #: Where the chain stops. Equal to `blocked_by` unless that job is itself
+    #: held back, in which case this is the red or paused job further up.
+    root: str
+    #: `failed`, `errored` or `paused`: the root's state, not this lane's.
+    root_state: str
+    #: When the root's last build ended -- for a failure, when this lane
+    #: stopped receiving versions. None for a root that never built.
+    since: datetime | None = None
+    #: This lane's own last finished build. Usually `succeeded`, which is the
+    #: whole problem: it is what every other view displays.
+    last_status: str | None = None
+    last_finished_at: datetime | None = None
+    #: The root's build, which is where the repair starts.
+    build_url: str | None = None
+
+    @property
+    def days_blocked(self) -> float | None:
+        """Since the root's last build ended. A floor for a failure, and only a
+        proxy for a pause, for the reason `PausedLane.days_paused` gives."""
+        if self.since is None:
+            return None
+        from mykronos.schemas import utcnow
+
+        end = self.since
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        return (utcnow().replace(tzinfo=UTC) - end).total_seconds() / 86400
+
+
+@dataclass
 class TokenDelivery:
     """An ingestion token the rotation job left for a person (#263).
 
@@ -737,6 +787,13 @@ class Briefing:
     #: True when the CI system could not be asked. Distinct from an empty
     #: `failing` list, which means it was asked and nothing is failing.
     failing_unknown: bool = False
+    #: CI jobs that did not run because an upstream `passed:` lane did not
+    #: pass (TheHub#349). The third state beside `failing` and `paused`: these
+    #: lanes show their last green build and are not running at all.
+    blocked: list[BlockedLane] = field(default_factory=list)
+    #: True when the CI system could not be asked. Distinct from an empty
+    #: `blocked` list, which means it was asked and nothing is held back.
+    blocked_unknown: bool = False
     #: Lanes that are reporting and not covering (B-046). Deliberately its own
     #: list rather than another `reason` on `StalledLane`: those lanes are not
     #: producing successful scans and these are, so the sentence, the number
@@ -1377,6 +1434,7 @@ def build(
     concourse_token: bool = False,
     paused_jobs: list[PausedLane] | None = None,
     failing_jobs: list[FailingLane] | None = None,
+    blocked_jobs: list[BlockedLane] | None = None,
     unhealthy_jobs: list[Any] | None = None,
     tokens: list[TokenDelivery] | None = None,
     toxic_combinations: list[dict[str, Any]] | None = None,
@@ -1457,6 +1515,11 @@ def build(
         paused_unknown=paused_jobs is None,
         failing=list(failing_jobs or []),
         failing_unknown=failing_jobs is None,
+        # Not scoped by `asset_id`, for `paused`'s reason: a pipeline is not a
+        # repository name, and dropping a held-back gate from a scoped view is
+        # the omission this list exists to end.
+        blocked=list(blocked_jobs or []),
+        blocked_unknown=blocked_jobs is None,
         # Not scoped by `asset_id` either: a scheduled job belongs to the
         # platform, not to a repository, so a scoped briefing showing the
         # estate's broken jobs is over-reporting and that is the safe
@@ -1701,6 +1764,43 @@ def render(briefing: Briefing) -> str:
             "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF",
             "  Could not ask the CI system. This is not the same as nothing",
             "  failing, and must not read like it.",
+            "",
+        ]
+
+    if briefing.blocked:
+        lines += [
+            "LANES THAT DID NOT RUN BECAUSE AN UPSTREAM LANE DID NOT PASS",
+            "  Not failing and not paused: their last build may well be green,",
+            "  and that is what every other view shows. They are gated on a",
+            "  lane that is red or switched off, so nothing new reaches them.",
+            "  Repair the lane named after 'behind'; these follow on their own.",
+            "",
+        ]
+        for held in sorted(briefing.blocked, key=lambda b: (b.pipeline, b.root, b.job)):
+            days = held.days_blocked
+            when = (
+                f" since {held.since:%Y-%m-%d} ({days:.0f} days)"
+                if held.since and days is not None
+                else ""
+            )
+            via = "" if held.blocked_by == held.root else f", via {held.blocked_by}"
+            own = (
+                f"its own last build {held.last_status}"
+                if held.last_status
+                else "it has never finished a build"
+            )
+            lines.append(f"  {held.pipeline}/{held.job}")
+            lines.append(f"      behind {held.root} ({held.root_state}){when}{via}")
+            lines.append(f"      did not run — {own}")
+            if held.build_url:
+                lines.append(f"      {held.build_url}")
+        lines.append("")
+    elif briefing.blocked_unknown:
+        lines += [
+            "LANES THAT DID NOT RUN BECAUSE AN UPSTREAM LANE DID NOT PASS",
+            "  Could not ask the CI system. A lane held back by a red upstream",
+            "  shows its last green build, so 'could not ask' must not read as",
+            "  'nothing held back'.",
             "",
         ]
 

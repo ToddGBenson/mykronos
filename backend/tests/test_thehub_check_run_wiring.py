@@ -67,9 +67,28 @@ def _reporters(node: Any) -> list[dict[str, Any]]:
 
 
 def test_the_gate_waits_on_every_verifying_lane() -> None:
-    """The premise of choosing `oracle-gate`: it sits downstream of the lanes."""
+    """The premise of choosing `oracle-gate`: it sits downstream of the lanes.
+
+    Not `deploy-demo` since TheHub#349: the gate sits beside the demo deploy,
+    not behind it.
+    """
+    upstream = _upstream_of(GATE)
     assert {"unit", "build", "secrets", "sast", "dependencies", "containers",
-            "prompt-evals", "iac", "deploy-demo"} <= _upstream_of(GATE)
+            "prompt-evals", "iac"} <= upstream
+    assert "deploy-demo" not in upstream
+
+
+def test_only_the_gate_and_its_upstream_write_the_check() -> None:
+    """TheHub#349. The platform keeps the LATEST report per commit, so a job
+    beside the gate that reported too would race it: a demo failure landing
+    before the gate's success would be overwritten green, one landing after
+    would turn a passed gate red. Only the gate's own chain may report."""
+    allowed = _upstream_of(GATE) | {GATE}
+    for job in _doc()["jobs"]:
+        if _reporters(job):
+            assert job["name"] in allowed, (
+                f"{job['name']} reports `Concourse / thehub` but is not upstream of {GATE}"
+            )
 
 
 def test_the_first_lane_reports_the_start_before_it_tests() -> None:
@@ -111,7 +130,8 @@ def test_every_lane_up_to_the_gate_reports_failure(hook: str) -> None:
 def test_the_report_is_never_retried_and_always_bounded() -> None:
     """PS-12 and PS-7: it can fail, so no `attempts:`; it holds the worker, so a timeout."""
     reporters = _reporters(_doc()["jobs"])
-    assert len(reporters) == 22
+    # 20 since TheHub#349 took `deploy-demo`'s two failure reports out.
+    assert len(reporters) == 20
     for step in reporters:
         assert "attempts" not in step
         assert step.get("timeout")
