@@ -39,6 +39,12 @@ on:
     workflows: ["Delivery"]
     types: [completed]
     branches: ["main"]
+  # Weekly, with the active scan on. D-053 paused active scanning because it
+  # took the shared host down; this runs on a GitHub runner against a stack
+  # that exists only for the run, so nothing it consumes is production's.
+  # Sunday 11:00 UTC, clear of the Concourse `weekly` coverage window.
+  schedule:
+    - cron: "0 11 * * 0"
   workflow_dispatch:
     inputs:
       active_scan:
@@ -51,7 +57,9 @@ on:
         default: false
 
 concurrency:
-  group: demo-and-dast-${{ github.ref }}
+  # The weekly active scan takes ~40 minutes; a Delivery landing meanwhile
+  # must not cancel it, so the two kinds of run queue separately.
+  group: demo-and-dast-${{ github.ref }}-${{ github.event_name == 'schedule' && 'weekly' || 'delivery' }}
   cancel-in-progress: true
 
 permissions:
@@ -67,6 +75,7 @@ jobs:
     # on completion regardless of outcome, so the check is explicit.
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
       github.event.workflow_run.conclusion == 'success'
 
     env:
@@ -282,7 +291,7 @@ jobs:
         if: always()
         continue-on-error: true
         env:
-          ACTIVE: ${{ inputs.active_scan }}
+          ACTIVE: ${{ github.event_name == 'schedule' || inputs.active_scan }}
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/dast"
