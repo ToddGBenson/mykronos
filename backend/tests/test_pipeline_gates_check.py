@@ -228,7 +228,13 @@ class TestTheConfiguredSource:
         #   #60653  deletes `insider` itself (operator option A, 2026-10-11):
         #           a one-user Hub has no second human for it to model, and
         #           #60571 found it blind. The deepest gated job is now
-        #           `oracle-gate`, pinned below at `[deploy-demo]`.
+        #           `oracle-gate`, pinned at `[deploy-demo]`.
+        #
+        #   TheHub#349  pins `oracle-gate` at the six static lanes (operator
+        #           decision 2026-10-15: decouple and report). The gate reads
+        #           findings by commit and nothing from a deployed demo, and
+        #           behind `deploy-demo` it went dark for seven days. The six
+        #           are `deploy-demo`'s own list, so no lane left the set.
         #
         # What would move it again: a job in that file whose success means
         # "production now runs this commit". #55167's reasoning is the
@@ -241,10 +247,9 @@ class TestTheConfiguredSource:
         # the real file. A refactor that made `gates()` return nothing would
         # pass every test above and fail this one.
         assert "insider" not in gates, "insider was deleted by #60653"
-        assert gates["oracle-gate"]["source"] == ["deploy-demo"], (
-            "oracle-gate gates on deploy-demo, which itself waits on the six "
-            "scanning lanes (#59999)."
-        )
+        assert gates["oracle-gate"]["source"] == [
+            "containers", "dependencies", "iac", "prompt-evals", "sast", "secrets",
+        ], "oracle-gate gates on the six scanning lanes directly (TheHub#349)."
         # The floor, and it is the assertion that makes the one above mean
         # something: `gates()` returning `{"oracle-gate": {"source": []}}`
         # for a file it failed to parse would otherwise read as agreement.

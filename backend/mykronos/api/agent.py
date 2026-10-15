@@ -228,6 +228,7 @@ async def work(
             concourse_token=bool(settings.concourse_api_token),
             paused_jobs=operational.paused_jobs,
             failing_jobs=operational.failing_jobs,
+            blocked_jobs=operational.blocked_jobs,
             unhealthy_jobs=operational.unhealthy_jobs,
             tokens=operational.tokens,
             toxic_combinations=operational.toxic_combinations,
