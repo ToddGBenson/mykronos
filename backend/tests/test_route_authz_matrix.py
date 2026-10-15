@@ -121,6 +121,7 @@ ROUTES: dict[str, str] = {
     "DELETE /api/dashboard/repos/{repo_id}/controls/{control_id}": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/findings": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/open-findings": PRINCIPAL,
+    "GET /api/dashboard/repos/{repo_id}/findings/export": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/scan-health": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/scan-runs/trend": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/scan-runs": PRINCIPAL,
