@@ -169,3 +169,173 @@ def test_the_kaniko_build_loop_keeps_its_own_shell_tools() -> None:
     script = build["config"]["run"]["args"][-1]
     assert "--cleanup" in script
     assert "--ignore-path=/busybox" in script
+
+
+# -- MyKronos's own images (`x-mykronos-build`) ----------------------------------
+
+MYKRONOS_COMPOSE = """
+x-worker: &worker
+  image: concourse/concourse:8.3.1@sha256:aaa
+  x-mykronos-build:
+    context: ../images/apk-upgrade
+    base: concourse/concourse:8.3.1@sha256:aaa
+    publish: concourse/concourse:8.3.1
+    refresh_arg: APK_REFRESH
+services:
+  concourse:
+    image: concourse/concourse:8.3.1@sha256:aaa
+    x-mykronos-build:
+      context: ../images/apk-upgrade
+      base: concourse/concourse:8.3.1@sha256:aaa
+      publish: concourse/concourse:8.3.1
+      refresh_arg: APK_REFRESH
+  worker-1:
+    <<: *worker
+  vault:
+    image: hashicorp/vault:2.1.2@sha256:bbb
+    x-mykronos-build:
+      context: ../images/apk-upgrade
+      base: hashicorp/vault:2.1.2@sha256:bbb
+      publish: hashicorp/vault:2.1.2
+      refresh_arg: APK_REFRESH
+      args: { RUN_AS: vault }
+  minio:
+    image: pgsty/silo:distroless
+"""
+
+
+def _mykronos_tree(tmp_path: Path, compose: str = MYKRONOS_COMPOSE) -> Path:
+    (tmp_path / "deploy" / "concourse").mkdir(parents=True)
+    (tmp_path / "deploy" / "images" / "apk-upgrade").mkdir(parents=True)
+    (tmp_path / "deploy" / "images" / "apk-upgrade" / "Dockerfile").write_text(
+        "ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n", encoding="utf-8"
+    )
+    (tmp_path / "deploy" / "concourse" / "docker-compose.yml").write_text(
+        compose, encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_mykronos_plan_publishes_under_the_vendor_path(tmp_path: Path) -> None:
+    recipes = ir.plan_mykronos(_mykronos_tree(tmp_path), "20261016", "r:5000")
+    assert [r.candidate for r in recipes] == [
+        "r:5000/concourse/concourse:8.3.1-p20261016",
+        "r:5000/hashicorp/vault:2.1.2-p20261016",
+    ]
+    concourse, vault = recipes
+    # Web and worker (through the YAML anchor) are one build.
+    assert len(concourse.services) == 2
+    # Before adoption the baseline is the vendor image the service runs.
+    assert concourse.current == "concourse/concourse:8.3.1@sha256:aaa"
+    # The context is resolved from the compose file to the repository root.
+    assert concourse.context == "deploy/images/apk-upgrade"
+    assert vault.build_args == (
+        ("RUN_AS", "vault"),
+        ("BASE_IMAGE", "hashicorp/vault:2.1.2@sha256:bbb"),
+        ("APK_REFRESH", "20261016"),
+    )
+
+
+def test_mykronos_plan_refuses_two_recipes_for_one_publish(tmp_path: Path) -> None:
+    clash = MYKRONOS_COMPOSE.replace(
+        "    refresh_arg: APK_REFRESH\nservices:", "    refresh_arg: APT_REFRESH\nservices:", 1
+    )
+    with pytest.raises(ValueError, match="different recipe"):
+        ir.plan_mykronos(_mykronos_tree(tmp_path, clash), "20261016", "r:5000")
+
+
+@pytest.mark.parametrize(
+    ("publish", "reason"),
+    [
+        ("hashicorp/vault", "repository:tag"),
+        ("hashicorp/vault:2.1.2-p20261011", "-p date"),
+    ],
+)
+def test_mykronos_plan_refuses_a_bad_publish(tmp_path: Path, publish: str, reason: str) -> None:
+    bad = MYKRONOS_COMPOSE.replace("publish: hashicorp/vault:2.1.2", f"publish: {publish}")
+    with pytest.raises(ValueError, match=reason):
+        ir.plan_mykronos(_mykronos_tree(tmp_path, bad), "20261016", "r:5000")
+
+
+def test_mykronos_plan_refuses_a_context_outside_the_repository(tmp_path: Path) -> None:
+    bad = MYKRONOS_COMPOSE.replace(
+        "context: ../images/apk-upgrade\n      base: hashicorp",
+        "context: ../../../elsewhere\n      base: hashicorp",
+    )
+    with pytest.raises(ValueError, match="leaves the repository"):
+        ir.plan_mykronos(_mykronos_tree(tmp_path, bad), "20261016", "r:5000")
+
+
+def test_the_estate_recipes_keep_each_images_finding_identity() -> None:
+    """The point of publishing under the vendor's path: container finding
+    identity drops the registry host and the tag, so a derivative's findings
+    are the image's findings and the acceptances against them keep covering
+    what a rebuild did not fix. A Docker Hub official image needs `library/`
+    spelled out, because the host is dropped before `library/` is added."""
+    import yaml
+
+    from mykronos.fingerprint import image_repository
+
+    recipes = ir.plan_mykronos(REPO_ROOT, "20261016", "192.168.0.14:5000")
+    assert recipes, "no x-mykronos-build recipes in the estate's compose files"
+    for name in ir.MYKRONOS_COMPOSE_FILES:
+        services = yaml.safe_load((REPO_ROOT / name).read_text(encoding="utf-8"))["services"]
+        for service, definition in services.items():
+            build = definition.get("x-mykronos-build")
+            if not build:
+                continue
+            candidate = next(r.candidate for r in recipes if f"{name}::{service}" in r.services)
+            image = str(definition["image"])
+            # An image compose builds is scanned as `<registry>/<name>:<sha>`
+            # by the containers lane, so that is the identity to keep.
+            scanned = f"192.168.0.14:5000/{image}" if "build" in definition else image
+            assert image_repository(candidate) == image_repository(scanned), (name, service)
+
+
+def test_one_regressed_image_holds_back_only_itself(tmp_path: Path) -> None:
+    plan_file = tmp_path / "plan.tsv"
+    plan_file.write_text("a:1\tr/a:1-p2\tctx\t\nb:1\tr/b:1-p2\tctx\t\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    findings: dict[str, list[tuple[str, str, str]]] = {
+        "a:1": [("CVE-1", "liba", "HIGH")],
+        "r/a:1-p2": [],
+        "b:1": [("CVE-2", "libb", "HIGH")],
+        "r/b:1-p2": [("CVE-3", "libb", "CRITICAL")],
+    }
+    for ref, pairs in findings.items():
+        (reports / ir.report_name(ref)).write_text(json.dumps(_trivy(*pairs)), encoding="utf-8")
+    verdict = tmp_path / "verdict.json"
+    publish = tmp_path / "publish.txt"
+    assert ir.main(["decide", "--plan", str(plan_file), "--reports", str(reports),
+                    "--output", str(verdict), "--publish-list", str(publish)]) == 0
+    document = json.loads(verdict.read_text(encoding="utf-8"))
+    assert document["verdict"] == "regressed"
+    assert document["publish"] == ["r/a:1-p2"]
+    assert publish.read_text(encoding="utf-8") == "r/a:1-p2\n"
+    assert [i["outcome"] for i in document["images"]] == ["improved", "regressed"]
+    # TheHub's publish step greps for this string; a per-image outcome must
+    # never satisfy it when the set as a whole did not improve.
+    assert '"verdict": "improved"' not in verdict.read_text(encoding="utf-8")
+
+
+MYKRONOS_PIPELINE = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+
+
+def test_mykronos_image_refresh_never_pushes_to_find_out() -> None:
+    """Build to a tarball, push only the published list: the registry has
+    deletes disabled, so every speculative push would stay forever."""
+    import yaml
+
+    config = yaml.safe_load(MYKRONOS_PIPELINE.read_text(encoding="utf-8"))
+    job = next(j for j in config["jobs"] if j["name"] == "image-refresh")
+    steps = {s.get("task"): s for s in job["plan"] if s.get("task")}
+    build = steps["build"]["config"]["run"]["args"][-1]
+    assert "--no-push" in build and "--tar-path" in build
+    assert "--cleanup" in build and "--ignore-path=/busybox" in build
+    assert "--recipes mykronos" in steps["plan"]["config"]["run"]["args"][-1]
+    publish = steps["publish"]["config"]["run"]["args"][-1]
+    assert "verdict/publish.txt" in publish
+    # Nothing in the job deploys or touches what runs.
+    text = yaml.safe_dump(job)
+    assert "docker compose" not in text and "deploy.ps1" not in text

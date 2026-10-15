@@ -26,6 +26,35 @@ not produce a report is `failed`, never a zero.
 
 The verdict authorises the demo only. Production keeps the date its compose
 file pins, and moving it is a reviewed one-line change.
+
+**MyKronos's own images (`x-mykronos-build`).** The same lane, out of band,
+for the estate this repository runs: Concourse, Postgres, the registry, Vault
+and the ZAP scanner. Their recipes differ from TheHub's in one way: they are
+declared before they are adopted, so the service's `image:` can still be the
+vendor's. A recipe therefore names what it publishes rather than deriving it
+from `image:`:
+
+    x-mykronos-build:
+      context: ../images/apt-upgrade        # relative to the compose file
+      base: postgres:15.19@sha256:...       # passed as BASE_IMAGE, optional
+      publish: library/postgres:15.19       # repository:tag on the registry
+      refresh_arg: APT_REFRESH              # gets the date, optional
+      args: {RUN_AS: vault}                 # more build args, optional
+      baseline: ...                         # compare against, optional
+
+The candidate is `<registry>/<publish>-p<date>`. Keeping the vendor's
+repository path matters: container finding identity drops the registry host
+and the tag (`fingerprint.image_repository`), so the derivative's findings
+are the vendor image's findings, and the risk acceptances recorded against
+them keep covering whatever the rebuild did not fix. The baseline is the
+service's `image:` - the vendor image before adoption, the pinned derivative
+after - unless the recipe names one, which an image compose builds locally
+(ZAP) must, since a local tag cannot be pulled to scan.
+
+`decide` also judges each image on its own (`outcome`) and lists the
+candidates worth publishing (`publish`): independent infrastructure should
+not wait on each other, so one image that regresses holds back only itself.
+The set-level `verdict` keeps its meaning for TheHub's lane.
 """
 
 from __future__ import annotations
@@ -121,6 +150,89 @@ def plan(
     return sorted(found.values(), key=lambda r: r.current)
 
 
+#: The compose files that declare MyKronos's own recipes, relative to the root.
+MYKRONOS_COMPOSE_FILES = ("deploy/concourse/docker-compose.yml", "deploy/demo/docker-compose.yml")
+_TAGGED = re.compile(r"^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
+def plan_mykronos(
+    root: Path,
+    date: str,
+    registry: str,
+    env: dict[str, str] | None = None,
+    files: tuple[str, ...] = MYKRONOS_COMPOSE_FILES,
+) -> list[Recipe]:
+    """Every distinct `x-mykronos-build` recipe in `files`, built for `date`.
+
+    Two services sharing one `publish` (Concourse's web and worker) are one
+    recipe; they must agree on everything else, or the plan refuses.
+    """
+    if not _DATE.match(date):
+        raise ValueError(f"date {date!r} is not YYYYMMDD")
+    found: dict[str, tuple[Recipe, tuple[Any, ...]]] = {}
+    for name in files:
+        path = root / name
+        if not path.is_file():
+            continue
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for service, definition in (document.get("services") or {}).items():
+            build = (definition or {}).get("x-mykronos-build")
+            if not build:
+                continue
+            where = f"{name}::{service}"
+            publish = str(build.get("publish", ""))
+            if not _TAGGED.match(publish):
+                raise ValueError(f"{where}: publish {publish!r} must be repository:tag")
+            if _DATE_SUFFIX.search(publish):
+                raise ValueError(f"{where}: publish {publish!r} must not carry a -p date")
+            baseline_ref = str(build.get("baseline") or definition.get("image", ""))
+            baseline, unresolved = interpolate(baseline_ref, env or {})
+            if unresolved:
+                raise ValueError(f"{where}: unset {', '.join(unresolved)}")
+            if not baseline:
+                raise ValueError(f"{where}: no image: and no baseline to compare against")
+            context = (path.parent / str(build["context"])).resolve()
+            try:
+                relative = context.relative_to(root.resolve()).as_posix()
+            except ValueError as exc:
+                raise ValueError(f"{where}: context {build['context']!r} leaves the repository") from exc
+            if not (context / "Dockerfile").is_file():
+                raise ValueError(f"{where}: no Dockerfile in {relative}")
+            args = [(str(k), str(v)) for k, v in (build.get("args") or {}).items()]
+            if build.get("base"):
+                args.append(("BASE_IMAGE", str(build["base"])))
+            if build.get("refresh_arg"):
+                args.append((str(build["refresh_arg"]), date))
+            recipe = Recipe(
+                current=baseline,
+                candidate=f"{registry}/{publish}-p{date}",
+                context=relative,
+                build_args=tuple(args),
+                services=(where,),
+            )
+            shape = (recipe.current, recipe.context, recipe.build_args)
+            if publish in found:
+                previous, previous_shape = found[publish]
+                if previous_shape != shape:
+                    raise ValueError(
+                        f"{where}: publishes {publish} like {previous.services[0]} "
+                        "but with a different recipe"
+                    )
+                found[publish] = (
+                    Recipe(
+                        previous.current,
+                        previous.candidate,
+                        previous.context,
+                        previous.build_args,
+                        (*previous.services, where),
+                    ),
+                    previous_shape,
+                )
+                continue
+            found[publish] = (recipe, shape)
+    return sorted((r for r, _ in found.values()), key=lambda r: r.candidate)
+
+
 def gated_findings(report: dict[str, Any]) -> set[tuple[str, str]]:
     """The HIGH/CRITICAL (vulnerability, package) pairs in one Trivy JSON report."""
     pairs: set[tuple[str, str]] = set()
@@ -175,6 +287,11 @@ def decide(comparisons: list[Comparison]) -> Verdict:
     return "unchanged"
 
 
+def outcome(comparison: Comparison) -> Verdict:
+    """`decide` for one image: what publishing this candidate alone would mean."""
+    return decide([comparison])
+
+
 def report_name(reference: str) -> str:
     """A filesystem-safe name for one image's Trivy report."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", reference) + ".json"
@@ -196,17 +313,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--root", default=".")
     p.add_argument("--date", required=True, help="YYYYMMDD package snapshot to build")
     p.add_argument("--registry", required=True, help="host:port the pipeline pushes to")
+    p.add_argument(
+        "--recipes",
+        choices=("thehub", "mykronos"),
+        default="thehub",
+        help="`x-thehub-build` in TheHub's compose files, or `x-mykronos-build` in this one's",
+    )
     p.add_argument("--output", default="-")
 
     d = sub.add_parser("decide", help="Compare current and candidate Trivy reports")
     d.add_argument("--plan", required=True, help="the build list `plan` wrote")
     d.add_argument("--reports", required=True, help="directory of Trivy JSON reports")
     d.add_argument("--output", required=True, help="where to write the verdict JSON")
+    d.add_argument(
+        "--publish-list",
+        help="also write the candidates to publish, one per line (empty if none)",
+    )
 
     arguments = parser.parse_args(argv)
 
     if arguments.command == "plan":
-        recipes = plan(Path(arguments.root), arguments.date, arguments.registry)
+        planner = plan_mykronos if arguments.recipes == "mykronos" else plan
+        recipes = planner(Path(arguments.root), arguments.date, arguments.registry)
         lines = [f"{r.current}\t{r.tsv()}" for r in recipes]
         text = "\n".join(lines) + ("\n" if lines else "")
         if arguments.output == "-":
@@ -232,12 +360,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     verdict = decide(comparisons)
+    # Per image as `outcome`, never as a second `verdict` key: TheHub's
+    # publish step greps the file for `"verdict": "improved"`, and an image
+    # that improved inside a set that regressed must not satisfy it.
     document = {
         "verdict": verdict,
+        "publish": [c.candidate for c in comparisons if outcome(c) == "improved"],
         "images": [
             {
                 "current": c.current,
                 "candidate": c.candidate,
+                "outcome": outcome(c),
                 "removed": [list(x) for x in c.removed],
                 "added": [list(x) for x in c.added],
                 "kept": c.kept,
@@ -247,9 +380,13 @@ def main(argv: list[str] | None = None) -> int:
         ],
     }
     Path(arguments.output).write_text(json.dumps(document, indent=2), encoding="utf-8")
+    if arguments.publish_list:
+        Path(arguments.publish_list).write_text(
+            "".join(f"{c}\n" for c in document["publish"]), encoding="utf-8"
+        )
     for c in comparisons:
         state = c.error or f"-{len(c.removed)} +{len(c.added)} ={c.kept} HIGH/CRITICAL"
-        print(f"[decide] {c.candidate}: {state}", file=sys.stderr)
+        print(f"[decide] {c.candidate}: {state} ({outcome(c)})", file=sys.stderr)
         for vuln, package in c.added:
             print(f"[decide]   NEW {vuln} in {package}", file=sys.stderr)
     print(f"[decide] verdict: {verdict}", file=sys.stderr)
