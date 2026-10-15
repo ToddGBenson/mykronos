@@ -71,3 +71,31 @@ jobs:
         run: |
           echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER} on this runner."
           python -m pytest -q -n auto -p no:cacheprovider
+
+  # One test file, alone: no secret-named variable passed by value on a
+  # command line (backend/tests/test_no_secret_on_a_command_line.py). It is
+  # also part of the whole suite above. It runs here as well because #821
+  # merged with it red: `backend-tests` is advisory, and requiring a nine-
+  # minute suite waits on D-162's steadiness evidence. This job takes seconds,
+  # installs nothing but pytest, and reads only the repository's scripts, so
+  # it can be required on its own today.
+  #
+  # `-c /dev/null`: the backend's pytest config sets asyncio options and
+  # warnings-as-errors for plugins this job does not install. `--noconftest`:
+  # conftest.py imports the backend. The test file uses the standard library.
+  secret-hygiene:
+    name: secret-hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: No secret on a command line
+        working-directory: backend
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q -p no:cacheprovider -c /dev/null --rootdir . --noconftest tests/test_no_secret_on_a_command_line.py

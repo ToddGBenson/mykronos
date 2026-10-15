@@ -78,3 +78,22 @@ def test_it_runs_the_whole_suite_in_parallel(document: dict[str, Any]) -> None:
     # The whole suite: no path, -k or -m narrows it.
     arguments = run[run.index("python -m pytest") + len("python -m pytest") :]
     assert not re.search(r"\s(-k|-m)\s|tests/", arguments), arguments
+
+
+def test_the_secret_hygiene_check_runs_alone(document: dict[str, Any]) -> None:
+    """A fast check that can be required before the whole suite is (#821)."""
+    job = document["jobs"]["secret-hygiene"]
+    assert job["name"] == "secret-hygiene"
+    run = " ".join(str(step.get("run", "")) for step in job["steps"])
+    assert "tests/test_no_secret_on_a_command_line.py" in run
+    # It installs pytest only, so the test must not need the backend.
+    assert "-e " not in run and ".[dev]" not in run
+    assert "--noconftest" in run
+
+
+def test_the_secret_hygiene_test_needs_only_the_standard_library() -> None:
+    source = (Path(__file__).parent / "test_no_secret_on_a_command_line.py").read_text(
+        encoding="utf-8"
+    )
+    imports = re.findall(r"^(?:from|import) (\w+)", source, re.MULTILINE)
+    assert set(imports) <= {"__future__", "re", "pathlib"}, imports
