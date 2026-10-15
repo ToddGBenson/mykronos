@@ -2806,7 +2806,57 @@ jobs:
                 set -euo pipefail
                 pip install --quiet pyyaml
                 PYTHONPATH="$PWD/source/backend" python -m mykronos.estate_images \
-                  --root source --output estate/images.txt
+                  --root source --output estate/images.txt \
+                  --builds-output estate/builds.txt
+
+      # -- Images compose builds rather than pulls ---------------------------
+      #
+      # The demo's ZAP is built from deploy/zap/Dockerfile: upstream's pinned
+      # weekly with Debian's fixes applied and what our usage never runs
+      # removed. Its local tag exists only where compose built it, so it cannot
+      # be scanned by reference the way the estate's pulled images are, and
+      # scanning the upstream image instead would report findings the lane no
+      # longer runs. So the same Dockerfile is built here, from this commit,
+      # pushed beside the application images under the commit SHA, and scanned
+      # like them. The list is derived (`builds`), for the reason #427 gives.
+      #
+      # Fatal, unlike an estate image that will not pull: this is our own
+      # Dockerfile, and a red build here stops the job before the upload, so
+      # nothing is closed by an absence that is really a failed build.
+      - task: build-tool-images
+        timeout: 45m
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gcr.io/kaniko-project/executor
+              tag: v1.23.2-debug
+          inputs: [{ name: source }, { name: meta }, { name: estate }]
+          outputs: [{ name: built }]
+          params:
+            REGISTRY: ((registry))
+          run:
+            path: /busybox/sh
+            args:
+              - -ec
+              - |
+                SHA=$(cat meta/sha)
+                : > built/images.txt
+                # `--cleanup`: kaniko unpacks each base into its own root, so a
+                # second build in this container would start from the first's.
+                while read -r name context dockerfile; do
+                  [ -n "${name}" ] || continue
+                  echo "Building ${name} from ${dockerfile}"
+                  /kaniko/executor \
+                    --context "source/${context}" \
+                    --dockerfile "source/${dockerfile}" \
+                    --destination "${REGISTRY}/${name}:${SHA}" \
+                    --insecure --skip-tls-verify \
+                    --single-snapshot --cleanup
+                  echo "${REGISTRY}/${name}:${SHA}" >> built/images.txt
+                done < estate/builds.txt
+                echo "Built $(wc -l < built/images.txt) image(s) compose builds."
 
       - task: scan-images
         # 45m covered two application images. The estate's own images are
@@ -2818,7 +2868,7 @@ jobs:
         image: trivy
         config:
           platform: linux
-          inputs: [{ name: meta }, { name: estate }]
+          inputs: [{ name: meta }, { name: estate }, { name: built }]
           outputs: [{ name: results }]
           params:
             REGISTRY: ((registry))
@@ -2859,6 +2909,28 @@ jobs:
                     exit 1
                   }
                 done
+
+                # The images compose builds (`build-tool-images`), pushed to the
+                # same LAN registry under the same SHA, so the same `--insecure`
+                # and the same rule: no report is a failed scan of our own
+                # artefact, and fatal. Named after the image, not the tag, so a
+                # finding keeps one report name from commit to commit.
+                while IFS= read -r built_image; do
+                  [ -n "${built_image}" ] || continue
+                  name="${built_image##*/}"
+                  safe="${name%%:*}"
+                  echo "Scanning ${built_image}"
+                  trivy image "${built_image}" \
+                    --insecure \
+                    --scanners vuln \
+                    --format sarif --output "results/trivy-built-${safe}.sarif" \
+                    --exit-code 0 --quiet \
+                    --timeout 30m
+                  test -s "results/trivy-built-${safe}.sarif" || {
+                    echo "::error::Trivy wrote no report for ${built_image} - the scan did not run."
+                    exit 1
+                  }
+                done < built/images.txt
 
                 # The images this estate runs and does not build (#427). The
                 # list came from `derive-estate-images`, which read it out of

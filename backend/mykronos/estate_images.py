@@ -52,6 +52,7 @@ import argparse
 import json
 import logging
 import os
+import posixpath
 import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -60,6 +61,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from mykronos.fingerprint import image_repository
 
 logger = logging.getLogger(__name__)
 
@@ -201,10 +204,35 @@ class ComposeService:
     #: Where that role came from, in the same form `reason` takes -- so a
     #: reader can tell "declared a tool" from "nobody said, so it counts".
     role_reason: str = "not declared; counted as a service"
+    #: For a service with `build:`, the build context and Dockerfile relative
+    #: to the derivation root (POSIX). `None` when there is no build, or when
+    #: the context is outside the tree and so not this repository's to build.
+    build_context: str | None = None
+    build_dockerfile: str | None = None
 
     @property
     def tag_kind(self) -> TagKind:
         return classify_tag(self.reference)
+
+
+@dataclass(frozen=True)
+class BuiltImage:
+    """An image a compose file builds here rather than pulls.
+
+    The containers lane cannot scan these by reference -- the tag compose
+    gives them exists only on the machine that ran the build -- so it builds
+    the same context and scans the result (`--builds-output`). This is how the
+    demo's ZAP, built from `deploy/zap/Dockerfile`, stays in scope after it
+    stopped being an upstream `image:`.
+    """
+
+    #: The repository part of the service's `image:`, which the lane reuses as
+    #: the name it pushes under, so a finding keeps one identity across builds.
+    name: str
+    context: str
+    dockerfile: str
+    role: Role
+    run_by: tuple[str, ...]
 
 
 @dataclass
@@ -227,6 +255,36 @@ class Derivation:
         spec 05 §5 warns about, arrived at from the other direction.
         """
         return sorted({service.reference for service in self.of_origin("upstream")})
+
+    def builds(self) -> list[BuiltImage]:
+        """What the lane must build to scan: one entry per image name.
+
+        Only a service with a literal `image:` qualifies. Without one compose
+        invents a name from the project, and a deploy-time override is a
+        publish pipeline's artefact, scanned where it is published.
+        """
+        by_name: dict[str, list[ComposeService]] = {}
+        for service in self.of_origin("built_here"):
+            if service.build_context is None or service.build_dockerfile is None:
+                continue
+            if "$" in service.raw_image or not service.reference:
+                continue
+            name = split_reference(service.reference)[0]
+            by_name.setdefault(name, []).append(service)
+        built = []
+        for name, services in sorted(by_name.items()):
+            first = services[0]
+            built.append(
+                BuiltImage(
+                    name=name,
+                    context=first.build_context or "",
+                    dockerfile=first.build_dockerfile or "",
+                    # The stricter answer wins, as for `images()`.
+                    role="service" if any(s.role == "service" for s in services) else "tool",
+                    run_by=tuple(sorted(f"{s.compose_path}::{s.service}" for s in services)),
+                )
+            )
+        return built
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -261,6 +319,16 @@ class Derivation:
                 f"{service.compose_path}::{service.service}"
                 for service in self.of_origin("built_here")
             ),
+            "builds": [
+                {
+                    "name": build.name,
+                    "context": build.context,
+                    "dockerfile": build.dockerfile,
+                    "role": build.role,
+                    "run_by": list(build.run_by),
+                }
+                for build in self.builds()
+            ],
             "unresolved": sorted(
                 f"{service.compose_path}::{service.service} ({service.raw_image})"
                 for service in self.of_origin("unresolved")
@@ -377,6 +445,12 @@ def services_from_compose(
         if origin == "upstream" and not reference:
             origin, reason = "unresolved", "the image resolved to an empty reference"
 
+        build_context, build_dockerfile, build_warning = _build_paths(
+            definition.get("build"), compose_path
+        )
+        if build_warning:
+            warnings.append(f"{compose_path}::{name}: {build_warning}")
+
         found.append(
             ComposeService(
                 compose_path=compose_path,
@@ -388,10 +462,50 @@ def services_from_compose(
                 origin=origin,
                 reason=reason,
                 unresolved_vars=tuple(unresolved),
+                build_context=build_context,
+                build_dockerfile=build_dockerfile,
             )
         )
 
     return found, warnings
+
+
+def _build_paths(build: object, compose_path: str) -> tuple[str | None, str | None, str | None]:
+    """A `build:` section as (context, dockerfile, warning), relative to the root.
+
+    Both compose spellings: a bare context string, or a mapping with `context`
+    and `dockerfile`. Paths are relative to the compose file. A context that
+    leaves the tree, is absolute, is a URL or is interpolated is not built:
+    the lane builds this checkout and nothing else, and saying so beats a
+    kaniko error three steps away.
+    """
+    if build is None:
+        return None, None, None
+    if isinstance(build, str):
+        context, dockerfile = build, "Dockerfile"
+    elif isinstance(build, dict):
+        if "dockerfile_inline" in build:
+            return None, None, "an inline Dockerfile is not built by the containers lane"
+        context = str(build.get("context") or ".")
+        dockerfile = str(build.get("dockerfile") or "Dockerfile")
+    else:
+        return None, None, "`build:` is neither a path nor a mapping"
+
+    if "$" in context or "$" in dockerfile or "://" in context or context.startswith("git@"):
+        return None, None, f"build context {context!r} is not a path in this tree"
+    if posixpath.isabs(context) or posixpath.isabs(dockerfile):
+        return None, None, f"build context {context!r} is outside the repository"
+    base = posixpath.dirname(compose_path)
+    resolved = posixpath.normpath(posixpath.join(base, context))
+    if resolved == ".." or resolved.startswith("../"):
+        return None, None, f"build context {context!r} is outside the repository"
+    resolved_dockerfile = posixpath.normpath(posixpath.join(resolved, dockerfile))
+    if resolved_dockerfile == ".." or resolved_dockerfile.startswith("../"):
+        return None, None, f"Dockerfile {dockerfile!r} is outside the repository"
+    if any(character.isspace() for character in resolved_dockerfile):
+        # `--builds-output` is a space-separated line a shell `read` splits.
+        return None, None, f"build path {resolved_dockerfile!r} contains whitespace; not built"
+    return resolved, resolved_dockerfile, None
 
 
 def discover_compose_files(root: Path) -> list[Path]:
@@ -444,7 +558,14 @@ def summarise(derivation: Derivation) -> str:
     }
     for reference, service in sorted(by_reference.items()):
         lines.append(f"  {reference}  [{service.tag_kind}, {service.role}]")
+    builds = derivation.builds()
+    lines.append(f"Images to build and scan: {len(builds)}")
+    for build in builds:
+        lines.append(f"  {build.name}  <- {build.dockerfile}  [{build.role}]")
+    built = {run_by for build in builds for run_by in build.run_by}
     for service in derivation.of_origin("built_here"):
+        if f"{service.compose_path}::{service.service}" in built:
+            continue
         lines.append(
             f"  (skipped) {service.compose_path}::{service.service} "
             f"-> {service.raw_image}: {service.reason}"
@@ -466,6 +587,12 @@ def _environment(pairs: Iterable[str]) -> dict[str, str]:
     return env
 
 
+def _repository_name(reference: str) -> str:
+    """`192.0.2.1:5000/mykronos-zap:abc` and `mykronos-zap:local` -> `mykronos-zap`."""
+    repository = image_repository(reference)
+    return repository.removeprefix("library/")
+
+
 def annotate_reports(derivation: Derivation, directory: Path) -> dict[str, int]:
     """Stamp each Trivy report with the role its image was declared to have (#666).
 
@@ -477,11 +604,18 @@ def annotate_reports(derivation: Derivation, directory: Path) -> dict[str, int]:
 
     Only `tool` is written. A service needs no mark - it is the default, and
     the default is the direction that cannot lose a finding.
+
+    An image the lane built (`builds()`) is reported under the name it was
+    pushed as, `<registry>/<name>:<sha>`, which no compose file says, so it is
+    matched by repository name with the registry and tag dropped.
     """
     tools = {
         str(image["reference"])
         for image in derivation.as_dict()["images"]
         if image.get("role") == "tool"
+    }
+    built_tools = {
+        _repository_name(build.name) for build in derivation.builds() if build.role == "tool"
     }
     counts = {"reports": 0, "tool_reports": 0}
     for path in sorted(directory.glob("*.sarif")):
@@ -497,7 +631,10 @@ def annotate_reports(derivation: Derivation, directory: Path) -> dict[str, int]:
             properties = run.get("properties")
             if not isinstance(properties, dict):
                 continue
-            if str(properties.get("imageName") or "").strip() in tools:
+            image_name = str(properties.get("imageName") or "").strip()
+            if image_name in tools or (
+                image_name and _repository_name(image_name) in built_tools
+            ):
                 properties["mykronosRole"] = "tool"
                 changed = True
         if changed:
@@ -532,6 +669,13 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="NAME=VALUE",
         help="A compose variable, repeatable. The process environment is used as well.",
+    )
+    parser.add_argument(
+        "--builds-output",
+        metavar="FILE",
+        help="Also write the images compose builds here, one `name context dockerfile` "
+        "line each (paths relative to --root), for the lane to build and scan. "
+        "Written even when empty, so a missing file means this step did not run.",
     )
     parser.add_argument(
         "--annotate",
@@ -570,6 +714,15 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(payload)
     else:
         Path(arguments.output).write_text(payload, encoding="utf-8")
+
+    if arguments.builds_output:
+        Path(arguments.builds_output).write_text(
+            "".join(
+                f"{build.name} {build.context} {build.dockerfile}\n"
+                for build in derivation.builds()
+            ),
+            encoding="utf-8",
+        )
 
     if arguments.annotate:
         counts = annotate_reports(derivation, Path(arguments.annotate))
