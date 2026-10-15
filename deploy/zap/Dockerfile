@@ -39,6 +39,11 @@ USER root
 # during upstream's own build. systemd itself is `Protected` and stays; the
 # units nothing in a container starts go.
 #
+# Webswing (/zap/webswing) is ZAP's GUI served to a browser; it is not a
+# package, so the purge cannot take it. Nothing here runs it, and its bundled
+# jetty 9.4 and lz4 1.3.0 jars were the last five HIGH findings left after the
+# purge (2026-10-15) -- ones only a ZAP release could fix -- so it is deleted.
+#
 # `apt-get upgrade` first, so whatever Debian has fixed is fixed here. That
 # makes the build depend on the day it runs -- the derivative is reproducible
 # in its pin and its package set, not byte for byte -- which is the trade
@@ -62,6 +67,8 @@ RUN set -eux; \
         systemd-timesyncd systemd-cryptsetup libnss-systemd libpam-systemd dbus-user-session; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
+    rm -rf /zap/webswing; \
+    if [ -e /zap/webswing ]; then echo "/zap/webswing is still present" >&2; exit 1; fi; \
     for gone in firefox-esr xvfb xserver-common openssh-client libgs10 librsvg2-2 \
                 libxtst6 libexpat1-dev python3.13-dev linux-libc-dev wget; do \
         if dpkg-query -W -f='${Status}' "$gone" 2>/dev/null | grep -q 'ok installed'; then \
