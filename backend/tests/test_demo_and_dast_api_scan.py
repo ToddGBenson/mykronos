@@ -337,7 +337,10 @@ echo '{"paths": {"/api/repos": {}}}' > "$out"
 def _run_step(tmp_path: Path, zap_rc: int) -> tuple[int, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("docker", _DOCKER_STUB), ("curl", _CURL_STUB)):
+    # The step calls `python`; point it at this interpreter. (A Windows
+    # interpreter directory cannot go on a POSIX PATH: its drive colon splits.)
+    python_shim = f'#!/usr/bin/env bash\nexec "{Path(sys.executable).as_posix()}" "$@"\n'
+    for name, body in (("docker", _DOCKER_STUB), ("curl", _CURL_STUB), ("python", python_shim)):
         stub = bin_dir / name
         stub.write_text(body, encoding="utf-8", newline="\n")
         stub.chmod(0o755)
@@ -347,7 +350,7 @@ def _run_step(tmp_path: Path, zap_rc: int) -> tuple[int, Path]:
     script = tmp_path / "step.sh"
     script.write_text(_api_run(), encoding="utf-8", newline="\n")
     env = {
-        "PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin:{Path(sys.executable).parent.as_posix()}",
+        "PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin",
         "RUNNER_TEMP": runner_temp.as_posix(),
         "COMPOSE": "compose.yml",
         "DEMO_GATE_TOKEN": "gate",
