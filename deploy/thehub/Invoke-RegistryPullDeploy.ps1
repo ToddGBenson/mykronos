@@ -28,7 +28,22 @@
     means demo is serving that commit rather than that a request was filed.
 
 .PARAMETER Environments
-    Which pointers to check. Both by default.
+    Which pointers to check. Demo only by default.
+
+    Production is OPT-IN (TheHub #364). It used to be in the default, so the
+    Scheduled Task - which passes no -Environments - kept polling
+    `prod.requested` after deploy-prod was retired (#59990): anything able to
+    write that object could restart production with whatever SHA it named,
+    while production's real deploy path is TheHub's deploy.sh (ADR 0072).
+    A listener for a delivery path nobody chose is not a dormant feature, it
+    is an unreviewed one.
+
+    To move production onto the registry artifact, the operator passes
+    `-Environments demo,prod` on the task AND pins THEHUB_IMAGE in
+    production's own .env - the cutover steps are in TheHub #364. Passing
+    prod here alone is not enough: the pin this script sets lives only in
+    its own process, and the next deploy.sh or bare `docker compose up`
+    returns production to the local build.
 
 .PARAMETER Once
     Check once and exit. This is how the Scheduled Task runs it; the polling
@@ -62,7 +77,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet("demo", "prod")]
-    [string[]]$Environments = @("demo", "prod"),
+    [string[]]$Environments = @("demo"),
     [string]$Endpoint = "http://localhost:9000",
     [string]$Bucket = "thehub-releases",
     [switch]$Once,
