@@ -173,35 +173,38 @@ def test_the_kaniko_build_loop_keeps_its_own_shell_tools() -> None:
 
 # -- MyKronos's own images (`x-mykronos-build`) ----------------------------------
 
+DIGEST_A = "sha256:" + "a" * 64
+DIGEST_B = "sha256:" + "b" * 64
+
 MYKRONOS_COMPOSE = """
 x-worker: &worker
-  image: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  image: concourse/concourse:8.3.1@sha256:aaa
   x-mykronos-build:
     context: ../images/apk-upgrade
-    base: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    base: concourse/concourse:8.3.1@sha256:aaa
     publish: concourse/concourse:8.3.1
     refresh_arg: APK_REFRESH
 services:
   concourse:
-    image: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    image: concourse/concourse:8.3.1@sha256:aaa
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      base: concourse/concourse:8.3.1@sha256:aaa
       publish: concourse/concourse:8.3.1
       refresh_arg: APK_REFRESH
   worker-1:
     <<: *worker
   vault:
-    image: hashicorp/vault:2.1.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    image: hashicorp/vault:2.1.2@sha256:bbb
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: hashicorp/vault:2.1.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      base: hashicorp/vault:2.1.2@sha256:bbb
       publish: hashicorp/vault:2.1.2
       refresh_arg: APK_REFRESH
       args: { RUN_AS: vault }
   minio:
     image: pgsty/silo:distroless
-"""
+""".replace("sha256:aaa", DIGEST_A).replace("sha256:bbb", DIGEST_B)
 
 
 def _mykronos_tree(tmp_path: Path, compose: str = MYKRONOS_COMPOSE) -> Path:
@@ -226,12 +229,12 @@ def test_mykronos_plan_publishes_under_the_vendor_path(tmp_path: Path) -> None:
     # Web and worker (through the YAML anchor) are one build.
     assert len(concourse.services) == 2
     # Before adoption the baseline is the vendor image the service runs.
-    assert concourse.current == "concourse/concourse:8.3.1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert concourse.current == f"concourse/concourse:8.3.1@{DIGEST_A}"
     # The context is resolved from the compose file to the repository root.
     assert concourse.context == "deploy/images/apk-upgrade"
     assert vault.build_args == (
         ("RUN_AS", "vault"),
-        ("BASE_IMAGE", "hashicorp/vault:2.1.2@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ("BASE_IMAGE", f"hashicorp/vault:2.1.2@{DIGEST_B}"),
         ("APK_REFRESH", "20261016"),
     )
 
