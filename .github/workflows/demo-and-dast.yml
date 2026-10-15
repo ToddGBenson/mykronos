@@ -129,6 +129,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      # For the browser suite (`frontend/e2e/`). The same pin and major as
+      # `frontend-pr.yml`, which matches the frontend image's `node:22-slim`.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Lowercase the owner
         # `github.repository_owner` is `ToddGBenson`; a Docker repository name
         # must be lowercase or the pull is refused outright. Same fix as
@@ -291,6 +299,80 @@ jobs:
           DEMO_FRONTEND_URL="$PROXIED_FRONTEND" DEMO_BACKEND_URL="$PROXIED_BACKEND" \
             python -m pytest functional -q -p no:cacheprovider \
               --junitxml="$RUNNER_TEMP/functional/functional.xml"
+
+      - name: Browser suite (Playwright)
+        id: e2e
+        # The functional suite speaks HTTP and ZAP reads responses; neither
+        # runs the page's JavaScript. The static CSP that blocked hydration
+        # (`frontend/proxy.ts`) left every control on the site inert while
+        # every page answered 200 with the right HTML, so both stayed green.
+        # This opens a real Chromium against the stack and fails on a CSP
+        # violation, an uncaught error or a console error, as well as on what
+        # each spec asserts.
+        #
+        # Here, before the spider: a broken UI is reported even when ZAP is
+        # slow or runs out the job's clock. Gated like the functional suite and
+        # `continue-on-error` like it, so the scans below run whatever this did
+        # and the job goes red at the end (`Fail if the browser suite failed`).
+        #
+        # **Direct, not through ZAP.** The published port, from the runner.
+        # Shaping the site tree is the functional suite's job, and nothing
+        # here changes what the spider or the API scan does.
+        #
+        # **One functional ScanRun.** The JUnit goes beside `functional.xml`,
+        # into the directory `Upload the functional result` reads, and the
+        # junit adapter merges every *.xml there into one run. A second
+        # `functional`/`junit` upload would be a second run for the same lane.
+        # Traces go to their own directory, outside both uploads.
+        continue-on-error: true
+        env:
+          E2E_BASE_URL: http://127.0.0.1:3200
+          E2E_JUNIT: ${{ runner.temp }}/functional/e2e.xml
+          E2E_OUTPUT_DIR: ${{ runner.temp }}/e2e
+        run: |
+          set -uo pipefail
+          mkdir -p "$(dirname "$E2E_JUNIT")" "$E2E_OUTPUT_DIR"
+
+          # Written first, replaced only by Playwright's own report, so a
+          # suite that never ran -- a failed install, a timeout, a cancel --
+          # fails the functional run rather than leaving `functional.xml` to
+          # read as the whole of it. Same idea as the API scan's marker.
+          cat > "$E2E_JUNIT" <<'XML'
+          <testsuites><testsuite name="e2e" tests="1" failures="0" errors="1"><testcase name="the browser suite did not complete" classname="e2e"><error message="The Playwright suite wrote no report: it did not run, or did not finish."/></testcase></testsuite></testsuites>
+          XML
+
+          broken() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          # The seed's findings sit in the write-ahead buffer until the
+          # backend's compaction loop runs, every five minutes; the pages read
+          # the compacted lake. Without this the findings views are empty or
+          # full depending on how long the steps above took. Retried because
+          # it shares partitions with that loop, and a collision is a retry,
+          # not a lost write (the buffer keeps everything until it lands).
+          BACKEND=$(docker compose -f "$COMPOSE" ps -q backend)
+          compacted=0
+          for attempt in 1 2 3; do
+            if docker exec "$BACKEND" python -m mykronos.cli compact; then
+              compacted=1
+              break
+            fi
+            echo "::warning::Compaction attempt ${attempt} failed; retrying."
+            sleep 10
+          done
+          [ "$compacted" -eq 1 ] || broken "Could not compact the seeded findings: the browser suite would be testing an empty estate."
+
+          cd frontend
+          npm ci --no-audit --no-fund || broken "npm ci failed in frontend/."
+          npx playwright install --with-deps chromium || broken "Could not install Playwright's Chromium."
+
+          # `|| RC=$?`: GitHub runs this under `bash -e`, which would end the
+          # step on a failing test before the exit code is kept.
+          RC=0
+          npx playwright test || RC=$?
+          exit "$RC"
 
       - name: Spider, and scan
         id: zap
@@ -619,6 +701,20 @@ jobs:
           token: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
           mykronos-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Keep the browser traces
+        # A failed browser test keeps a Playwright trace (DOM, console and
+        # network, step by step); `npx playwright show-trace` opens it. After
+        # the uploads, like every report here, and never able to fail the job
+        # on its own account.
+        if: steps.e2e.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-traces
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Resource read
         # Before `Tear down`, so the containers still exist to be named, and
         # `always()` because the reading is the point on a run that failed as
@@ -702,4 +798,12 @@ jobs:
         if: steps.functional.outcome == 'failure'
         run: |
           echo "::error::The functional suite failed."
+          exit 1
+
+      - name: Fail if the browser suite failed
+        # Last, for the same reason. Its JUnit is already in the functional
+        # ScanRun; the trace is in the `e2e-traces` artifact.
+        if: steps.e2e.outcome == 'failure'
+        run: |
+          echo "::error::The browser suite failed; see 'Browser suite (Playwright)' and the e2e-traces artifact."
           exit 1
