@@ -90,6 +90,15 @@ class TestTheDockerfile:
         ):
             assert re.search(rf"(?<![\w.-]){re.escape(package)}(?![\w.-])", purge), package
 
+    def test_webswing_is_removed_and_the_build_proves_it(self) -> None:
+        """Webswing is ZAP's GUI-in-a-browser. Nothing here runs it, and its
+        bundled jetty and lz4 jars were the last five HIGH findings Debian
+        could not fix (2026-10-15), so it goes - and a build that kept it
+        fails rather than shipping it."""
+        body = _run_body()
+        assert re.search(r"rm -rf /zap/webswing(?![\w/-])", body)
+        assert re.search(r"\[ -e /zap/webswing \][^;]*exit 1", body)
+
     def test_the_jre_zap_runs_on_is_kept(self) -> None:
         """Dropping the JDK must not take the headless JRE with it."""
         assert "apt-mark manual openjdk-21-jre-headless" in _run_body()
