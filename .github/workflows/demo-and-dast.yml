@@ -70,7 +70,9 @@ jobs:
   demo-and-dast:
     name: functional + ZAP
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Spider (10) + the frontend's active scan (40) + the API's active scan
+    # (capped at 20 below) + stand-up and upload no longer fit in 60.
+    timeout-minutes: 90
     # A delivery that failed published nothing to scan. `workflow_run` fires
     # on completion regardless of outcome, so the check is explicit.
     if: >-
@@ -108,6 +110,12 @@ jobs:
       # equal to the compose value. Since #753 every frontend path but
       # `/api/healthz` answers 401 without it (TheHub #60735).
       DEMO_GATE_TOKEN: demo-gate-token-not-a-secret
+      # The demo backend's admin token, for the API scan: the value
+      # `MYKRONOS_ADMIN_TOKEN` has in the same compose file, public for the
+      # same reason. It is valid only on the stack this job stands up and
+      # tears down, whose database is tmpfs. `test_demo_and_dast_api_scan.py`
+      # holds it equal to the compose value.
+      DEMO_ADMIN_TOKEN: demo-admin-token-not-a-secret
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -409,6 +417,178 @@ jobs:
             echo "::warning::The crawl did not finish inside its budget. The report covers the ${AFTER} URL(s) reached, which is a narrower scan rather than a failed one."
           fi
 
+      - name: Scan the backend API from its OpenAPI document
+        id: zap_api
+        # The step above scans the dashboard; the backend it talks to was only
+        # ever reached through whatever the functional suite happened to call,
+        # so most API routes were never requested by ZAP at all. This imports
+        # the backend's own OpenAPI document and scans every operation in it,
+        # authenticated as admin and through the perimeter gate.
+        #
+        # **What it can reach.** `backend` resolves on this run's compose
+        # network to this run's container: synthetic data, a tmpfs database,
+        # no GitHub App, no production credential, destroyed by `Tear down`.
+        # An active scan here submits writes with an admin token, and that is
+        # only acceptable because nothing it writes outlives the job.
+        #
+        # **The same report, not a second one.** It writes beside the
+        # dashboard's report, into the directory `Upload the DAST result`
+        # reads, so both become one ScanRun under `zap`. Absence
+        # reconciliation partitions on the tool: two `zap` uploads, one per
+        # target, would each close the other's findings after two runs.
+        #
+        # `always()` and `continue-on-error`, like the scan above: a failure
+        # here must not cost the dashboard's report, and the job still goes
+        # red at the end (`Fail if the API scan did not complete`).
+        if: always()
+        continue-on-error: true
+        env:
+          ACTIVE: ${{ github.event_name == 'schedule' || inputs.active_scan }}
+          # The backend as the runner sees it (the compose file publishes
+          # 8201), used only to fetch the document. ZAP itself is on the
+          # compose network and scans `$PROXIED_BACKEND`.
+          PUBLISHED_BACKEND: http://127.0.0.1:8201
+        run: |
+          set -uo pipefail
+          WRK="$RUNNER_TEMP/zap-api"
+          mkdir -p "$WRK" "$RUNNER_TEMP/dast"
+          # ZAP runs as uid 1000 in its image; the runner owns this as 1001.
+          chmod 777 "$WRK"
+
+          # The converse of the marker below. `Spider, and scan` deliberately
+          # writes no report when it only reached the gate, so that the upload
+          # records a failed run. With this step's report beside it, the
+          # directory would no longer be empty and the API findings alone
+          # would read as the whole `zap` run, closing every dashboard finding
+          # by absence. The marker keeps that run partial.
+          if [ ! -s "$RUNNER_TEMP/dast/zap.json" ]; then
+            echo "::warning::'Spider, and scan' wrote no dashboard report; marking the DAST run partial."
+            echo "The dashboard scan wrote no report." > "$RUNNER_TEMP/dast/zap.json"
+          fi
+
+          # Written first, replaced only by a finished report at the end, so
+          # a timeout or a cancel-in-progress -- which run none of this
+          # script's logic -- still leaves the run partial.
+          echo "The API scan did not complete: interrupted before its report was written." > "$RUNNER_TEMP/dast/zap-api.json"
+
+          # A failed API scan must not read as a clean API. The frontend's
+          # report alone, uploaded as the whole `zap` run, would let absence
+          # reconciliation close every API finding after two runs. So the
+          # failure leaves a marker the zap adapter cannot parse, which records
+          # the run as PARTIAL_FAILURE -- confirming no absence, closing
+          # nothing -- while the dashboard's findings still ingest.
+          broken() {
+            echo "::error::$1"
+            echo "The API scan did not complete: $1" > "$RUNNER_TEMP/dast/zap-api.json"
+            exit 1
+          }
+
+          # One ZAP pin (D-128): the image compose's `zap` service names,
+          # read from the compose file rather than repeated here.
+          ZAP_IMAGE=$(docker compose -f "$COMPOSE" config --format json \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["services"]["zap"]["image"])' \
+            || echo "")
+          case "$ZAP_IMAGE" in
+            *@sha256:*) echo "ZAP image: ${ZAP_IMAGE}" ;;
+            *) broken "compose's ZAP image '${ZAP_IMAGE}' is not digest-pinned; not scanning with an unpinned scanner." ;;
+          esac
+
+          # Fetched here rather than by ZAP, so an unreachable or gated-off
+          # backend is a red step with the reason in it, not a scan that
+          # imported nothing and reported nothing.
+          curl -fsS --max-time 30 \
+            -H "X-Hub-Token: ${DEMO_GATE_TOKEN}" \
+            -H "Authorization: Bearer ${DEMO_ADMIN_TOKEN}" \
+            -o "$WRK/openapi.json" "${PUBLISHED_BACKEND}/openapi.json" \
+            || broken "Could not fetch ${PUBLISHED_BACKEND}/openapi.json from the demo backend."
+          PATHS=$(python -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("paths") or {}))' \
+            "$WRK/openapi.json" 2>/dev/null || echo 0)
+          if [ "$PATHS" -eq 0 ]; then
+            broken "The backend's OpenAPI document has no paths: there is nothing to scan, and an empty scan is not a clean one."
+          fi
+          echo "OpenAPI document: ${PATHS} path(s)."
+
+          # zap-api-scan.py actively scans unless told `-S` (safe mode, a
+          # passive baseline). Same switch as the dashboard's scan: passive
+          # after a Delivery (D-053), active weekly or on request.
+          MODE=(-S)
+          if [ "$ACTIVE" = "true" ]; then
+            MODE=()
+          else
+            echo "::notice::API scan is passive only (D-053). Re-run with active_scan to include it."
+          fi
+
+          # Admin, through the gate. The bearer token goes in ZAP's own
+          # header-auth variables, by name (`-e VAR`), and only to the backend
+          # host; the gate token is a replacer rule, as the dashboard scan
+          # uses. Both are the demo stack's public literals, never a secret.
+          export ZAP_AUTH_HEADER=Authorization
+          export ZAP_AUTH_HEADER_VALUE="Bearer ${DEMO_ADMIN_TOKEN}"
+          export ZAP_AUTH_HEADER_SITE=backend
+          # The start of the window the access-log check below reads.
+          STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # `|| RC=$?`, not `RC=$?` on the next line: GitHub runs this under
+          # `bash -e`, which ends the step on ZAP's exit 3 before a bare
+          # `RC=$?` is reached, and `broken` below never writes the marker.
+          RC=0
+          docker run --rm --name mykronos-demo-zap-api \
+            --network mykronos-demo_default \
+            -v "$WRK:/zap/wrk:rw" \
+            -e ZAP_AUTH_HEADER -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \
+            "$ZAP_IMAGE" zap-api-scan.py \
+              -t openapi.json -f openapi \
+              -O "${PROXIED_BACKEND}" \
+              -J zap-api.json -I "${MODE[@]}" \
+              -z "-config scanner.maxScanDurationInMins=20 -config replacer.full_list(0).description=perimeter-gate -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=X-Hub-Token -config replacer.full_list(0).regex=false -config replacer.full_list(0).replacement=${DEMO_GATE_TOKEN}" \
+            || RC=$?
+
+          # 0, 1 and 2 are "scanned, and here is what it found" (pass, FAIL,
+          # WARN). 3 is an error -- including importing no URLs at all.
+          if [ "$RC" -ge 3 ] || [ ! -s "$WRK/zap-api.json" ]; then
+            broken "zap-api-scan.py exited ${RC} against ${PROXIED_BACKEND}; no usable API report."
+          fi
+
+          # What ZAP actually got back. A scan whose requests the gate or the
+          # admin check refused is a scan of the gate, and its report looks
+          # exactly like a clean API -- the same trap the dashboard spider fell
+          # into. The headers are ZAP's to send, so the evidence is the
+          # backend's own uvicorn access log for the scan's window, not a
+          # request made from here. The image runs uvicorn at `info` with the
+          # access log on, and the demo compose file does not override that.
+          # Format, from uvicorn's AccessFormatter:
+          #   INFO:     172.18.0.5:41234 - "GET /api/repos HTTP/1.1" 200 OK
+          # Only `/api/` lines count: the healthcheck is `/healthz` and this
+          # step's own fetch was `/openapi.json`.
+          docker logs --since "$STARTED" mykronos-demo-backend-1 > "$WRK/backend.log" 2>&1 || true
+          SENT=$(python - "$WRK/backend.log" <<'PY'
+          import re
+          import sys
+          from collections import Counter
+
+          ANSI = re.compile(r"\x1b\[[0-9;]*m")
+          LINE = re.compile(r'"[A-Z]+ (/api/\S*) HTTP/[0-9.]+" (\d{3})')
+          try:
+              text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          except OSError:
+              text = ""
+          seen = Counter()
+          for raw in text.splitlines():
+              match = LINE.search(ANSI.sub("", raw))
+              if match:
+                  seen[match.group(2)] += 1
+          total = sum(seen.values())
+          ok = sum(n for code, n in seen.items() if code.startswith("2"))
+          print(total, ok, seen["401"] + seen["403"])
+          PY
+          ) || SENT="0 0 0"
+          read -r API_TOTAL API_2XX API_DENIED <<< "$SENT"
+          echo "The backend answered ZAP's /api/ requests: ${API_TOTAL} total, ${API_2XX} 2xx, ${API_DENIED} 401/403."
+          if [ "$API_2XX" -eq 0 ] || [ $((API_DENIED * 2)) -gt "$API_TOTAL" ]; then
+            broken "The API scan reached the gate, not the API: ${API_2XX} of ${API_TOTAL} /api/ responses were 2xx and ${API_DENIED} were 401/403. Not uploading it as a scan of the API."
+          fi
+          cp "$WRK/zap-api.json" "$RUNNER_TEMP/dast/zap-api.json"
+          echo "API report written (zap-api-scan.py exit ${RC})."
+
       # Measure everything first, then report. The first live run put this
       # upload before the scan, the upload failed on a 502 from the ingestion
       # API, and `Spider, and scan` was *skipped* — so an unreachable Mykronos
@@ -506,6 +686,13 @@ jobs:
         if: steps.zap.outcome == 'failure'
         run: |
           echo "::error::The DAST scan did not complete; see 'Spider, and scan'."
+          exit 1
+
+      - name: Fail if the API scan did not complete
+        # Last, after the upload recorded it as a partial run.
+        if: steps.zap_api.outcome == 'failure'
+        run: |
+          echo "::error::The API scan did not complete; see 'Scan the backend API from its OpenAPI document'."
           exit 1
 
       - name: Fail if the functional suite failed
