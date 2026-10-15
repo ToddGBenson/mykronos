@@ -1134,7 +1134,7 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: verdict }]
+            inputs: [{ name: source }, { name: verdict, optional: true }]
             outputs: [{ name: results }]
             run:
               path: bash
@@ -1808,7 +1808,7 @@ jobs:
             params: *mykronos_env
             config:
               platform: linux
-              inputs: [{ name: source }, { name: results }]
+              inputs: [{ name: source }, { name: results, optional: true }]
               run:
                 path: bash
                 args:
@@ -2138,7 +2138,7 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: results }]
+            inputs: [{ name: source }, { name: results, optional: true }]
             run:
               path: bash
               args:
@@ -2962,7 +2962,7 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: results }]
+            inputs: [{ name: source }, { name: results, optional: true }]
             run:
               path: bash
               args:

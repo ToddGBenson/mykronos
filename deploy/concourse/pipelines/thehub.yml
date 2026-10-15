@@ -3437,7 +3437,7 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: results }]
+            inputs: [{ name: source }, { name: results, optional: true }]
             run:
               path: bash
               args:
@@ -4259,7 +4259,7 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: results }]
+            inputs: [{ name: source }, { name: results, optional: true }]
             run:
               path: bash
               args:
@@ -5468,6 +5468,13 @@ jobs:
         # the honest answer. As a plain following step this never ran on a bad
         # build, and the capability went `never_reported`: identical, in the
         # lake, to a capability nobody enabled (L0003).
+        #
+        # `optional: true` because the volume only exists once the task
+        # starts. Builds 2-18 (2026-09-24..10-10) died at interpolation on
+        # the undefined `azure-*` vars, so there was no `results` and this
+        # upload errored "missing inputs: results" - `cloud` stayed
+        # never_reported through three weeks of red builds. Missing now
+        # uploads as a failed scan, as above.
         ensure:
           task: upload
           timeout: 10m
@@ -5475,7 +5482,7 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: results }]
+            inputs: [{ name: source }, { name: results, optional: true }]
             run:
               path: bash
               args:

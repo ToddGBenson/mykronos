@@ -1345,7 +1345,7 @@ jobs:
             MYKRONOS_REF: ((mykronos-ref))
           config:
             platform: linux
-            inputs: [{ name: source }, { name: results }]
+            inputs: [{ name: source }, { name: results, optional: true }]
             run:
               path: bash
               args:
