@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -20,17 +21,18 @@ WORKFLOW = ROOT / ".github" / "workflows" / "demo-and-dast.yml"
 DEMO = ROOT / "deploy" / "demo" / "docker-compose.yml"
 
 
-def _job() -> dict:
-    job: dict = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["demo-and-dast"]
+def _job() -> dict[str, Any]:
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job: dict[str, Any] = doc["jobs"]["demo-and-dast"]
     return job
 
 
-def _steps() -> list[dict]:
-    steps: list[dict] = _job()["steps"]
+def _steps() -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = _job()["steps"]
     return steps
 
 
-def _step(step_id: str) -> dict:
+def _step(step_id: str) -> dict[str, Any]:
     found = [s for s in _steps() if s.get("id") == step_id]
     assert found, f"no step with id {step_id!r}"
     return found[0]
