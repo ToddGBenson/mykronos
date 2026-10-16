@@ -153,7 +153,10 @@ def test_a_medium_swapped_for_another_is_unchanged() -> None:
 
 def test_a_new_high_regresses_even_when_mediums_fall() -> None:
     c = ir.compare(
-        "a", "b", _trivy(("CVE-1", "x", "MEDIUM"), ("CVE-2", "y", "MEDIUM")), _trivy(("CVE-3", "z", "HIGH"))
+        "a",
+        "b",
+        _trivy(("CVE-1", "x", "MEDIUM"), ("CVE-2", "y", "MEDIUM")),
+        _trivy(("CVE-3", "z", "HIGH")),
     )
     assert ir.decide([c]) == "regressed"
 

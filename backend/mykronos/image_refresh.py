@@ -24,6 +24,15 @@ HIGH/CRITICAL (vulnerability, package) pair and at least one is removed;
 `regressed` when any image gains one; `unchanged` otherwise. A scan that did
 not produce a report is `failed`, never a zero.
 
+**MEDIUM is the second tier.** With no HIGH/CRITICAL change, a candidate that
+removes a MEDIUM pair and adds none is also `improved`. Until 2026-10-16 only
+the top tier counted, and the registry, Vault and Concourse rebuilds, which
+each fixed zlib CVE-2026-85091 (MEDIUM) and nothing else, read `unchanged` and
+were never published: the distribution's fix was built every night and thrown
+away. A MEDIUM swapped for a different MEDIUM is not progress, so it stays
+`unchanged`; a new MEDIUM never makes anything `regressed`, and never holds
+back a HIGH/CRITICAL fix. LOW and UNKNOWN never decide.
+
 The verdict authorises the demo only. Production keeps the date its compose
 file pins, and moving it is a reviewed one-line change.
 
@@ -74,6 +83,7 @@ from mykronos.estate_images import interpolate
 
 COMPOSE_FILES = ("docker-compose.yml", "docker-compose.demo.yml")
 GATED = ("CRITICAL", "HIGH")
+SECOND_TIER = ("MEDIUM",)
 _DATE_SUFFIX = re.compile(r"-p(\d{8})$")
 _DATE = re.compile(r"^\d{8}$")
 
@@ -248,12 +258,14 @@ def plan_mykronos(
     return sorted((r for r, _ in found.values()), key=lambda r: r.candidate)
 
 
-def gated_findings(report: dict[str, Any]) -> set[tuple[str, str]]:
-    """The HIGH/CRITICAL (vulnerability, package) pairs in one Trivy JSON report."""
+def gated_findings(
+    report: dict[str, Any], severities: tuple[str, ...] = GATED
+) -> set[tuple[str, str]]:
+    """The (vulnerability, package) pairs of `severities` in one Trivy JSON report."""
     pairs: set[tuple[str, str]] = set()
     for result in report.get("Results") or []:
         for vuln in result.get("Vulnerabilities") or []:
-            if vuln.get("Severity") in GATED:
+            if vuln.get("Severity") in severities:
                 pairs.add((str(vuln.get("VulnerabilityID")), str(vuln.get("PkgName"))))
     return pairs
 
@@ -266,6 +278,8 @@ class Comparison:
     added: list[tuple[str, str]] = field(default_factory=list)
     kept: int = 0
     error: str | None = None
+    removed_medium: list[tuple[str, str]] = field(default_factory=list)
+    added_medium: list[tuple[str, str]] = field(default_factory=list)
 
 
 def compare(
@@ -283,12 +297,16 @@ def compare(
             return Comparison(current, candidate, error=f"the {which} image's report is empty")
     assert current_report is not None and candidate_report is not None
     before, after = gated_findings(current_report), gated_findings(candidate_report)
+    medium_before = gated_findings(current_report, SECOND_TIER)
+    medium_after = gated_findings(candidate_report, SECOND_TIER)
     return Comparison(
         current,
         candidate,
         removed=sorted(before - after),
         added=sorted(after - before),
         kept=len(before & after),
+        removed_medium=sorted(medium_before - medium_after),
+        added_medium=sorted(medium_after - medium_before),
     )
 
 
@@ -298,6 +316,10 @@ def decide(comparisons: list[Comparison]) -> Verdict:
     if any(c.added for c in comparisons):
         return "regressed"
     if any(c.removed for c in comparisons):
+        return "improved"
+    if any(c.removed_medium for c in comparisons) and not any(
+        c.added_medium for c in comparisons
+    ):
         return "improved"
     return "unchanged"
 
@@ -389,6 +411,8 @@ def main(argv: list[str] | None = None) -> int:
                 "removed": [list(x) for x in c.removed],
                 "added": [list(x) for x in c.added],
                 "kept": c.kept,
+                "removed_medium": [list(x) for x in c.removed_medium],
+                "added_medium": [list(x) for x in c.added_medium],
                 "error": c.error,
             }
             for c in comparisons
@@ -400,7 +424,10 @@ def main(argv: list[str] | None = None) -> int:
             "".join(f"{c}\n" for c in document["publish"]), encoding="utf-8"
         )
     for c in comparisons:
-        state = c.error or f"-{len(c.removed)} +{len(c.added)} ={c.kept} HIGH/CRITICAL"
+        state = c.error or (
+            f"-{len(c.removed)} +{len(c.added)} ={c.kept} HIGH/CRITICAL, "
+            f"-{len(c.removed_medium)} +{len(c.added_medium)} MEDIUM"
+        )
         print(f"[decide] {c.candidate}: {state} ({outcome(c)})", file=sys.stderr)
         for vuln, package in c.added:
             print(f"[decide]   NEW {vuln} in {package}", file=sys.stderr)
