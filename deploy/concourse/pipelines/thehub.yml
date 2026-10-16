@@ -3309,7 +3309,10 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -m mykronos.estate_images --root source --output estate/images.txt
+                # --set, not the params alone: estate_images ignores the process
+                # environment unless told otherwise, so REGISTRY above reached
+                # nothing and containers 189 (2026-10-15) asked for localhost.
+                python -m mykronos.estate_images --root source --output estate/images.txt --set "REGISTRY=${REGISTRY}"
 
       - task: scan-image
         # 45m covered one application image. TheHub's stack adds eight more,
