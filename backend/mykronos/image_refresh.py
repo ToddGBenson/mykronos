@@ -75,6 +75,10 @@ COMPOSE_FILES = ("docker-compose.yml", "docker-compose.demo.yml")
 GATED = ("CRITICAL", "HIGH")
 _DATE_SUFFIX = re.compile(r"-p(\d{8})$")
 _DATE = re.compile(r"^\d{8}$")
+#: The upgrade layers' `FROM ${BASE_IMAGE}` carries a CKV_DOCKER_7 skip that
+#: says the base is pinned; this is what makes that true.
+_PINNED = re.compile(r"@sha256:[0-9a-f]{64}$")
+_BASE_ARG = re.compile(r"^\s*ARG\s+BASE_IMAGE\b", re.MULTILINE)
 
 Verdict = Literal["improved", "unchanged", "regressed", "failed"]
 
@@ -201,8 +205,15 @@ def plan_mykronos(
             if not (context / "Dockerfile").is_file():
                 raise ValueError(f"{where}: no Dockerfile in {relative}")
             args = [(str(k), str(v)) for k, v in (build.get("args") or {}).items()]
-            if build.get("base"):
-                args.append(("BASE_IMAGE", str(build["base"])))
+            base = str(build.get("base") or "")
+            if base and not _PINNED.search(base):
+                raise ValueError(f"{where}: base {base!r} must be pinned by @sha256 digest")
+            if not base and _BASE_ARG.search(
+                (context / "Dockerfile").read_text(encoding="utf-8")
+            ):
+                raise ValueError(f"{where}: {relative}/Dockerfile needs a base")
+            if base:
+                args.append(("BASE_IMAGE", base))
             if build.get("refresh_arg"):
                 args.append((str(build["refresh_arg"]), date))
             recipe = Recipe(

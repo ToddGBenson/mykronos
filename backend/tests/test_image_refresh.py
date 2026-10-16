@@ -173,6 +173,9 @@ def test_the_kaniko_build_loop_keeps_its_own_shell_tools() -> None:
 
 # -- MyKronos's own images (`x-mykronos-build`) ----------------------------------
 
+AAA = "sha256:" + "a" * 64
+BBB = "sha256:" + "b" * 64
+
 MYKRONOS_COMPOSE = """
 x-worker: &worker
   image: concourse/concourse:8.3.1@sha256:aaa
@@ -201,7 +204,7 @@ services:
       args: { RUN_AS: vault }
   minio:
     image: pgsty/silo:distroless
-"""
+""".replace("sha256:aaa", AAA).replace("sha256:bbb", BBB)
 
 
 def _mykronos_tree(tmp_path: Path, compose: str = MYKRONOS_COMPOSE) -> Path:
@@ -226,12 +229,12 @@ def test_mykronos_plan_publishes_under_the_vendor_path(tmp_path: Path) -> None:
     # Web and worker (through the YAML anchor) are one build.
     assert len(concourse.services) == 2
     # Before adoption the baseline is the vendor image the service runs.
-    assert concourse.current == "concourse/concourse:8.3.1@sha256:aaa"
+    assert concourse.current == f"concourse/concourse:8.3.1@{AAA}"
     # The context is resolved from the compose file to the repository root.
     assert concourse.context == "deploy/images/apk-upgrade"
     assert vault.build_args == (
         ("RUN_AS", "vault"),
-        ("BASE_IMAGE", "hashicorp/vault:2.1.2@sha256:bbb"),
+        ("BASE_IMAGE", f"hashicorp/vault:2.1.2@{BBB}"),
         ("APK_REFRESH", "20261016"),
     )
 
@@ -255,6 +258,32 @@ def test_mykronos_plan_refuses_a_bad_publish(tmp_path: Path, publish: str, reaso
     bad = MYKRONOS_COMPOSE.replace("publish: hashicorp/vault:2.1.2", f"publish: {publish}")
     with pytest.raises(ValueError, match=reason):
         ir.plan_mykronos(_mykronos_tree(tmp_path, bad), "20261016", "r:5000")
+
+
+@pytest.mark.parametrize(
+    ("base", "reason"),
+    [
+        ("hashicorp/vault:2.1.2", "pinned by @sha256"),
+        ("hashicorp/vault:latest@sha256:bbb", "pinned by @sha256"),
+        (None, "needs a base"),
+    ],
+)
+def test_mykronos_plan_refuses_an_unpinned_base(
+    tmp_path: Path, base: str | None, reason: str
+) -> None:
+    """The upgrade layers skip CKV_DOCKER_7 on `FROM ${BASE_IMAGE}` because
+    the base is always a digest; the plan is what holds them to it."""
+    line = f"      base: hashicorp/vault:2.1.2@{BBB}\n"
+    bad = MYKRONOS_COMPOSE.replace(line, "" if base is None else f"      base: {base}\n")
+    assert bad != MYKRONOS_COMPOSE
+    with pytest.raises(ValueError, match=reason):
+        ir.plan_mykronos(_mykronos_tree(tmp_path, bad), "20261016", "r:5000")
+
+
+def test_the_upgrade_layers_skip_ckv_docker_7_only_with_a_reason() -> None:
+    for name in ("apk-upgrade", "apt-upgrade"):
+        text = (REPO_ROOT / "deploy" / "images" / name / "Dockerfile").read_text(encoding="utf-8")
+        assert "checkov:skip=CKV_DOCKER_7: BASE_IMAGE is always pinned by digest" in text
 
 
 def test_mykronos_plan_refuses_a_context_outside_the_repository(tmp_path: Path) -> None:

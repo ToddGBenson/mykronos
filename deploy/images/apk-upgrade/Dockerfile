@@ -21,6 +21,7 @@
 #
 # checkov:skip=CKV_DOCKER_2: No HEALTHCHECK on purpose -- each service declares its probe in compose, which overrides an image's anyway.
 # checkov:skip=CKV_DOCKER_3: USER is the vendor's own, restored through RUN_AS; this layer must not change who the daemon runs as.
+# checkov:skip=CKV_DOCKER_7: BASE_IMAGE is always pinned by digest; image_refresh.plan_mykronos refuses a recipe whose base is not.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 ARG APK_REFRESH=unset
