@@ -2096,7 +2096,9 @@ class DashboardQueries:
         the previous scan had already seen, byte for byte (#734).
 
         Reported beside `introduced_by`, never inside it: the finding is real
-        and open, but the vulnerability database moved, not the commit.
+        and open, but the vulnerability database moved, not the commit. Also
+        here: findings in an image that was already a tool before this commit,
+        and a renamed tool image's carried-over CVEs (#858).
         """
         _, disclosed = self._first_seen_at(repo_full_name, commit_sha)
         return _by_severity(disclosed)

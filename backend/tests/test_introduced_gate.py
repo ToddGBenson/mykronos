@@ -539,6 +539,144 @@ class TestRebuiltImagesAreCorroborated:
         assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
 
 
+# -- Tool images: the role as the previous scan recorded it (#858) -----------
+
+UPSTREAM_ZAP = "ghcr.io/zaproxy/zaproxy:weekly"
+OWN_ZAP = "192.168.0.14:5000/mykronos-zap:" + NEW
+
+
+def _role_scan(client, run_compaction, scan_run_id, commit, started_at, images):
+    """`_estate_scan`, with each report stamped by `annotate-roles`. `images`
+    maps a name to `(imageID, role, [(cve, package, version), ...])`."""
+    _estate_scan(client, run_compaction, scan_run_id, commit, started_at, {
+        image: (image_id, rows) for image, (image_id, _, rows) in images.items()
+    })
+    owner, name = REPO.split("/")
+    folder = client.app.state.settings.raw_dir / owner / name / scan_run_id
+    for n, (image, (image_id, role, _)) in enumerate(images.items()):
+        properties = {"imageName": image, "imageID": image_id}
+        if role:
+            properties["mykronosRole"] = role
+        report = {"version": "2.1.0", "runs": [{"results": [], "properties": properties}]}
+        (folder / f"trivy-{n}.sarif").write_text(json.dumps(report), encoding="utf-8")
+
+
+class TestToolImagesAreJudgedByTheirEarlierRole:
+    """25cd28c: renaming the ZAP scanner image re-keyed 87 highs the estate
+    already carried, and the floor counted every one as introduced."""
+
+    def _before(self, client, run_compaction):
+        _role_scan(client, run_compaction, "ctr-old", OLD, "2026-10-15T01:00:00", {
+            PG: ("sha256:pg", "", [("CVE-PG", "libpq5", "15.1")]),
+            UPSTREAM_ZAP: ("sha256:zap1", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-B", "libtiff6", "4.5.0"),
+            ]),
+        })
+
+    def test_a_renamed_tool_image_carries_its_findings_over(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """The same CVE on the same package, on a newer version after the
+        rebuild's upgrade, is the exposure the old name already had."""
+        self._before(client, run_compaction)
+        _role_scan(client, run_compaction, "ctr-new", NEW, "2026-10-15T18:00:00", {
+            PG: ("sha256:pg", "", [("CVE-PG", "libpq5", "15.1")]),
+            OWN_ZAP: ("sha256:zap2", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-B", "libtiff6", "4.5.1"),
+            ]),
+        })
+
+        queries = DashboardQueries(catalog)
+        assert queries.introduced_by(REPO, NEW) == {}
+        assert queries.disclosed_by(REPO, NEW) == {"high": 2}
+
+    def test_a_cve_the_old_image_never_had_is_still_introduced(
+        self, client, run_compaction, catalog
+    ) -> None:
+        self._before(client, run_compaction)
+        _role_scan(client, run_compaction, "ctr-new", NEW, "2026-10-15T18:00:00", {
+            PG: ("sha256:pg", "", [("CVE-PG", "libpq5", "15.1")]),
+            OWN_ZAP: ("sha256:zap2", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-Z", "libxml2", "2.9.14"),
+            ]),
+        })
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
+
+    def test_a_tool_image_rebuilt_under_its_name_is_not_this_commits(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """The previous scan already recorded it as a tool, so the policy
+        that scores it out was declared before this commit."""
+        self._before(client, run_compaction)
+        _role_scan(client, run_compaction, "ctr-new", NEW, "2026-10-15T18:00:00", {
+            PG: ("sha256:pg", "", [("CVE-PG", "libpq5", "15.1")]),
+            UPSTREAM_ZAP: ("sha256:zap2", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-NEW", "openssl", "3.5.8"),
+            ]),
+        })
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {}
+
+    def test_declaring_a_service_image_a_tool_clears_nothing(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """The relabel #858 must not allow: the commit that adds a CVE to the
+        postgres image and declares it a tool still answers for the CVE."""
+        self._before(client, run_compaction)
+        _role_scan(client, run_compaction, "ctr-new", NEW, "2026-10-15T18:00:00", {
+            PG: ("sha256:pg2", "tool", [
+                ("CVE-PG", "libpq5", "15.1"), ("CVE-NEW", "libpq5", "15.0"),
+            ]),
+            UPSTREAM_ZAP: ("sha256:zap1", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-B", "libtiff6", "4.5.0"),
+            ]),
+        })
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
+
+    def test_a_new_image_declared_a_tool_with_nothing_renamed_is_introduced(
+        self, client, run_compaction, catalog
+    ) -> None:
+        """No tool image vanished, so a new one has nothing to inherit - even
+        a CVE the old ZAP image also carries."""
+        self._before(client, run_compaction)
+        _role_scan(client, run_compaction, "ctr-new", NEW, "2026-10-15T18:00:00", {
+            PG: ("sha256:pg", "", [("CVE-PG", "libpq5", "15.1")]),
+            UPSTREAM_ZAP: ("sha256:zap1", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-B", "libtiff6", "4.5.0"),
+            ]),
+            "192.168.0.14:5000/backdoor:" + NEW: ("sha256:bd", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"),
+            ]),
+        })
+
+        assert DashboardQueries(catalog).introduced_by(REPO, NEW) == {"high": 1}
+
+    def test_the_gate_does_not_block_a_rename(
+        self, client, oracle_auth, run_compaction, catalog
+    ) -> None:
+        self._before(client, run_compaction)
+        _role_scan(client, run_compaction, "ctr-new", NEW, "2026-10-15T18:00:00", {
+            PG: ("sha256:pg", "", [("CVE-PG", "libpq5", "15.1")]),
+            OWN_ZAP: ("sha256:zap2", "tool", [
+                ("CVE-A", "libxml2", "2.9.14"), ("CVE-B", "libtiff6", "4.5.1"),
+            ]),
+        })
+
+        body = client.post(
+            "/api/oracle/evaluate",
+            json={"commit_sha": NEW, "decision_type": "portfolio"},
+            headers=oracle_auth,
+        ).json()
+        assert body["introduced_blocking"] is False
+        assert body["disclosed"] == {"high": 2}
+        queries = DashboardQueries(catalog)
+        pairs = [(REPO, OLD), (REPO, NEW)]
+        assert queries.introduced_by_commits(pairs) == {
+            pair: queries.introduced_by(*pair) for pair in pairs
+        }
+
 
 class TestIntroducedByCommitsIsTheSameAnswer:
     """`introduced_by_commits` batches `introduced_by` for the shadow-mode
