@@ -237,9 +237,9 @@ def _tool_carry_over(
         repository = image_repository(row.image)
         if repository not in tools_now:
             continue
-        if repository in tools_then:
-            carried.add(row.finding_id)
-        elif (
+        # Already a tool before this commit; or new, and the same CVE on the
+        # same package as a tool image this commit removed (a rename).
+        if repository in tools_then or (
             repository not in seen_then
             and row.rule_id
             and row.package
