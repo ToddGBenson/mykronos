@@ -36,7 +36,8 @@ from `image:`:
 
     x-mykronos-build:
       context: ../images/apt-upgrade        # relative to the compose file
-      base: postgres:15.19@sha256:...       # passed as BASE_IMAGE, optional
+      base: postgres:15.19@sha256:...       # passed as BASE_IMAGE; a digest,
+                                            # required by FROM ${BASE_IMAGE}
       publish: library/postgres:15.19       # repository:tag on the registry
       refresh_arg: APT_REFRESH              # gets the date, optional
       args: {RUN_AS: vault}                 # more build args, optional
@@ -153,6 +154,11 @@ def plan(
 #: The compose files that declare MyKronos's own recipes, relative to the root.
 MYKRONOS_COMPOSE_FILES = ("deploy/concourse/docker-compose.yml", "deploy/demo/docker-compose.yml")
 _TAGGED = re.compile(r"^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9._-]*$")
+#: A Dockerfile whose FROM is the recipe's `base`. Its version lives in the
+#: recipe, not the Dockerfile, so checkov reads it as unversioned (CKV_DOCKER_7)
+#: and this is the only check that the base cannot float.
+_FROM_BASE_ARG = re.compile(r"(?mi)^\s*FROM\s+\$\{?BASE_IMAGE\}?\s*$")
+_DIGEST_PINNED = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
 
 
 def plan_mykronos(
@@ -200,6 +206,13 @@ def plan_mykronos(
                 ) from exc
             if not (context / "Dockerfile").is_file():
                 raise ValueError(f"{where}: no Dockerfile in {relative}")
+            dockerfile = (context / "Dockerfile").read_text(encoding="utf-8")
+            base = str(build.get("base") or "")
+            if _FROM_BASE_ARG.search(dockerfile) and not _DIGEST_PINNED.match(base):
+                raise ValueError(
+                    f"{where}: base {base!r} is not pinned by digest, and "
+                    f"{relative}/Dockerfile builds FROM it"
+                )
             args = [(str(k), str(v)) for k, v in (build.get("args") or {}).items()]
             if build.get("base"):
                 args.append(("BASE_IMAGE", str(build["base"])))
