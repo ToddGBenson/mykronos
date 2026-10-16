@@ -28,6 +28,7 @@ def scan(
     *,
     capability: str = "sast",
     status: str = "success",
+    pr_number: int | None = 2841,
 ) -> None:
     headers = {"Authorization": f"Bearer {token}"}
     post_scan(
@@ -37,6 +38,8 @@ def scan(
         capability=capability,
         branch=branch,
         scan_status=status,
+        pr_number=pr_number,
+        triggered_by="pull_request" if pr_number is not None else "push",
     )
     post_findings(
         client, headers, findings or [], scan_run_id=run_id, capability=capability
@@ -184,3 +187,131 @@ class TestOneBranchDoesNotCloseAnother:
 
         assert len(outcome.fixed) == 1
         assert outcome.insufficient_history == []
+
+
+def push(client, token: str, run_id: str, branch: str, findings: list | None = None) -> None:
+    """A push or scheduled run: no pull request, as every main/develop run in
+    the estate's lake is."""
+    scan(client, token, run_id, branch, findings, pr_number=None)
+
+
+class TestAPullRequestSightingFallsBackToTheLongLivedBranches:
+    """#864: a pull request's branch is scanned for a few days and deleted, so
+    a finding whose last sighting was one could never close by absence."""
+
+    def test_the_binnacle_shape_closes_on_two_later_main_runs(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """main sees it, the fix lands, a PR cut before the fix re-sights it,
+        and main then runs clean twice. Before #864 this stayed open for good."""
+        token = issue_token(client, REPO, "sast")
+        push(client, token, "main-1", "main", [finding_payload(title="re-sighted")])
+        run_compaction()
+        scan(
+            client, token, "pr-1", "fix/cut-before-the-fix",
+            [finding_payload(title="re-sighted")], pr_number=29,
+        )
+        run_compaction()
+        push(client, token, "main-2", "main", [])
+        push(client, token, "main-3", "main", [])
+        run_compaction()
+
+        assert len(reconcile_absences(catalog).fixed) == 1
+        assert statuses(catalog)["re-sighted"] == "fixed"
+
+    def test_one_later_main_run_is_not_enough(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """The two-scan rule still holds on the fallback lane."""
+        token = issue_token(client, REPO, "sast")
+        scan(client, token, "pr-1", "fix/x", [finding_payload(title="pr")], pr_number=29)
+        run_compaction()
+        push(client, token, "main-1", "main", [])
+        run_compaction()
+
+        assert reconcile_absences(catalog).fixed == []
+        assert statuses(catalog)["pr"] == "open"
+
+    def test_runs_from_before_the_sighting_are_not_evidence(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """Two clean main runs that finished before the PR saw it say nothing
+        about the tree the PR scanned."""
+        token = issue_token(client, REPO, "sast")
+        push(client, token, "main-1", "main", [])
+        push(client, token, "main-2", "main", [])
+        scan(client, token, "pr-1", "fix/x", [finding_payload(title="pr")], pr_number=29)
+        run_compaction()
+
+        assert reconcile_absences(catalog).fixed == []
+        assert statuses(catalog)["pr"] == "open"
+
+    def test_every_long_lived_branch_that_ran_since_must_have_run_twice(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """TheHub's shape: develop and main both long-lived. develop clean twice
+        and main clean once since the sighting is not yet enough -- main has
+        looked once and could still be the tree that has it."""
+        token = issue_token(client, REPO, "sast")
+        scan(client, token, "pr-1", "fix/x", [finding_payload(title="pr")], pr_number=29)
+        run_compaction()
+        push(client, token, "dev-1", "develop", [])
+        push(client, token, "dev-2", "develop", [])
+        push(client, token, "main-1", "main", [])
+        run_compaction()
+
+        assert reconcile_absences(catalog).fixed == []
+
+        push(client, token, "main-2", "main", [])
+        run_compaction()
+
+        assert len(reconcile_absences(catalog).fixed) == 1
+
+    def test_a_branch_that_has_not_run_since_is_not_counted(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """TheHub's main has been quiet since September; a long-lived branch
+        that has not looked is not evidence either way, and must not hold a
+        finding the default branch has twice confirmed gone."""
+        token = issue_token(client, REPO, "sast")
+        push(client, token, "main-old", "main", [])
+        scan(client, token, "pr-1", "fix/x", [finding_payload(title="pr")], pr_number=29)
+        run_compaction()
+        push(client, token, "dev-1", "develop", [])
+        push(client, token, "dev-2", "develop", [])
+        run_compaction()
+
+        assert len(reconcile_absences(catalog).fixed) == 1
+
+    def test_a_long_lived_sighting_still_closes_only_on_its_own_branch(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """B-056 is untouched: a develop push sighting and two clean main
+        pushes close nothing."""
+        token = issue_token(client, REPO, "sast")
+        push(client, token, "dev-1", "develop", [finding_payload(title="on develop")])
+        run_compaction()
+        push(client, token, "main-1", "main", [])
+        push(client, token, "main-2", "main", [])
+        run_compaction()
+
+        assert reconcile_absences(catalog).fixed == []
+        assert statuses(catalog)["on develop"] == "open"
+
+    def test_another_tool_on_the_branch_is_not_evidence(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """The tool dimension holds on the fallback too: ShellCheck's silence
+        says nothing about a CodeQL finding."""
+        token = issue_token(client, REPO, "sast")
+        scan(client, token, "pr-1", "fix/x", [finding_payload(title="pr")], pr_number=29)
+        run_compaction()
+        headers = {"Authorization": f"Bearer {token}"}
+        for run_id in ("sc-1", "sc-2"):
+            post_scan(
+                client, headers, scan_run_id=run_id, capability="sast", branch="main",
+                tool_name="shellcheck", pr_number=None, triggered_by="push",
+            )
+        run_compaction()
+
+        assert reconcile_absences(catalog).fixed == []

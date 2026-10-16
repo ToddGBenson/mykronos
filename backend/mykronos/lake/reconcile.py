@@ -36,6 +36,24 @@ judgement, and the judgement stays on the closed record. Which statuses this
 does and does not extend to, and why they are not all alike, is
 `CLOSEABLE_STATUSES` below.
 
+**A pull-request sighting falls back to the long-lived branches (#864).** The
+branch lane has one hole: a pull request's branch is scanned for a few days and
+then deleted. A PR cut from an older main and scanned after the fix landed on
+main still sees the finding, so its run becomes the last sighting and moves the
+finding into that PR's lane -- and once the PR merges, that lane never runs
+again. binnacle's `py/overly-large-range` sat `open` that way through four clean
+`main` CodeQL runs on 2026-10-15. So a finding last seen by a pull-request run
+(`pr_number` set) may also close on the repository's non-pull-request runs:
+every such branch that has run since the sighting must have run `required`
+qualifying times since it, and at least one must have. "Since the sighting" is
+what keeps it honest -- only runs that could have seen the finding and did not
+count. A long-lived branch that has not run since (TheHub's `main` has been
+quiet since September) is not evidence either way, and if the code is still
+there its next scan re-sights the finding and compaction reopens it, exactly
+as a returning finding is reopened today. Push and schedule runs never carry
+a `pr_number`, so this widens nothing for them: a `develop` finding still
+closes on `develop` alone.
+
 **On spec 05 §9's "no component other than the Ingestion API writes to the
 Parquet partitions".** This job does write. The rule exists so that all
 *ingestion* goes through one validating, deduplicating path — and this is not
@@ -201,7 +219,9 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
             CREATE TEMP TABLE finding_branch AS
             SELECT f.finding_id, f.dt, f.asset_id, f.capability, f.status,
                    coalesce(s.branch, '') AS branch,
-                   coalesce(s.tool_name, '') AS tool_name
+                   coalesce(s.tool_name, '') AS tool_name,
+                   s.pr_number IS NOT NULL AS seen_on_pull_request,
+                   coalesce(s.completed_at, s.started_at) AS seen_at
             FROM findings f
             JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
             WHERE f.status IN ({closeable})
@@ -264,6 +284,28 @@ def reconcile_absences(catalog: Catalog, required: int = REQUIRED_ABSENCES) -> R
                     AND r.branch = b.branch
                     AND r.tool_name = b.tool_name
               )
+            UNION
+            -- #864: a finding last seen by a pull-request run, judged by the
+            -- repository's long-lived branches. Every non-pull-request branch
+            -- that has started a qualifying run since the sighting must have
+            -- started `required` of them; a branch that has not run since is
+            -- not counted, and min() over no branches is NULL, which is false.
+            SELECT b.finding_id, b.dt, b.status
+            FROM finding_branch b
+            WHERE b.seen_on_pull_request
+              AND (
+                  SELECT min(n) FROM (
+                      SELECT count(*) AS n
+                      FROM scan_runs r
+                      WHERE r.repo_full_name = b.asset_id
+                        AND r.capability = b.capability
+                        AND coalesce(r.tool_name, '') = b.tool_name
+                        AND r.pr_number IS NULL
+                        AND r.scan_status IN ({statuses})
+                        AND r.started_at > b.seen_at
+                      GROUP BY coalesce(r.branch, '')
+                  )
+              ) >= {required}
             """
         ).fetchall()
 
