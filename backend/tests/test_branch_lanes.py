@@ -207,7 +207,10 @@ class TestAPullRequestSightingFallsBackToTheLongLivedBranches:
         token = issue_token(client, REPO, "sast")
         push(client, token, "main-1", "main", [finding_payload(title="re-sighted")])
         run_compaction()
-        scan(client, token, "pr-1", "fix/cut-before-the-fix", [finding_payload(title="re-sighted")], pr_number=29)
+        scan(
+            client, token, "pr-1", "fix/cut-before-the-fix",
+            [finding_payload(title="re-sighted")], pr_number=29,
+        )
         run_compaction()
         push(client, token, "main-2", "main", [])
         push(client, token, "main-3", "main", [])
