@@ -316,3 +316,110 @@ class TestTheRegistryIsCheckedToo:
 
         assert used, "found no --capability/--tool pairs to check against"
         assert used <= declared, f"undeclared pairs: {sorted(used - declared)}"
+
+
+#: v8, the commit both Actions pins named until #337. No ShellCheck adapter,
+#: no PSScriptAnalyzer adapter.
+V8 = "cce7495afafb3f22b014847bd91624ced9b8e2dd"
+
+
+class TestTheActionsPinsAreCheckedToo:
+    """#337: the GitHub Actions workflows install the runner from
+    `config.py`'s pins, not from the Concourse `mykronos-ref` this script
+    introspects. Concourse moved to v14 and pin-check went green while the
+    Actions pins stayed on v8, which has neither the ShellCheck nor the
+    PSScriptAnalyzer adapter the `sast-shell` and `sast-powershell`
+    templates upload under."""
+
+    @staticmethod
+    def _template_pairs() -> set[tuple[str, str]]:
+        """Render every template with its defaults and read what its upload
+        step declares. YAML, not a regex, so a reordered `with:` block still
+        counts."""
+        from mykronos.installer.templates import TemplateLibrary
+
+        ref = "ToddGBenson/mykronos/actions/upload-results@" + "a" * 40
+        library = TemplateLibrary(SCRIPT.resolve().parents[1] / "workflow-templates")
+        pairs: set[tuple[str, str]] = set()
+        for capability in sorted(library.available):
+            rendered = library.render(
+                capability,
+                repo_full_name="o/r",
+                default_branch="main",
+                ingestion_api_url="https://mykronos.test",
+                token_secret_name="MYKRONOS_TOKEN",
+                upload_action_ref=ref,
+                mykronos_package_spec="mykronos",
+            )
+            document = yaml.safe_load(rendered.content)
+            for job in (document.get("jobs") or {}).values():
+                for step in job.get("steps") or []:
+                    if step.get("uses") == ref:
+                        pairs.add((step["with"]["capability"], step["with"]["tool"]))
+        return pairs
+
+    def test_the_declared_pairs_are_what_the_templates_upload(self, checker) -> None:
+        """The list the check enforces must be the templates' own; a template
+        added without its pair here is a pair nothing checks."""
+        rendered = self._template_pairs()
+
+        assert ("sast", "shellcheck") in rendered
+        assert ("sast", "psscriptanalyzer") in rendered
+        assert rendered == set(checker.ACTIONS_TEMPLATE_ADAPTERS)
+
+    def test_both_settings_are_found_and_name_one_commit(self, checker) -> None:
+        """`config.py` says to keep them on the same tag: they install one
+        package into one job, and the first install wins."""
+        pins = checker.actions_pins()
+
+        assert set(pins) == set(checker.ACTIONS_PIN_SETTINGS)
+        assert len(set(pins.values())) == 1, pins
+
+    def test_the_pins_match_the_settings_the_installer_uses(self, checker) -> None:
+        """The source file is parsed, so check the parse against the loaded
+        settings: a refactor of `config.py` must not leave this reading
+        nothing."""
+        from mykronos.config import Settings
+
+        fields = Settings.model_fields
+        pins = checker.actions_pins()
+        for setting in checker.ACTIONS_PIN_SETTINGS:
+            assert pins[setting] in str(fields[setting].default)
+
+    def test_the_registry_parse_agrees_with_the_live_registry(self, checker) -> None:
+        from mykronos.adapters import registry
+
+        source = SCRIPT.resolve().parents[1] / "backend" / "mykronos" / "adapters" / "registry.py"
+        assert checker.registry_pairs(source.read_text(encoding="utf-8")) == set(registry.REGISTRY)
+
+    def test_the_pins_carry_every_template_adapter(self, checker) -> None:
+        """The assertion #337 asks for. Read from the local object store, or
+        the raw URL; skipped only when neither can reach the commit."""
+        for setting, commit in checker.actions_pins().items():
+            source = checker.registry_source_at(commit)
+            if source is None:
+                pytest.skip(f"cannot read registry.py at {commit[:12]} here")
+            missing = set(checker.ACTIONS_TEMPLATE_ADAPTERS) - checker.registry_pairs(source)
+            assert not missing, f"{setting} pins {commit[:12]}, missing {sorted(missing)}"
+
+    def test_v8_would_have_been_caught(self, checker, monkeypatch) -> None:
+        """The control: the commit the pins named before this fix fails."""
+        source = checker.registry_source_at(V8)
+        if source is None:
+            pytest.skip("cannot read registry.py at v8 here")
+        monkeypatch.setattr(
+            checker, "actions_pins", lambda: dict.fromkeys(checker.ACTIONS_PIN_SETTINGS, V8)
+        )
+
+        problems = checker._actions_pin_problems()
+
+        assert any("'shellcheck'" in p and "upload_action_ref" in p for p in problems)
+        assert any("'psscriptanalyzer'" in p and "mykronos_package_spec" in p for p in problems)
+
+    def test_an_unreadable_pin_is_skipped_not_failed(self, checker, monkeypatch, capsys) -> None:
+        """Fails open, as the raw-script check does: an unreachable GitHub is
+        not a stale pin."""
+        monkeypatch.setattr(checker, "registry_source_at", lambda commit: None)
+
+        assert checker._actions_pin_problems() == []
+        assert "skipping" in capsys.readouterr().out
