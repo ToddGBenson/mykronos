@@ -4621,6 +4621,11 @@ jobs:
         timeout: 90m
         image: python
         params:
+          # #428: the PS-1 report below reads MYKRONOS_URL, MYKRONOS_TOKEN,
+          # MYKRONOS_REF and SCANNED_BRANCH. Without them `set -u` killed the
+          # reporting subshell on its first line, the tolerated-failure guard
+          # swallowed that, and evaluation coverage never reached the lake.
+          <<: *mykronos_env
           PIP_CACHE_DIR: /pipcache
           # The harness's own default key, pointed at a Concourse cache so a
           # judged fixture is paid for once rather than once per build.

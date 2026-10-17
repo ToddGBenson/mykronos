@@ -1134,3 +1134,51 @@ def test_no_git_over_ssh_can_ask_a_question() -> None:
         "hangs the task to its timeout rather than failing it:\n  "
         + "\n  ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# A task that reports must be handed what it reports with (#428)
+# ---------------------------------------------------------------------------
+
+#: The reporting variables a task script reads to reach Mykronos.
+_REPORTING_VARS = ("MYKRONOS_URL", "MYKRONOS_TOKEN", "MYKRONOS_REF", "SCANNED_BRANCH")
+
+
+def _inline_tasks(node: object, where: str = ""):
+    """Every inline `task:` step in a parsed pipeline, hooks included."""
+    if isinstance(node, dict):
+        if "task" in node and isinstance(node.get("config"), dict):
+            yield where, node
+        for key, value in node.items():
+            yield from _inline_tasks(value, f"{where}/{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            label = (value.get("name") or value.get("task")) if isinstance(value, dict) else None
+            yield from _inline_tasks(value, f"{where}/{label or index}")
+
+
+def test_every_task_that_reads_a_reporting_var_is_given_it() -> None:
+    """[#428] thehub/prompt-evals ran its PS-1 report with none of these set.
+
+    The report runs in a `( ... ) || echo ::warning::` subshell under `set -u`,
+    so the first unset variable killed it, the guard swallowed that, and
+    evaluation coverage silently never reached the lake. A variable the script
+    reads with no default, and that its step does not supply, is that bug
+    wherever it recurs.
+    """
+    offenders: list[str] = []
+    for path in sorted((CONCOURSE_DIR / "pipelines").glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for where, task in _inline_tasks(document.get("jobs", [])):
+            args = task["config"].get("run", {}).get("args") or []
+            script = "\n".join(a for a in args if isinstance(a, str))
+            supplied = set(task.get("params") or {}) | set(task["config"].get("params") or {})
+            for var in _REPORTING_VARS:
+                read = re.search(rf"\$(?:{var}\b|\{{{var}\}})", script)
+                assigned = re.search(rf"(?:^|[\s;(]){var}=", script)
+                if read and not assigned and var not in supplied:
+                    offenders.append(f"{path.name}:{where}: reads ${var}")
+    assert not offenders, (
+        "These tasks read a reporting variable their step never supplies:\n  "
+        + "\n  ".join(offenders)
+    )
