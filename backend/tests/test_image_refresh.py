@@ -369,3 +369,83 @@ def test_every_real_recipe_base_is_a_digest() -> None:
     root = Path(__file__).resolve().parents[2]
     recipes = ir.plan_mykronos(root, "20261016", "r:5000")
     assert recipes, "no x-mykronos-build recipes found"
+
+
+# -- Where each recipe is built ----------------------------------------------
+
+ZAP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "zap-image.yml"
+
+
+def _compose_args(script: str) -> list[str]:
+    words = script.replace("\\n", " ").split()
+    return [words[i + 1] for i, word in enumerate(words) if word == "--compose"]
+
+
+def _workflow_steps() -> dict[str, str]:
+    import yaml
+
+    workflow = yaml.safe_load(ZAP_WORKFLOW.read_text(encoding="utf-8"))
+    (job,) = workflow["jobs"].values()
+    return {s["name"]: s["run"] for s in job["steps"] if "name" in s and "run" in s}
+
+
+def test_plan_reads_only_the_compose_file_it_is_given(tmp_path: Path, capsys) -> None:
+    root = _mykronos_tree(tmp_path)
+    (root / "deploy" / "demo").mkdir()
+    (root / "deploy" / "demo" / "docker-compose.yml").write_text(
+        "services:\n  zap:\n    image: z:1\n    x-mykronos-build:\n"
+        "      context: ../images/apk-upgrade\n"
+        "      base: z:1@sha256:" + "a" * 64 + "\n      publish: mykronos-zap:weekly\n",
+        encoding="utf-8",
+    )
+    argv = ["plan", "--recipes", "mykronos", "--root", str(root), "--date", "20261016",
+            "--registry", "ghcr.io/o"]
+    assert ir.main([*argv, "--compose", "deploy/demo/docker-compose.yml"]) == 0
+    only = capsys.readouterr().out
+    assert ir.main(argv) == 0
+    both = capsys.readouterr().out
+    assert [line.split("\t")[1] for line in only.splitlines()] == [
+        "ghcr.io/o/mykronos-zap:weekly-p20261016"
+    ]
+    assert len(both.splitlines()) == 3
+
+
+def test_compose_is_refused_for_thehub_recipes(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        ir.main(["plan", "--root", str(tmp_path), "--date", "20261016", "--registry", "r",
+                 "--compose", "deploy/demo/docker-compose.yml"])
+
+
+def test_every_recipe_is_built_by_exactly_one_lane() -> None:
+    """Concourse publishes to the LAN registry, the ZAP workflow to ghcr.io.
+    A compose file read by both would build and publish the same recipe
+    twice; one read by neither would be declared and never built."""
+    import yaml
+
+    config = yaml.safe_load(MYKRONOS_PIPELINE.read_text(encoding="utf-8"))
+    job = next(j for j in config["jobs"] if j["name"] == "image-refresh")
+    concourse_plan = next(s for s in job["plan"] if s.get("task") == "plan")
+    concourse = _compose_args(concourse_plan["config"]["run"]["args"][-1])
+    github = _compose_args(_workflow_steps()["Plan"])
+    assert concourse == ["deploy/concourse/docker-compose.yml"]
+    assert github == ["deploy/demo/docker-compose.yml"]
+    assert sorted(concourse + github) == sorted(ir.MYKRONOS_COMPOSE_FILES)
+
+
+def test_the_zap_workflow_pushes_only_what_decide_published() -> None:
+    import yaml
+
+    workflow = yaml.safe_load(ZAP_WORKFLOW.read_text(encoding="utf-8"))
+    assert workflow["permissions"] == {"contents": "read", "packages": "write"}
+    steps = _workflow_steps()
+    pushes = [name for name, run in steps.items() if "docker push" in run]
+    assert pushes == ["Publish"]
+    assert "verdict/publish.txt" in steps["Publish"]
+    assert "--publish-list verdict/publish.txt" in steps["Decide"]
+    # A missing report fails the run; it never publishes as clean.
+    assert '"outcome": "failed"' in steps["Decide"] and "exit 1" in steps["Decide"]
+    # The same scanner Concourse judges with.
+    pinned = yaml.safe_load(MYKRONOS_PIPELINE.read_text(encoding="utf-8"))
+    trivy = next(r for r in pinned["resources"] if r["name"] == "trivy")["source"]
+    (job,) = workflow["jobs"].values()
+    assert job["env"]["TRIVY"] == f"{trivy['repository']}:{trivy['tag']}"

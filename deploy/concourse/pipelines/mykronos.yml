@@ -3193,9 +3193,12 @@ jobs:
   # were never rebuilt at all, and their risk acceptances say so.
   #
   # What it does, nightly, per recipe (`x-mykronos-build` in
-  # deploy/concourse/docker-compose.yml and deploy/demo/docker-compose.yml):
+  # deploy/concourse/docker-compose.yml). ZAP's recipe, in the demo compose
+  # file, is built by .github/workflows/zap-image.yml instead: the DAST lane
+  # that runs ZAP is on GitHub's runners and cannot pull from this registry.
   #
-  #   plan     python -m mykronos.image_refresh plan --recipes mykronos
+  #   plan     python -m mykronos.image_refresh plan --recipes mykronos \
+  #              --compose deploy/concourse/docker-compose.yml
   #   build    kaniko, to a tarball - nothing is pushed to find out
   #   scan     Trivy HIGH/CRITICAL, the baseline against the candidate
   #   decide   per (vulnerability, package): an image is published only when
@@ -3253,7 +3256,8 @@ jobs:
                 DATE=$(date -u +%Y%m%d)
                 printf '%s' "$DATE" > refresh/date
                 PYTHONPATH="$PWD/source/backend" python -m mykronos.image_refresh plan \
-                  --recipes mykronos --root source --date "$DATE" \
+                  --recipes mykronos --compose deploy/concourse/docker-compose.yml \
+                  --root source --date "$DATE" \
                   --registry "$REGISTRY" --output refresh/plan.tsv
                 test -s refresh/plan.tsv || { echo "::error::no x-mykronos-build recipes found"; exit 1; }
 

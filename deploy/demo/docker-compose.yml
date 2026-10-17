@@ -161,13 +161,17 @@ services:
       context: ../zap
     image: mykronos-zap:local
     pull_policy: build
-    # Out-of-band rebuild (mykronos.yml `image-refresh`): the same Dockerfile,
-    # built nightly and published as <registry>/mykronos-zap:weekly-p<date>
-    # only when strictly better. Declared, not adopted: this service still
-    # builds locally until a reviewed change pins a published date and drops
-    # `build:`, which also takes the per-commit build out of the containers
-    # lane. The baseline is upstream's image at the same digest, because the
-    # local tag above cannot be pulled to scan.
+    # Out-of-band rebuild (.github/workflows/zap-image.yml): the same
+    # Dockerfile, built nightly and published as
+    # ghcr.io/<owner>/mykronos-zap:weekly-p<date> only when strictly better.
+    # ghcr.io and not the LAN registry, because the DAST lane that runs this
+    # service is on GitHub's runners. Declared, not adopted: this service
+    # still builds locally until a reviewed change pins a published date and
+    # drops `build:`. That change must also keep the image's finding identity
+    # (`mykronos-zap`; ghcr.io's path adds the owner), for example by having
+    # the containers lane scan a LAN copy, as it does the application images.
+    # The baseline is upstream's image at the same digest, because the local
+    # tag above cannot be pulled to scan.
     x-mykronos-build:
       context: ../zap
       publish: mykronos-zap:weekly

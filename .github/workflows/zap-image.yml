@@ -1,0 +1,150 @@
+# The ZAP scanner image, rebuilt out of band and published to ghcr.io.
+#
+# ZAP was the one image rebuilt on the commit path: the `containers` lane and
+# the DAST lane each built deploy/zap/Dockerfile on every commit, and its
+# `apt-get upgrade` depends on the day. A commit could change what the scanner
+# contained without touching it, and on 2026-10-15 a rename of the image put
+# 87 HIGH it already carried on a commit's account (#858).
+#
+# This is the same lane as Concourse's `image-refresh` (mykronos.image_refresh,
+# the recipe under `x-mykronos-build` in deploy/demo/docker-compose.yml), run
+# here because ZAP's consumer is the DAST lane on GitHub's runners, which
+# cannot reach the LAN registry Concourse publishes to. ghcr.io needs no new
+# credential: the job's own GITHUB_TOKEN can write this repository's packages.
+#
+# Nightly: plan, build (loaded into this runner, nothing pushed to find out),
+# scan the baseline and the candidate with Trivy, decide, and push
+# `mykronos-zap:weekly-p<date>` only when it removes at least one HIGH or
+# CRITICAL and adds none. Publishing changes nothing that runs; adopting a
+# date is a reviewed change to the compose file.
+
+name: zap-image
+
+on:
+  schedule:
+    # 09:40 UTC is 02:40 in Phoenix, inside the Concourse lane's window.
+    - cron: "40 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: zap-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  refresh:
+    name: rebuild, scan, publish if better
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # Concourse's `trivy` resource pins the same version, so both lanes
+      # judge with the same scanner.
+      TRIVY: aquasec/trivy:0.58.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Lowercase the owner
+        # A Docker repository name must be lowercase (as in delivery.yml).
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Plan
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          mkdir -p refresh images reports verdict
+          DATE=$(date -u +%Y%m%d)
+          printf '%s' "$DATE" > refresh/date
+          PYTHONPATH="$PWD/backend" python -m mykronos.image_refresh plan \
+            --recipes mykronos --compose deploy/demo/docker-compose.yml \
+            --root . --date "$DATE" --registry "ghcr.io/${OWNER}" \
+            --output refresh/plan.tsv
+          test -s refresh/plan.tsv || { echo "::error::no x-mykronos-build recipe for ZAP"; exit 1; }
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          safe() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'; }
+          while IFS=$'\t' read -r current candidate context args; do
+            [ -n "$candidate" ] || continue
+            echo "Building $candidate from $context"
+            # $args is a deliberate word list of --build-arg=K=V flags.
+            # shellcheck disable=SC2086
+            docker build --pull $args --tag "$candidate" "$context"
+            docker save "$candidate" --output "images/$(safe "$candidate").tar"
+            docker pull --quiet "$current"
+            docker save "$current" --output "images/$(safe "$current").tar"
+          done < refresh/plan.tsv
+
+      - name: Scan
+        run: |
+          set -euo pipefail
+          # A scan that writes nothing leaves no report, and `decide` turns a
+          # missing report into `failed` - never into "clean".
+          safe() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'; }
+          docker pull --quiet "$TRIVY"
+          while IFS=$'\t' read -r current candidate _ _; do
+            [ -n "$candidate" ] || continue
+            for ref in "$current" "$candidate"; do
+              echo "Scanning $ref"
+              docker run --rm -v "$PWD:/w" -w /w "$TRIVY" image \
+                --input "images/$(safe "$ref").tar" --scanners vuln \
+                --severity CRITICAL,HIGH --format json \
+                --output "reports/$(safe "$ref").json" \
+                --exit-code 0 --quiet --timeout 30m || true
+            done
+          done < refresh/plan.tsv
+
+      - name: Decide
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$PWD/backend" python -m mykronos.image_refresh decide \
+            --plan refresh/plan.tsv --reports reports --output verdict/verdict.json \
+            --publish-list verdict/publish.txt
+          if grep -q '"outcome": "failed"' verdict/verdict.json; then
+            echo "::error::a scan produced no usable report; nothing is published"
+            exit 1
+          fi
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          if [ ! -s verdict/publish.txt ]; then
+            echo "No image improved; nothing to publish."
+          else
+            while read -r candidate; do
+              [ -n "$candidate" ] || continue
+              docker push --quiet "$candidate"
+              echo "published $candidate"
+              echo "published \`$candidate\`" >> "$GITHUB_STEP_SUMMARY"
+            done < verdict/publish.txt
+            echo "Adopt it by pinning its -p$(cat refresh/date) tag in deploy/demo/docker-compose.yml, by review."
+          fi
+          # A regression held its image back above; it still turns the run
+          # red, so it is seen rather than skipped every night.
+          if grep -q '"outcome": "regressed"' verdict/verdict.json; then
+            echo "::error::the rebuilt image gained a HIGH or CRITICAL; it was not published"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: zap-image-verdict
+          path: |
+            refresh/plan.tsv
+            verdict/
+            reports/
+          if-no-files-found: warn

@@ -52,6 +52,12 @@ service's `image:` - the vendor image before adoption, the pinned derivative
 after - unless the recipe names one, which an image compose builds locally
 (ZAP) must, since a local tag cannot be pulled to scan.
 
+Where a recipe is built depends on who must pull it. Concourse builds the
+infrastructure recipes (`--compose deploy/concourse/docker-compose.yml`) to
+the LAN registry. ZAP's consumer is the DAST lane on GitHub's runners, which
+cannot reach that registry, so `.github/workflows/zap-image.yml` builds the
+demo's recipe (`--compose deploy/demo/docker-compose.yml`) to ghcr.io.
+
 `decide` also judges each image on its own (`outcome`) and lists the
 candidates worth publishing (`publish`): independent infrastructure should
 not wait on each other, so one image that regresses holds back only itself.
@@ -334,6 +340,12 @@ def main(argv: list[str] | None = None) -> int:
         default="thehub",
         help="`x-thehub-build` in TheHub's compose files, or `x-mykronos-build` in this one's",
     )
+    p.add_argument(
+        "--compose",
+        action="append",
+        choices=MYKRONOS_COMPOSE_FILES,
+        help="with --recipes mykronos, read only this compose file (repeatable)",
+    )
     p.add_argument("--output", default="-")
 
     d = sub.add_parser("decide", help="Compare current and candidate Trivy reports")
@@ -348,8 +360,18 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     if arguments.command == "plan":
-        planner = plan_mykronos if arguments.recipes == "mykronos" else plan
-        recipes = planner(Path(arguments.root), arguments.date, arguments.registry)
+        root = Path(arguments.root)
+        if arguments.recipes == "mykronos":
+            recipes = plan_mykronos(
+                root,
+                arguments.date,
+                arguments.registry,
+                files=tuple(arguments.compose or MYKRONOS_COMPOSE_FILES),
+            )
+        elif arguments.compose:
+            parser.error("--compose applies to --recipes mykronos only")
+        else:
+            recipes = plan(root, arguments.date, arguments.registry)
         lines = [f"{r.current}\t{r.tsv()}" for r in recipes]
         text = "\n".join(lines) + ("\n" if lines else "")
         if arguments.output == "-":
