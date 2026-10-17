@@ -26,7 +26,7 @@ from sqlalchemy import select
 from mykronos import agent_work, briefing, briefing_sources, playbooks
 from mykronos.adminauth import Principal, PrincipalDep
 from mykronos.dashboard import DashboardQueries
-from mykronos.db.models import ApprovalDecision, ApprovalRequest, RepoOnboarding, RiskAcceptance
+from mykronos.db.models import ApprovalDecision, ApprovalRequest, RiskAcceptance
 from mykronos.risk_acceptance import serialize as serialize_acceptance
 from mykronos.schemas import utcnow
 
@@ -106,14 +106,6 @@ class WorkQueueOut(BaseModel):
     waiting: list[WorkWaitingOut]
     #: Sources that could not be read. Not the same as nothing to report.
     unknown: list[WorkUnknownOut]
-
-
-def _repo_ids(db: Any) -> dict[str, str]:
-    with db.session() as session:
-        rows = session.execute(
-            select(RepoOnboarding.github_repo_full_name, RepoOnboarding.id)
-        ).all()
-    return {str(name): str(repo_id) for name, repo_id in rows}
 
 
 def _acceptances(db: Any, repo: str | None) -> list[dict[str, Any]] | None:
@@ -206,7 +198,7 @@ async def work(
     settings = state.settings
     # First, so a broken playbooks file fails the call before any gathering.
     playbook_version = _playbooks(request).version
-    repo_ids = await asyncio.to_thread(_repo_ids, state.db)
+    repo_ids = await asyncio.to_thread(briefing_sources.repo_ids, state.db)
     repo = None
     if repo_id is not None:
         from mykronos.api.dashboard import _resolve_repo
@@ -226,6 +218,7 @@ async def work(
             default_branches=default_branches,
             scanned_by=scanned_by,
             concourse_token=bool(settings.concourse_api_token),
+            repo_ids=repo_ids,
             paused_jobs=operational.paused_jobs,
             failing_jobs=operational.failing_jobs,
             blocked_jobs=operational.blocked_jobs,
@@ -246,7 +239,6 @@ async def work(
         triage_rows=triage_rows,
         acceptances=acceptances,
         approval_requests=own,
-        repo_ids=repo_ids,
         now=utcnow(),
         probe_interval_seconds=int(settings.exposure_probe_interval_seconds),
         playbook_version=playbook_version,

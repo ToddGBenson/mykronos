@@ -273,6 +273,11 @@ class StalledLane:
     #: Actions-scanned one does not -- which is why both fields are here and
     #: `dispatch_refusal` reads them together.
     concourse_token: bool = False
+    #: The repository's onboarding id, which is what every repository route
+    #: takes: `owner/repo` has a slash and cannot be one path segment
+    #: (`_resolve_repo`). Empty when the repository has no onboarding row, and
+    #: then the lane gets no path at all (#60739).
+    repo_id: str = ""
     #: Why the dispatch below is not offered, empty when it is. Serialised, so
     #: a UI can say the same sentence the terminal does instead of deciding for
     #: itself whether the button works.
@@ -280,7 +285,8 @@ class StalledLane:
     #: Set in `__post_init__` rather than exposed as a property, because
     #: `--json` serialises with `dataclasses.asdict` and a property is
     #: silently absent from it. The action is the part a pipeline step wants.
-    action: Action = field(init=False)
+    #: None when there is no route to name: no onboarding row, no id.
+    action: Action | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """Re-run the lane — where this deployment can actually dispatch it.
@@ -305,6 +311,16 @@ class StalledLane:
         made is worse than printing none: it costs a round trip and the trust
         in every other line on the page.
         """
+        if not self.repo_id:
+            # Both routes this could name, the dispatch and the CI view, are
+            # keyed by onboarding id. Printing one built from the full name
+            # cost a 404 everywhere it was copied (#60739).
+            self.dispatch_refusal = (
+                f"{self.repo_full_name} has no onboarding row here, so there is "
+                "no route to dispatch or read this lane by: every repository "
+                "route takes the onboarding id."
+            )
+            return
         self.dispatch_refusal = dispatch_refusal(
             self.scanned_by, concourse_token=self.concourse_token
         )
@@ -318,7 +334,7 @@ class StalledLane:
             self.action = Action(
                 label=f"Fix {self.blocked_by} for {self.repo_full_name}",
                 method="POST",
-                path=f"/api/repos/{self.repo_full_name}/scan?capabilities={self.blocked_by}",
+                path=f"/api/repos/{self.repo_id}/scan?capabilities={self.blocked_by}",
                 effect=(
                     f"Re-runs the upstream lane this one gates on. Nothing here "
                     f"can start until {self.blocked_by} is green; once it is, two "
@@ -336,7 +352,7 @@ class StalledLane:
         self.action = Action(
             label=f"Re-run {self.capability} for {self.repo_full_name}",
             method="POST",
-            path=f"/api/repos/{self.repo_full_name}/scan?capabilities={self.capability}",
+            path=f"/api/repos/{self.repo_id}/scan?capabilities={self.capability}",
             effect=(
                 f"Dispatches the lane. {caveat} Two successful runs then "
                 f"close up to {self.open_findings} finding(s)."
@@ -384,7 +400,7 @@ class StalledLane:
         return Action(
             label=f"No way to dispatch {target} for {self.repo_full_name} from here",
             method="GET",
-            path=f"/api/dashboard/repos/{self.repo_full_name}/ci",
+            path=f"/api/dashboard/repos/{self.repo_id}/ci",
             effect=(
                 f"{self.dispatch_refusal} {waiting} Two successful runs then close "
                 f"up to {self.open_findings} finding(s)."
@@ -1019,6 +1035,7 @@ def stalled_lanes(
     now: datetime | None = None,
     scanned_by: dict[str, str] | None = None,
     concourse_token: bool = False,
+    repo_ids: dict[str, str] | None = None,
 ) -> list[StalledLane]:
     """Lanes that cannot close findings, failing or silent.
 
@@ -1027,6 +1044,11 @@ def stalled_lanes(
     `dispatch_refusal`. Both are handed in rather than read here, because both
     live in the operational database and this builds from the lake. Omitted,
     every row keeps the button, which is what every caller got before.
+
+    `repo_ids` maps each full name to its onboarding id, from the same ledger.
+    Every route a row can name takes the id, so a repository missing from it
+    (or every repository, when it is omitted) gets the diagnosis and no path
+    (#60739).
 
     **Failing** is counted consecutively from the newest run backwards, so a
     lane that failed twice and then recovered is not reported — it is working,
@@ -1144,6 +1166,7 @@ def stalled_lanes(
                 scanned_by=(scanned_by or {}).get(repo, ""),
                 concourse_token=concourse_token,
                 last_scan_run_id=newest_run.get((repo, capability), ""),
+                repo_id=(repo_ids or {}).get(repo, ""),
             )
         )
 
@@ -1432,6 +1455,9 @@ def build(
     # unconditionally, which is the behaviour #278 is about.
     scanned_by: dict[str, str] | None = None,
     concourse_token: bool = False,
+    # `repo_full_name` -> onboarding id. Every route a stalled lane can name
+    # takes the id; a repository missing here gets no path (#60739).
+    repo_ids: dict[str, str] | None = None,
     paused_jobs: list[PausedLane] | None = None,
     failing_jobs: list[FailingLane] | None = None,
     blocked_jobs: list[BlockedLane] | None = None,
@@ -1498,6 +1524,7 @@ def build(
                 now=stamp,
                 scanned_by=scanned_by,
                 concourse_token=concourse_token,
+                repo_ids=repo_ids,
             ),
             asset_id,
         ),
@@ -1705,14 +1732,16 @@ def render(briefing: Briefing) -> str:
                 # The line below is a read, not the dispatch this section used
                 # to print unconditionally. Without this sentence beside it the
                 # row reads as an unhelpful link rather than as a refusal with
-                # a reason and a thing to wait for (#278).
+                # a reason and a thing to wait for (#278). With no onboarding
+                # row there is no line below at all, only the reason (#60739).
                 lines += textwrap.wrap(
-                    lane.action.effect,
+                    lane.action.effect if lane.action else lane.dispatch_refusal,
                     72,
                     initial_indent="      ",
                     subsequent_indent="      ",
                 )
-            lines.append(f"      → {lane.action.method} {lane.action.path}")
+            if lane.action:
+                lines.append(f"      → {lane.action.method} {lane.action.path}")
         # Closes the section whether or not the idle note follows it.
         lines.append("")
 

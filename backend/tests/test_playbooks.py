@@ -245,6 +245,7 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
                 detail="",
                 open_findings=1,
                 scanned_by="github_actions",
+                repo_id=REPO_ID,
             )
         ],
         failing=[FailingLane(pipeline="acme", job="unit", last_status="failed")],
@@ -305,7 +306,6 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
             {"id": "r1", "duty": "pull_request_merge", "subject_ref": "x#1",
              "last_verdict": "needs_info", "last_rationale": "Which test?"}
         ],
-        repo_ids={REPO: REPO_ID},
         now=NOW,
         probe_interval_seconds=21_600,
         playbook_version=version,

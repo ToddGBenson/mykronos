@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from mykronos import (
     briefing,
+    briefing_sources,
     composition,
     consult,
     controls,
@@ -2598,7 +2599,12 @@ class StalledLaneOut(BaseModel):
     #: action below as a button; where this is set, that action is a read and
     #: this is the sentence to show instead of pretending otherwise.
     dispatch_refusal: str = ""
-    action: BriefingActionOut
+    #: The repository's onboarding id, which the action's path is built from;
+    #: empty when it has no onboarding row (#60739).
+    repo_id: str = ""
+    #: None when there is no route to name: the repository has no onboarding
+    #: row, and `dispatch_refusal` says so.
+    action: BriefingActionOut | None = None
 
 
 class AwaitingClosureOut(BaseModel):
@@ -2731,6 +2737,7 @@ async def post_deployment_briefing(
         sast_tools=sast_tools,
         scanned_by=_scanned_by(request),
         concourse_token=bool(request.app.state.settings.concourse_api_token),
+        repo_ids=briefing_sources.repo_ids(request.app.state.db),
     )
     return BriefingOut(
         generated_at=report.generated_at,

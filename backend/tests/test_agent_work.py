@@ -46,7 +46,7 @@ def _briefing(**overrides: Any) -> Briefing:
     return Briefing(**values)
 
 
-def _lane(capability: str = "dast", open_findings: int = 5) -> StalledLane:
+def _lane(capability: str = "dast", open_findings: int = 5, repo_id: str = REPO_ID) -> StalledLane:
     return StalledLane(
         repo_full_name=REPO,
         capability=capability,
@@ -57,6 +57,7 @@ def _lane(capability: str = "dast", open_findings: int = 5) -> StalledLane:
         detail="",
         open_findings=open_findings,
         scanned_by="github_actions",
+        repo_id=repo_id,
     )
 
 
@@ -85,7 +86,6 @@ def _build(
     inputs.setdefault("triage_rows", [])
     inputs.setdefault("acceptances", [])
     inputs.setdefault("approval_requests", [])
-    inputs.setdefault("repo_ids", {REPO: REPO_ID})
     inputs.setdefault("playbook_version", "1.0")
     return agent_work.build(
         briefing or _briefing(),
@@ -294,7 +294,7 @@ class TestCallablePaths:
         assert REPO not in action.path
 
     def test_no_dead_path_without_an_onboarding_row(self) -> None:
-        [item] = _build(_briefing(stalled=[_lane()]), repo_ids={}).items
+        [item] = _build(_briefing(stalled=[_lane(repo_id="")])).items
         assert item.actions == []
 
     def test_a_partly_accepted_combination_offers_no_retired_groom(self) -> None:

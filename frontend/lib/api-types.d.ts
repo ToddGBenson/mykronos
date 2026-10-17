@@ -8656,7 +8656,12 @@ export interface components {
              * @default
              */
             dispatch_refusal: string;
-            action: components["schemas"]["BriefingActionOut"];
+            /**
+             * Repo Id
+             * @default
+             */
+            repo_id: string;
+            action?: components["schemas"]["BriefingActionOut"] | null;
         };
         /** StatusChange */
         StatusChange: {
