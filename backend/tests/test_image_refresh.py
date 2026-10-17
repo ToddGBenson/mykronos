@@ -131,6 +131,48 @@ def test_an_empty_report_fails_rather_than_reading_as_clean() -> None:
     assert ir.decide([c]) == "failed"
 
 
+def test_a_fixed_medium_with_nothing_new_is_improved() -> None:
+    """2026-10-16: the registry, Vault and Concourse rebuilds each fixed zlib
+    CVE-2026-85091 (MEDIUM) and nothing else, read `unchanged`, and were never
+    published, so the fix the distribution shipped never ran."""
+    c = ir.compare(
+        "registry:3",
+        "r/library/registry:3-p20261016",
+        _trivy(("CVE-1", "x", "HIGH"), ("CVE-2026-85091", "zlib", "MEDIUM")),
+        _trivy(("CVE-1", "x", "HIGH")),
+    )
+    assert c.removed == [] and c.kept == 1
+    assert c.removed_medium == [("CVE-2026-85091", "zlib")] and c.added_medium == []
+    assert ir.decide([c]) == "improved"
+
+
+def test_a_medium_swapped_for_another_is_unchanged() -> None:
+    c = ir.compare("a", "b", _trivy(("CVE-1", "x", "MEDIUM")), _trivy(("CVE-2", "y", "MEDIUM")))
+    assert ir.decide([c]) == "unchanged"
+
+
+def test_a_new_high_regresses_even_when_mediums_fall() -> None:
+    c = ir.compare(
+        "a",
+        "b",
+        _trivy(("CVE-1", "x", "MEDIUM"), ("CVE-2", "y", "MEDIUM")),
+        _trivy(("CVE-3", "z", "HIGH")),
+    )
+    assert ir.decide([c]) == "regressed"
+
+
+def test_a_new_medium_in_one_image_holds_back_a_medium_only_set() -> None:
+    better = ir.compare("a", "b", _trivy(("CVE-1", "x", "MEDIUM")), _trivy())
+    worse = ir.compare("c", "d", _trivy(), _trivy(("CVE-2", "y", "MEDIUM")))
+    assert ir.decide([better, worse]) == "unchanged"
+    assert ir.outcome(better) == "improved"
+
+
+def test_low_findings_never_decide() -> None:
+    c = ir.compare("a", "b", _trivy(("CVE-1", "x", "LOW")), _trivy(("CVE-2", "y", "UNKNOWN")))
+    assert ir.decide([c]) == "unchanged"
+
+
 def test_cli_plan_then_decide(tmp_path: Path) -> None:
     root = _write(tmp_path)
     build_list = tmp_path / "plan.tsv"
@@ -150,6 +192,8 @@ def test_cli_plan_then_decide(tmp_path: Path) -> None:
     document = json.loads(verdict.read_text(encoding="utf-8"))
     assert document["verdict"] == "improved"
     assert len(document["images"]) == 2
+    assert document["images"][0]["removed_medium"] == []
+    assert document["images"][0]["added_medium"] == []
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
