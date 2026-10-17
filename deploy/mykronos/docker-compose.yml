@@ -97,6 +97,29 @@ services:
       MYKRONOS_SLACK_BOT_TOKEN: ${MYKRONOS_SLACK_BOT_TOKEN:-}
       MYKRONOS_SLACK_CHANNEL: ${MYKRONOS_SLACK_CHANNEL:-}
       MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY: ${MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY:-high}
+
+      # #60754: the Slack lesson a third time. docs/OPERATOR-TASKS.md says to
+      # set MYKRONOS_DIGEST_ENABLED=true in backend/.env, and none of the lines
+      # below were here, so the digest could not be switched on in this stack
+      # at all. Every fallback is the code's own default - written out, not
+      # left empty, because an empty string is a validation error for a bool,
+      # an int or a list and the backend would not start.
+      # test_compose_passes_settings.py now diffs .env.example against this
+      # block, so the next documented setting cannot be missed the same way.
+      MYKRONOS_DIGEST_ENABLED: ${MYKRONOS_DIGEST_ENABLED:-false}
+      MYKRONOS_WEEKLY_DIGEST_INTERVAL_SECONDS: ${MYKRONOS_WEEKLY_DIGEST_INTERVAL_SECONDS:-604800}
+      # On-demand Concourse builds (spec 17 sec. 2.5). Empty disables dispatch
+      # only; the read-only pipeline panel works without it.
+      MYKRONOS_CONCOURSE_API_TOKEN: ${MYKRONOS_CONCOURSE_API_TOKEN:-}
+      # JSON list, e.g. ["my-app[bot]"]. `[]`, not empty: empty does not parse.
+      MYKRONOS_GITHUB_BOT_LOGINS: ${MYKRONOS_GITHUB_BOT_LOGINS:-[]}
+      MYKRONOS_COMPACTION_INTERVAL_SECONDS: ${MYKRONOS_COMPACTION_INTERVAL_SECONDS:-300}
+      MYKRONOS_MAX_FINDINGS_PER_REQUEST: ${MYKRONOS_MAX_FINDINGS_PER_REQUEST:-10000}
+      MYKRONOS_RATE_LIMIT_REQUESTS_PER_MINUTE: ${MYKRONOS_RATE_LIMIT_REQUESTS_PER_MINUTE:-100}
+      MYKRONOS_TOKEN_OVERLAP_HOURS: ${MYKRONOS_TOKEN_OVERLAP_HOURS:-24}
+      MYKRONOS_ADMIN_IDENTITY: ${MYKRONOS_ADMIN_IDENTITY:-admin}
+      MYKRONOS_INSIDER_RISK_DEFAULT_RETENTION_DAYS: ${MYKRONOS_INSIDER_RISK_DEFAULT_RETENTION_DAYS:-90}
+      MYKRONOS_KNOWLEDGE_HALF_LIFE_DAYS: ${MYKRONOS_KNOWLEDGE_HALF_LIFE_DAYS:-180}
     volumes:
       # Every finding, decision, token and archived scan output. Without this
       # a deploy destroys the lot, including the data a day of reprocessing
