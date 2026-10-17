@@ -185,7 +185,7 @@ foreach ($i in @($inbox.offered)) {
     do { $rat = Read-Host 'Why not? (20+ characters; the requester and the reviewer are measured on it)' } while ($rat.Trim().Length -lt 20)
   }
   try {
-    $dec = Invoke-Api "/api/approvals/$($i.request_id)/decisions" 'Post' @{ verdict = $verdict; rationale = $rat; evidence_digest = $i.evidence_digest }
+    $dec = Invoke-Api -Path "/api/approvals/$($i.request_id)/decisions" -Method 'Post' -Body @{ verdict = $verdict; rationale = $rat; evidence_digest = $i.evidence_digest }
     Add-Content -LiteralPath $script:LogFile -Value "      $verdict, rationale: $rat" -Encoding utf8
     if ($verdict -eq 'approve') {
       $tally.agreed++

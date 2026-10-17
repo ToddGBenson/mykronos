@@ -57,6 +57,8 @@
 .EXAMPLE
   .\approval-queue.ps1 -SamplesOnly        # just the spot-check queue
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Api', Justification = 'Used by Invoke-Api, which reads it from script scope; the rule does not follow a script parameter into a nested function.')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'CheckTimeoutMinutes', Justification = 'Used by the check-wait helper, which reads it from script scope; the rule does not follow a script parameter into a nested function.')]
 [CmdletBinding()]
 param(
   [Parameter(Position = 0, ValueFromRemainingArguments = $true)] [int[]] $Pr,
@@ -223,7 +225,9 @@ function Get-Deferred([int[]] $Numbers, $Prs) {
 $script:Attrs = Join-Path ([IO.Path]::GetTempPath()) 'mykronos-approval-queue.gitattributes'
 Set-Content -LiteralPath $script:Attrs -Value 'docs/DECISIONS.md merge=union' -Encoding ascii
 
-function Update-Branch($p) {
+function Update-Branch {
+  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal helper. The script''s own -DryRun is the preview switch and is checked before this is called.')]
+  param($p)
   <# Bring a conflicting PR up to date with origin/main and push it. Returns
      $null on success, or the reason it could not.
 
@@ -316,6 +320,8 @@ function Wait-IndependentReview([string] $Sha) {
   return 'timeout'
 }
 function Update-LocalMain {
+  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal helper: a fast-forward-only update of local main, run once after real merges. The script''s own -DryRun is the preview switch.')]
+  param()
   Sync-Origin @()
   $current = (Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')).Out.Trim()
   if ($current -eq 'main') {
@@ -341,7 +347,7 @@ function Invoke-SampleReview {
       do { $note = Read-Host 'Why you disagree (required; the approver is measured on it)' } while (-not $note.Trim())
     }
     try {
-      $r = Invoke-Api "/api/approvals/samples/$($s.decision_id)" 'Post' @{ verdict = $(if ($a -eq 'a') { 'agree' } else { 'disagree' }); note = $note }
+      $r = Invoke-Api -Path "/api/approvals/samples/$($s.decision_id)" -Method 'Post' -Body @{ verdict = $(if ($a -eq 'a') { 'agree' } else { 'disagree' }); note = $note }
       Log ("  sample {0}: {1}; agreement {2}/{3}{4}" -f $s.decision_id, $r.verdict, $r.agreement.agreed, $r.agreement.reviewed, $(if ($r.delegation_suspended) { ' - DELEGATION SUSPENDED' } else { '' })) $(if ($r.delegation_suspended) { 'Red' } else { 'Green' })
     } catch [ApiError] { Log "  sample $($s.decision_id): MyKronos refused: $($_.Exception.Message)" 'Red' }
   }
@@ -384,9 +390,9 @@ while ($remaining.Count -gt 0 -and $round -lt $MaxRounds) {
   foreach ($n in @($remaining)) {
     $p = Get-Pr $n
     if (-not $p) { Drop $n 'skipped: gh could not read it'; continue }
-    if ($p.state -ne 'OPEN') { Drop $n "skipped: it is $($p.state.ToLower())" 'Yellow'; continue }
+    if ($p.state -ne 'OPEN') { Drop -n $n -why "skipped: it is $($p.state.ToLower())" -color 'Yellow'; continue }
     $why = (Invoke-Helper 'order' @{ prs = @($p); numbers = @($n) }).skipped
-    if (@($why).Count -gt 0) { Drop $n "skipped: $(@($why)[0].reason)" 'Yellow'; continue }
+    if (@($why).Count -gt 0) { Drop -n $n -why "skipped: $(@($why)[0].reason)" -color 'Yellow'; continue }
     $prs[$n] = $p
   }
   if ($prs.Count -eq 0) { break }
@@ -521,7 +527,7 @@ while ($remaining.Count -gt 0 -and $round -lt $MaxRounds) {
           foreach ($f in @($b.Evidence.evidence.files)) { Write-Host "`n=== $($f.path) [$($f.class)]" -ForegroundColor Cyan; Write-Host $f.patch }
         }
       } while ($ans -eq 'd')
-      if ($ans -ne 'y') { Drop $n 'not approved by you; the request stays open' 'Yellow'; continue }
+      if ($ans -ne 'y') { Drop -n $n -why 'not approved by you; the request stays open' -color 'Yellow'; continue }
       Write-Host "Default rationale: $($b.Summary.default_rationale)" -ForegroundColor DarkGray
       do {
         $rat = Read-Host 'Rationale (Enter accepts the default above; or type what you checked, 20+ characters)'
@@ -529,9 +535,9 @@ while ($remaining.Count -gt 0 -and $round -lt $MaxRounds) {
         if ($rat.Trim().Length -lt 20) { Write-Host 'Too short: MyKronos needs at least 20 characters.' -ForegroundColor Yellow }
       } while ($rat.Trim().Length -lt 20)
       try {
-        $dec = Invoke-Api "/api/approvals/$($b.Request.id)/decisions" 'Post' @{ verdict = 'approve'; rationale = $rat; evidence_digest = $b.Evidence.evidence_digest }
+        $dec = Invoke-Api -Path "/api/approvals/$($b.Request.id)/decisions" -Method 'Post' -Body @{ verdict = 'approve'; rationale = $rat; evidence_digest = $b.Evidence.evidence_digest }
         Add-Content -LiteralPath $script:LogFile -Value "      rationale: $rat" -Encoding utf8
-        if ($dec.state -ne 'approved') { Drop $n "your approval was recorded but the request is '$($dec.state)', not approved" 'Yellow'; continue }
+        if ($dec.state -ne 'approved') { Drop -n $n -why "your approval was recorded but the request is '$($dec.state)', not approved" -color 'Yellow'; continue }
         Log "  #${n}: approved by you" 'Green'
         $reqs[$n] = $dec
       } catch [ApiError] { Drop $n "MyKronos REFUSED the approval: $($_.Exception.Message)" }
@@ -542,7 +548,7 @@ while ($remaining.Count -gt 0 -and $round -lt $MaxRounds) {
   foreach ($n in $active) {
     if (-not $reqs.ContainsKey($n) -or $reqs[$n].state -ne 'approved') { continue }
     $p = Get-Pr $n
-    if (-not $p -or $p.state -ne 'OPEN') { Drop $n "skipped: it is no longer open" 'Yellow'; continue }
+    if (-not $p -or $p.state -ne 'OPEN') { Drop -n $n -why "skipped: it is no longer open" -color 'Yellow'; continue }
     $sha = $p.headRefOid
     if ("$Repo#$n@$sha" -ne $reqs[$n].subject_ref) { Log "  #${n}: head moved since its approval; next round" 'Yellow'; continue }
     Sync-Origin @($p.headRefName)

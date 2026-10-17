@@ -8,8 +8,8 @@ refused every `set-pipeline` after it.
 The state now lives under `%LOCALAPPDATA%\\mykronos\\personal-soc`, the old
 in-repo file is read once as a migration source, and it is no longer tracked.
 
-The executable tests run the script's own `Invoke-Cycle`, `Get-InstalledSkills`
-and `Set-InstalledSkills`, extracted from its AST, inside a throwaway git
+The executable tests run the script's own `Invoke-Cycle`, `Get-InstalledSkillSha`
+and `Set-InstalledSkillSha`, extracted from its AST, inside a throwaway git
 repository. `mc` is replaced by a scriptblock that serves a fake bucket from a
 directory, so nothing touches MinIO, `~/.claude` or the real checkout.
 """
@@ -80,7 +80,7 @@ def test_the_default_state_path_is_outside_the_checkout() -> None:
     ) in text
     # The only path built from the legacy name is the read-only migration source.
     assert text.count('".installed-skills"') == 1
-    assert "Set-InstalledSkills -Path $StateFile" in text
+    assert "Set-InstalledSkillSha -Path $StateFile" in text
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def cycle(tmp_path: Path, repo: Path, requested: str) -> subprocess.CompletedPro
     program = f"""
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('{SCRIPT}', [ref]$null, [ref]$null)
-$wanted = 'Get-Pointer', 'Invoke-Cycle', 'Get-InstalledSkills', 'Set-InstalledSkills'
+$wanted = 'Get-Pointer', 'Invoke-Cycle', 'Get-InstalledSkillSha', 'Set-InstalledSkillSha'
 $isFn = {{ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }}
 foreach ($fn in $ast.FindAll($isFn, $true) | Where-Object Name -in $wanted) {{
   . ([scriptblock]::Create($fn.Extent.Text))

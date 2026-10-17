@@ -730,7 +730,12 @@ if ($vaultToken) {
                 Set-Item -Path "env:$name" -Value (($value -join "").Trim())
                 $slackResolved += $name
             }
-        } catch { }
+        } catch {
+            # Unresolved names are reported as missing just below; Slack is
+            # optional for a deploy. The exception text is not echoed: this
+            # block runs with a Vault token in the environment.
+            Write-Verbose "Slack: could not read $name from Vault."
+        }
         $value = $null
     }
     $env:VAULT_TOKEN = $prior

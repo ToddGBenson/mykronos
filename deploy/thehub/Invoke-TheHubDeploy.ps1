@@ -124,7 +124,9 @@ $identity = if ($PatchDate) { "$Sha+p$PatchDate" } else { $Sha }
 
 # Compose reads this for the demo's patched images. Cleared when absent, so a
 # plain-SHA deploy goes back to the date the compose file pins.
-function Set-PatchDate([string]$Date) {
+function Set-PatchDate {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal: sets or clears one environment variable in this process for compose to read. Nothing outside the running script changes.')]
+    param([string]$Date)
     if ($Date) { $env:THEHUB_DEMO_PATCH_DATE = $Date }
     else { Remove-Item Env:THEHUB_DEMO_PATCH_DATE -ErrorAction SilentlyContinue }
 }

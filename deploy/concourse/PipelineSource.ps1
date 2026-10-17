@@ -161,6 +161,7 @@ function Update-PipelineSourceRemote {
     .SYNOPSIS
         Refresh origin/<ref> once, at the top of a script. Warns, never refuses.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal helper, dot-sourced by the appliers. It only runs git fetch, which updates a remote-tracking ref; skipping it under -WhatIf would make the source guard compare against a stale origin, the failure it exists to prevent.')]
     param(
         [Parameter(Mandatory = $true)][string]$Root,
         [string]$SourceRef = $script:DefaultPipelineSourceRef

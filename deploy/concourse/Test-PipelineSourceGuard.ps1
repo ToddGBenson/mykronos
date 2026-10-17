@@ -15,6 +15,7 @@ $workDir   = Join-Path $root 'work'
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 
 function New-Fixture {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Test-only helper: builds throwaway git repos under the OS temp dir; nothing real is touched, so -WhatIf has no meaning here.')]
     param([switch]$NoOrigin, [switch]$NoMain)
     Remove-Item -Recurse -Force $originDir, $workDir -ErrorAction SilentlyContinue
     git init --bare --quiet $originDir
@@ -49,27 +50,27 @@ function Probe {
     }
 }
 
-Probe 'clean, on main, level with origin' { New-Fixture } 'ALLOWED'
+Probe -Name 'clean, on main, level with origin' -Arrange { New-Fixture } -Expect 'ALLOWED'
 
-Probe 'HEAD on a feature branch' {
+Probe -Name 'HEAD on a feature branch' -Arrange {
     New-Fixture; Push-Location $workDir; git checkout --quiet -b feature/x; Pop-Location
-} 'REFUSED'
+} -Expect 'REFUSED'
 
-Probe 'tracked file modified (dirty tree)' {
+Probe -Name 'tracked file modified (dirty tree)' -Arrange {
     New-Fixture; Push-Location $workDir
     'jobs: [{name: sneaked-in}]' | Set-Content 'pipelines/thehub.yml'; Pop-Location
-} 'REFUSED'
+} -Expect 'REFUSED'
 
-Probe 'main is behind origin/main' {
+Probe -Name 'main is behind origin/main' -Arrange {
     New-Fixture; Push-Location $workDir
     'jobs: [{name: newer}]' | Set-Content 'pipelines/thehub.yml'
     git add -A; git commit --quiet -m 'newer'; git push --quiet origin main 2>$null
     git reset --hard --quiet HEAD~1; Pop-Location
-} 'REFUSED'
+} -Expect 'REFUSED'
 
-Probe 'no origin/main to compare against' { New-Fixture -NoOrigin } 'REFUSED'
+Probe -Name 'no origin/main to compare against' -Arrange { New-Fixture -NoOrigin } -Expect 'REFUSED'
 
-Probe 'no local main branch at all' { New-Fixture -NoMain } 'REFUSED'
+Probe -Name 'no local main branch at all' -Arrange { New-Fixture -NoMain } -Expect 'REFUSED'
 
 # The override must still work, loudly -- a guard with no escape hatch gets
 # disabled wholesale the first time somebody genuinely needs one.

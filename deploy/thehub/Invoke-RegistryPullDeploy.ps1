@@ -366,6 +366,7 @@ function Get-Pointer {
 # Writes a pointer back. Returns $true on success so a failed acknowledgement is
 # visible to the caller instead of vanishing into Out-Null.
 function Set-Pointer {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal: writes the deploy acknowledgement pointer after a deploy has already happened. Skipping it would leave the poller redeploying the same request.')]
     param([string]$Name, [string]$Content)
     $result = Invoke-S3Request -Method PUT -Key "$Bucket/$Name" -Body $Content
     if ($result.Status -ne "ok") {
