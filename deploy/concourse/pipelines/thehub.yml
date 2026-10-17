@@ -2291,7 +2291,8 @@ jobs:
 
                 # -- What this lane runs, and what it deliberately does not --
                 #
-                # `tests/unit` only, which is TheHub's own `make test-unit`.
+                # `tests/unit`, which is TheHub's own `make test-unit`, plus
+                # `tests/security` as its own step after it (#357, see below).
                 # Running the whole tree here produced several hundred errors
                 # and failures in a row and then hit the timeout, and none of
                 # it was about TheHub's code.
@@ -2318,11 +2319,12 @@ jobs:
                 # No backticks in this string: inside double quotes bash
                 # would run `make test-unit` as a command substitution, in a
                 # container with no make and no reason to.
-                echo "Running tests/unit only - TheHub's own make test-unit."
+                echo "Running tests/unit - TheHub's own make test-unit - then"
+                echo "tests/security as a separate serial step (#357)."
                 echo "tests/integration is NOT run here: it needs Postgres,"
                 echo "Redis and the app environment, which live in TheHub's"
                 echo "own container. A green tick on this job means the unit"
-                echo "tests pass, not that the suite passes."
+                echo "and security tests pass, not that the suite passes."
                 echo "=================================================="
 
                 cd backend
@@ -2435,6 +2437,69 @@ jobs:
                   echo "=================================================="
                 fi
 
+                # -- tests/security, its own serial step [#357] -------------
+                #
+                # Twelve modules that production comments in TheHub's
+                # middleware/api_gate.py cite by name as the thing that "fails
+                # the build" -- and no stage ran them. They are not moved into
+                # tests/unit: TheHub's test-offline.sh parallelises that tier
+                # and test_rate_limit.py is red under `-n 6`, because another
+                # worker's limiter.reset() wipes a burst mid-count. Here they run
+                # serially, after the unit tier, in their own pytest process.
+                #
+                # The environment is scoped to this subshell, not exported to
+                # the unit run above, so tests/unit is graded exactly as before:
+                #
+                #   SINGLE_USER_MODE=true  what prod and TheHub's own offline
+                #                          runner use. Without it 18 of these
+                #                          tests 401 on `client` requests and
+                #                          fail for a reason that is about this
+                #                          task, not the code.
+                #   HUB_API_TOKEN          random per build, never a real
+                #                          credential. Any non-empty value makes
+                #                          main.py install the API Gate, which
+                #                          test_authz_bypass exists to probe.
+                #                          Unset, 31 tests SKIP -- and a skip in
+                #                          this job reads as a pass.
+                #   HUB_REQUIRE_ARMED_GATE that skip becomes a FAILURE naming the
+                #                          missing variable, so a future edit
+                #                          that drops the token goes red rather
+                #                          than green-over-nothing.
+                #
+                # Skipped only if the unit tier already hit its soft timeout:
+                # the job exits 124 below either way, and the line says so.
+                # 10m soft cap (measured ~2.5m serial); 70m + 10m leaves the
+                # last 10m of the 90m hard cap for the upload.
+                SEC_SOFT_TIMEOUT_S=600
+                sec_rc=0
+                SEC_TIMED_OUT=false
+                if [ "$TIMED_OUT" = true ]; then
+                  echo "::warning::tests/security NOT RUN - the unit tier used the whole soft timeout"
+                else
+                  echo "=================================================="
+                  echo "Running tests/security - serial, API Gate armed, skips refused."
+                  echo "=================================================="
+                  sec_started=$(date +%s)
+                  (
+                    export SINGLE_USER_MODE=true
+                    HUB_API_TOKEN="ci-$(python -c 'import secrets; print(secrets.token_hex(16))')"
+                    export HUB_API_TOKEN
+                    export HUB_REQUIRE_ARMED_GATE=1
+                    if command -v timeout >/dev/null 2>&1; then
+                      timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
+                        python -m pytest tests/security -q -p no:cacheprovider -ra \
+                        --junitxml=/tmp/results/security.xml
+                    else
+                      python -m pytest tests/security -q -p no:cacheprovider -ra \
+                        --junitxml=/tmp/results/security.xml
+                    fi
+                  ) || sec_rc=$?
+                  if [ $(( $(date +%s) - sec_started )) -ge "$SEC_SOFT_TIMEOUT_S" ]; then
+                    SEC_TIMED_OUT=true
+                    echo "TESTS/SECURITY HIT ITS ${SEC_SOFT_TIMEOUT_S}s SOFT TIMEOUT - results are PARTIAL."
+                  fi
+                fi
+
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 python -m mykronos.upload \
@@ -2455,7 +2520,19 @@ jobs:
                   echo "::error::unit suite exceeded its ${SOFT_TIMEOUT_S}s soft timeout - partial results uploaded"
                   exit 124
                 fi
-                exit "$rc"
+                if [ "$SEC_TIMED_OUT" = true ]; then
+                  echo "::error::tests/security exceeded its ${SEC_SOFT_TIMEOUT_S}s soft timeout - partial results uploaded"
+                  exit 124
+                fi
+                # [#357] Either tier failing fails the job. The unit verdict is
+                # reported first because it was the job's only verdict until now.
+                if [ "$rc" -ne 0 ]; then
+                  exit "$rc"
+                fi
+                if [ "$sec_rc" -ne 0 ]; then
+                  echo "::error::tests/security failed (exit ${sec_rc}) - the unit tier passed"
+                fi
+                exit "$sec_rc"
 
   # == Stage 2: build =======================================================
   #
