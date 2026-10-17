@@ -1,12 +1,14 @@
-"""The ZAP the demo-and-dast lane runs is built here, from one pinned digest.
+"""The ZAP the demo-and-dast lane runs is our build, from one pinned digest.
 
 Every container finding the lake held against MyKronos was in the upstream
 ZAP image, and no upstream tag is better. So `deploy/zap/Dockerfile` takes the
 pinned weekly, applies Debian's fixes and removes what our usage never runs.
-These hold the three things that make that safe to rely on: the FROM is still
-the one exact pin (D-114/D-128), what was removed stays removed, and the
-containers lane scans the image the lane actually runs rather than the one it
-replaced.
+A nightly workflow builds that recipe and publishes it, and
+`deploy/zap-pinned/Dockerfile` adopts one published date by digest.
+These hold what makes that safe to rely on: each FROM is one exact pin
+(D-114/D-128), what was removed stays removed, the recipe's baseline is the
+image in use, and the containers lane scans the image the lane actually runs,
+under the name its findings already carry.
 """
 
 from __future__ import annotations
@@ -21,17 +23,22 @@ from mykronos.estate_images import annotate_reports, derive, main
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "deploy" / "zap" / "Dockerfile"
+PINNED = REPO_ROOT / "deploy" / "zap-pinned" / "Dockerfile"
 DEMO_COMPOSE = REPO_ROOT / "deploy" / "demo" / "docker-compose.yml"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "demo-and-dast.yml"
 REBUILD = REPO_ROOT / "deploy" / "demo" / "Invoke-DemoRebuild.ps1"
 PIPELINE = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
 
 PINNED_FROM = re.compile(r"^ghcr\.io/zaproxy/zaproxy:[\w.-]+@sha256:[0-9a-f]{64}$")
+#: What the nightly workflow publishes, held at one digest.
+PUBLISHED_FROM = re.compile(
+    r"^ghcr\.io/[a-z0-9-]+/mykronos-zap:weekly-p\d{8}@sha256:[0-9a-f]{64}$"
+)
 
 
-def _instructions() -> list[tuple[str, str]]:
+def _instructions(dockerfile: Path = DOCKERFILE) -> list[tuple[str, str]]:
     """(INSTRUCTION, argument) pairs, continuation lines joined, comments dropped."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
+    text = dockerfile.read_text(encoding="utf-8")
     logical: list[str] = []
     buffer = ""
     for raw in text.splitlines():
@@ -114,12 +121,46 @@ class TestTheDockerfile:
         assert users and users[-1] == "zap"
 
 
+class TestTheLaneRunsOnePublishedBuild:
+    """The recipe is rebuilt nightly; every commit runs one adopted date of it."""
+
+    def test_the_pinned_file_is_one_from_and_it_is_a_published_digest(self) -> None:
+        instructions = _instructions(PINNED)
+        froms = [arg for word, arg in instructions if word == "FROM"]
+        assert len(froms) == 1, froms
+        assert PUBLISHED_FROM.match(froms[0]), f"FROM {froms[0]!r} is not a published date"
+
+    def test_the_pinned_file_changes_nothing_in_the_image(self) -> None:
+        """A RUN, COPY or ADD here would make the scanned image something the
+        nightly lane never compared, and the pin a second recipe."""
+        words = {word for word, _ in _instructions(PINNED)}
+        assert words <= {"FROM", "HEALTHCHECK", "USER"}, words
+        users = [arg for word, arg in _instructions(PINNED) if word == "USER"]
+        assert users == ["zap"]
+
+    def test_the_recipe_is_compared_against_the_image_in_use(self) -> None:
+        """A baseline of upstream's image would publish every night's rebuild,
+        since any rebuild beats upstream, whether or not it beats what runs."""
+        froms = [arg for word, arg in _instructions(PINNED) if word == "FROM"]
+        assert _zap_service()["x-mykronos-build"]["baseline"] == froms[0]
+
+    def test_the_pin_is_of_what_the_recipe_publishes(self) -> None:
+        """Same repository name, so adopting a date never adopts another image."""
+        froms = [arg for word, arg in _instructions(PINNED) if word == "FROM"]
+        published = _zap_service()["x-mykronos-build"]["publish"].split(":", 1)[0]
+        assert froms[0].split("@", 1)[0].rsplit(":", 1)[0].endswith("/" + published)
+
+    def test_the_recipe_is_still_the_derivative(self) -> None:
+        recipe = _zap_service()["x-mykronos-build"]["context"]
+        assert (DEMO_COMPOSE.parent / recipe).resolve() == DOCKERFILE.parent.resolve()
+
+
 class TestTheDemoStackRunsIt:
-    def test_compose_builds_zap_from_the_dockerfile(self) -> None:
+    def test_compose_builds_zap_from_the_pinned_dockerfile(self) -> None:
         zap = _zap_service()
         build = zap.get("build")
-        assert isinstance(build, dict), "the zap service no longer builds the derivative"
-        assert (DEMO_COMPOSE.parent / build["context"]).resolve() == DOCKERFILE.parent.resolve()
+        assert isinstance(build, dict), "the zap service no longer builds the pin"
+        assert (DEMO_COMPOSE.parent / build["context"]).resolve() == PINNED.parent.resolve()
         assert build.get("dockerfile", "Dockerfile") == "Dockerfile"
 
     def test_the_built_image_has_a_local_name_never_the_upstream_one(self) -> None:
@@ -150,8 +191,8 @@ class TestTheContainersLaneScansIt:
         assert not [image for image in derivation.images() if "zaproxy" in image]
         builds = {build.name: build for build in derivation.builds()}
         assert "mykronos-zap" in builds, builds
-        assert builds["mykronos-zap"].context == "deploy/zap"
-        assert builds["mykronos-zap"].dockerfile == "deploy/zap/Dockerfile"
+        assert builds["mykronos-zap"].context == "deploy/zap-pinned"
+        assert builds["mykronos-zap"].dockerfile == "deploy/zap-pinned/Dockerfile"
         assert builds["mykronos-zap"].role == "tool"
 
     def test_the_build_list_is_a_file_the_pipeline_reads(self, tmp_path: Path) -> None:

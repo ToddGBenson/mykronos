@@ -145,12 +145,21 @@ services:
   # sees no traffic and spiders from the login page, which is the scan this
   # whole arrangement exists to replace.
   #
-  # Built, not pulled: deploy/zap/Dockerfile is upstream's `weekly` held at one
-  # digest (D-128) with Debian's fixes applied and the browser, X server,
-  # compiler and SSH client our usage never runs removed. Its FROM is the pin
-  # (D-114), and TheHub's `zap` resource pins the same digest - move both
-  # together. The 2.17.0 release image is Debian 12 with 822 fixable CVEs its
-  # maintainers never rebuilt, which is why the base is the weekly at all.
+  # A published build, adopted by digest. deploy/zap/Dockerfile (the recipe
+  # below) is upstream's `weekly` held at one digest (D-128) with Debian's fixes
+  # applied and the browser, X server, compiler and SSH client our usage never
+  # runs removed. Its FROM is the pin (D-114), and TheHub's `zap` resource pins
+  # the same digest - move both together. The 2.17.0 release image is Debian 12
+  # with 822 fixable CVEs its maintainers never rebuilt, which is why the base
+  # is the weekly at all.
+  #
+  # .github/workflows/zap-image.yml rebuilds the recipe nightly and publishes
+  # ghcr.io/<owner>/mykronos-zap:weekly-p<date> only when strictly better than
+  # the baseline below; ghcr.io rather than the LAN registry because the DAST
+  # lane runs on GitHub's runners. deploy/zap-pinned/Dockerfile names the date
+  # in use, and is all `build:` builds: one FROM, so every commit is scanned by
+  # the same reviewed bytes. It is a build rather than an `image:` to keep the
+  # finding identity `mykronos-zap` (that file says why).
   #
   # `image:` names the local build; it is in no registry, so `pull_policy:
   # build` keeps compose from looking for it there, and the lane's API scan
@@ -158,24 +167,16 @@ services:
   # Dockerfile and scans that (mykronos.estate_images, `builds`).
   zap:
     build:
-      context: ../zap
+      context: ../zap-pinned
     image: mykronos-zap:local
     pull_policy: build
-    # Out-of-band rebuild (.github/workflows/zap-image.yml): the same
-    # Dockerfile, built nightly and published as
-    # ghcr.io/<owner>/mykronos-zap:weekly-p<date> only when strictly better.
-    # ghcr.io and not the LAN registry, because the DAST lane that runs this
-    # service is on GitHub's runners. Declared, not adopted: this service
-    # still builds locally until a reviewed change pins a published date and
-    # drops `build:`. That change must also keep the image's finding identity
-    # (`mykronos-zap`; ghcr.io's path adds the owner), for example by having
-    # the containers lane scan a LAN copy, as it does the application images.
-    # The baseline is upstream's image at the same digest, because the local
-    # tag above cannot be pulled to scan.
+    # The baseline is the published image the service runs, the FROM of
+    # deploy/zap-pinned/Dockerfile: a rebuild is published only when it is
+    # better than what is in use. Move the two together.
     x-mykronos-build:
       context: ../zap
       publish: mykronos-zap:weekly
-      baseline: ghcr.io/zaproxy/zaproxy:weekly@sha256:4ec932d24ee6fa7181333a719d519cdebf92df541058d48041ce3358528cd0ea
+      baseline: ghcr.io/toddgbenson/mykronos-zap:weekly-p20261017@sha256:76aec1674bb84980ab4c240cbb417b983781853cec473afc1574226889e21a5f
     # Loopback only. The API below runs with no key and accepts any caller,
     # and ZAP's API can load and run scripts, so a LAN-reachable port is code
     # execution on this container. The DAST lane (.github/workflows/

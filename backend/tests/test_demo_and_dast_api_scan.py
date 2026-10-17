@@ -77,7 +77,7 @@ def test_the_api_scan_targets_the_ephemeral_backend_only() -> None:
 def test_the_api_scan_uses_the_zap_the_compose_file_pins() -> None:
     """One pin (D-128). The step reads the image from the compose file's
     `zap` service, rather than naming a second tag that can drift. Compose
-    builds that image (`deploy/zap/Dockerfile`), so the pin it checks is the
+    builds that image (`deploy/zap-pinned/Dockerfile`), so the pin it checks is the
     build's FROM; and `--pull never`, so a missing build is an error rather
     than a fetch of whatever a registry has under that name."""
     run = _api_run()
