@@ -66,6 +66,7 @@ from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_confi
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
+    hand_rotation_instruction,
     purge_expired_insider_risk,
     reconcile_installations,
     rotate_ingestion_tokens,
@@ -722,10 +723,7 @@ def main(argv: list[str] | None = None) -> int:
                 # line used to collapse -- "deferred" covering both is how a
                 # token with 88 days left was announced as due for rotation.
                 for repo in rotation.deferred:
-                    print(
-                        f"  DUE {repo}: rotate by hand, then re-run set-pipeline "
-                        "(or Import-EnvSecretsToVault.ps1 -Apply)"
-                    )
+                    print(f"  DUE {repo}: rotate by hand: {hand_rotation_instruction(repo)}")
                 for repo in rotation.unverified:
                     print(
                         f"  UNVERIFIED {repo}: NOT due for rotation. Its active "

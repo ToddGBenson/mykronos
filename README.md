@@ -85,9 +85,16 @@ the method does not exist.
 
 ## Running it
 
+```powershell
+# First, on a new host: Concourse and Vault, a separate stack the platform joins.
+# Generates deploy/concourse/.env, initialises Vault (vault-init.ps1 writes
+# CONCOURSE_VAULT_TOKEN and vault/init.json - copy that file to a password
+# manager), then starts everything. Re-running it is safe.
+pwsh -File deploy/concourse/setup.ps1
+```
+
 ```bash
-# The platform: API and dashboard. Concourse and Vault are a separate stack in
-# deploy/concourse; ZAP runs as a pipeline task, not a service.
+# The platform: API and dashboard. ZAP runs as a pipeline task, not a service.
 cd deploy/mykronos
 
 # The one thing that is not obvious: the GitHub App key is bind-mounted from

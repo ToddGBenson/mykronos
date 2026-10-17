@@ -434,7 +434,7 @@ services:
       # because there versioning is the point.
       CONCOURSE_VAULT_URL: http://vault:8200
       CONCOURSE_VAULT_PATH_PREFIX: /concourse
-      CONCOURSE_VAULT_CLIENT_TOKEN: ${CONCOURSE_VAULT_TOKEN:?set it in .env - see vault-init}
+      CONCOURSE_VAULT_CLIENT_TOKEN: ${CONCOURSE_VAULT_TOKEN:?set it in .env - run setup.ps1, or see vault-init.ps1}
 
       CONCOURSE_LOG_LEVEL: info
     volumes:

@@ -114,9 +114,14 @@ pipeline alerts post with — and hands them to compose. Leave
    Slack's own error, for example `not_in_channel` (invite the bot).
 
 5. Optionally enable the weekly digest, which is off by default because it
-   messages people:
+   messages people. Add this to `backend/.env` and redeploy (step 2):
 
        MYKRONOS_DIGEST_ENABLED=true
+
+   Until #60754 the compose file did not pass this setting, so it had no
+   effect on the deployed backend. Confirm it landed:
+
+       docker exec mykronos-backend printenv MYKRONOS_DIGEST_ENABLED
 
 ### Choosing the threshold
 

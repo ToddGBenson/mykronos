@@ -41,7 +41,49 @@ MUST_BE_PASSABLE = (
     "MYKRONOS_REVIEWER_MODE",
     "MYKRONOS_REVIEWER_MODEL",
     "MYKRONOS_REVIEWER_API_KEY",
+    # #60754: OPERATOR-TASKS.md tells the operator to set the first in
+    # backend/.env, and none of these reached the container - the digest could
+    # not be switched on under Docker at all.
+    "MYKRONOS_DIGEST_ENABLED",
+    "MYKRONOS_WEEKLY_DIGEST_INTERVAL_SECONDS",
+    "MYKRONOS_CONCOURSE_API_TOKEN",
+    "MYKRONOS_GITHUB_BOT_LOGINS",
 )
+
+EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
+
+#: The phrase that marks a `.env.example` block as deliberately NOT passed into
+#: the deployed container. The block has to say why; this only checks it says so.
+NOT_PASSED = "Not passed by deploy/mykronos/docker-compose.yml"
+
+#: Compose fallbacks that differ from the code default on purpose: the code's
+#: default is right for a laptop, and these describe this deployment.
+DEPLOYMENT_DEFAULTS = {
+    "MYKRONOS_INGESTION_API_URL",
+    "MYKRONOS_CONCOURSE_URL",
+    "MYKRONOS_CONCOURSE_EXTERNAL_URL",
+    "MYKRONOS_VAULT_URL",
+    "MYKRONOS_HUB_API_URL",
+}
+
+
+def _documented_settings() -> tuple[set[str], set[str]]:
+    """Settings `.env.example` tells an operator to set, split into the ones
+    it says compose passes and the ones it marks as not passed.
+
+    Blocks are separated by blank lines, so a marker covers the comment and
+    assignments it sits with. Commented-out assignments count: `# NAME=value`
+    is still an instruction that NAME can be set.
+    """
+    from mykronos.config import Settings
+
+    fields = {f"MYKRONOS_{name.upper()}" for name in Settings.model_fields}
+    passed: set[str] = set()
+    exempt: set[str] = set()
+    for block in re.split(r"\n\s*\n", EXAMPLE.read_text(encoding="utf-8")):
+        names = set(re.findall(r"^#?\s*(MYKRONOS_[A-Z0-9_]+)=", block, re.MULTILINE))
+        (exempt if NOT_PASSED in block else passed).update(names & fields)
+    return passed - exempt, exempt
 
 
 @pytest.fixture(scope="module")
@@ -196,3 +238,75 @@ def test_the_deploy_reads_the_slack_pair_from_the_pipelines_vault_paths() -> Non
         assert re.search(
             rf'"{name}"\s*=\s*"concourse/main/{var}"', deploy
         ), f"deploy.ps1 does not read {name} from concourse/main/{var}"
+
+
+def test_every_setting_the_docs_say_to_set_reaches_the_container(backend_environment) -> None:
+    """#60754, generally. MUST_BE_PASSABLE is a list somebody has to remember
+    to extend, and the digest, the Concourse API token and the bot logins were
+    each documented as settable and never added to it - so setting them in
+    backend/.env did nothing to the deployed backend, silently.
+
+    This diffs what `.env.example` tells an operator to set against what the
+    compose environment passes. A setting that genuinely cannot be configured
+    under compose (a path the image fixes, a pin that lives in code) stays out
+    of the list, and its `.env.example` block says so in words.
+    """
+    documented, _ = _documented_settings()
+    missing = sorted(documented - set(backend_environment))
+
+    assert not missing, (
+        "backend/.env.example tells an operator to set these, and the compose "
+        "environment does not pass them, so the deployed backend silently uses "
+        "the code default. Pass them in deploy/mykronos/docker-compose.yml, or "
+        f"mark their block in .env.example with {NOT_PASSED!r} and say why: "
+        + ", ".join(missing)
+    )
+
+
+def test_a_setting_marked_not_passed_really_is_not_passed(backend_environment) -> None:
+    """The marker is a claim, and a stale one misleads in the other direction:
+    an operator who reads "not configurable" never tries."""
+    _, exempt = _documented_settings()
+    contradicted = sorted(
+        name for name in exempt if str(backend_environment.get(name, "")).startswith("${")
+    )
+    assert not contradicted, f"marked {NOT_PASSED!r} but compose passes: {contradicted}"
+
+
+def test_a_passed_setting_left_unset_reads_as_the_code_default(
+    backend_environment, monkeypatch
+) -> None:
+    """Passing a setting must not change it for an operator who never set it.
+
+    `${NAME:-}` hands the container an empty string, which is not a default:
+    for a bool or a list it is a validation error and the backend does not
+    start. So each newly passed setting's compose fallback must parse to the
+    same value as leaving the variable out altogether.
+    """
+    from mykronos.config import Settings
+
+    baseline = Settings(_env_file=None)
+    documented, _ = _documented_settings()
+    differs = []
+    for name in sorted(documented - DEPLOYMENT_DEFAULTS):
+        match = re.fullmatch(r"\$\{" + name + r":-(.*)\}", str(backend_environment[name]))
+        if not match:
+            continue  # `:?` (must be set) or a fixed value - not a fallback
+        monkeypatch.setenv(name, match.group(1))
+        field = name.removeprefix("MYKRONOS_").lower()
+        try:
+            if getattr(Settings(_env_file=None), field) != getattr(baseline, field):
+                differs.append(name)
+        except ValueError:
+            differs.append(f"{name} (does not parse)")
+        monkeypatch.delenv(name)
+
+    assert not differs, f"compose's fallback is not the code default for: {differs}"
+
+
+def test_the_example_file_is_a_valid_configuration() -> None:
+    """It says "copy to .env and adjust", and `MYKRONOS_DIGEST_ENABLED=` - an
+    empty value - failed validation, so a straight copy did not start."""
+    from mykronos.config import Settings
+
+    Settings(_env_file=EXAMPLE)
