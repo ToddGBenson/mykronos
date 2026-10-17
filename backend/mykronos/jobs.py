@@ -291,6 +291,8 @@ async def rotate_ingestion_tokens(
         # doing the wrong thing quietly.
         if onboarding.scanned_by != "github_actions":
             if repo in due:
+                # Matches on the word 'token'. Logs a repo name and a command, never a token.
+                # nosemgrep: python-logger-credential-disclosure
                 logger.warning(
                     "%s is due for token rotation and is scanned by %s, which this "
                     "job cannot deliver to. Rotate it by hand: %s.",
@@ -334,6 +336,8 @@ async def rotate_ingestion_tokens(
                     else "Concourse could not be reached to rule one out"
                 )
                 if repo in due:
+                    # Matches on the word 'token'. Logs a repo name and a reason, never a token.
+                    # nosemgrep: python-logger-credential-disclosure
                     logger.warning(
                         "%s is due for token rotation and %s. This job can only "
                         "write a GitHub Actions secret, so rotating would leave "
@@ -382,6 +386,8 @@ async def rotate_ingestion_tokens(
         except (GitHubError, OSError) as exc:
             # Deliberately not fatal to the job: one unreachable repo must not
             # stop every other repo from rotating.
+            # Matches on the word 'token'. Logs GitHub's error text, which never echoes the secret.
+            # nosemgrep: python-logger-credential-disclosure
             logger.warning("Rotation for %s could not write the secret: %s", repo, exc)
             result.failed.append((repo, str(exc)))
 
@@ -390,6 +396,8 @@ async def rotate_ingestion_tokens(
             session, overlap_hours=overlap_hours
         ).purge_expired()
 
+    # Matches on the word 'token'. Logs counts only (TokenRotationResult.summary).
+    # nosemgrep: python-logger-credential-disclosure
     logger.info("Token rotation: %s", result.summary())
     return result
 
