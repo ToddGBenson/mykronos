@@ -15,8 +15,10 @@
 # Nightly: plan, build (loaded into this runner, nothing pushed to find out),
 # scan the baseline and the candidate with Trivy, decide, and push
 # `mykronos-zap:weekly-p<date>` only when it removes at least one HIGH or
-# CRITICAL and adds none. Publishing changes nothing that runs; adopting a
-# date is a reviewed change to the compose file.
+# CRITICAL and adds none, or, with no HIGH/CRITICAL change, removes a MEDIUM
+# and adds none (#869; the scan reports MEDIUM for that). Publishing changes
+# nothing that runs; adopting a date is a reviewed change to
+# deploy/zap-pinned/Dockerfile and the recipe's baseline.
 
 name: zap-image
 
@@ -101,7 +103,7 @@ jobs:
               echo "Scanning $ref"
               docker run --rm -v "$PWD:/w" -w /w "$TRIVY" image \
                 --input "images/$(safe "$ref").tar" --scanners vuln \
-                --severity CRITICAL,HIGH --format json \
+                --severity CRITICAL,HIGH,MEDIUM --format json \
                 --output "reports/$(safe "$ref").json" \
                 --exit-code 0 --quiet --timeout 30m || true
             done

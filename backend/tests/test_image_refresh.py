@@ -493,3 +493,21 @@ def test_the_zap_workflow_pushes_only_what_decide_published() -> None:
     trivy = next(r for r in pinned["resources"] if r["name"] == "trivy")["source"]
     (job,) = workflow["jobs"].values()
     assert job["env"]["TRIVY"] == f"{trivy['repository']}:{trivy['tag']}"
+
+
+@pytest.mark.parametrize(
+    "lane", [MYKRONOS_PIPELINE, THEHUB_PIPELINE, ZAP_WORKFLOW], ids=lambda p: p.name
+)
+def test_every_rebuild_scan_reports_every_severity_decide_reads(lane: Path) -> None:
+    """`decide` reads HIGH/CRITICAL and, since #869, MEDIUM. A scan run with
+    `--severity CRITICAL,HIGH` writes no MEDIUM into the report, so the second
+    tier can never fire and a MEDIUM-only fix is discarded as `unchanged`."""
+    import re
+
+    scans = re.findall(
+        r"--severity\s+([A-Z,]+)\s+--format json", lane.read_text(encoding="utf-8")
+    )
+    assert len(scans) >= 1, "no Trivy JSON scan found; the walker needs updating"
+    for severities in scans:
+        missing = set(ir.GATED + ir.SECOND_TIER) - set(severities.split(","))
+        assert not missing, f"a rebuild scan omits {sorted(missing)}"
