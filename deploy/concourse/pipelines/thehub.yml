@@ -145,6 +145,14 @@ resources:
     # a 3.14 codebase, which is one more variable than a test lane should have.
     source: { repository: python, tag: "3.14-slim" }
 
+  # PSScriptAnalyzer's runtime, for `sast`. The image and tag mykronos.yml and
+  # personal-soc.yml run their analyser on, so the estate's three PowerShell
+  # lanes read code the same way.
+  - name: pwsh
+    type: registry-image
+    icon: powershell
+    source: { repository: mcr.microsoft.com/powershell, tag: "7.5-debian-12" }
+
   # Scans the image out of the registry directly. No daemon, no privileged
   # task, and no `curl get.docker.com` in a task that never started dockerd -
   # which is what the previous containers lane did, and why it always wrote its
@@ -2909,6 +2917,8 @@ jobs:
         passed: [unit]
       - get: python313
         attempts: *retry_fetch
+      - get: pwsh
+        attempts: *retry_fetch
       - *preflight
       - task: semgrep
         timeout: 130m
@@ -2981,6 +2991,88 @@ jobs:
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false
+        # [2026-10-17] PowerShell, the second analyser on `sast`. The briefing
+        # reported TheHub 2% unread (PowerShell, PLpgSQL): semgrep and CodeQL
+        # implement neither. 25 scripts, measured over origin/develop with the
+        # pinned 1.25.0: 329 findings, 62 after the two style rules below
+        # (32 information, 30 warning). Copied from mykronos.yml's task, which
+        # says why each line is there: hung off semgrep's `ensure:` so neither
+        # analyser costs the other its run; absence reconciliation reads
+        # `tool_name`, so semgrep's silence cannot close a PSScriptAnalyzer
+        # finding. Reporting, not gating. PLpgSQL is still unread.
+        ensure:
+          task: psscriptanalyzer
+          timeout: 10m
+          image: pwsh
+          config:
+            platform: linux
+            inputs: [{ name: source }]
+            outputs: [{ name: results }]
+            run:
+              path: pwsh
+              args:
+                - -NonInteractive
+                - -NoProfile
+                - -Command
+                - |
+                  $ErrorActionPreference = 'Stop'
+                  Set-PSRepository PSGallery -InstallationPolicy Trusted
+                  Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -AcceptLicense
+                  Import-Module PSScriptAnalyzer
+
+                  $files = @(Get-ChildItem source -Recurse -File -Include *.ps1,*.psm1,*.psd1)
+                  Write-Host ("scripts analysed: {0}" -f $files.Count)
+                  if ($files.Count -eq 0) {
+                    Write-Host "::error:: no PowerShell found in the repository."
+                    Write-Host "          A check that examined nothing has not passed."
+                    exit 1
+                  }
+
+                  $all = @(Invoke-ScriptAnalyzer -Path source -Recurse)
+                  $styleOnly = @("PSAvoidUsingWriteHost", "PSUseBOMForUnicodeEncodedFile")
+                  $uploadable = @($all | Where-Object { $styleOnly -notcontains $_.RuleName })
+                  ,$uploadable | ConvertTo-Json -Depth 6 |
+                    Set-Content -Path results/psscriptanalyzer.json -Encoding utf8
+                  Write-Host "Uploading $($uploadable.Count) of $($all.Count) finding(s); $($all.Count - $uploadable.Count) style-only excluded."
+                  foreach ($d in $uploadable) {
+                    $rel = $d.ScriptPath -replace '.*[/\\]source[/\\]', ''
+                    Write-Host ("  {0,-11} {1,-44} {2}:{3}" -f $d.Severity, $d.RuleName, $rel, $d.Line)
+                  }
+          ensure:
+            task: upload-psscriptanalyzer
+            timeout: 10m
+            image: python313
+            params: *mykronos_env
+            config:
+              platform: linux
+              inputs: [{ name: source }, { name: results, optional: true }]
+              run:
+                path: bash
+                args:
+                  - -ec
+                  - |
+                    set -euo pipefail
+                    # Under `ensure:`, so this also runs when the analyser died
+                    # before writing anything; an empty upload would read as a
+                    # clean scan, so it is refused.
+                    if [ ! -s results/psscriptanalyzer.json ]; then
+                      echo "::error:: the analyser produced no results file - it failed before writing one."
+                      echo "          Not uploading: an empty upload would report this as a clean scan."
+                      exit 0
+                    fi
+                    # #59976: apt must use IPv4 on this host (see semgrep above).
+                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                    apt-get update -qq && apt-get install -y -qq git >/dev/null
+                    pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                    cd source
+                    python -m mykronos.upload \
+                      --capability sast --tool psscriptanalyzer \
+                      --results-path ../results \
+                      --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                      --repo ToddGBenson/TheHub \
+                      --commit-sha "$(git rev-parse HEAD)" \
+                      --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                      --severity-threshold low --blocking false
   - name: dependencies
     public: true
     serial_groups: [worker]
