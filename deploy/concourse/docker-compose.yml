@@ -168,8 +168,13 @@ services:
   # no `mc`, so the image's own `silo healthcheck ready` is the probe below.
   # The service keeps the name `minio` and the container `mykronos-minio`:
   # the pipelines address it as S3, and renaming would orphan the container.
+  #
+  # RELEASE.2026-10-15, pinned by digest (2026-10-17): built on Go 1.27.2.
+  # Trivy 0.73.0: 2026-09-16 at 5 high / 12 medium, 19 with a published fix;
+  # 2026-10-15 at 1 high, 1 fixable. Started on a copy of this volume and
+  # answered `silo healthcheck ready` in ~3s with no errors.
   minio:
-    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless
+    image: pgsty/silo:RELEASE.2026-10-15T00-00-00Z-distroless@sha256:70cac541c5a928be5cd16d6b8732d85ac06e891a0e3d9956a745381330692fc6
     # No x-mykronos-build: distroless, so there is no package manager to
     # upgrade with. SILO moves only by a new upstream release.
     container_name: mykronos-minio
@@ -280,16 +285,22 @@ services:
   # which clears the two high OpenSSL findings (CVE-2026-14456) and takes the
   # OS layer from 7 medium / 12 low to 1 / 0. bin/vault is still Go 1.26.8,
   # so CVE-2026-78669 stays until HashiCorp ships a build on Go >= 1.26.9.
+  #
+  # 2.2.0, pinned by digest (2026-10-17): that build. Trivy 0.73.0 measures
+  # 2.1.2 at 4 high / 14 medium, 19 with a published fix (golang.org/x/net,
+  # stdlib, zlib), and 2.2.0 at 1 medium, none fixable. Started on a copy of
+  # this volume: initialized, sealed, file storage, no errors. Unseal was not
+  # exercised on the copy; vault-unseal.ps1 after the recreate is that check.
   vault:
-    image: hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55
+    image: hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better. Declared, not adopted: `image:` stays the vendor's
     # until a reviewed change pins a published date.
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55
-      publish: hashicorp/vault:2.1.2
+      base: hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919
+      publish: hashicorp/vault:2.2.0
       refresh_arg: APK_REFRESH
       args: { RUN_AS: vault }
     container_name: mykronos-vault

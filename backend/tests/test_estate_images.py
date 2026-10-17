@@ -242,9 +242,9 @@ class TestThisEstate:
     @pytest.mark.parametrize(
         "reference",
         [
-            "hashicorp/vault:2.1.2@sha256:c2f666266f383d2cf424d86b8bb8ce7d065562173ffec2b476d762943608bb55",
+            "hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919",
             "concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48",
-            "pgsty/silo:RELEASE.2026-09-16T00-00-00Z-distroless",
+            "pgsty/silo:RELEASE.2026-10-15T00-00-00Z-distroless@sha256:70cac541c5a928be5cd16d6b8732d85ac06e891a0e3d9956a745381330692fc6",
             "registry:3",
             "postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c",
             # Not ZAP: the demo builds it from deploy/zap/Dockerfile now, and
