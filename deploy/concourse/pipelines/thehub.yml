@@ -102,7 +102,7 @@ groups:
   - name: gate
     jobs: [oracle-gate]
   - name: demo
-    jobs: [deploy-demo, api-inventory, dast-demo]
+    jobs: [deploy-demo, api-inventory, functional-demo, dast-demo]
   - name: prod
     jobs: [dast-prod, dast-edge]
   - name: remediation
@@ -3640,7 +3640,7 @@ jobs:
                 # The gate runs on the six static lanes; the demo lanes run
                 # behind `deploy-demo` and report separately. Absent is not
                 # clean, and this line is what keeps the two apart.
-                echo "Not measured by this verdict for ${SHORT}: dast (dast-demo), api-inventory."
+                echo "Not measured by this verdict for ${SHORT}: dast (dast-demo), api-inventory, functional (functional-demo)."
                 echo "Those run against demo after deploy-demo and report on their own;"
                 echo "this gate does not wait for them, and their absence is not a pass."
 
@@ -4012,6 +4012,94 @@ jobs:
                   --severity-threshold low --blocking false || true
 
                 # Reported either way, then the inventory decides the job.
+                exit "$rc"
+
+  # -- Functional: the deployed demo, as a visitor reaches it ------------------
+  #
+  # MyKronos defines `functional` and TheHub never reported one: the lake held
+  # no functional run for it, ever. deploy.sh's Playwright smoke reports only
+  # to TheHub's own lifecycle. This runs TheHub's tests/functional suite
+  # against the demo after every demo deploy and uploads the JUnit report as
+  # `functional` (one registered adapter for it: junit).
+  #
+  # What the suite proves is the deployment, not the code: the demo is
+  # read-only over the internet (writes 403, schema 404 with any forwarding
+  # header), private /frontend files are 404, the security headers and the
+  # self-hosted fonts are served, and no parameterless GET route in the
+  # committed inventory answers 500. It sends nothing that could change data
+  # even if a control were missing.
+  #
+  # Behind `deploy-demo` and NOT ahead of `oracle-gate`, like the other demo
+  # lanes (TheHub#349): it reads a running demo, and the gate reads none.
+  - name: functional-demo
+    public: true
+    serial_groups: [worker]
+    on_failure:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, JOB: functional-demo }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: functional-demo }
+    plan:
+      - get: source
+        attempts: *retry_fetch
+        trigger: true
+        passed: [deploy-demo]
+      - get: python
+        attempts: *retry_fetch
+      - *preflight
+      - task: run-functional
+        timeout: 30m
+        image: python
+        params:
+          <<: *mykronos_env
+          TARGET_URL: ((thehub-demo-url))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                # #59976: IPv4 for apt before it opens a socket (see `anchors:`).
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                cd source
+
+                # A commit from before the suite existed has nothing to run.
+                # That is "not measured", said in the report, never a pass.
+                if [ ! -f tests/functional/test_demo.py ]; then
+                  echo "tests/functional is not in this commit; nothing was measured."
+                  exit 0
+                fi
+
+                pip install --quiet pytest "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+
+                # `set +e`: pytest's exit code is the verdict and must survive
+                # to the upload below (see `dependencies` for the pipefail trap).
+                set +e
+                THEHUB_FUNCTIONAL_URL="$TARGET_URL" python -m pytest tests/functional -q \
+                  -p no:cacheprovider --junitxml=../results/functional.xml
+                rc=$?
+                set -e
+
+                # Exit 5 is "no tests collected", which is a broken suite, not
+                # a pass; any report that exists goes up either way.
+                if [ -s ../results/functional.xml ]; then
+                  python -m mykronos.upload \
+                    --capability functional --tool junit \
+                    --results-path ../results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" --workspace "$PWD" \
+                    --severity-threshold low --blocking false || true
+                fi
                 exit "$rc"
 
   # -- Unauthenticated baseline DAST: Demo ----------------------------------

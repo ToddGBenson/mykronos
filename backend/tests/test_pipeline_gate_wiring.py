@@ -107,6 +107,7 @@ REQUIRED_GATE: dict[str, dict[str, list[str]]] = {
     "oracle-gate": {"source": sorted(ANALYSERS)},
     "api-inventory": {"source": ["deploy-demo"]},
     "dast-demo": {"source": ["deploy-demo"]},
+    "functional-demo": {"source": ["deploy-demo"]},
 }
 
 #: The deepest job in the promotion chain. Named once, because three tests
@@ -153,7 +154,9 @@ MUST_PRECEDE_THE_DEEPEST_GATE = frozenset(ANALYSERS)
 #: demo; the gate does not, and a gate stuck behind a lane it reads nothing
 #: from cannot render a verdict, silently. Asserted on the transitive closure
 #: so the coupling cannot come back by a longer route either.
-MUST_NOT_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", "dast-demo", "api-inventory"})
+MUST_NOT_PRECEDE_THE_DEEPEST_GATE = frozenset(
+    {"deploy-demo", "dast-demo", "api-inventory", "functional-demo"}
+)
 
 #: Differences between our copy and TheHub's that are deliberate, with the
 #: reason. Anything NOT in here fails the cross-repo check, which is the point:
@@ -167,6 +170,11 @@ MUST_NOT_PRECEDE_THE_DEEPEST_GATE = frozenset({"deploy-demo", "dast-demo", "api-
 #: `TestTheCommittedGate` is what stops this being load-bearing: the contents
 #: of every gated edge are pinned exactly, offline, against the file itself.
 EXPLAINED_DIVERGENCE = {
+    "functional-demo": (
+        "ours only, added 2026-10-17: TheHub's tests/functional suite against "
+        "the running demo, behind `deploy-demo` like `api-inventory`. TheHub's "
+        "read-only mirror gains it on the next export after set-pipeline"
+    ),
     "functional-dast": (
         "retired by #468 and deliberately left retired by #491 -- its only "
         "image resource (`playwright`) went with it and nothing else in the "
@@ -319,7 +327,7 @@ class TestTheCommittedGate:
     def test_the_demo_lanes_stay_behind_the_demo_deploy(self) -> None:
         """The other half of #349: these two genuinely need a running demo."""
         gate = committed_gates()
-        for job in ("dast-demo", "api-inventory"):
+        for job in ("dast-demo", "api-inventory", "functional-demo"):
             assert "deploy-demo" in closure(gate, job), f"`{job}` no longer waits for demo"
 
     def test_the_gate_says_what_it_did_not_measure(self) -> None:
