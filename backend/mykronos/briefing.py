@@ -451,7 +451,16 @@ class StaleLane:
     #: What is frozen behind it. A lane covering a stale tree cannot close a
     #: finding fixed on the tree it is not reading.
     open_findings: int
-    action: Action = field(init=False)
+    #: The repository's onboarding id, which the CI view takes: `owner/repo`
+    #: has a slash and cannot be one path segment (`_resolve_repo`). Empty
+    #: when the repository has no onboarding row, and then there is no path
+    #: (#60805, #60739's defect in this section).
+    repo_id: str = ""
+    #: Why there is no action, empty when there is one. Serialised, so a UI
+    #: says the same sentence the terminal does.
+    path_refusal: str = field(init=False, default="")
+    #: None when there is no route to name: no onboarding row, no id.
+    action: Action | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """Re-running is not the fix here, and saying so is the point.
@@ -462,26 +471,32 @@ class StaleLane:
         in the pipeline definition, so the action names the file rather than
         offering a request that would change nothing.
         """
+        if not self.repo_id:
+            self.path_refusal = _no_onboarding_row(self.repo_full_name)
+            return
+        self.action = Action(
+            label=f"Repair the {self.capability} lane for {self.repo_full_name}",
+            method="GET",
+            path=f"/api/dashboard/repos/{self.repo_id}/ci",
+            effect=self.diagnosis(),
+        )
+
+    def diagnosis(self) -> str:
+        """What is wrong and what fixes it, whether or not there is a page to
+        send somebody to. The terminal prints it either way."""
         if self.reason == "wrong_branch":
-            effect = (
+            return (
                 f"This lane scans `{self.branch}` and the repository's default is "
                 f"`{self.default_branch}`. Nothing on the default branch has been "
                 f"scanned by it. Point the resource at `{self.default_branch}` and "
                 "re-apply; a re-run changes nothing."
             )
-        else:
-            effect = (
-                f"This lane has scanned `{self.commit_sha}` for its last "
-                f"{self.runs} successful run(s) while the repository moved on. "
-                "A pinned ref or a cached checkout is the usual cause. A re-run "
-                f"produces one more clean scan of the same tree and closes none "
-                f"of the {self.open_findings} finding(s) behind it."
-            )
-        self.action = Action(
-            label=f"Repair the {self.capability} lane for {self.repo_full_name}",
-            method="GET",
-            path=f"/api/dashboard/repos/{self.repo_full_name}/ci",
-            effect=effect,
+        return (
+            f"This lane has scanned `{self.commit_sha}` for its last "
+            f"{self.runs} successful run(s) while the repository moved on. "
+            "A pinned ref or a cached checkout is the usual cause. A re-run "
+            f"produces one more clean scan of the same tree and closes none "
+            f"of the {self.open_findings} finding(s) behind it."
         )
 
 
@@ -506,7 +521,13 @@ class UnreadCode:
     share_unread: float
     #: The languages it cannot read, largest first, as (name, bytes).
     unread: list[tuple[str, int]]
-    action: Action = field(init=False)
+    #: The repository's onboarding id, which the CI view takes. Empty when
+    #: there is no onboarding row, and then there is no path (#60805).
+    repo_id: str = ""
+    #: Why there is no action, empty when there is one.
+    path_refusal: str = field(init=False, default="")
+    #: None when there is no route to name: no onboarding row, no id.
+    action: Action | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         """No dispatch button, and that is the point.
@@ -517,18 +538,35 @@ class UnreadCode:
         is a second analyser, which is a decision about the repository rather
         than a request this platform can make.
         """
+        if not self.repo_id:
+            self.path_refusal = _no_onboarding_row(self.repo_full_name)
+            return
         languages = ", ".join(name for name, _ in self.unread[:3])
         self.action = Action(
             label=f"Choose an analyser for {languages} on {self.repo_full_name}",
             method="GET",
-            path=f"/api/dashboard/repos/{self.repo_full_name}/ci",
-            effect=(
-                f"{self.share_unread:.0%} of this repository is {languages}, which "
-                f"{self.tool} does not implement. Re-running the lane reads the same "
-                "bytes and reports success again; the gap closes when a tool that "
-                "reads those languages runs beside it."
-            ),
+            path=f"/api/dashboard/repos/{self.repo_id}/ci",
+            effect=self.diagnosis(),
         )
+
+    def diagnosis(self) -> str:
+        """What is wrong and what fixes it, path or no path."""
+        languages = ", ".join(name for name, _ in self.unread[:3])
+        return (
+            f"{self.share_unread:.0%} of this repository is {languages}, which "
+            f"{self.tool} does not implement. Re-running the lane reads the same "
+            "bytes and reports success again; the gap closes when a tool that "
+            "reads those languages runs beside it."
+        )
+
+
+def _no_onboarding_row(repo_full_name: str) -> str:
+    """Why a row names no CI view: that route takes the onboarding id, and a
+    repository with no onboarding row has none (#60805)."""
+    return (
+        f"{repo_full_name} has no onboarding row here, so there is no CI view "
+        "to link: every repository route takes the onboarding id."
+    )
 
 
 @dataclass
@@ -1181,6 +1219,7 @@ def stale_lanes(
     *,
     now: datetime | None = None,
     default_branches: dict[str, str] | None = None,
+    repo_ids: dict[str, str] | None = None,
 ) -> list[StaleLane]:
     """Lanes that are succeeding without covering anything new (B-046).
 
@@ -1198,6 +1237,10 @@ def stale_lanes(
 
     So a repository with one lane is never reported: there is nothing to
     establish movement from, and guessing would be worse than the gap.
+
+    `repo_ids` maps each full name to its onboarding id, which the CI view a
+    row links to takes. A repository missing from it gets the diagnosis and no
+    path (#60805).
     """
     from mykronos.schemas import utcnow
 
@@ -1206,6 +1249,7 @@ def stale_lanes(
 
     stamp = now or utcnow()
     branches = default_branches or {}
+    ids = repo_ids or {}
 
     rows = catalog.query(
         """
@@ -1260,6 +1304,7 @@ def stale_lanes(
                     since=since,
                     runs=len(block),
                     open_findings=open_counts.get((repo, capability), 0),
+                    repo_id=ids.get(repo, ""),
                 )
             )
             continue
@@ -1296,6 +1341,7 @@ def stale_lanes(
                 since=since,
                 runs=len(block),
                 open_findings=open_counts.get((repo, capability), 0),
+                repo_id=ids.get(repo, ""),
             )
         )
 
@@ -1308,6 +1354,7 @@ def stale_lanes(
 def unread_code(
     languages: dict[str, dict[str, int]] | None,
     sast_tools: dict[str, str | list[str]] | None = None,
+    repo_ids: dict[str, str] | None = None,
 ) -> list[UnreadCode]:
     """Repositories with source no configured analyser implements (B-051).
 
@@ -1316,6 +1363,9 @@ def unread_code(
     lake, so a caller with no GitHub client passes nothing and this reports
     nothing -- which is the honest degradation: not knowing what a repository
     is made of is different from knowing it is fully analysed.
+
+    `repo_ids` maps each full name to its onboarding id; a repository missing
+    from it gets the diagnosis and no path (#60805).
     """
     from mykronos.analysers import readability
 
@@ -1334,6 +1384,7 @@ def unread_code(
                 tool=reading.tool,
                 share_unread=reading.share_unread,
                 unread=reading.unread,
+                repo_id=(repo_ids or {}).get(repo, ""),
             )
         )
 
@@ -1529,9 +1580,12 @@ def build(
             asset_id,
         ),
         stale=_only(
-            stale_lanes(catalog, now=stamp, default_branches=default_branches), asset_id
+            stale_lanes(
+                catalog, now=stamp, default_branches=default_branches, repo_ids=repo_ids
+            ),
+            asset_id,
         ),
-        unread=_only(unread_code(languages, sast_tools), asset_id),
+        unread=_only(unread_code(languages, sast_tools, repo_ids), asset_id),
         # Not scoped by `asset_id`: a `PausedLane` names a pipeline and a job,
         # and the mapping from pipeline to repository is the CI system's, not
         # the lake's. Filtering it here on a repository name would silently drop
@@ -1981,7 +2035,14 @@ def render(briefing: Briefing) -> str:
             )
             if uncovered.open_findings:
                 lines.append(f"      holding {uncovered.open_findings} finding(s) open")
-            lines.append(f"      → {uncovered.action.effect}")
+            lines.append(f"      → {uncovered.diagnosis()}")
+            if uncovered.path_refusal:
+                lines += textwrap.wrap(
+                    uncovered.path_refusal,
+                    72,
+                    initial_indent="        ",
+                    subsequent_indent="        ",
+                )
         lines.append("")
 
     if briefing.unread:
@@ -1998,7 +2059,14 @@ def render(briefing: Briefing) -> str:
                 f"  {blind.repo_full_name}  — {blind.share_unread:.0%} unread "
                 f"({languages}), analyser {blind.tool}"
             )
-            lines.append(f"      → {blind.action.effect}")
+            lines.append(f"      → {blind.diagnosis()}")
+            if blind.path_refusal:
+                lines += textwrap.wrap(
+                    blind.path_refusal,
+                    72,
+                    initial_indent="        ",
+                    subsequent_indent="        ",
+                )
         lines.append("")
 
     lines += ["OPEN FINDINGS, BY WHAT WOULD FIX THEM", ""]

@@ -8617,7 +8617,17 @@ export interface components {
             runs: number;
             /** Open Findings */
             open_findings: number;
-            action: components["schemas"]["BriefingActionOut"];
+            /**
+             * Repo Id
+             * @default
+             */
+            repo_id: string;
+            /**
+             * Path Refusal
+             * @default
+             */
+            path_refusal: string;
+            action?: components["schemas"]["BriefingActionOut"] | null;
         };
         /** StalledLaneOut */
         StalledLaneOut: {
@@ -9240,7 +9250,17 @@ export interface components {
                 string,
                 number
             ][];
-            action: components["schemas"]["BriefingActionOut"];
+            /**
+             * Repo Id
+             * @default
+             */
+            repo_id: string;
+            /**
+             * Path Refusal
+             * @default
+             */
+            path_refusal: string;
+            action?: components["schemas"]["BriefingActionOut"] | null;
         };
         /** ValidationError */
         ValidationError: {

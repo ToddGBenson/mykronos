@@ -2558,7 +2558,12 @@ class UnreadCodeOut(BaseModel):
     share_unread: float
     #: (language, bytes), largest first.
     unread: list[tuple[str, int]]
-    action: BriefingActionOut
+    #: The onboarding id the action's path is built from; empty when the
+    #: repository has no onboarding row (#60805).
+    repo_id: str = ""
+    #: Why there is no action, empty when there is one.
+    path_refusal: str = ""
+    action: BriefingActionOut | None = None
 
 
 class StaleLaneOut(BaseModel):
@@ -2575,7 +2580,12 @@ class StaleLaneOut(BaseModel):
     since: datetime | None
     runs: int
     open_findings: int
-    action: BriefingActionOut
+    #: The onboarding id the action's path is built from; empty when the
+    #: repository has no onboarding row (#60805).
+    repo_id: str = ""
+    #: Why there is no action, empty when there is one.
+    path_refusal: str = ""
+    action: BriefingActionOut | None = None
 
 
 class StalledLaneOut(BaseModel):
