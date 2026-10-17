@@ -5562,7 +5562,9 @@ jobs:
   # Daily: rebuild every recipe at today's date, Trivy the result against what
   # the compose files pin, and decide with `python -m mykronos.image_refresh`.
   # Only `improved` - at least one HIGH/CRITICAL removed and none introduced,
-  # per (vulnerability, package) pair, in every image - does anything:
+  # or, with no HIGH/CRITICAL change, a MEDIUM removed and none introduced
+  # (#869, which is why the scan reports MEDIUM too), per (vulnerability,
+  # package) pair, in every image - does anything:
   #
   #   1. the candidates are pushed (never before: the registry has deletes
   #      disabled, so pushing to find out would grow it every day forever);
@@ -5693,12 +5695,12 @@ jobs:
                   [ -n "$candidate" ] || continue
                   echo "Scanning $current"
                   trivy image --insecure "$current" --scanners vuln \
-                    --severity CRITICAL,HIGH --format json \
+                    --severity CRITICAL,HIGH,MEDIUM --format json \
                     --output "reports/$(safe "$current").json" \
                     --exit-code 0 --quiet --parallel 1 --timeout 30m || true
                   echo "Scanning $candidate"
                   trivy image --input "images/$(safe "$candidate").tar" --scanners vuln \
-                    --severity CRITICAL,HIGH --format json \
+                    --severity CRITICAL,HIGH,MEDIUM --format json \
                     --output "reports/$(safe "$candidate").json" \
                     --exit-code 0 --quiet --parallel 1 --timeout 30m || true
                 done < refresh/plan.tsv
