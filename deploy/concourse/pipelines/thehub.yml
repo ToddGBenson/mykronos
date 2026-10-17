@@ -2820,7 +2820,18 @@ jobs:
       - task: gitleaks
         timeout: 55m
         image: python
-        params: *mykronos_env
+        # Written out rather than `*mykronos_env`, per the note on that anchor:
+        # this task also needs the read-only deploy key, and a merge key is one
+        # typo from handing it to every job. #399: the `source` resource clones
+        # ((thehub-branch)) alone, so the key is what lets this task fetch the
+        # other heads it is meant to scan. It is the same fetch-only,
+        # this-repository-only credential `source` already uses.
+        params:
+          MYKRONOS_URL: ((mykronos-url))
+          MYKRONOS_TOKEN: ((thehub-ingestion-token))
+          MYKRONOS_REF: ((mykronos-ref))
+          SCANNED_BRANCH: ((thehub-branch))
+          SOURCE_DEPLOY_KEY: ((source-deploy-key))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -2836,7 +2847,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+                apt-get update -qq && apt-get install -y -qq curl git openssh-client >/dev/null
                 # Checksummed (PS-8), the way the osv-scanner binary in the
                 # `dependencies` lane already is and this was not. Pinning the
                 # version without pinning the bytes is half a control, in a
@@ -2857,8 +2868,28 @@ jobs:
                 # non-zero here is the scanner failing rather than a secret
                 # being found - and a scanner that failed before uploading
                 # reads in the lake as a capability nobody ever enabled.
+                #
+                # #399: every branch, not only the one `source` checked out.
+                # The git resource clones $SCANNED_BRANCH single-branch, so
+                # gitleaks' `--all` saw one branch, and a token committed to a
+                # feature branch that was never merged went unscanned for good.
+                # Fetch every head into refs/remotes/origin/* with the deploy
+                # key, checked against GitHub's published host key rather than
+                # trusted on first use. A failed fetch still scans and uploads
+                # what is here (PS-3) and then fails the task, because a
+                # one-branch scan reported green is the bug being fixed.
+                fetch_rc=0
+                install -d -m 700 /tmp/ssh
+                ( umask 077; printf '%s\n' "$SOURCE_DEPLOY_KEY" > /tmp/ssh/id )
+                echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > /tmp/ssh/known_hosts
+                # BatchMode (#496): a prompt becomes an exit code, not a hang.
+                ssh_cmd="ssh -i /tmp/ssh/id -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/tmp/ssh/known_hosts -o StrictHostKeyChecking=yes"
+                GIT_SSH_COMMAND="$ssh_cmd" git fetch --quiet --no-tags origin '+refs/heads/*:refs/remotes/origin/*' || fetch_rc=$?
+                rm -rf /tmp/ssh
+                echo "gitleaks: scanning $(git for-each-ref refs/remotes/origin | wc -l) remote branch(es)"
+
                 rc=0
-                /tmp/gitleaks detect --source . --report-format json \
+                /tmp/gitleaks detect --source . --log-opts="--full-history --all" --report-format json \
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
@@ -2876,6 +2907,10 @@ jobs:
                 if [ "$rc" -ne 0 ]; then
                   echo "::error::gitleaks exited $rc - a scan failure, not a result."
                   exit "$rc"
+                fi
+                if [ "$fetch_rc" -ne 0 ]; then
+                  echo "::error::fetching every branch exited $fetch_rc - only $SCANNED_BRANCH was scanned."
+                  exit "$fetch_rc"
                 fi
   - name: sast
     public: true
