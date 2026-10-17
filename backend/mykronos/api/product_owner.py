@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mykronos import governance, po_issues
 from mykronos import product_owner as po
-from mykronos.adminauth import PrincipalDep
+from mykronos.adminauth import PrincipalDep, Role
 from mykronos.db.models import RepoGovernance, RepoOnboarding
 from mykronos.github.client import GitHubError, PermissionDeniedError
 from mykronos.process_templates import TEMPLATES
@@ -274,8 +274,15 @@ class RankRequest(BaseModel):
 # --------------------------------------------------------------------------
 
 
+def _may_write_here(principal: Any) -> bool:
+    """spec 35: every Product Owner tab write is the operator's. Not
+    `may_write`, which also admits the `agent` role (spec 34 §1). The same
+    rule as the console's approval decision (`po_console.require_admin`)."""
+    return principal.role is Role.ADMIN
+
+
 def _require_writer(principal: Any, verb: str) -> None:
-    if not principal.may_write:
+    if not _may_write_here(principal):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"{verb} requires the 'admin' role; you have '{principal.role.value}'.",
@@ -898,7 +905,7 @@ async def product_owner(
         repo_id=repo_id,
         repo_full_name=repo_full_name,
         default_branch=branch,
-        can_write=bool(principal.may_write) and issues_read is None,
+        can_write=_may_write_here(principal) and issues_read is None,
         manifest=ManifestOut(
             state=state.state,
             path=po.MANIFEST_PATH,
