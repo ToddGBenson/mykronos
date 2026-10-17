@@ -2,7 +2,8 @@
 
 **Read tools** answer #319's narrow questions without SQL: what needs doing
 (`work`, spec 36 §2), the briefing, findings by typed filter, one finding with
-its DAST target already parsed, and a lane's health. Repository-scoped tools
+its DAST target already parsed, a lane's health, the playbook a work item
+names (§5) and the agents' track record (§6). Repository-scoped tools
 take the onboarding **id** (the API's routes are id-only, TheHub #60739);
 `repos()` maps names to ids.
 
@@ -50,6 +51,8 @@ TOOL_NAMES = frozenset(
         "finding",
         "lane_health",
         "scan_run",
+        "playbook",
+        "scorecard",
         # write, governed
         "claim",
         "disposition",
@@ -133,6 +136,14 @@ RepoId = Annotated[
     ),
 ]
 FindingId = Annotated[str, Field(min_length=1, description="The finding's finding_id.")]
+PlaybookKind = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=100,
+        description="A work item's kind, e.g. lane_stalled: the part of its `playbook` before `@`.",
+    ),
+]
 ScanRunId = Annotated[
     str, Field(min_length=1, description="The run's scan_run_id, e.g. from a work item.")
 ]
@@ -440,6 +451,42 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         """
         path = f"/api/dashboard/scan-runs/{_segment(scan_run_id)}"
         result: dict[str, Any] = await _call(api, "GET", path)
+        return result
+
+    @server.tool(annotations=_READ)
+    async def playbook(kind: PlaybookKind) -> dict[str, Any]:
+        """How to work one kind of item (spec 36 §5): ordered steps, the check
+        between them, when to stop, and when to hand it to a person with what
+        evidence.
+
+        GET /api/agent/playbooks/{kind}. Every work item names its playbook as
+        `<kind>@<version>`; pass the kind. An unknown kind is refused with the
+        kinds that exist.
+        """
+        path = f"/api/agent/playbooks/{_segment(kind)}"
+        result: dict[str, Any] = await _call(api, "GET", path)
+        return result
+
+    @server.tool(annotations=_READ)
+    async def scorecard(
+        family: Annotated[
+            str | None,
+            Field(max_length=200, description="Only this model family, e.g. claude-opus-5.5."),
+        ] = None,
+        instance: Annotated[
+            str | None, Field(max_length=200, description="Only this agent instance id.")
+        ] = None,
+    ) -> dict[str, Any]:
+        """The agents' track record, per model family and per instance (spec 36 §6).
+
+        GET /api/agent/scorecard. The same numbers the operator reads; counts,
+        never rationales. Every metric names its source and denominator. One the
+        records cannot support is `unavailable` with the reason, never zero, and
+        `unknown` lists sources that could not be read.
+        """
+        result: dict[str, Any] = await _call(
+            api, "GET", "/api/agent/scorecard", params={"family": family, "instance": instance}
+        )
         return result
 
     # -- write --------------------------------------------------------------

@@ -82,6 +82,8 @@ id-only (TheHub #60739). `repos()` maps one to the other. `accept` and `request_
 | `finding(finding_id)` | `GET /api/dashboard/findings/{id}/record` | For DAST, `uri`, `method`, `param` and `evidence` from `raw_finding_json.instance` are at the top level. |
 | `lane_health(repo_id)` | `GET /api/dashboard/repos/{id}/scan-health` + `/ci` | A CI half that cannot be read is listed in `unknown`. |
 | `scan_run(scan_run_id)` | `GET /api/dashboard/scan-runs/{id}` | One run and what it changed against the previous run on its lane. A `lane_stalled` work item cites its latest run. `new` is exact; the rest are lower bounds unless `exact`. `raw_files` are listed, not returned; fetch one from `/api/dashboard/scan-runs/{id}/raw/{filename}` with the same credential (refused to viewers). |
+| `playbook(kind)` | `GET /api/agent/playbooks/{kind}` | How to work one kind of work item (spec 36 §5): ordered steps, the check between them, when to stop and when to escalate. A work item's `playbook` is `<kind>@<version>`; pass the kind. An unknown kind is the API's 404, naming the kinds; an unloadable playbooks file is its 503. |
+| `scorecard(family?, instance?)` | `GET /api/agent/scorecard` | The agents' track record per model family and per instance (spec 36 §6). Both filters are passed through. A metric the records cannot support is `unavailable`, never zero. |
 | `claim(finding_id)` | `POST /api/dashboard/triage/{id}/claim` | Claimed in the agent's actor name. |
 | `disposition(finding_id, status, reason)` | `PATCH /api/dashboard/findings/{id}/status`, or `POST …/disposition-requests` | Reads severity first. Critical or high goes to the governed route (`finding_disposition`, #713). `status` is `false_positive` or `suppressed`. |
 | `accept(...)` | `POST /api/risk-acceptances` | The route's own rules: a deviation type (the reason code), a review date (`requested_until`, required, since this route has no indefinite option), a named person as risk owner, and a milestone that ends the weakness. |
@@ -104,4 +106,4 @@ is a worse one. Anything that removes coverage or authority stays behind a perso
 fails if a tool's name, description or schema mentions any of those verbs.
 
 The tools #319 also proposed, `pipeline(repo)` and `coverage(repo)`, are not here because no route
-serves them yet (#318). Playbooks (spec 36 §5) and the agent's track record (§6) come later.
+serves them yet (#318).
