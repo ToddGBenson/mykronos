@@ -99,6 +99,16 @@ COPY --from=build --chown=nonroot:nonroot /app/package.json ./package.json
 COPY --from=build --chown=nonroot:nonroot /app/next.config.ts ./next.config.ts
 COPY --from=prod-deps --chown=nonroot:nonroot /app/node_modules ./node_modules
 
+# The commit this image was built from, inside the image as well as on its tag
+# (#382; the backend has had the same since #361). A container cannot read the
+# tag it was started from, so an image that is only tagged cannot say what it
+# is. Same name as backend/Dockerfile so one check reads both. Declared in this
+# stage, after the COPYs, so a new SHA invalidates no cached layer above it.
+# Empty is the honest default for a local `docker build`, which does not know
+# the commit.
+ARG MYKRONOS_BUILD_SHA=""
+ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA}
+
 USER nonroot
 
 EXPOSE 3100
