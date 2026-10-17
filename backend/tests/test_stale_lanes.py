@@ -22,6 +22,9 @@ from mykronos.schemas import utcnow as _utcnow
 from tests.conftest import REPO, finding_payload, issue_token, post_findings, post_scan
 
 BRANCHES = {REPO: "main"}
+#: An onboarding id for `REPO`. The CI view a stale lane links to takes the
+#: id, and a repository without one gets no path at all (#60805).
+IDS = {REPO: "onb-1"}
 
 
 def scan(
@@ -56,6 +59,7 @@ def token(client) -> str:
 
 
 def lanes(catalog, **kwargs):
+    kwargs.setdefault("repo_ids", IDS)
     return briefing.stale_lanes(catalog, default_branches=BRANCHES, **kwargs)
 
 
@@ -389,3 +393,63 @@ class TestInTheBriefing:
 
         assert [lane.capability for lane in scoped.stale] == ["unit"]
         assert elsewhere.stale == []
+
+
+class TestThePathIsTheOnboardingId:
+    """#60805, #60739's defect in this section: the CI route is id-only
+    (`_resolve_repo`), and `owner/repo` has a slash, so a path built from the
+    full name answers 404 wherever it is copied."""
+
+    def _drift(self, client, catalog, run_compaction) -> None:
+        tok = token(client)
+        scan(client, tok, "unit", _utcnow() - timedelta(days=1), "aaaaaaa", branch="stale-branch")
+        scan(client, tok, "iac", _utcnow() - timedelta(days=1), "aaaaaaa")
+        run_compaction()
+
+    def test_the_lane_names_the_onboarding_id(self, client, catalog, run_compaction) -> None:
+        self._drift(client, catalog, run_compaction)
+
+        lane = next(lane for lane in lanes(catalog) if lane.capability == "unit")
+
+        assert lane.repo_id == "onb-1"
+        assert lane.action is not None
+        assert lane.action.path == "/api/dashboard/repos/onb-1/ci"
+        assert REPO not in lane.action.path
+
+    def test_no_onboarding_row_gets_no_path_and_says_why(
+        self, client, catalog, run_compaction
+    ) -> None:
+        self._drift(client, catalog, run_compaction)
+
+        lane = next(lane for lane in lanes(catalog, repo_ids={}) if lane.capability == "unit")
+
+        assert lane.action is None
+        assert "onboarding" in lane.path_refusal
+        # Still reported: the lane is not covering whether or not there is a
+        # page to send somebody to, and the fix is still named.
+        rendered = briefing.render(
+            briefing.build(catalog, default_branches=BRANCHES, repo_ids={})
+        )
+        assert "no onboarding row" in rendered
+        assert "Point the resource at `main`" in rendered
+        assert f"/api/dashboard/repos/{REPO}/ci" not in rendered
+
+    def test_the_path_the_briefing_prints_can_be_called(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """Call what the endpoint hands out, not a path the test assembles."""
+        from tests.test_onboarding import onboard
+
+        assert onboard(client, admin_auth).status_code in (200, 201)
+        tok = token(client)
+        scan(client, tok, "unit", _utcnow() - timedelta(days=1), "aaaaaaa", branch="stale-branch")
+        scan(client, tok, "iac", _utcnow() - timedelta(days=1), "aaaaaaa")
+        run_compaction()
+
+        body = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+        assert body["stale"], body
+        for lane in body["stale"]:
+            action = lane["action"]
+            assert action["method"] == "GET"
+            response = client.get(action["path"], headers=admin_auth)
+            assert response.status_code != 404, response.text

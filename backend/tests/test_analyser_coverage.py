@@ -178,8 +178,9 @@ class TestInTheBriefing:
         """Every other lane row on that page offers a dispatch. Running this
         one again reads the same bytes with the same tool and reports success
         again."""
-        row = briefing.unread_code({"keel": KEEL})[0]
+        row = briefing.unread_code({"keel": KEEL}, repo_ids={"keel": "onb-1"})[0]
 
+        assert row.action is not None
         assert row.action.method == "GET"
         assert "reports success again" in row.action.effect
 
@@ -230,3 +231,47 @@ class TestInTheBriefing:
         )
 
         assert [row.repo_full_name for row in scoped.unread] == ["ToddGBenson/keel"]
+
+
+class TestThePathIsTheOnboardingId:
+    """#60805, #60739's defect in this section: the CI route is id-only
+    (`_resolve_repo`), so a path built from `owner/repo` answers 404."""
+
+    def test_the_row_names_the_onboarding_id(self) -> None:
+        row = briefing.unread_code(
+            {"ToddGBenson/keel": KEEL}, repo_ids={"ToddGBenson/keel": "onb-1"}
+        )[0]
+
+        assert row.repo_id == "onb-1"
+        assert row.action is not None
+        assert row.action.path == "/api/dashboard/repos/onb-1/ci"
+
+    def test_no_onboarding_row_gets_no_path_and_says_why(self, catalog) -> None:
+        row = briefing.unread_code({"ToddGBenson/keel": KEEL}, repo_ids={})[0]
+
+        assert row.action is None
+        assert "onboarding" in row.path_refusal
+        rendered = briefing.render(
+            briefing.build(catalog, languages={"ToddGBenson/keel": KEEL}, repo_ids={})
+        )
+        assert "no onboarding row" in rendered
+        assert "reports success again" in rendered
+        assert "/api/dashboard/repos/ToddGBenson/keel/ci" not in rendered
+
+    def test_the_path_the_briefing_prints_can_be_called(
+        self, client, admin_auth, github
+    ) -> None:
+        """Call what the endpoint hands out, not a path the test assembles."""
+        from tests.conftest import REPO
+        from tests.test_onboarding import onboard
+
+        assert onboard(client, admin_auth).status_code in (200, 201)
+        github.repos[REPO].languages = dict(KEEL)
+
+        body = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+        assert body["unread"], body
+        for row in body["unread"]:
+            action = row["action"]
+            assert action["method"] == "GET"
+            response = client.get(action["path"], headers=admin_auth)
+            assert response.status_code != 404, response.text
