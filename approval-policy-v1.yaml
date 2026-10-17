@@ -105,6 +105,8 @@ duties:
       governance:
         - "*-policy-v1.yaml"          # approval, oracle and governance policy
         - "agent-playbooks-v1.yaml"   # how agents act (spec 36 §5): an agent must not approve its own instructions
+        - "maturity-model-v1.yaml"    # what "good" is: reviewed as policy, like the Oracle policy (D-164)
+        - "stride-map-v1.yaml"        # the CWE -> STRIDE judgement, reviewed as policy (D-164)
         - ".gitleaksignore"
         - ".github/**"                # CI definitions and CODEOWNERS
         - "deploy/concourse/**"       # the pipelines themselves
