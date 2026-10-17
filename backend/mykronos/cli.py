@@ -1466,6 +1466,7 @@ def main(argv: list[str] | None = None) -> int:
                 default_branches=default_branches,
                 scanned_by=scanned_by,
                 concourse_token=bool(settings.concourse_api_token),
+                repo_ids=briefing_sources.repo_ids(db),
                 languages=languages,
                 sast_tools=sast_tools,
                 paused_jobs=operational.paused_jobs,

@@ -46,7 +46,7 @@ def _briefing(**overrides: Any) -> Briefing:
     return Briefing(**values)
 
 
-def _lane(capability: str = "dast", open_findings: int = 5) -> StalledLane:
+def _lane(capability: str = "dast", open_findings: int = 5, repo_id: str = REPO_ID) -> StalledLane:
     return StalledLane(
         repo_full_name=REPO,
         capability=capability,
@@ -57,6 +57,7 @@ def _lane(capability: str = "dast", open_findings: int = 5) -> StalledLane:
         detail="",
         open_findings=open_findings,
         scanned_by="github_actions",
+        repo_id=repo_id,
     )
 
 
@@ -85,7 +86,6 @@ def _build(
     inputs.setdefault("triage_rows", [])
     inputs.setdefault("acceptances", [])
     inputs.setdefault("approval_requests", [])
-    inputs.setdefault("repo_ids", {REPO: REPO_ID})
     inputs.setdefault("playbook_version", "1.0")
     return agent_work.build(
         briefing or _briefing(),
@@ -294,10 +294,15 @@ class TestCallablePaths:
         assert REPO not in action.path
 
     def test_no_dead_path_without_an_onboarding_row(self) -> None:
-        [item] = _build(_briefing(stalled=[_lane()]), repo_ids={}).items
+        [item] = _build(_briefing(stalled=[_lane(repo_id="")])).items
         assert item.actions == []
 
-    def test_a_combination_grooms_by_onboarding_id(self) -> None:
+    def test_a_partly_accepted_combination_offers_no_retired_groom(self) -> None:
+        """#60756. The groom route answers 410 for every combination since D-161,
+        so offering it turned a partly-accepted combination the Findings tab
+        shows into a call that cannot succeed. The item still carries the
+        combination, its members and its caveats; the playbook says where the
+        story is filed."""
         combo = {
             "repo_full_name": REPO,
             "combination_id": "c1",
@@ -305,7 +310,15 @@ class TestCallablePaths:
             "severity": "critical",
             "partly_accepted": True,
             "rationale": "",
-            "members": [{"finding_id": "f1", "severity": "high", "rule_id": "CWE-89"}],
+            "members": [
+                {"finding_id": "f1", "severity": "high", "rule_id": "CWE-89"},
+                {
+                    "finding_id": "f2",
+                    "severity": "medium",
+                    "rule_id": "CWE-306",
+                    "status": "accepted_risk",
+                },
+            ],
         }
         [item] = _build(
             _briefing(
@@ -313,7 +326,10 @@ class TestCallablePaths:
                 toxic_coverage={"cannot_fire": [{"rule_id": "x"}]},
             )
         ).items
-        assert item.actions[0].path == f"/api/triage/repos/{REPO_ID}/combinations/c1/groom"
+        # The repository has an onboarding row, so an empty list is not the
+        # "no dead path without an id" rule: there is no route to offer.
+        assert item.actions == []
+        assert [e.ref for e in item.evidence] == ["f1", "f2"]
         assert _caveats(item) == {"partly_accepted", "rules_cannot_fire"}
 
 

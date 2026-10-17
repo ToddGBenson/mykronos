@@ -185,34 +185,21 @@ def lane_id(repo: str, capability: str) -> str:
     return f"lane_stalled:{repo}:{capability}"
 
 
-def _by_id(path: str, repo: str, repo_ids: dict[str, str]) -> str | None:
-    """`path` with the repository's onboarding id where its full name stood.
-
-    The briefing writes its lane actions as `/api/repos/<owner/repo>/scan`,
-    and those routes take an onboarding id (`_resolve_repo`: a full name has a
-    slash and cannot be one path segment), so the path it prints cannot be
-    called. Rewritten here, where an agent will call it; None when the
-    repository has no onboarding row, so no dead path is offered.
-    """
-    repo_id = repo_ids.get(repo)
-    if not repo_id:
-        return None
-    return path.replace(f"/{repo}/", f"/{repo_id}/")
-
-
-def _lane_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
+def _lane_items(briefing: Briefing) -> list[WorkItem]:
     items = []
     for lane in briefing.stalled:
         last = lane.last_success.isoformat() if lane.last_success else "never"
-        path = _by_id(lane.action.path, lane.repo_full_name, repo_ids)
+        # The briefing names the lane's routes by onboarding id, and names none
+        # when the repository has no onboarding row (#60739), so its action is
+        # passed through as it stands: no dead path is offered.
         actions = (
             []
-            if path is None
+            if lane.action is None
             else [
                 ActionRef(
                     label=lane.action.label,
                     method=lane.action.method,
-                    path=path,
+                    path=lane.action.path,
                     effect=lane.action.effect,
                 )
             ]
@@ -359,7 +346,7 @@ def _job_items(briefing: Briefing) -> list[WorkItem]:
 # Band 2: composite risk
 
 
-def _toxic_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
+def _toxic_items(briefing: Briefing) -> list[WorkItem]:
     dark = list((briefing.toxic_coverage or {}).get("cannot_fire") or [])
     items = []
     for combo in briefing.toxic:
@@ -383,19 +370,9 @@ def _toxic_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]
                 )
             )
         combination_id = str(combo.get("combination_id") or "")
-        repo_id = repo_ids.get(repo)
-        actions = (
-            [
-                ActionRef(
-                    label="Groom the combination as one story",
-                    method="POST",
-                    path=f"/api/triage/repos/{repo_id}/combinations/{combination_id}/groom",
-                    effect="Files or updates one issue for the whole combination.",
-                )
-            ]
-            if repo_id
-            else []
-        )
+        # No action. The groom route answers 410 for every combination since
+        # D-161, and offering it sent an agent to a call that cannot succeed
+        # (#60756). The story is filed in TheHub; the playbook says how.
         items.append(
             WorkItem(
                 item_id=f"toxic_combination:{repo}:{combination_id}",
@@ -418,7 +395,7 @@ def _toxic_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]
                     )
                     for m in members
                 ],
-                actions=actions,
+                actions=[],
                 caveats=caveats,
             )
         )
@@ -808,16 +785,15 @@ def build(
     triage_rows: list[dict[str, Any]] | None,
     acceptances: list[dict[str, Any]] | None,
     approval_requests: list[dict[str, Any]] | None,
-    repo_ids: dict[str, str],
     now: datetime,
     probe_interval_seconds: int,
     playbook_version: str,
 ) -> WorkQueue:
     """The queue for one principal. `None` for any input means it was not read.
 
-    `repo_ids` maps each full name to its onboarding id, which is what every
-    repository-scoped route takes. `playbook_version` is the loaded
-    `agent-playbooks-v1.yaml`'s version; every item names its playbook with it.
+    Paths come from the briefing, which names them by onboarding id (#60739).
+    `playbook_version` is the loaded `agent-playbooks-v1.yaml`'s version; every
+    item names its playbook with it.
     """
     now = _aware(now)
     queue = WorkQueue(
@@ -827,10 +803,10 @@ def build(
         unknown=_briefing_unknowns(briefing),
     )
     items = [
-        *_lane_items(briefing, repo_ids),
+        *_lane_items(briefing),
         *_ci_items(briefing),
         *_job_items(briefing),
-        *_toxic_items(briefing, repo_ids),
+        *_toxic_items(briefing),
         *_exposure_items(briefing, now=now, probe_interval_seconds=probe_interval_seconds),
         *_token_items(briefing),
     ]

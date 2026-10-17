@@ -501,13 +501,16 @@ playbooks:
         routes:
           - "GET /api/dashboard/toxic-combinations"
           - "GET /api/dashboard/findings/{finding_id}/record"
-      - id: groom-as-one-story
+      - id: file-as-one-story
         do: >-
-          Groom the combination into one issue rather than one per member.
+          File the combination as one story in TheHub rather than one per
+          member, naming every member and any that is an accepted risk.
+          MyKronos no longer files work items (D-161); its groom route
+          answers 410.
         check: >-
-          One issue covers the combination and links every member.
-        routes:
-          - "POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom"
+          One TheHub story covers the combination and lists every member.
+        outside:
+          - "TheHub dev_stories, the system of record for work items (D-133)"
       - id: break-the-chain
         do: >-
           Fix the member that breaks the combination, in a pull request, and
@@ -792,16 +795,15 @@ playbooks:
           The acceptance request exists.
         routes:
           - "POST /api/risk-acceptances"
-      - id: or-groom-it
+      - id: or-file-it
         do: >-
-          If it needs work you will not do now, groom it into an issue. Search
-          the backlog first so you do not file a duplicate.
+          If it needs work you will not do now, file it as a story in TheHub.
+          Search the board first so you do not file a duplicate. MyKronos no
+          longer files work items (D-161); its groom route answers 410.
         check: >-
-          One issue tracks it.
-        routes:
-          - "POST /api/triage/{finding_id}/groom"
+          One TheHub story tracks it.
         outside:
-          - "gh issue list --search <distinctive noun> --state all"
+          - "TheHub dev_stories, the system of record for work items (D-133)"
     stop_when:
       - "The finding is dispositioned, or two successful scans observe it gone."
       - "Its disposition or acceptance request is with an approver."

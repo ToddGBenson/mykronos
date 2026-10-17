@@ -69,6 +69,9 @@ function Lane({ lane }: { lane: StalledLane }) {
   const [message, setMessage] = useState("");
   const [pending, startTransition] = useTransition();
 
+  // None when the repository has no onboarding row: there is no route to
+  // name, and `dispatch_refusal` says why (#60739).
+  const action = lane.action ?? null;
   const failing = lane.reason === "failing";
   const state_line = failing
     ? `${lane.streak_capped ? "at least " : ""}${lane.consecutive_failures} consecutive ` +
@@ -86,16 +89,14 @@ function Lane({ lane }: { lane: StalledLane }) {
           lane.usual_gap_days,
         )})`;
 
-  async function dispatch() {
+  async function dispatch(path: string) {
     setMessage("");
-    // The backend endpoint is keyed by repo id, and `repo_full_name` is what
-    // the lake holds. They are the same string for a repository asset (spec
-    // 14 §5), which is what makes this safe.
-    const response = await fetch(
-      `/api/repos/${encodeURIComponent(lane.repo_full_name)}/scan` +
-        `?capabilities=${encodeURIComponent(lane.capability)}`,
-      { method: "POST" },
-    );
+    // The path the backend wrote, not one assembled here. The endpoint is
+    // keyed by onboarding id, and building it from `repo_full_name` (which
+    // has a slash) answered 404 for every lane (#60739). The backend path
+    // also names the right capability for a blocked lane: the upstream's.
+    // `/api/repos/{id}/scan` is this app's proxy route as well.
+    const response = await fetch(path, { method: "POST" });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { detail?: string } | null;
       setState("error");
@@ -124,20 +125,24 @@ function Lane({ lane }: { lane: StalledLane }) {
         </p>
       ) : null}
 
-      {lane.dispatch_refusal ? (
+      {lane.dispatch_refusal || !action ? (
         // No button, and that is the point. The sentence the backend wrote is
         // the same one `mykronos briefing` prints, so the terminal and this
         // page cannot disagree about whether the dispatch is available.
         <div className="mt-1 flex flex-col gap-1">
           <p className="max-w-[70ch] text-[11px] leading-snug text-ink-3">
-            {lane.action.effect}
+            {action?.effect ?? lane.dispatch_refusal}
           </p>
-          <a
-            href={`/repos/${encodeURIComponent(lane.repo_full_name)}`}
-            className="inline-block font-mono text-[11px] text-ink-3 underline decoration-rule underline-offset-2 hover:text-ink"
-          >
-            Open the repository &rarr;
-          </a>
+          {lane.repo_id ? (
+            // By onboarding id: the repository page is keyed by it, and with
+            // no onboarding row there is no page to open (#60739).
+            <a
+              href={`/repos/${lane.repo_id}`}
+              className="inline-block font-mono text-[11px] text-ink-3 underline decoration-rule underline-offset-2 hover:text-ink"
+            >
+              Open the repository &rarr;
+            </a>
+          ) : null}
         </div>
       ) : (
       <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -148,9 +153,9 @@ function Lane({ lane }: { lane: StalledLane }) {
         ) : (
           <button
             type="button"
-            onClick={() => void dispatch()}
+            onClick={() => void dispatch(action.path)}
             disabled={pending}
-            title={lane.action.effect}
+            title={action.effect}
             className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-2 hover:border-accent hover:text-accent disabled:opacity-40"
           >
             re-run {lane.capability}

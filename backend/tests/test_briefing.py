@@ -15,6 +15,10 @@ from mykronos import briefing
 from mykronos.schemas import utcnow as _utcnow
 from tests.conftest import REPO, finding_payload, issue_token, post_findings, post_scan
 
+#: An onboarding id for `REPO`. A stalled lane's routes take the id, and a
+#: repository without one gets no path at all (#60739).
+IDS = {REPO: "onb-1"}
+
 
 def _scan(client, auth, run_id: str, findings: list[dict], *, status: str = "success") -> None:
     post_scan(client, auth, scan_run_id=run_id, scan_status=status)
@@ -164,7 +168,8 @@ class TestStalledLanes:
         _scan(client, auth, "run-1", [finding_payload()])
         run_compaction()
 
-        lane = briefing.build(catalog, now=_utcnow() + timedelta(days=30)).stalled[0]
+        report = briefing.build(catalog, repo_ids=IDS, now=_utcnow() + timedelta(days=30))
+        lane = report.stalled[0]
 
         assert lane.reason == "silent"
         assert "Repair the job first" not in lane.action.effect
@@ -494,7 +499,7 @@ class TestActions:
         _scan(client, auth, "run-1", [finding_payload()], status="failure")
         run_compaction()
 
-        action = briefing.build(catalog).stalled[0].action
+        action = briefing.build(catalog, repo_ids=IDS).stalled[0].action
 
         assert action.method == "POST"
         assert action.path.startswith("/api/repos/")
@@ -502,6 +507,73 @@ class TestActions:
         # The order matters and the effect text must say so: re-running a
         # broken workflow fails again and closes nothing.
         assert "Repair the job first" in action.effect
+
+    def test_the_dispatch_names_the_onboarding_id(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """#60739. `POST /api/repos/{repo_id}/scan` takes the onboarding id, and
+        `owner/repo` has a slash, so a path built from the full name cannot be
+        called."""
+        _scan(client, auth, "run-1", [finding_payload()], status="failure")
+        run_compaction()
+
+        lane = briefing.build(catalog, repo_ids={REPO: "onb-1"}).stalled[0]
+
+        assert lane.repo_id == "onb-1"
+        assert lane.action is not None
+        assert lane.action.path == "/api/repos/onb-1/scan?capabilities=sast"
+        assert REPO not in lane.action.path
+
+    def test_the_read_offered_instead_names_the_onboarding_id(
+        self, client, auth, catalog, run_compaction
+    ) -> None:
+        """The CI view is id-only too (`_resolve_repo`)."""
+        _scan(client, auth, "run-1", [finding_payload()], status="failure")
+        run_compaction()
+
+        lane = briefing.build(
+            catalog,
+            repo_ids={REPO: "onb-1"},
+            scanned_by={REPO: "concourse"},
+            concourse_token=False,
+        ).stalled[0]
+
+        assert lane.action is not None
+        assert lane.action.path == "/api/dashboard/repos/onb-1/ci"
+
+    def test_no_onboarding_row_gets_no_path(self, client, auth, catalog, run_compaction) -> None:
+        """Every repository route takes the onboarding id. Without a row there
+        is nothing to call, and printing a path anyway is the bug."""
+        _scan(client, auth, "run-1", [finding_payload()], status="failure")
+        run_compaction()
+
+        lane = briefing.build(catalog, repo_ids={}).stalled[0]
+
+        assert lane.action is None
+        assert "onboarding" in lane.dispatch_refusal
+        # Still on the page: the lane is stalled whether or not it can be
+        # dispatched, and it still holds its finding open.
+        assert lane.open_findings == 1
+        assert "onboarding" in briefing.render(briefing.build(catalog, repo_ids={}))
+
+    def test_the_path_the_briefing_prints_can_be_called(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """#60739's acceptance: call what the endpoint hands out, not a path the
+        test assembles itself, which is how the bug went unnoticed."""
+        from tests.test_onboarding import onboard
+
+        assert onboard(client, admin_auth).status_code in (200, 201)
+        _scan(client, auth, "run-1", [finding_payload()], status="failure")
+        run_compaction()
+
+        body = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+        action = body["stalled"][0]["action"]
+        assert action["method"] == "POST"
+
+        response = client.post(action["path"], headers=admin_auth)
+
+        assert response.status_code != 404, response.text
 
     def test_classes_without_a_route_offer_no_button(self) -> None:
         """The Remediation tab's lesson, applied here.
@@ -522,6 +594,10 @@ class TestActions:
     ) -> None:
         """One source, two surfaces. A dashboard that disagreed with the
         terminal about which lanes are broken would be worse than either."""
+        from tests.test_onboarding import onboard
+
+        # Onboarded, so the lane has an id to name its dispatch by (#60739).
+        assert onboard(client, admin_auth).status_code in (200, 201)
         _scan(client, auth, "run-1", [finding_payload()], status="failure")
         run_compaction()
 
@@ -649,7 +725,9 @@ class TestBlockedLanes:
         run_compaction()
 
         lane = next(
-            lane for lane in briefing.build(catalog).stalled if lane.capability == "sast"
+            lane
+            for lane in briefing.build(catalog, repo_ids=IDS).stalled
+            if lane.capability == "sast"
         )
 
         assert lane.action.path.endswith("capabilities=unit")
@@ -1008,7 +1086,8 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         self._stall(client, auth, catalog, run_compaction)
 
         lane = briefing.build(
-            catalog, scanned_by={REPO: "concourse"}, concourse_token=False
+            catalog,
+            repo_ids=IDS, scanned_by={REPO: "concourse"}, concourse_token=False
         ).stalled[0]
 
         assert lane.action.method != "POST"
@@ -1023,7 +1102,8 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         self._stall(client, auth, catalog, run_compaction)
 
         lane = briefing.build(
-            catalog, scanned_by={REPO: "concourse"}, concourse_token=False
+            catalog,
+            repo_ids=IDS, scanned_by={REPO: "concourse"}, concourse_token=False
         ).stalled[0]
 
         assert "only thing that will run it" in lane.action.effect
@@ -1038,7 +1118,8 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         self._stall(client, auth, catalog, run_compaction)
 
         lane = briefing.build(
-            catalog, scanned_by={REPO: "concourse"}, concourse_token=True
+            catalog,
+            repo_ids=IDS, scanned_by={REPO: "concourse"}, concourse_token=True
         ).stalled[0]
 
         assert lane.dispatch_refusal == ""
@@ -1053,7 +1134,8 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         self._stall(client, auth, catalog, run_compaction)
 
         lane = briefing.build(
-            catalog, scanned_by={REPO: "github_actions"}, concourse_token=False
+            catalog,
+            repo_ids=IDS, scanned_by={REPO: "github_actions"}, concourse_token=False
         ).stalled[0]
 
         assert lane.dispatch_refusal == ""
@@ -1065,7 +1147,7 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         """`scanned_by=none` 409s, for a different and equally stated reason."""
         self._stall(client, auth, catalog, run_compaction)
 
-        lane = briefing.build(catalog, scanned_by={REPO: "none"}).stalled[0]
+        lane = briefing.build(catalog, repo_ids=IDS, scanned_by={REPO: "none"}).stalled[0]
 
         assert lane.action.method == "GET"
         assert "scanned_by=none" in lane.dispatch_refusal
@@ -1076,7 +1158,7 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         """A caller that did not say gets no guess about which way it fails."""
         self._stall(client, auth, catalog, run_compaction)
 
-        lane = briefing.build(catalog).stalled[0]
+        lane = briefing.build(catalog, repo_ids=IDS).stalled[0]
 
         assert lane.dispatch_refusal == ""
         assert lane.action.method == "POST"
@@ -1089,7 +1171,9 @@ class TestTheDispatchIsOnlyOfferedWhereItWorks:
         self._stall(client, auth, catalog, run_compaction)
 
         rendered = briefing.render(
-            briefing.build(catalog, scanned_by={REPO: "concourse"}, concourse_token=False)
+            briefing.build(
+                catalog, repo_ids=IDS, scanned_by={REPO: "concourse"}, concourse_token=False
+            )
         )
 
         assert f"/api/repos/{REPO}/scan" not in rendered
@@ -1141,7 +1225,8 @@ class TestABlockedLaneCannotDispatchItsUpstreamEither:
         lane = next(
             lane
             for lane in briefing.build(
-                catalog, scanned_by={REPO: "concourse"}, concourse_token=False
+                catalog,
+                repo_ids=IDS, scanned_by={REPO: "concourse"}, concourse_token=False
             ).stalled
             if lane.capability == "sast"
         )

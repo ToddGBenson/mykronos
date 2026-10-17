@@ -122,6 +122,28 @@ class TestTheShippedFile:
             "host-or-docker-restart",
         } <= ids
 
+    def test_no_playbook_names_a_retired_route(self, client) -> None:
+        """#60756. A route kept only to answer 410 Gone (the groom routes,
+        D-161) is a dead end. Naming it as a step sends an agent to a call
+        that cannot succeed, however well the rest of the playbook reads."""
+        import fastapi.routing
+
+        walk = getattr(fastapi.routing, "iter_route_contexts", None)
+        routes = list(walk(client.app.routes)) if walk is not None else list(client.app.routes)
+        retired = {
+            (method, _template(route.path))
+            for route in routes
+            if 410 in (getattr(route, "responses", None) or {})
+            for method in getattr(route, "methods", None) or ()
+        }
+        assert ("POST", "/api/triage/{}/groom") in retired, "the retired-route walk found nothing"
+        named = [
+            f"{kind}.{step}: {route}"
+            for kind, step, route in playbooks.load_playbooks(SHIPPED).routes()
+            if (lambda m, p: (m, _template(p)) in retired)(*playbooks.split_route(route))
+        ]
+        assert not named, "Playbooks name retired (410) routes:\n" + "\n".join(named)
+
     def test_no_playbook_sends_an_agent_round_the_governed_routes(self) -> None:
         """A playbook that told an agent to approve, revoke or grant would be
         asking it to call routes that refuse it. None does."""
@@ -223,6 +245,7 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
                 detail="",
                 open_findings=1,
                 scanned_by="github_actions",
+                repo_id=REPO_ID,
             )
         ],
         failing=[FailingLane(pipeline="acme", job="unit", last_status="failed")],
@@ -283,7 +306,6 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
             {"id": "r1", "duty": "pull_request_merge", "subject_ref": "x#1",
              "last_verdict": "needs_info", "last_rationale": "Which test?"}
         ],
-        repo_ids={REPO: REPO_ID},
         now=NOW,
         probe_interval_seconds=21_600,
         playbook_version=version,

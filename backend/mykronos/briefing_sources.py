@@ -63,6 +63,17 @@ def onboarding_maps(db: Any) -> tuple[dict[str, str], dict[str, str]]:
     return default_branches, scanned_by
 
 
+def repo_ids(db: Any) -> dict[str, str]:
+    """Each repository's onboarding id, which is what every repository route
+    takes. `briefing.build` names a stalled lane's routes with it, and a
+    repository missing here gets no path (#60739)."""
+    with db.session() as session:
+        rows = session.execute(
+            select(RepoOnboarding.github_repo_full_name, RepoOnboarding.id)
+        ).all()
+    return {str(name): str(repo_id) for name, repo_id in rows}
+
+
 def gather(settings: Any, db: Any, catalog: Any) -> OperationalInputs:
     """Read every non-lake input once. Never raises: each one fails to `None`."""
     found = OperationalInputs()
