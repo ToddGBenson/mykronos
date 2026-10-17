@@ -249,6 +249,11 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # them, which is what `test_every_reporting_job_is_cross_checked` caught.
     ((THEHUB,), "api-inventory", "qa"),
     ((THEHUB,), "dast-demo", "dast"),
+    # `functional-demo` (2026-10-17): TheHub's tests/functional suite against
+    # the running demo after each demo deploy. TheHub had `functional` enabled
+    # and had never reported one; registered so the cross-check can tell a
+    # quiet lane from a dead one.
+    ((THEHUB,), "functional-demo", "functional"),
     # `dast-staging` scans the standing staging environment on a daily timer
     # rather than after a deploy, because staging is deployed out of band. That
     # makes registering it matter more than for its two siblings, not less: a
