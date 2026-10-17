@@ -1695,6 +1695,33 @@ def _render_exposure(briefing: Briefing) -> list[str]:
     return lines
 
 
+def _held_behind(lane: StalledLane, blocked: list[BlockedLane]) -> list[str]:
+    """The CI jobs held back behind this stalled lane, by name, sorted (#330).
+
+    A `BlockedLane` names a pipeline and a job; a `StalledLane` names a
+    repository and a capability. They meet through the same two heuristics
+    the "scan now" button uses -- `pipeline_name_for` and
+    `jobs_for_capability` -- so a pipeline that names its jobs differently is
+    simply not matched, and the note falls back to what it said before.
+
+    A job counts whether this lane is the root of its hold or a link in the
+    chain (`blocked_by`): either way it is held behind this lane.
+    """
+    if not blocked:
+        return []
+    from mykronos.ci import jobs_for_capability, pipeline_name_for
+
+    pipeline = pipeline_name_for(lane.repo_full_name)
+    jobs = set(jobs_for_capability(pipeline, lane.capability))
+    return sorted(
+        {
+            held.job
+            for held in blocked
+            if held.pipeline == pipeline and (held.root in jobs or held.blocked_by in jobs)
+        }
+    )
+
+
 def render(briefing: Briefing) -> str:
     """The briefing as a person reads it after a deploy."""
     lines = [
@@ -1777,16 +1804,40 @@ def render(briefing: Briefing) -> str:
         lines += ["Every lane is reporting. Findings can close.", ""]
 
     if idle:
-        names = ", ".join(f"{lane.repo_full_name} {lane.capability}" for lane in idle)
+        # "Holding nothing open" is about findings. It says nothing about the
+        # jobs gated on the lane, and on 2026-09-12 this note told a reader
+        # "Nothing is stuck behind" `mykronos unit` while the blocked section
+        # further down listed seven scanners held behind it (#330). So the
+        # sentence is only printed for the lanes it is true of; a lane that
+        # is holding jobs back says how many, and sorts first, because one red
+        # gate stopping seven scanners matters more than a lane stopping none.
+        pairs = [(lane, _held_behind(lane, briefing.blocked)) for lane in idle]
+        # Stable, so lanes holding equally many keep the order `stalled_lanes` gave.
+        gating = sorted((pair for pair in pairs if pair[1]), key=lambda pair: -len(pair[1]))
+        quiet = [lane for lane, held in pairs if not held]
         # "Also" needs something to be also to. With nothing printed above it
         # the word is a dangling reference to a section that never rendered.
-        lead = "Also stalled" if holding else "Stalled"
-        lines += textwrap.wrap(
-            f"  {lead}, holding nothing open: {names}. Nothing is "
-            f"stuck behind these, but they are not watching either.",
-            72,
-            subsequent_indent="  ",
-        )
+        preceded = bool(holding)
+        for lane, held in gating:
+            lead = "Also stalled" if preceded else "Stalled"
+            preceded = True
+            jobs = "1 job is" if len(held) == 1 else f"{len(held)} jobs are"
+            lines += textwrap.wrap(
+                f"  {lead}, holding nothing open: {lane.repo_full_name} "
+                f"{lane.capability}. {jobs} held behind it and cannot run until "
+                f"it is green: {', '.join(held)}.",
+                72,
+                subsequent_indent="  ",
+            )
+        if quiet:
+            names = ", ".join(f"{lane.repo_full_name} {lane.capability}" for lane in quiet)
+            lead = "Also stalled" if preceded else "Stalled"
+            lines += textwrap.wrap(
+                f"  {lead}, holding nothing open: {names}. Nothing is "
+                f"stuck behind these, but they are not watching either.",
+                72,
+                subsequent_indent="  ",
+            )
         lines.append("")
 
     if briefing.failing:
