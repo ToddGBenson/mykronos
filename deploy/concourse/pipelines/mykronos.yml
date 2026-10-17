@@ -2821,14 +2821,15 @@ jobs:
 
       # -- Images compose builds rather than pulls ---------------------------
       #
-      # The demo's ZAP is built from deploy/zap/Dockerfile: upstream's pinned
-      # weekly with Debian's fixes applied and what our usage never runs
-      # removed. Its local tag exists only where compose built it, so it cannot
-      # be scanned by reference the way the estate's pulled images are, and
-      # scanning the upstream image instead would report findings the lane no
-      # longer runs. So the same Dockerfile is built here, from this commit,
-      # pushed beside the application images under the commit SHA, and scanned
-      # like them. The list is derived (`builds`), for the reason #427 gives.
+      # The demo's ZAP is built from deploy/zap-pinned/Dockerfile: one FROM
+      # naming, by digest, the derivative the nightly zap-image workflow
+      # published (upstream's pinned weekly with Debian's fixes applied and
+      # what our usage never runs removed). Its local tag exists only where
+      # compose built it, so the same Dockerfile is built here, from this
+      # commit, pushed beside the application images under the commit SHA, and
+      # scanned like them - which also keeps its findings under the name
+      # `mykronos-zap` rather than ghcr.io's owner-prefixed path. The list is
+      # derived (`builds`), for the reason #427 gives.
       #
       # Fatal, unlike an estate image that will not pull: this is our own
       # Dockerfile, and a red build here stops the job before the upload, so

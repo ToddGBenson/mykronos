@@ -158,9 +158,9 @@ jobs:
           MYKRONOS_IMAGE_FRONTEND: ghcr.io/${{ env.OWNER }}/mykronos-frontend:${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
-          # `--ignore-buildable`: ZAP is built from deploy/zap/Dockerfile (its
-          # FROM is the pin), and its local tag is in no registry. `up` builds
-          # it, pulling the pinned base as part of the build.
+          # `--ignore-buildable`: ZAP is built from deploy/zap-pinned/Dockerfile,
+          # one FROM naming the nightly-published image by digest, and its local
+          # tag is in no registry. `up` builds it, which is a pull of that image.
           docker compose -f "$COMPOSE" pull --quiet --ignore-buildable
           docker compose -f "$COMPOSE" up -d
 
@@ -584,7 +584,7 @@ jobs:
 
           # One ZAP pin (D-128): the image compose's `zap` service names,
           # read from the compose file rather than repeated here. Compose
-          # builds it from deploy/zap/Dockerfile, so what must be digest-pinned
+          # builds it from deploy/zap-pinned/Dockerfile, so what must be digest-pinned
           # is every FROM in that build; a service that pulled instead would
           # need its own `image:` pinned. Prints "OK <image>", or the
           # references that are not pinned.
