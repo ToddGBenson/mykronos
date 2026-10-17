@@ -24,6 +24,7 @@ advisory by default (see §6) and never silently overrides a human.
 | Decision type | Trigger | Scope of evaluation |
 |---|---|---|
 | **PR gate decision** | `pull_request` event (opened/synchronize) on a repo with Oracle enabled | All findings introduced/still-open on this PR's commit, Aegis insider-risk signal for this PR, any in-flight Patchwork remediation for these findings |
+| **Commit gate decision** (`commit_gate`) | A push to a branch, with no pull request: what Concourse pipelines and the Actions gate template send | Findings introduced on this commit. Added in #275: per-commit verdicts used to be filed as `portfolio` and could not be found. A gate request with no `pr_number` is recorded as `commit_gate` |
 | **Release gate decision** | `release`/tag creation | All open findings for the repo above the configured severity floor, Atlas `SscsEvidence.trust_score`, unresolved insider-risk flags from recent PRs into this release |
 | **Portfolio risk decision** | Scheduled (daily) per repo | Full current risk posture snapshot — feeds the Dashboard's portfolio view, not a gate on any specific action |
 
@@ -33,7 +34,7 @@ advisory by default (see §6) and never silently overrides a human.
 |---|---|---|
 | `decision_id` | UUID | PK |
 | `repo_full_name` | string | |
-| `decision_type` | enum | `pr_gate, release_gate, portfolio` |
+| `decision_type` | enum | `pr_gate, commit_gate, release_gate, portfolio` |
 | `pr_number` | int, nullable | |
 | `release_tag` | string, nullable | |
 | `commit_sha` | string | |
@@ -167,8 +168,9 @@ available as a fallback/audit baseline.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/oracle/evaluate` | Synchronously request a decision (called by the `oracle-gate.yml` workflow template at PR/release time); body: `repo_full_name`, `decision_type`, `commit_sha`/`pr_number`/`release_tag` |
-| `GET` | `/api/oracle/decisions/{repo_full_name}` | List recent decisions for a repo (dashboard use) |
+| `POST` | `/api/oracle/evaluate` | Synchronously request a decision (called by the `oracle-gate.yml` workflow template at PR/release time); body: `decision_type`, `commit_sha`, optional `pr_number` and `release_tag`. There is no `repo_full_name` in the body: the repository comes from the ingestion token, so a workflow cannot ask about someone else's repository, and the token needs the `oracle` grant |
+| `GET` | `/api/oracle/decisions/{repo_id}` | List recent decisions for a repo (dashboard use). Takes the onboarding id, not `owner/repo`; optional `decision_type` and `limit` |
+| `GET` | `/api/oracle/decisions/by-commit/{commit_sha}` | The decision for one commit; what `deploy.ps1` asks before it pulls (D-126) |
 | `POST` | `/api/oracle/decisions/{id}/override` | Record a human override with a required free-text reason |
 | `GET` | `/api/oracle/policy` | Return the currently active policy version + full weight config (transparency — any admin can see exactly how scores are computed) |
 
@@ -195,7 +197,7 @@ available as a fallback/audit baseline.
 - `reasoning` text is generated purely from `inputs_snapshot` and the
   active policy — no hidden inputs.
 - Overriding a decision requires a non-empty reason and is retrievable via
-  `GET /api/oracle/decisions/{repo_full_name}`.
+  `GET /api/oracle/decisions/{repo_id}`.
 
 ## 10. Edge cases
 

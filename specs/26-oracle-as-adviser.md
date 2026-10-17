@@ -61,7 +61,7 @@ This repository is no_go at 84. Threshold for review_recommended is 70; for go, 
 
   1.  CVE-2026-1337 in requests (critical, KEV)      -9   → 75
   2.  hardcoded-credential × 3 occurrences (high)    -6   → 69   review_recommended
-  3.  exploitable-dependency-reachable (combination) -18  → 51
+  3.  vulnerable-image-and-live-service (combo)      -18  → 51
   4.  sql-injection in handlers.py (high)            -6   → 45
       ... 3 more to reach go
 ```

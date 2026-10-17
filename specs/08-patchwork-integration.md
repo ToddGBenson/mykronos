@@ -34,9 +34,16 @@ requests for a human to review. **Patchwork never merges anything itself.**
    **Two generators, and the deterministic one is not a fallback.** v1 ships
    pattern-based fixers for the classes where the correct change is mechanical
    and verifiable — pinning a vulnerable dependency to a known-good version,
-   removing a committed credential and replacing the reference, adding a
-   missing IaC property with a documented default. These need no model, they
-   are reviewable line by line, and their output is identical every run.
+   removing a committed credential and replacing the reference. These need no
+   model, they are reviewable line by line, and their output is identical
+   every run. The four that exist (`patchwork/fixers.py`) are
+   `pin-python-requirement`, `pin-npm-dependency` and `pin-go-module` for
+   `atlas`, and `remove-committed-secret` for `secrets`. **There is no IaC
+   fixer.** It was proposed here (adding a missing property with a documented
+   default) and deliberately not built: infrastructure defaults are often set
+   on purpose, and changing one without knowing why is how a fix causes an
+   outage. `NOT_COVERED` in the same module states that for `iac`, `sast`,
+   `containers`, `dast` and `cloud`.
 
    **Deterministic fixers are the only generator (D-096).** This section
    previously specified a second, LLM-backed one behind a `fix_generator_url`
@@ -134,7 +141,8 @@ the second one wrong.
 
 Which findings Patchwork can write a patch for is a narrow set, correctly:
 SAST, secrets, containers and IaC findings all point at a line in a file that
-a deterministic fixer can change. A DAST finding does not. Neither does a
+a deterministic fixer could change, though today only `atlas` and `secrets`
+have one (§2 stage 4). A DAST finding does not. Neither does a
 cloud-posture finding, or an open port.
 
 Which findings can *participate in a toxic combination* is a different and

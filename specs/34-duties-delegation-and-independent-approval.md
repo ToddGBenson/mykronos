@@ -53,7 +53,13 @@ A principal gains a **kind** and, for agents, a **provenance**.
 
 - **One credential per agent instance**, minted by a human (or by automation under a human's
   standing grant), short-lived, and scoped to the duties it may perform. The shared admin token
-  becomes the operator's alone. This is IA-9 (identification and authentication of non-person
+  becomes the operator's alone.
+
+  *As built (`backend/mykronos/agents.py`):* the credential is per instance, short-lived (12 hours
+  by default, 7 days at most) and records family, instance, lineage, `on_behalf_of` and purpose. It
+  is **not** scoped to duties. Every agent credential carries the one `agent` role, which may write
+  wherever `admin` may except where a route requires a person. What an agent may *approve* is
+  decided per request by the duty's tier and the active delegations (§3, §5), not by the credential. This is IA-9 (identification and authentication of non-person
   entities) applied to agents, and it is the prerequisite for everything below: independence
   cannot be checked between identities the platform cannot tell apart.
 - `automation` — the sweep, the scanners, the pipelines — keeps its existing tokens and gains the
@@ -129,7 +135,13 @@ from the duty's policy and never from the requester (§4.3).
 A **duty** is a governed action type. Its policy declares who may request, who may approve, how
 many approvals are needed, and which independence rules apply — **per tier**, so one duty can be
 strict for critical and delegable for low. Policy lives in `approval-policy-v1.yaml`, reviewed in a
-pull request like the Oracle policy:
+pull request like the Oracle policy. The block below is the shape as first proposed; the file is
+authoritative where they differ. As built, the key is `cooling_off_hours` and every tier carries one
+(`risk_acceptance` critical 24, high 4, medium and low 1; `pull_request_merge` governance 1), the
+policy adds `finding_disposition`, and the duty that grants a delegation is **`delegation_grant`**
+(human requesters only, human approver, 1-hour cooling-off). There is no `approval_policy_change`
+duty: an edit to `approval-policy-v1.yaml` is a `governance`-class pull request under
+`pull_request_merge` (§6.1), which is human-only with a 1-hour cooling-off.
 
 ```yaml
 duties:
@@ -172,9 +184,10 @@ duties:
     tiers:
       any: {approvers: [{kind: human}], quorum: 1, independence: [distinct_principal]}
 
-  approval_policy_change:              # §5 — the root of trust
+  delegation_grant:                    # §5 — the root of trust (proposed as `approval_policy_change`)
+    requesters: [human]
     tiers:
-      any: {approvers: [{kind: human}], quorum: 1, independence: [distinct_principal], cooling_off: 24h}
+      any: {approvers: [{kind: human}], quorum: 1, independence: [distinct_principal], cooling_off: 1h}
 ```
 
 - **A request that no tier's approvers can satisfy is refused at creation**, with the reason — not
@@ -252,8 +265,8 @@ delegations:
 
 ### 5.1 Rules
 
-- **Granted only by a human, and only through `approval_policy_change`** — the one duty an agent can
-  never approve. An agent cannot delegate authority to itself or to another agent, and cannot widen
+- **Granted only by a human, and only through `delegation_grant`** — a duty an agent can neither
+  request nor approve. An agent cannot delegate authority to itself or to another agent, and cannot widen
   a delegation's scope or extend its date.
 - **Scoped, time-boxed, revocable.** Revocation takes effect immediately; pending approvals under it
   return to `pending` for a human.
@@ -323,7 +336,7 @@ policy, with no new mechanism.
 | Control | Title (Rev. 5) | Implemented by |
 |---|---|---|
 | **AC-5** | Separation of Duties | duties, tiers, independence rules (§2, §3) |
-| **AC-6** | Least Privilege | per-instance agent credentials scoped to duties (§1) |
+| **AC-6** | Least Privilege | per-instance, short-lived agent credentials (§1); approval authority per duty tier and delegation, not per credential (§3, §5) |
 | **AC-3(2)**, **CM-5(4)** | Dual Authorization | quorum and independence per tier (§3) |
 | **IA-2**, **IA-9** | Identification and Authentication (organizational users; services) | distinct principals and agent credentials on the platform (§1.1); shared external identities as a documented deviation with process-level attribution (§1.2) |
 | **AU-3**, **AU-10** | Content of Audit Records; Non-repudiation | principal provenance; approvals bound to evidence digests (§1, §4) |

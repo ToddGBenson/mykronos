@@ -221,9 +221,15 @@ that is not.
 
 ### If not restoring it
 
-1. Disable the capability so it stops reading as available:
+1. Disable the capability so it stops reading as available: untick `cloud` in
+   TheHub's capability settings on the dashboard, which sends
+   `PATCH /api/repos/{repo_id}/capabilities` without it. TheHub is scanned by
+   Concourse, so that moves the enabled set at once, revokes the `cloud` grant
+   and opens no pull request (spec 03 §3a).
 
-       docker exec mykronos-backend mykronos disable-workflow ToddGBenson/TheHub cloud
+   Do not use `mykronos disable-workflow`. It switches an installed GitHub
+   Actions workflow, and it refuses any repository whose `scanned_by` is not
+   `github_actions`, so for TheHub it exits 1 and changes nothing.
 
 2. Write it up as a decision, the way D-053 did for DAST. A capability that is
    off for a stated reason is a posture; one that is on and cannot run is a

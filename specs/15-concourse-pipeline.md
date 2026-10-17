@@ -102,6 +102,11 @@ for one day the Oracle gate was advisory at deploy time.
 — before it pulls anything, and **refuses a `no_go`** unless
 `-Force` is passed with a reason that is recorded. A machine says no again.
 
+**Narrowed by D-159 (2026-10-12).** The deploy now refuses only what the
+`oracle-gate` job refuses: a decision with `introduced_blocking` true, meaning
+the commit introduced an open critical or high. A `no_go` that describes the
+standing backlog prints a banner and proceeds, logged as `backlog_no_go`.
+
 **It fails open, deliberately.** If the platform cannot be reached the deploy
 warns and proceeds, because that is never worse than the state it replaces:
 with no check at all, an unreachable platform already meant no gate. Fail

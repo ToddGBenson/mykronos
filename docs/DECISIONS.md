@@ -5626,6 +5626,11 @@ not work is how `:latest` came to point at an eleven-day-old image.
 **2026-09-23.** **Status:** Decided by the operator, implemented
 **Spec:** [15 §3](../specs/15-concourse-pipeline.md) · **Story:** #60487 · **Closes the gap recorded in** D-125 · **Restores** D-047
 
+> **Amended by [D-159](decisions/D-159-the-deploy-refuses-only-what-the-gate-refuses.md) (2026-10-12):**
+> the title no longer holds. `deploy.ps1` refuses a sha only when its decision has
+> `introduced_blocking` true; a backlog `no_go` prints a banner and proceeds
+> (`state: "backlog_no_go"` in the ledger). Asking first and failing open are unchanged.
+
 D-125 retired `:latest` and said plainly what it cost: with no tag for the
 Oracle gate to hold, *nothing mechanically stopped a `no_go` commit being
 deployed*, and the gate was advisory at deploy time. That is the state D-047

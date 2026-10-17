@@ -43,18 +43,28 @@ it left implicit made explicit: which capability each stage produces, and what
   gate                oracle — scores the whole picture, blocks on what this
         │                      commit introduced (D-048)
         ▼
-  promote             :SHA → :latest, the pointer the deploy reads
-        │
+  promote             Concourse retags the LAN registry's :latest; nothing
+        │             deploys from it (D-125)
         ▼
   runtime             dast · functional · patchwork · cloud
 ```
+
+**What the deploy reads is the gate's decision, not a tag.** D-125 retired the
+GHCR `promote.yml` workflow and `:latest` on 2026-09-23. `deploy.ps1 -Tag <sha>`
+pulls `:${SHA}` and first asks the platform what the gate decided about that
+sha: it refuses one whose decision has `introduced_blocking` true and proceeds
+with a banner on a backlog `no_go` (D-126, narrowed by
+[D-159](decisions/D-159-the-deploy-refuses-only-what-the-gate-refuses.md)). The
+`mykronos` Concourse pipeline still runs its `promote` job behind `oracle-gate`,
+which retags `:latest` on the LAN registry (`192.168.0.14:5000`); only a deploy
+passed `-Registry localhost:5000` is on that path.
 
 Two orderings differ between pipelines and both are deliberate, both are
 spec'd, and neither is a drift to fix:
 
 | | `mykronos` | `thehub` |
 |---|---|---|
-| Where the gate sits | after the static + container scans, before `promote` | after DAST, so runtime findings reach the score (spec 16 §3) |
+| Where the gate sits | after the static + container scans, before the Concourse `promote` job | after DAST, so runtime findings reach the score (spec 16 §3) |
 | Where `aegis` sits | **before** the gate, so insider risk is an Oracle input | **nowhere** — the `insider` lane is deleted ([D-150](DECISIONS.md)); it sat after the gate (spec 16 §3) |
 
 TheHub's ordering buys runtime findings in the score and pays for it by

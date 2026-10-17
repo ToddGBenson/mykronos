@@ -1,8 +1,11 @@
 # Decisions, one file each
 
-From D-137 on, every implementation decision the specs do not settle is its own
-file here (D-149). [`../DECISIONS.md`](../DECISIONS.md) holds D-001 to D-136 as
-they were written, and the generated index of this directory.
+Every new implementation decision the specs do not settle is its own file here
+(D-149). [`../DECISIONS.md`](../DECISIONS.md) holds D-001 to D-136 as they were
+written, and the generated index of this directory. It also still holds D-137
+to D-148, D-150 and D-151: pull requests opened before D-149 appended those to
+the log, and they stay there until `scripts/move-decisions-to-files.py` moves
+them. The first decision filed here is D-149.
 
 **To record one:**
 
