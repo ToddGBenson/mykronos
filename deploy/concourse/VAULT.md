@@ -28,6 +28,26 @@ Concourse reads with a token scoped to `concourse/*`, **read and list only**. It
 cannot see `personal/`, and it cannot write anywhere. Verified at bootstrap by
 attempting a read of `personal/` with that token and confirming it is denied.
 
+## First install
+
+```powershell
+.\setup.ps1          # runs .\vault-init.ps1 before it starts the stack
+```
+
+`vault-init.ps1` is the bootstrap this page describes, as a script (#60753).
+It starts the `vault` service, initialises it (one key share, written to
+`vault/init.json` and never over an existing one), unseals it, mounts
+`concourse/` (KV v1) and `personal/` (KV v2), writes the `concourse` policy,
+mints a token holding only that policy, proves the token is denied
+`personal/`, and writes it to `.env` as `CONCOURSE_VAULT_TOKEN`. On a host that
+is already set up it confirms the token in `.env` still works and changes
+nothing.
+
+The token is minted with a ten-year TTL, and the token store's cap is raised to
+allow it: the default cap is 32 days, and a lapsed client token fails every
+`((var))` lookup with a 403 that reads like a policy fault. To replace it,
+revoke it, delete the line from `.env`, and run `vault-init.ps1` again.
+
 ## Daily use
 
 ```powershell

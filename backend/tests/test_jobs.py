@@ -209,6 +209,27 @@ class TestRotation:
         assert result.deferred == [REPO]
         assert "is due for token rotation" in caplog.text
 
+    async def test_the_due_hint_names_a_path_that_replaces_the_vault_copy(
+        self, db: Database, factory, github: FakeGitHubClient, caplog
+    ) -> None:
+        """#60753. The hint recommended `Import-EnvSecretsToVault.ps1 -Apply`,
+        which leaves any key already in Vault untouched ("PRESENT ... leaving
+        it") - so on a repository whose token is in Vault, which is every one
+        this line is about, it rotated nothing. `repair-ingestion-token.ps1`
+        rotates once and writes every reader, Vault included."""
+        onboard(db, scanned_by="concourse")
+        with db.session() as session:
+            TokenRegistry(session).issue(REPO)
+            TokenRegistry(session).mark_secret_synced(REPO)
+        age_token(db, REPO)
+
+        with caplog.at_level("WARNING"):
+            await rotate_ingestion_tokens(db, factory)
+
+        assert "repair-ingestion-token.ps1" in caplog.text
+        assert f"-Repo {REPO}" in caplog.text
+        assert "Import-EnvSecretsToVault" not in caplog.text
+
     def test_the_unsynced_warning_does_not_tell_anyone_to_rotate(self) -> None:
         """A warning whose recommended action breaks the thing it is warning
         about is worse than silence."""

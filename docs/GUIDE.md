@@ -87,6 +87,18 @@ says so.
 
 ## Standing it up
 
+Concourse and Vault first. The platform joins their network as `external`, so
+that stack has to exist before this one:
+
+```powershell
+pwsh -File deploy/concourse/setup.ps1
+```
+
+It writes `deploy/concourse/.env` with generated credentials, then runs
+`vault-init.ps1`, which initialises Vault, writes `vault/init.json` (the only
+unseal key - put a copy in a password manager) and the `CONCOURSE_VAULT_TOKEN`
+Concourse reads with, and only then starts the stack. Both are safe to re-run.
+
 ```bash
 cd deploy/mykronos
 export MYKRONOS_GITHUB_APP_KEY_HOST_PATH=/absolute/path/to/app.pem

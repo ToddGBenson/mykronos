@@ -158,6 +158,27 @@ def unsynced_deferral_warning(repo: str, blocker: str) -> str:
     )
 
 
+def hand_rotation_instruction(repo: str) -> str:
+    """How to rotate a token this job had to defer, as one runnable line.
+
+    It used to say "re-run set-pipeline (or Import-EnvSecretsToVault.ps1
+    -Apply)", and neither replaces a value Vault already holds:
+    `set-pipeline.ps1` falls back to the vars file only when Vault has *no*
+    value, and `Import-EnvSecretsToVault.ps1` reports a key it finds there as
+    PRESENT and leaves it (#60753). Every repository this line is about reads
+    its token from Vault, so following the advice rotated nothing - or, done by
+    hand in the order it implied, rotated the registry and left Vault serving
+    the old value, which is D-097.
+
+    `repair-ingestion-token.ps1` is the one path that rotates once and writes
+    every reader, Vault included, then re-applies the pipeline.
+    """
+    return (
+        f"deploy/concourse/repair-ingestion-token.ps1 -Repo {repo} -WhatIf, "
+        "then again without -WhatIf"
+    )
+
+
 def deliveries_awaiting_operator(db: Database) -> list[TokenDelivery]:
     """The tokens the rotation sweep will hand to a person, for the briefing.
 
@@ -272,10 +293,10 @@ async def rotate_ingestion_tokens(
             if repo in due:
                 logger.warning(
                     "%s is due for token rotation and is scanned by %s, which this "
-                    "job cannot deliver to. Rotate it by hand and re-run "
-                    "set-pipeline (or Import-EnvSecretsToVault.ps1 -Apply).",
+                    "job cannot deliver to. Rotate it by hand: %s.",
                     repo,
                     onboarding.scanned_by,
+                    hand_rotation_instruction(repo),
                 )
                 result.deferred.append(repo)
             else:
