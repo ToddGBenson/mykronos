@@ -759,23 +759,7 @@ def _finding_items(
 
 
 def _briefing_unknowns(briefing: Briefing) -> list[Unknown]:
-    unknown = []
-    if briefing.failing_unknown or briefing.paused_unknown or briefing.blocked_unknown:
-        unknown.append(
-            Unknown(
-                "concourse",
-                "CI could not be asked which jobs are failing, paused or held back.",
-            )
-        )
-    if briefing.jobs_unknown:
-        unknown.append(Unknown("job_runs", "Scheduled-job health could not be read."))
-    if briefing.tokens_unknown:
-        unknown.append(Unknown("ingestion_tokens", "The token registry could not be read."))
-    if briefing.toxic_unknown:
-        unknown.append(Unknown("toxic", "Toxic combinations could not be computed."))
-    if briefing.exposure_unknown:
-        unknown.append(Unknown("exposure", "Public endpoints could not be read."))
-    return unknown
+    return [Unknown(source, detail) for source, detail in briefing.unknown_sources()]
 
 
 def build(

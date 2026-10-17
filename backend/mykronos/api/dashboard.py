@@ -2661,6 +2661,54 @@ class BriefingClassOut(BaseModel):
     action: BriefingActionOut | None
 
 
+class CiLaneOut(BaseModel):
+    """A paused or failing CI job (#401, #306): `briefing.PausedLane` and
+    `briefing.FailingLane`, which share a shape."""
+
+    pipeline: str
+    job: str
+    last_status: str | None = None
+    last_finished_at: datetime | None = None
+    build_url: str | None = None
+
+
+class BlockedLaneOut(CiLaneOut):
+    """A job held back by a red or paused upstream (TheHub#349)."""
+
+    blocked_by: str
+    root: str
+    root_state: str
+    since: datetime | None = None
+
+
+class TokenDeliveryOut(BaseModel):
+    """An ingestion token the rotation sweep deferred to a person (#263)."""
+
+    repo_full_name: str
+    #: "due" | "unverified"
+    state: str
+    issued_at: datetime
+    rotate_after: datetime
+    scanned_by: str = ""
+
+
+class UnhealthyJobOut(BaseModel):
+    """A scheduled job that is failing, late or has never run (#409):
+    `platform_health.JobHealth`. Its own model rather than `JobHealthOut`,
+    which is declared after the briefing's route."""
+
+    name: str
+    status: str
+    detail: str
+    last_succeeded_at: datetime | None = None
+    consecutive_failures: int = 0
+
+
+class BriefingUnknownOut(BaseModel):
+    source: str
+    detail: str
+
+
 class BriefingOut(BaseModel):
     generated_at: datetime
     total_open: int
@@ -2692,6 +2740,19 @@ class BriefingOut(BaseModel):
     guidance: list[CapabilityGuidanceOut]
     #: The same work grouped by the *change* rather than the rule (B-028).
     fixes: list[FixGroupOut]
+    # The inputs from outside the lake (`briefing_sources.gather`), the same
+    # ones `mykronos briefing` prints (#60808). An empty list means the source
+    # was read and nothing is wrong; one that could not be read is named in
+    # `unknown` instead, never shown as an empty list.
+    toxic: list[dict[str, Any]] = Field(default_factory=list)
+    toxic_coverage: dict[str, Any] | None = None
+    exposure: list[dict[str, Any]] = Field(default_factory=list)
+    paused: list[CiLaneOut] = Field(default_factory=list)
+    failing: list[CiLaneOut] = Field(default_factory=list)
+    blocked: list[BlockedLaneOut] = Field(default_factory=list)
+    unhealthy_jobs: list[UnhealthyJobOut] = Field(default_factory=list)
+    tokens: list[TokenDeliveryOut] = Field(default_factory=list)
+    unknown: list[BriefingUnknownOut] = Field(default_factory=list)
 
 
 @router.get("/briefing", response_model=BriefingOut)
@@ -2729,10 +2790,22 @@ async def post_deployment_briefing(
     """
     asset_id = _resolve_repo(request, repo_id) if repo_id else None
     languages, sast_tools = await _languages(request)
+    state = request.app.state
+    operational = await asyncio.to_thread(
+        briefing_sources.gather, state.settings, state.db, state.catalog
+    )
     report = briefing.build(
         request.app.state.catalog,
         asset_id=asset_id,
         default_branches=_default_branches(request),
+        paused_jobs=operational.paused_jobs,
+        failing_jobs=operational.failing_jobs,
+        blocked_jobs=operational.blocked_jobs,
+        unhealthy_jobs=operational.unhealthy_jobs,
+        tokens=operational.tokens,
+        toxic_combinations=operational.toxic_combinations,
+        toxic_coverage=operational.toxic_coverage,
+        exposure=operational.exposure,
         languages=languages,
         sast_tools=sast_tools,
         scanned_by=_scanned_by(request),
@@ -2784,6 +2857,20 @@ async def post_deployment_briefing(
                 steps=f.steps,
             )
             for f in guidance.fix_groups(request.app.state.catalog)
+        ],
+        toxic=report.toxic,
+        toxic_coverage=report.toxic_coverage,
+        exposure=report.exposure,
+        paused=[CiLaneOut.model_validate(dataclasses.asdict(j)) for j in report.paused],
+        failing=[CiLaneOut.model_validate(dataclasses.asdict(j)) for j in report.failing],
+        blocked=[BlockedLaneOut.model_validate(dataclasses.asdict(j)) for j in report.blocked],
+        unhealthy_jobs=[
+            UnhealthyJobOut.model_validate(dataclasses.asdict(j)) for j in report.unhealthy_jobs
+        ],
+        tokens=[TokenDeliveryOut.model_validate(dataclasses.asdict(t)) for t in report.tokens],
+        unknown=[
+            BriefingUnknownOut(source=source, detail=detail)
+            for source, detail in report.unknown_sources()
         ],
     )
 

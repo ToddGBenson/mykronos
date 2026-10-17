@@ -860,6 +860,28 @@ class Briefing:
         """Open findings that cannot close until a lane is repaired."""
         return sum(lane.open_findings for lane in self.stalled)
 
+    def unknown_sources(self) -> list[tuple[str, str]]:
+        """(source, why) for every input that could not be read.
+
+        The `*_unknown` flags, named, so a surface that drops the flags still
+        says what it could not ask rather than showing an empty section as "all
+        clear". One list for the API briefing and the agent work queue.
+        """
+        unknown = []
+        if self.failing_unknown or self.paused_unknown or self.blocked_unknown:
+            unknown.append(
+                ("concourse", "CI could not be asked which jobs are failing, paused or held back.")
+            )
+        if self.jobs_unknown:
+            unknown.append(("job_runs", "Scheduled-job health could not be read."))
+        if self.tokens_unknown:
+            unknown.append(("ingestion_tokens", "The token registry could not be read."))
+        if self.toxic_unknown:
+            unknown.append(("toxic", "Toxic combinations could not be computed."))
+        if self.exposure_unknown:
+            unknown.append(("exposure", "Public endpoints could not be read."))
+        return unknown
+
 
 def awaiting_closure(catalog: Catalog) -> list[AwaitingClosure]:
     """Closeable findings absent from their lane's most recent successful scan.

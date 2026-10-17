@@ -4031,6 +4031,30 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /**
+         * BlockedLaneOut
+         * @description A job held back by a red or paused upstream (TheHub#349).
+         */
+        BlockedLaneOut: {
+            /** Pipeline */
+            pipeline: string;
+            /** Job */
+            job: string;
+            /** Last Status */
+            last_status?: string | null;
+            /** Last Finished At */
+            last_finished_at?: string | null;
+            /** Build Url */
+            build_url?: string | null;
+            /** Blocked By */
+            blocked_by: string;
+            /** Root */
+            root: string;
+            /** Root State */
+            root_state: string;
+            /** Since */
+            since?: string | null;
+        };
         /** BriefingActionOut */
         BriefingActionOut: {
             /** Label */
@@ -4088,6 +4112,37 @@ export interface components {
             guidance: components["schemas"]["CapabilityGuidanceOut"][];
             /** Fixes */
             fixes: components["schemas"]["FixGroupOut"][];
+            /** Toxic */
+            toxic?: {
+                [key: string]: unknown;
+            }[];
+            /** Toxic Coverage */
+            toxic_coverage?: {
+                [key: string]: unknown;
+            } | null;
+            /** Exposure */
+            exposure?: {
+                [key: string]: unknown;
+            }[];
+            /** Paused */
+            paused?: components["schemas"]["CiLaneOut"][];
+            /** Failing */
+            failing?: components["schemas"]["CiLaneOut"][];
+            /** Blocked */
+            blocked?: components["schemas"]["BlockedLaneOut"][];
+            /** Unhealthy Jobs */
+            unhealthy_jobs?: components["schemas"]["UnhealthyJobOut"][];
+            /** Tokens */
+            tokens?: components["schemas"]["TokenDeliveryOut"][];
+            /** Unknown */
+            unknown?: components["schemas"]["BriefingUnknownOut"][];
+        };
+        /** BriefingUnknownOut */
+        BriefingUnknownOut: {
+            /** Source */
+            source: string;
+            /** Detail */
+            detail: string;
         };
         /**
          * Capability
@@ -4278,6 +4333,23 @@ export interface components {
             build_url?: string | null;
             /** Finished At */
             finished_at?: string | null;
+        };
+        /**
+         * CiLaneOut
+         * @description A paused or failing CI job (#401, #306): `briefing.PausedLane` and
+         *     `briefing.FailingLane`, which share a shape.
+         */
+        CiLaneOut: {
+            /** Pipeline */
+            pipeline: string;
+            /** Job */
+            job: string;
+            /** Last Status */
+            last_status?: string | null;
+            /** Last Finished At */
+            last_finished_at?: string | null;
+            /** Build Url */
+            build_url?: string | null;
         };
         /**
          * CiPage
@@ -9042,6 +9114,31 @@ export interface components {
              */
             vulnerable_dependency_count: number;
         };
+        /**
+         * TokenDeliveryOut
+         * @description An ingestion token the rotation sweep deferred to a person (#263).
+         */
+        TokenDeliveryOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** State */
+            state: string;
+            /**
+             * Issued At
+             * Format: date-time
+             */
+            issued_at: string;
+            /**
+             * Rotate After
+             * Format: date-time
+             */
+            rotate_after: string;
+            /**
+             * Scanned By
+             * @default
+             */
+            scanned_by: string;
+        };
         /** ToxicCombinationMemberOut */
         ToxicCombinationMemberOut: {
             /** Finding Id */
@@ -9217,6 +9314,27 @@ export interface components {
          * @enum {string}
          */
         TriggeredBy: "pull_request" | "push" | "schedule" | "workflow_dispatch" | "manual";
+        /**
+         * UnhealthyJobOut
+         * @description A scheduled job that is failing, late or has never run (#409):
+         *     `platform_health.JobHealth`. Its own model rather than `JobHealthOut`,
+         *     which is declared after the briefing's route.
+         */
+        UnhealthyJobOut: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /** Last Succeeded At */
+            last_succeeded_at?: string | null;
+            /**
+             * Consecutive Failures
+             * @default 0
+             */
+            consecutive_failures: number;
+        };
         /** UnreachableRepoOut */
         UnreachableRepoOut: {
             /** Repo Full Name */
