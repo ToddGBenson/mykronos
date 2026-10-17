@@ -120,11 +120,13 @@ function Get-VaultToken {
 Write-Step "Checking every reader of $Repo before touching the token..."
 $problems = @()
 
-if (-not ((docker ps --format '{{.Names}}' 2>$null) -contains $Container)) {
+$runningContainers = docker ps --format '{{.Names}}' 2>$null
+if (-not ($runningContainers -contains $Container)) {
     $problems += "Container $Container is not running - cannot mint a token."
 } else { Write-Ok "$Container is running." }
 
-$ghUser = (gh api user --jq .login 2>$null)
+# Only the exit code matters here: it says whether gh is authenticated.
+$null = (gh api user --jq .login 2>$null)
 if ($LASTEXITCODE -ne 0) {
     $problems += "gh is not authenticated - run: gh auth login"
 } else {

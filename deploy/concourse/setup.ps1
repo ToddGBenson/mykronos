@@ -26,6 +26,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 function New-Secret {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure generator: returns a random string and changes no state. Writing .env is the caller''s job, guarded by -Rotate.')]
     param([int]$Bytes = 24)
     $buffer = New-Object byte[] $Bytes
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)

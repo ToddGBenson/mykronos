@@ -41,6 +41,7 @@
 .NOTES
     ASCII only - see setup.ps1 for why.
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Container', Justification = 'Used by Write-VaultValue and Get-VaultLength, which read it from script scope; the rule does not follow a script parameter into a nested function.')]
 [CmdletBinding()]
 param(
     [switch]$Apply,

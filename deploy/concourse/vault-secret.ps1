@@ -100,11 +100,11 @@ function Invoke-Vault {
 # its lookup templates read, so getting it wrong means the pipeline reports a
 # missing credential rather than a wrong one.
 switch ($Scope) {
-  'personal' { $mount = 'personal'; $path = "personal/$Name" }
-  'team'     { $mount = 'concourse'; $path = "concourse/$Team/$Name" }
+  'personal' { $path = "personal/$Name" }
+  'team'     { $path = "concourse/$Team/$Name" }
   'pipeline' {
     if (-not $Pipeline) { Write-Error "-Pipeline is required with -Scope pipeline" }
-    $mount = 'concourse'; $path = "concourse/$Team/$Pipeline/$Name"
+    $path = "concourse/$Team/$Pipeline/$Name"
   }
 }
 

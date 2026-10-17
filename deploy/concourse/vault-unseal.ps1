@@ -44,6 +44,7 @@
   already has two of those. Whether Vault should be running at all is the
   compose healthcheck's question, not this script's.
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'LogFile', Justification = 'Used by Write-Step, which reads it from script scope; Install-VaultUnsealTask.ps1 passes it for the boot-time task. The rule does not follow a script parameter into a nested function.')]
 [CmdletBinding()]
 param(
   [string] $InitFile = (Join-Path $PSScriptRoot 'vault/init.json'),
@@ -64,6 +65,7 @@ function Write-Step {
 }
 
 function Stop-With {
+  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal: logs a message and exits 1. It changes no system state; the verb names the script stopping.')]
   param([string] $Message)
 
   Write-Step $Message 'Red'

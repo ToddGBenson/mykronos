@@ -43,6 +43,7 @@
     SHA is copied across, so an upgrade does not reinstall or lose its place.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'SkillRoot', Justification = 'Used inside Invoke-Cycle, which reads it from script scope; the rule does not follow a script parameter into a nested function.')]
 [CmdletBinding()]
 param(
     [string]$Endpoint = "http://localhost:9000",
@@ -81,17 +82,18 @@ $creds = "{0}:{1}" -f
     [System.Uri]::EscapeDataString((Read-EnvValue $stackEnv "MINIO_ROOT_PASSWORD"))
 $env:MC_HOST_psoc = "{0}://{1}@{2}" -f $uri.Scheme, $creds, $uri.Authority
 
-# Where the state used to live. Read once by Get-InstalledSkills, never written.
+# Where the state used to live. Read once by Get-InstalledSkillSha, never written.
 $legacyStateFile = Join-Path $here ".installed-skills"
 $script:failures = 0
 
-function Set-InstalledSkills {
+function Set-InstalledSkillSha {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal helper that records the installed SHA in this host''s own state file; it must run whenever a bundle was copied, or the state would disagree with what is installed.')]
     param([string]$Path, [string]$Sha)
     New-Item -ItemType Directory -Force -Path (Split-Path $Path -Parent) | Out-Null
     Set-Content -Path $Path -Value $Sha -NoNewline -Encoding ASCII
 }
 
-function Get-InstalledSkills {
+function Get-InstalledSkillSha {
     param([string]$Path, [string]$LegacyPath)
     # One-time migration from the tracked in-repo file. Only a well-formed SHA
     # is carried over; anything else falls through to "nothing installed",
@@ -99,7 +101,7 @@ function Get-InstalledSkills {
     if (-not (Test-Path $Path) -and $LegacyPath -and (Test-Path $LegacyPath)) {
         $old = (Get-Content $LegacyPath -Raw).Trim()
         if ($old -match '^[0-9a-f]{40}$') {
-            Set-InstalledSkills -Path $Path -Sha $old
+            Set-InstalledSkillSha -Path $Path -Sha $old
             Write-Host "skills state migrated from $LegacyPath to $Path ($old)" -ForegroundColor DarkGray
         }
     }
@@ -126,7 +128,7 @@ function Invoke-Cycle {
         return
     }
 
-    $current = Get-InstalledSkills -Path $StateFile -LegacyPath $legacyStateFile
+    $current = Get-InstalledSkillSha -Path $StateFile -LegacyPath $legacyStateFile
     if ($current -eq $requested) { Write-Verbose "skills already at $requested"; return }
 
     Write-Host "skills: $current -> $requested" -ForegroundColor Cyan
@@ -179,7 +181,7 @@ function Invoke-Cycle {
             $survived | ForEach-Object { Write-Host "  preserved $($_.Name) in $($_.Directory.Name)" -ForegroundColor DarkGray }
         }
 
-        Set-InstalledSkills -Path $StateFile -Sha $requested
+        Set-InstalledSkillSha -Path $StateFile -Sha $requested
 
         $ack = Join-Path $work "ack"
         [System.IO.File]::WriteAllText($ack, $requested)
@@ -193,7 +195,7 @@ function Invoke-Cycle {
 try {
     # Migrate at start-up, not only when a new bundle is published, so the
     # legacy SHA is carried across on the first run whatever the pointer says.
-    Get-InstalledSkills -Path $StateFile -LegacyPath $legacyStateFile | Out-Null
+    Get-InstalledSkillSha -Path $StateFile -LegacyPath $legacyStateFile | Out-Null
 
     if ($Once) {
         Invoke-Cycle

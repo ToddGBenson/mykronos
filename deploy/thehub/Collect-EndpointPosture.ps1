@@ -162,7 +162,11 @@ function Get-EndpointPosture {
             try {
                 $p = Get-Process -Id $c.OwningProcess -ErrorAction Stop
                 $name = $p.ProcessName
-            } catch { }
+            } catch {
+                # The owner exited between listing and lookup, or is not
+                # visible to this account: count the socket as "unknown".
+                $name = "unknown"
+            }
             if (-not $byProc.ContainsKey($name)) { $byProc[$name] = 0 }
             $byProc[$name]++
         }

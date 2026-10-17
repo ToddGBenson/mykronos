@@ -77,7 +77,10 @@ def test_every_refusal_branch_has_a_scenario() -> None:
     assert branches, "no refusal branches found in the guard -- it cannot refuse at all"
 
     probe = PROBE.read_text(encoding="utf-8")
-    scenarios = re.findall(r"^Probe\s+'([^']+)'", probe, re.MULTILINE)
+    # Scenarios are called with named parameters (`Probe -Name '...'`) since
+    # PSScriptAnalyzer's PSAvoidUsingPositionalParameters; the positional form
+    # still counts so a scenario written either way is never missed.
+    scenarios = re.findall(r"^Probe\s+(?:-Name\s+)?'([^']+)'", probe, re.MULTILINE)
     refusing = [s for s in scenarios if "clean" not in s]
 
     assert len(refusing) >= len(branches), (

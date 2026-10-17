@@ -281,7 +281,11 @@ try {
     $probe = docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN `
         mykronos-vault vault read -format=json concourse/main/slack-bot-token 2>$null
     if ($LASTEXITCODE -eq 0 -and $probe) { $slackReady = $true }
-} catch { } finally { $env:VAULT_TOKEN = $prior }
+} catch {
+    # A failed probe means "not readable", which is reported just below; it
+    # is a warning about alerts, never a reason to stop applying the pipeline.
+    $slackReady = $false
+} finally { $env:VAULT_TOKEN = $prior }
 if ($slackReady) {
     Write-Host "Slack alerts resolve from Vault (concourse/main/slack-bot-token)." -ForegroundColor DarkGray
 } else {

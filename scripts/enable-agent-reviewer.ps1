@@ -48,6 +48,7 @@
 .EXAMPLE
   .\enable-agent-reviewer.ps1             # run once to propose, again after an hour to approve and go live
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Api', Justification = 'Used by Invoke-Api, which reads it from script scope; the rule does not follow a script parameter into a nested function.')]
 [CmdletBinding()]
 param(
   [string] $RepoPath = 'C:\Users\tgb_\Documents\Projects\mykronos',
@@ -84,7 +85,9 @@ function Invoke-Api([string] $Path, [string] $Method = 'Get', $Body = $null) {
 }
 $did = [System.Collections.Generic.List[string]]::new()
 function Done([string] $what) { $did.Add($what); Write-Host "  $what" -ForegroundColor Green }
-function Stop-Here([string] $why) {
+function Stop-Here {
+  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal: prints a reason and what was done, then exits 2. It changes no state; the verb names the script stopping.')]
+  param([string] $why)
   Write-Host "`n$why" -ForegroundColor Yellow
   if ($did.Count) { Write-Host "`nDone this run:" -ForegroundColor Cyan; $did | ForEach-Object { Write-Host "  - $_" } }
   exit 2
@@ -140,7 +143,7 @@ if ($active.Count -gt 0) {
   $pending = @(@(Invoke-Api '/api/approvals?state=pending&duty=delegation_grant') | Where-Object { $_.subject_ref -eq $Subject })
   if ($pending.Count -eq 0) {
     $expires = (Get-Date).ToUniversalTime().AddDays($Days).ToString('yyyy-MM-ddTHH:mm:ssZ')
-    $req = Invoke-Api '/api/approvals/delegations' 'Post' @{
+    $req = Invoke-Api -Path '/api/approvals/delegations' -Method 'Post' -Body @{
       duty = $Duty; tiers = $Tiers; approver_families = @($Family); expires_at = $expires; sampling = $Sampling
       statement = "Operator decision 2026-10-11 (D-149): a platform-started, fresh-context reviewer approves production and routine pull requests; governance stays with a person. $([int](100 * $Sampling))% of its approvals are sampled for spot-check."
     }
@@ -164,7 +167,7 @@ if ($active.Count -gt 0) {
   $answer = Read-Host 'Grant it? Type y to approve, anything else to stop'
   if ($answer -ne 'y') { Stop-Here 'Not approved. The request stays open.' }
   $rationale = "Granting $Duty for production and routine only, never governance: the reviewer is platform-started with fresh context, and $($p.sampling) of its approvals come back to me for spot-check; expires $($p.expires_at)."
-  $dec = Invoke-Api "/api/approvals/$($req.id)/decisions" 'Post' @{ verdict = 'approve'; rationale = $rationale; evidence_digest = $ev.evidence_digest }
+  $dec = Invoke-Api -Path "/api/approvals/$($req.id)/decisions" -Method 'Post' -Body @{ verdict = 'approve'; rationale = $rationale; evidence_digest = $ev.evidence_digest }
   if ($dec.state -ne 'approved') { Stop-Here "Your decision was recorded but request $($req.id) is '$($dec.state)'." }
   Done "approved delegation request $($req.id) (same_person=$((@($dec.decisions) | Select-Object -Last 1).same_person)); the delegation is active"
 }
