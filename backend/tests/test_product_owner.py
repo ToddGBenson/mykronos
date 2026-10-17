@@ -522,6 +522,51 @@ class TestAuth:
             assert response.status_code == 403
         assert hub.calls == []
 
+    @pytest.mark.parametrize(
+        ("path", "body"),
+        [
+            ("stories/7/pull", None),
+            ("stories/8/return", None),
+            ("rank", {"story_id": 7, "direction": "up"}),
+            ("template", {"template": "keel"}),
+        ],
+        ids=["pull", "return", "rank", "template"],
+    )
+    def test_an_agent_cannot_write(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        connect: Callable[..., Any],
+        path: str,
+        body: dict[str, Any] | None,
+    ) -> None:
+        """spec 35: every Product Owner tab write is the operator's. The agent
+        role may write elsewhere (`may_write`), but not here."""
+        repo_id, hub = connect([story(id=7), story(id=8, bucket="sprint")])
+        minted = client.post(
+            "/api/agents/credentials", json={"family": "claude-opus-5.5"}, headers=admin_auth
+        )
+        assert minted.status_code == 201, minted.text
+        agent = {"Authorization": f"Bearer {minted.json()['token']}"}
+        response = client.post(
+            f"/api/dashboard/repos/{repo_id}/product-owner/{path}", json=body, headers=agent
+        )
+        assert response.status_code == 403, response.text
+        assert "'admin' role" in response.json()["detail"]
+        assert hub.calls == []
+
+    def test_an_agent_reads_the_tab_without_write_rights(
+        self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
+    ) -> None:
+        repo_id, _ = connect([story(id=1)])
+        minted = client.post(
+            "/api/agents/credentials", json={"family": "claude-opus-5.5"}, headers=admin_auth
+        )
+        agent = {"Authorization": f"Bearer {minted.json()['token']}"}
+        response = client.get(f"/api/dashboard/repos/{repo_id}/product-owner", headers=agent)
+        assert response.status_code == 200
+        assert response.json()["can_write"] is False
+
     def test_every_write_is_audit_logged(
         self, client: TestClient, admin_auth: dict[str, str], connect: Callable[..., Any]
     ) -> None:
