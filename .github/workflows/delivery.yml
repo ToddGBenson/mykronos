@@ -1,4 +1,4 @@
-# Build, publish and promote — spec 32 §5, §4.1.
+# Build and publish — spec 32 §5, §4.1.
 #
 # This repository's own delivery pipeline, hand-written and committed here
 # rather than rendered by the Workflow Installer. The installer's unit is a
@@ -8,7 +8,7 @@
 # file is ordinary CI for the repository it lives in.
 #
 # What it replaces: `build`, `publish-backend` and `publish-frontend` in
-# `deploy/concourse/pipelines/mykronos.yml`. Its `promote` is `promote.yml`. Those stay applied
+# `deploy/concourse/pipelines/mykronos.yml`. Those stay applied
 # and running until the parity check of spec 32 §9 says this one has taken
 # over. Two publishes of the same commit are idempotent — the tag is the
 # commit SHA and the content is the same build — so running both costs
@@ -26,8 +26,10 @@
 #     triggered on Delivery *completing*, could not run until somebody
 #     approved a production promote. The security scan was gated behind the
 #     deploy decision it exists to inform. Delivery now finishes at publish.
-#     Deploy itself is unchanged and stays D-038: a human runs
-#     `deploy/mykronos/deploy.ps1` on the host.
+#     `promote.yml` never completed a run and was deleted on 2026-09-23 with
+#     `:latest` itself (D-125): images publish as `:${SHA}` and nothing else.
+#     Deploy stays D-038: a human runs `deploy/mykronos/deploy.ps1 -Tag <sha>`
+#     on the host, and it asks the gate about that sha first (D-126, D-159).
 #   - Scan the image. That is the `containers` capability, which discovers
 #     Dockerfiles and builds them itself, and needs no registry (spec 32 §5).
 
@@ -40,8 +42,8 @@ on:
 
 # One delivery at a time, and never cancelled. `cancel-in-progress: true` —
 # which every scanner workflow sets — would be wrong here: a cancelled publish
-# can leave a tag pushed and its sibling not, and the promote that follows
-# would move `:latest` onto a half-published commit.
+# can leave one component's `:${SHA}` pushed and its sibling not, so a deploy
+# of that sha would find half an image set.
 concurrency:
   group: delivery-${{ github.ref }}
   cancel-in-progress: false
@@ -144,8 +146,8 @@ jobs:
       packages: write
     strategy:
       # One component failing must not stop the other from publishing: the
-      # promote job below requires both, so a partial publish simply does not
-      # promote, and the half that worked is still on the registry by SHA.
+      # half that worked is still on the registry by SHA, and a re-run
+      # publishes the other half under the same tag.
       fail-fast: false
       matrix:
         # The context differs per component and is not cosmetic. The backend
@@ -187,10 +189,9 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.component }}/Dockerfile
           push: true
-          # The commit SHA and nothing else. `:latest` is moved by `promote`,
-          # after the gate — spec 15 §3's rule that what the gate holds is the
-          # tag rather than the artifact (D-047). A refused commit leaves an
-          # image nothing points at.
+          # The commit SHA and nothing else. There is no `:latest` (D-125):
+          # the deploy names a sha, and `deploy.ps1` asks the gate about it
+          # before pulling (D-126, D-159).
           tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/mykronos-${{ matrix.component }}:${{ github.sha }}
           # The same SHA, inside the image as well as on the tag (#361). A
           # container cannot read the tag it was started from, so an image

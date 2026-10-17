@@ -169,7 +169,9 @@ image older than the last production deploy. Images still publish as `:${SHA}`
 on every push, which is unchanged and is now the *whole* tagging model;
 `deploy.ps1` takes a mandatory `-Tag <sha>`. The consequence for the gate is
 stated in spec 15 §3 rather than softened here: with no tag to hold, nothing
-mechanically stops a `no_go` commit being deployed.
+mechanically stops a `no_go` commit being deployed. *(That gap lasted a day:
+D-126 made `deploy.ps1` ask the gate about the sha before pulling, and D-159
+narrowed the refusal to a commit that introduced a blocking finding.)*
 
 **What this gains beyond reachability**, worth stating so the migration is not
 read as pure cost: authentication where there is none today, immutable
@@ -382,7 +384,8 @@ concluding this migration is impossible.
 For `mykronos`, D-038 already answered this: the pipeline publishes an image
 and a human runs `deploy/mykronos/deploy.ps1` on the host. Nothing in CI
 deploys, so nothing in CI needs the LAN. `deploy.ps1` changes one hostname to
-pull `:latest` from GHCR instead of `192.168.0.14:5000`.
+pull `:latest` from GHCR instead of `192.168.0.14:5000`. *(Since D-125 there is
+no GHCR `:latest`: `deploy.ps1 -Tag <sha>` is mandatory and pulls `:${SHA}`.)*
 
 **The Actions-native gate is a GitHub Environment**, not a job that waits. A
 `production` environment with required reviewers turns "a person clicks a
@@ -878,6 +881,9 @@ unrevertible. The Concourse pipeline stays applied and running until step 8.
    create cannot redirect `:latest`, because a digest names bytes rather
    than a tag. Verified with `actionlint`; every third-party action pin was
    resolved against the GitHub API rather than written from memory.
+   *(The promote half was split into `promote.yml` on 2026-08-29 (§4.6) and
+   deleted on 2026-09-23 with `:latest` (D-125). Delivery now ends at
+   publish.)*
 
    **`deploy.ps1` moved to GHCR, 2026-08-29**, and now names the two things
    that can go wrong there and could not before: a GHCR package is private by
@@ -1005,10 +1011,13 @@ that failure mode since it was written.
 4. Raw tool output is archived and `mykronos reprocess` can re-derive findings
    from it. Spec 15 §9.4, unchanged.
 5. An Oracle `no_go` prevents `promote`, and the decision is visible in the
-   dashboard with its reasoning.
+   dashboard with its reasoning. *(Retired with `promote` by D-125. Its
+   successor: `deploy.ps1` refuses a sha whose decision has
+   `introduced_blocking` true, D-126 as narrowed by D-159.)*
 6. Images are published to GHCR as `:${SHA}`; `:latest` moves only after a `go`
    and an Environment approval; `deploy.ps1` pulls the promoted image and the
-   deployed SHA matches.
+   deployed SHA matches. *(Since D-125: images publish as `:${SHA}` only, there
+   is no `:latest`, and `deploy.ps1 -Tag <sha>` pulls that sha.)*
 7. No credential appears in workflow YAML, in a run log, or in an image layer —
    and the repository is public, so this criterion is now checkable by anyone.
 8. For each of the three repositories, every capability that read `reporting`

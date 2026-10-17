@@ -414,6 +414,18 @@ objection spec 24 §3.3 made to synthetic dates.
 
 Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
 
+**Implementation status (checked against the code 2026-10-17).**
+
+- Built: the record and its authority. `POST /api/risk-acceptances` with renew, revoke and
+  `migrate-legacy` (`api/risk_acceptances.py`), approval through spec 34's engine, and the rule that
+  at least one milestone ends the weakness.
+- Not built: the POA&M export. No route or command produces OSCAL or CSV, so the §13 criterion on
+  the OSCAL 1.1 schema is unmet.
+- Not built: §8's scoring changes. `residual_cap` is still **15** in `oracle-policy-v1.yaml`, not 30,
+  and the residual term weights by severity alone, with no deviation-type multiplier. Tool images
+  are not weighted 0.25×; when the policy's `exclude_tool_images` is on they are left out entirely.
+  §8 describes the intended change, not the running policy.
+
 ## 13. Acceptance criteria
 
 - An acceptance cannot be created without a named risk owner, a deviation type, a residual

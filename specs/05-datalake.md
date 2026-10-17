@@ -32,8 +32,12 @@ results siloed in its own tool's UI only.
   ├── remediation_events/       # written by Patchwork, spec 08
   ├── insider_risk_signals/     # written by Aegis, spec 06
   ├── sscs_evidence/            # written by Atlas, spec 07
+  ├── finding_tests/            # a test that exists because of a finding, spec 31 §1
+  ├── sbom_components/          # what a repository resolved to, spec 29 §1
   └── _manifest.duckdb          # DuckDB catalog/views over the above
   ```
+  Eight tables. The list that the code holds is `TABLES` in
+  `backend/mykronos/lake/tables.py`.
 - Writes happen via an **append-only ingestion buffer**: the Ingestion API
   writes incoming records to a small write-ahead JSONL buffer file
   immediately (durability), then a background compaction job batches the

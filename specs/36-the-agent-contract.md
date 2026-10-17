@@ -63,7 +63,7 @@ finding another principal has claimed is left out, because working it would dupl
 ```
 WorkQueue
   generated_at
-  principal              who the queue was computed for (actor, kind)
+  actor, actor_kind      who the queue was computed for: the principal's actor and kind
   items[]                ordered; the agent works from the top
   waiting[]              things that need no action and must not be touched
   unknown[]              sources that could not be read, each with why
@@ -150,7 +150,8 @@ An MCP server that wraps the API under the agent's own `mka_` credential. #319 l
 experience; this spec adds the queue in front of them:
 
 - **Read:** `work()`, `briefing()`, `findings(...)`, `finding(id)` with the parsed DAST instance,
-  `lane_health(repo)`, `pipeline(repo)`, `coverage(repo)`, `whoami()`.
+  `lane_health(repo)`, `pipeline(repo)`, `coverage(repo)`, `whoami()`. `pipeline()` and `coverage()` are
+  not built: neither has a route yet (§8, #318).
 - **Write, few and governed:** `claim(finding_id)`, `disposition(finding_id, status, reason)` which routes to
   `disposition-requests` itself when governed, `accept(...)` through `/api/risk-acceptances`,
   `request_pr_review(repo, number, statement)`.

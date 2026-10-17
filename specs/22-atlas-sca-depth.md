@@ -156,7 +156,7 @@ gap justifies).
 
 `atlas` is already in `DEFAULT_CORRELATION_CAPABILITIES` (the eligible pool for toxic-combination
 detection) — it has been since spec 08 shipped. No rule in `BUILT_IN_RULES` has ever named it. The
-closest existing rule, `exploitable-dependency-reachable` ("Exploitable dependency in a running,
+closest existing rule, `vulnerable-image-and-live-service` ("Exploitable dependency in a running,
 reachable service"), pairs a `containers` CVE finding with a `dast` reachability signal — the identical
 shape a vulnerable *application* dependency (not just a vulnerable container layer) already has, since
 `atlas` findings are already CVE-bearing (confirmed: Oracle's KEV boost already reads CVEs out of them
@@ -170,24 +170,21 @@ a service that's reachably disclosing itself" rather than two near-duplicate rul
 `Requirement` already supports this shape (a regex matched against `rule_id`/`title`, capability as a
 separate field) — this is a data change to one rule, not new matching logic:
 
+As built (`backend/mykronos/patchwork/correlate.py`), the rule keeps its id and the OR lives inside one
+requirement, whose `capability` takes a tuple. The pattern also matches `GHSA-`, because a GitHub
+advisory id is often the only identifier a finding carries:
+
 ```python
 CombinationRule(
-    rule_id="exploitable-dependency-reachable",
+    rule_id="vulnerable-image-and-live-service",
     name="Exploitable dependency in a running, reachable service",
     requires=(
-        Requirement(r"CVE-", capability="containers", min_severity="high"),
-        Requirement(r"CVE-", capability="atlas", min_severity="high"),  # new: either may satisfy
-        Requirement(r"auth|exposed|version|banner|outdated|fingerprint", capability="dast"),
+        Requirement(r"CVE-|GHSA-", capability=("containers", "atlas"), min_severity="high"),
+        Requirement(...ZAP's own vocabulary for a disclosing service..., capability="dast"),
     ),
     ...
 )
 ```
-
-(`Requirement` matching today is "any requirement of this shape satisfied by at least one finding";
-the exact mechanism for "either containers or atlas satisfies the first slot" — an explicit OR inside
-one requirement vs. two alternative requirements sharing a satisfied-by-either flag — is an
-implementation-time decision `correlate.detect()`'s matching loop should make explicit, not left
-ambiguous by this spec.)
 
 ## 5. Acceptance criteria
 

@@ -70,7 +70,7 @@ path creates a GitHub issue with no assignee.
   declares it, so choosing between those two paths would be this platform inventing a location and
   then routing real work by it. The profile answer is weaker and true; the manifest answer would be
   specific and made up.
-- **Manual override.** `PATCH /api/findings/{finding_id}/owner` sets `owner` with
+- **Manual override.** `PATCH /api/dashboard/findings/{finding_id}/owner` sets `owner` with
   `owner_source: manual`. A later scan does not overwrite a manual assignment — a person reassigning
   a finding is making a decision, and a re-scan is not new information about who should fix it.
 
@@ -122,8 +122,10 @@ mails everybody.
 
 ### 2.4 Overdue as a first-class state
 
-- A `due` filter on `open_findings()` and `triage_queue()`: `overdue` | `due_soon` (inside 7 days) |
-  `on_track` | `no_target`.
+- A `due` filter on `open_findings()`: `overdue` | `due_soon` (inside 7 days) | `on_track` |
+  `no_target` (`GET /api/dashboard/repos/{repo_id}/open-findings?due=`). The cross-repository triage
+  queue (`GET /api/dashboard/triage`) has no `due` filter; each row carries `due_state`, and
+  `order=rank` scores `overdue` and `due_soon` (spec 27 §1).
 - A portfolio tile counting overdue findings, beside the existing critical/high tiles.
 - **An Oracle term.** `overdue_findings` is additive and small, and — importantly — it is *not* a
   second age term. Age already escalates continuously; this fires once, on a date the organisation
