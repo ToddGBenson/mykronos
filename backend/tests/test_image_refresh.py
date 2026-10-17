@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -502,8 +503,6 @@ def test_every_rebuild_scan_reports_every_severity_decide_reads(lane: Path) -> N
     """`decide` reads HIGH/CRITICAL and, since #869, MEDIUM. A scan run with
     `--severity CRITICAL,HIGH` writes no MEDIUM into the report, so the second
     tier can never fire and a MEDIUM-only fix is discarded as `unchanged`."""
-    import re
-
     scans = re.findall(
         r"--severity\s+([A-Z,]+)\s+--format json", lane.read_text(encoding="utf-8")
     )
