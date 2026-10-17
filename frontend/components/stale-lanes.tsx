@@ -66,12 +66,19 @@ export function StaleLanes({ lanes }: { lanes: StaleLane[] }) {
             </p>
           ) : null}
 
-          <a
-            href={`/repos/${encodeURIComponent(lane.repo_full_name)}/ci`}
-            className="mt-1 inline-block font-mono text-[11px] text-ink-3 underline decoration-rule underline-offset-2 hover:text-ink"
-          >
-            Open the lane &rarr;
-          </a>
+          {/* The repository page takes the onboarding id, never the full
+              name: `owner/repo` has a slash. Without an onboarding row there
+              is no page to open, and the row says why instead (#60805). */}
+          {lane.repo_id ? (
+            <a
+              href={`/repos/${encodeURIComponent(lane.repo_id)}`}
+              className="mt-1 inline-block font-mono text-[11px] text-ink-3 underline decoration-rule underline-offset-2 hover:text-ink"
+            >
+              Open the lane &rarr;
+            </a>
+          ) : (
+            <p className="mt-1 text-[11px] text-ink-3">{lane.path_refusal}</p>
+          )}
         </div>
       ))}
     </div>
