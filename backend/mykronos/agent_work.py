@@ -359,7 +359,7 @@ def _job_items(briefing: Briefing) -> list[WorkItem]:
 # Band 2: composite risk
 
 
-def _toxic_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]:
+def _toxic_items(briefing: Briefing) -> list[WorkItem]:
     dark = list((briefing.toxic_coverage or {}).get("cannot_fire") or [])
     items = []
     for combo in briefing.toxic:
@@ -383,19 +383,9 @@ def _toxic_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]
                 )
             )
         combination_id = str(combo.get("combination_id") or "")
-        repo_id = repo_ids.get(repo)
-        actions = (
-            [
-                ActionRef(
-                    label="Groom the combination as one story",
-                    method="POST",
-                    path=f"/api/triage/repos/{repo_id}/combinations/{combination_id}/groom",
-                    effect="Files or updates one issue for the whole combination.",
-                )
-            ]
-            if repo_id
-            else []
-        )
+        # No action. The groom route answers 410 for every combination since
+        # D-161, and offering it sent an agent to a call that cannot succeed
+        # (#60756). The story is filed in TheHub; the playbook says how.
         items.append(
             WorkItem(
                 item_id=f"toxic_combination:{repo}:{combination_id}",
@@ -418,7 +408,7 @@ def _toxic_items(briefing: Briefing, repo_ids: dict[str, str]) -> list[WorkItem]
                     )
                     for m in members
                 ],
-                actions=actions,
+                actions=[],
                 caveats=caveats,
             )
         )
@@ -830,7 +820,7 @@ def build(
         *_lane_items(briefing, repo_ids),
         *_ci_items(briefing),
         *_job_items(briefing),
-        *_toxic_items(briefing, repo_ids),
+        *_toxic_items(briefing),
         *_exposure_items(briefing, now=now, probe_interval_seconds=probe_interval_seconds),
         *_token_items(briefing),
     ]

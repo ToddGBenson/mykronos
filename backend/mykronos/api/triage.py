@@ -4,9 +4,11 @@ These routes turned a triaged finding, or a detected toxic combination, into
 a GitHub issue. TheHub's `dev_stories` is now the system of record for work
 items (D-133), so MyKronos writes no issues and the GitHub App holds
 `issues: read` only. The routes answer 410 Gone with that reason rather
-than disappearing: the frontend proxy and the agent work queue (spec 36)
-still name these paths, and "this moved, here is where" is a better answer
-to them than a bare 404.
+than disappearing: a caller built before D-161 may still name these paths,
+and "this moved, here is where" is a better answer to it than a bare 404.
+Nothing in this repository offers them any more: the agent work queue and
+its playbooks stopped in #60756, and `tests/test_playbooks.py` refuses a
+playbook that names a route answering 410.
 
 `GroomResult` stays in the schema so the generated frontend types do not
 change under a caller that has not been updated yet.
