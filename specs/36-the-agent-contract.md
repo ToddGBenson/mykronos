@@ -271,9 +271,13 @@ every group:**
 
 - `findings.reported_fixed_reopened`: no principal reports a finding fixed. `fixed` is an observation the
   reconciler makes after two successful scans miss a finding, and the status route refuses it from
-  anyone. When a fixed finding comes back, compaction reopens it and only logs a count
-  (`CompactionResult.reopened`), so nothing records which finding reopened or which change claimed to fix
-  it. `dispositions.reopened` is the measurable version.
+  anyone. When a fixed finding comes back, compaction reopens it and writes one `finding.reopened_by_scan`
+  audit entry per finding (actor `job:compaction`, `actor_kind = automation`), with the repository,
+  capability, the scan run that saw it again and when it had been resolved (TheHub #60794). That records
+  which findings reopened. It does not record which change claimed to fix them, so no principal can be
+  credited, and the metric stays unavailable: the entry is a record, not a measure. It is deliberately not
+  `finding.reopened`, which `dispositions.reopened` reads. `dispositions.reopened` is the measurable
+  version.
 - `pull_requests.closed_unmerged`: the platform records an approval request for each head commit, not
   what happened to the pull request on GitHub, so nothing stores a pull request closed without merging.
   Every GitHub action also comes from one shared account (spec 34 §1.2), so a close could not be
@@ -281,8 +285,8 @@ every group:**
   Requests the platform opens itself for unclaimed pull requests are `automation`, so they appear on no
   agent's record.
 
-Closing either gap would need a new record: a per-finding reopen event from compaction, or the PR
-stamp job recording a close. This phase adds neither.
+Closing either gap would need a new record. Compaction's per-finding reopen entry now exists but names
+no claimant, so it does not close the first; the second would need the PR stamp job recording a close.
 
 A delegation is then granted against a published record rather than on trust, and sampling and
 suspension (`suspend_below_agreement`) already turn a falling record into consequences.

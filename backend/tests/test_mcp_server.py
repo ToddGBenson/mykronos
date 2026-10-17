@@ -57,6 +57,8 @@ EXPECTED_TOOLS = {
     "finding",
     "lane_health",
     "scan_run",
+    "playbook",
+    "scorecard",
     "claim",
     "disposition",
     "accept",
@@ -217,6 +219,9 @@ EVERY_TOOL_CALL: list[tuple[str, dict[str, Any]]] = [
     ("finding", {"finding_id": "f1"}),
     ("lane_health", {"repo_id": "r1"}),
     ("scan_run", {"scan_run_id": "run-1"}),
+    ("playbook", {"kind": "lane_stalled"}),
+    ("scorecard", {}),
+    ("scorecard", {"family": "claude-opus-5.5", "instance": "abc12345"}),
     ("claim", {"finding_id": "f1"}),
     ("disposition", {"finding_id": "f1", "status": "false_positive", "reason": "x"}),
     ("accept", ACCEPT_ARGS),
@@ -265,6 +270,12 @@ async def test_every_path_a_tool_calls_is_a_route_the_api_serves() -> None:
              "offset": "50"},
         ),
         ("finding", {"finding_id": "f1"}, "/api/dashboard/findings/f1/record", {}),
+        ("playbook", {"kind": "lane_stalled"}, "/api/agent/playbooks/lane_stalled", {}),
+        ("scorecard", {}, "/api/agent/scorecard", {}),
+        ("scorecard", {"family": "claude-opus-5.5"}, "/api/agent/scorecard",
+         {"family": "claude-opus-5.5"}),
+        ("scorecard", {"family": "claude-opus-5.5", "instance": "abc12345"},
+         "/api/agent/scorecard", {"family": "claude-opus-5.5", "instance": "abc12345"}),
     ],
 )
 async def test_read_tools_call_their_route(
@@ -362,6 +373,38 @@ async def test_scan_run_reads_one_run_and_cannot_become_another_path() -> None:
     await _call(fake, "scan_run", {"scan_run_id": "../../agents/whoami"})
     assert fake.calls[0] == ("GET", "/api/dashboard/scan-runs/run-1")
     assert all(path.startswith("/api/dashboard/scan-runs/") for _, path in fake.calls)
+
+
+async def test_an_unknown_playbook_kind_comes_back_as_the_apis_404() -> None:
+    detail = "No playbook for kind 'nope'. Kinds: lane_dead, lane_stalled."
+    fake = FakeMykronos(
+        {("GET", "/api/agent/playbooks/nope"): httpx2.Response(404, json={"detail": detail})}
+    )
+    result = await _call(fake, "playbook", {"kind": "nope"})
+    assert result.is_error
+    assert detail in _text(result)
+    assert "HTTP 404" in _text(result)
+    assert len(fake.requests) == 1
+
+
+async def test_an_unloadable_playbooks_file_comes_back_as_the_apis_503() -> None:
+    detail = "The agent playbooks could not be loaded: agent-playbooks-v1.yaml: not found"
+    fake = FakeMykronos(
+        {("GET", "/api/agent/playbooks/lane_stalled"): httpx2.Response(
+            503, json={"detail": detail}
+        )}
+    )
+    result = await _call(fake, "playbook", {"kind": "lane_stalled"})
+    assert result.is_error
+    assert detail in _text(result)
+    assert "HTTP 503" in _text(result)
+
+
+async def test_a_playbook_kind_cannot_become_another_path() -> None:
+    fake = FakeMykronos()
+    await _call(fake, "playbook", {"kind": "../../agents/whoami"})
+    assert all(path.startswith("/api/agent/playbooks/") for _, path in fake.calls)
+    assert "%2F" in str(fake.requests[0].url)
 
 
 async def test_lane_health_reports_an_unreadable_ci_half_as_unknown() -> None:
