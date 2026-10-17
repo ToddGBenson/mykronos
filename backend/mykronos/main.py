@@ -255,7 +255,9 @@ async def _compaction_loop(app: FastAPI, interval: int) -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            result = await asyncio.to_thread(compact, app.state.catalog, app.state.buffer)
+            result = await asyncio.to_thread(
+                compact, app.state.catalog, app.state.buffer, db=app.state.db
+            )
             if result.total_rows:
                 logger.info(
                     "Compacted %s rows (%s inserted, %s updated) from %s segments",
@@ -749,7 +751,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await task
         # Final drain, so a clean shutdown leaves nothing sitting in the buffer.
         with suppress(Exception):
-            await asyncio.to_thread(compact, app.state.catalog, app.state.buffer)
+            await asyncio.to_thread(
+                compact, app.state.catalog, app.state.buffer, db=app.state.db
+            )
         app.state.db.close()
 
 

@@ -22,6 +22,7 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -38,6 +39,14 @@ from mykronos.lake.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The audit entry a compaction writes for each fixed finding it reopens
+#: (TheHub #60794). Not `finding.reopened`: that is a principal undoing a
+#: disposition, which the agent scorecard reads (spec 36 §6). A rescan undoes
+#: an observation, and crediting it to anyone would be a guess.
+REOPEN_ACTION = "finding.reopened_by_scan"
+#: Who the entry names. Automation, and it says so (spec 34 §1).
+REOPEN_ACTOR = "job:compaction"
 
 # Columns refreshed from the incoming row when a key already exists.
 # Everything absent from these lists is immutable after first write —
@@ -231,6 +240,8 @@ class CompactionResult:
     inserted: dict[str, int] = field(default_factory=dict)
     updated: dict[str, int] = field(default_factory=dict)
     reopened: list[str] = field(default_factory=list)
+    #: Per reopened finding: what the audit entry records beside its id.
+    reopened_detail: dict[str, dict[str, Any]] = field(default_factory=dict)
     segments_consumed: int = 0
     partitions_written: int = 0
     #: Partitions rewritten into one file because appends had fragmented them.
@@ -376,11 +387,20 @@ def _compact_table(
 
         if table == "findings":
             reopened = con.execute(
-                "SELECT part.finding_id FROM part "
+                "SELECT part.finding_id, part.repo_full_name, part.capability, "
+                "i.scan_run_id, part.resolved_at FROM part "
                 "JOIN incoming i ON i.finding_id = part.finding_id "
                 "WHERE part.status = 'fixed'"
             ).fetchall()
-            result.reopened.extend(str(r[0]) for r in reopened)
+            for finding_id, repo, capability, scan_run_id, resolved_at in reopened:
+                result.reopened.append(str(finding_id))
+                result.reopened_detail[str(finding_id)] = {
+                    "repo": repo,
+                    "capability": capability,
+                    "previous_status": "fixed",
+                    "resolved_at": resolved_at.isoformat() if resolved_at else None,
+                    "scan_run_id": scan_run_id,
+                }
 
         con.execute(
             f"UPDATE part SET {_UPDATE_SETS[table]} FROM incoming i WHERE part.{pk} = i.{pk}"
@@ -503,13 +523,53 @@ def consolidate_fragmented(
     return done
 
 
+def audit_reopened(db: Any, result: CompactionResult) -> int:
+    """One audit entry per finding the compaction reopened (TheHub #60794).
+
+    Written after the Parquet write is confirmed, as automation: a rescan saw
+    the finding again, and nobody is credited with the fix that did not hold.
+    The record only; nothing is measured from it (spec 36 §6). Returns the
+    number of entries written, which is `len(result.reopened)`.
+    """
+    if not result.reopened:
+        return 0
+    from mykronos.adminauth import ActorKind, Principal, Role, current_principal
+
+    token = current_principal.set(
+        Principal(actor=REOPEN_ACTOR, role=Role.VIEWER, kind=ActorKind.AUTOMATION)
+    )
+    try:
+        with db.session() as session:
+            for finding_id in result.reopened:
+                db.audit(
+                    session,
+                    actor=REOPEN_ACTOR,
+                    action=REOPEN_ACTION,
+                    entity_type="finding",
+                    entity_id=finding_id,
+                    **result.reopened_detail.get(finding_id, {}),
+                )
+    finally:
+        current_principal.reset(token)
+    return len(result.reopened)
+
+
 def compact(
     catalog: Catalog,
     buffer: WriteAheadBuffer,
     tables: list[str] | None = None,
+    *,
+    db: Any = None,
 ) -> CompactionResult:
     """Fold all sealed buffer segments into Parquet. Safe to run concurrently
-    with ingestion — new segments simply land in the next run."""
+    with ingestion — new segments simply land in the next run.
+
+    With `db`, each finding the run reopened gets an audit entry
+    (`audit_reopened`). The lake cannot share a transaction with the audit
+    log, so the entries follow the confirmed write; a failure to write them
+    is raised, not swallowed, because the count would then claim a record
+    that does not exist.
+    """
     result = CompactionResult()
     targets = tables or list(TABLES)
 
@@ -551,5 +611,7 @@ def compact(
     if result.reopened:
         # Feeds spec 11 retro signals once the Knowledge Store exists (Phase 5).
         logger.info("Findings reopened during compaction: %s", len(result.reopened))
+        if db is not None:
+            audit_reopened(db, result)
 
     return result

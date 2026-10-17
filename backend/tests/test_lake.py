@@ -8,9 +8,13 @@ from typing import Any
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect, select
 
-from mykronos.lake import Catalog
+from mykronos import cli
+from mykronos.db.models import AuditLogEntry
+from mykronos.lake import Catalog, WriteAheadBuffer, compact
 from mykronos.lake.catalog import sql_path
+from mykronos.lake.compaction import REOPEN_ACTION
 from mykronos.lake.tables import column_names
 from tests.conftest import (
     REPO,
@@ -262,6 +266,76 @@ class TestStatusTransitions:
         assert status == "open"
         assert resolved_at is None
         assert finding_id in result.reopened
+
+    def _two_fixed_findings_return(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog, run_compaction
+    ) -> set[str]:
+        payloads = [finding_payload(), finding_payload(code_snippet="os.system(cmd)")]
+        post_findings(client, auth, payloads)
+        run_compaction()
+        ids = {row[0] for row in catalog.query("SELECT finding_id FROM findings")}
+        assert len(ids) == 2
+        for finding_id in ids:
+            set_status(catalog, finding_id, "fixed")
+        post_findings(client, auth, payloads, scan_run_id="regression")
+        return ids
+
+    @staticmethod
+    def _reopen_entries(client: TestClient) -> list[AuditLogEntry]:
+        db = client.app.state.db  # type: ignore[attr-defined]
+        with db.session() as session:
+            rows = session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == REOPEN_ACTION)
+            ).scalars()
+            for row in (out := list(rows)):
+                session.expunge(row)
+            return out
+
+    def test_a_reopen_by_compaction_is_audited_per_finding_as_automation(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog,
+        buffer: WriteAheadBuffer, run_compaction
+    ) -> None:
+        """TheHub #60794: which findings reopened, not only how many. The
+        record only: no principal is credited with the fix (spec 36 §6)."""
+        ids = self._two_fixed_findings_return(client, auth, catalog, run_compaction)
+        db = client.app.state.db  # type: ignore[attr-defined]
+        tables_before = set(inspect(db.engine).get_table_names())
+
+        result = compact(catalog, buffer, db=db)
+
+        entries = self._reopen_entries(client)
+        assert set(result.reopened) == ids
+        assert sorted(e.entity_id for e in entries) == sorted(result.reopened)
+        for e in entries:
+            assert e.actor_kind == "automation"
+            assert e.actor == "job:compaction"
+            assert e.entity_type == "finding"
+            assert e.detail["previous_status"] == "fixed"
+            assert e.detail["scan_run_id"] == "regression"
+            assert e.detail["repo"] == REPO
+        assert set(inspect(db.engine).get_table_names()) == tables_before
+
+    def test_a_compaction_that_reopens_nothing_writes_nothing(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog,
+        buffer: WriteAheadBuffer
+    ) -> None:
+        post_findings(client, auth, [finding_payload()])
+        compact(catalog, buffer, db=client.app.state.db)  # type: ignore[attr-defined]
+        post_findings(client, auth, [finding_payload()], scan_run_id="rescan")
+        compact(catalog, buffer, db=client.app.state.db)  # type: ignore[attr-defined]
+        assert self._reopen_entries(client) == []
+
+    def test_the_cli_count_matches_the_entries_written(
+        self, client: TestClient, auth: dict[str, str], catalog: Catalog, settings: Any,
+        run_compaction, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._two_fixed_findings_return(client, auth, catalog, run_compaction)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+
+        assert cli.main(["compact"]) == 0
+
+        assert "reopened 2;" in capsys.readouterr().out
+        assert len(self._reopen_entries(client)) == 2
 
     @pytest.mark.parametrize("disposition", ["false_positive", "accepted_risk", "suppressed"])
     def test_human_dispositions_survive_a_rescan(

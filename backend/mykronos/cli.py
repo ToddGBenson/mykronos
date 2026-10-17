@@ -624,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "compact":
-            result = compact(catalog, buffer)
+            result = compact(catalog, buffer, db=db)
             print(
                 f"Consumed {result.segments_consumed} segment(s); "
                 f"inserted {sum(result.inserted.values())}, "

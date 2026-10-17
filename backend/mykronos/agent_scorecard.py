@@ -78,8 +78,9 @@ NOT_DERIVABLE: dict[str, tuple[str, str]] = {
         "No principal reports a finding fixed: `fixed` is an observation the reconciler "
         "records after two successful scans miss a finding, and the status route refuses "
         "it from anyone (spec 10 §2.2). When a fixed finding comes back, compaction flips "
-        "it to open and only logs a count (`CompactionResult.reopened`); nothing stores "
-        "which finding reopened or which change claimed to fix it. Dispositions an agent "
+        "it to open and audits which finding reopened (`finding.reopened_by_scan`, as "
+        "automation), but nothing stores which change claimed to fix it, so nobody can be "
+        "credited. Dispositions an agent "
         "made that were later reopened are measured instead: `dispositions.reopened`.",
     ),
     "pull_requests.closed_unmerged": (
