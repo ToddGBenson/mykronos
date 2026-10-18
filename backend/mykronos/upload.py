@@ -402,6 +402,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         triggered_by=resolve_triggered_by(args.triggered_by),
         pr_number=pr_number,
         workspace=workspace,
+        sbom_paths=tuple(Path(p) for p in (getattr(args, "sbom", None) or [])),
     )
 
     def _finding_payload(finding: FindingSubmission) -> dict[str, Any]:
@@ -638,6 +639,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-number", type=int, default=None)
     parser.add_argument("--workspace", default=".")
     parser.add_argument("--scan-run-id", default="")
+    # Atlas only (mykronos#322). Repeatable, most preferred first.
+    parser.add_argument(
+        "--sbom",
+        action="append",
+        default=[],
+        help="A CycloneDX SBOM of what this commit installs. Repeatable.",
+    )
     parser.add_argument("--severity-threshold", default="low", choices=[s.value for s in Severity])
     parser.add_argument(
         "--blocking",
