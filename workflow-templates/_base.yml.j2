@@ -121,6 +121,7 @@ jobs:
           # rendered. The action can also fall back to `github.action_ref`, but
           # that is empty inside a composite action, so it is not relied on.
           mykronos-ref: << mykronos_ref >>
+{%- block upload_extra_inputs %}{% endblock %}
 
 {# A capability with an aggregate record as well as findings hangs it here:
    Atlas writes per-dependency Finding rows through the upload action above and

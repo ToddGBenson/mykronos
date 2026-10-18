@@ -79,6 +79,9 @@ def onboarding(session: Session) -> RepoOnboarding:
         enabled_capabilities=[],
         default_branch="main",
         onboarded_by="tgb",
+        # Explicit: the column defaults to `concourse` (spec 03 §3a), and the
+        # installer refuses to write Actions workflows into such a repo (#13).
+        scanned_by="github_actions",
     )
     session.add(row)
     session.flush()
@@ -786,3 +789,24 @@ class TestGateOrdering:
         from mykronos.installer.installer import _gate_depends_on
 
         assert _gate_depends_on("sast", ["sast", "oracle"]) == []
+
+
+class TestNotScannedByActions:
+    """#13: a repository another CI scans gets no Actions workflows."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("scanned_by", ["concourse", "none"])
+    async def test_the_installer_refuses_and_says_how_to_change_it(
+        self, installer, github, onboarding, scanned_by
+    ) -> None:
+        onboarding.scanned_by = scanned_by
+        before = dict(github.repos[REPO].files)
+
+        with pytest.raises(InstallerError) as raised:
+            await installer.plan(onboarding, {"sast"})
+
+        message = str(raised.value)
+        assert repr(scanned_by) in message
+        assert f"PATCH /api/repos/{onboarding.id}" in message
+        assert '"scanned_by": "github_actions"' in message
+        assert github.repos[REPO].files == before

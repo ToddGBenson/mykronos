@@ -110,6 +110,28 @@ wrong the same way.
 true here now. A default that installs Actions workflows into a repository
 whose Actions were deliberately removed is a default that undoes a decision.
 
+**Install *and* resync honour it (#13).** The API never called the
+installer for a non-Actions repository, but the bulk resync (§6) read only
+`enabled_capabilities`, so a repository that had moved to Concourse got its
+Actions workflows restored on the next sweep and both CIs scanned and
+ingested every commit. The resync now skips any repository whose
+`scanned_by` is not `github_actions`, names it in the result
+(`not Actions-scanned N`, with a per-repo note), and makes no GitHub call
+for it. `WorkflowInstaller.plan` refuses the same repositories as a
+backstop.
+
+To mark a repository as not using the Actions target — the one call, by an
+admin; it records a fact and installs, removes or revokes nothing:
+
+    curl -X PATCH "http://127.0.0.1:8100/api/repos/<repo_id>" \
+      -H "X-Hub-Token: $GATE" -H "Authorization: Bearer $ADMIN" \
+      -H "Content-Type: application/json" \
+      -d '{"scanned_by": "concourse"}'
+
+`<repo_id>` is the onboarding id from `GET /api/repos`. Any Actions
+workflows already in the repository stay until someone deletes them; after
+this call no install or resync will put them back.
+
 **What this does *not* do is decide whether a capability is covered.**
 `scanned_by` records intent — which system is supposed to scan. Whether it
 actually does is a different question with a different answer, and spec 15

@@ -17,9 +17,24 @@ from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.installer import BRANCH_PREFIX
 from mykronos.installer.resync import RESYNC_BRANCH_PREFIX, resync_templates
 from tests.conftest import REPO
-from tests.test_portfolio_job import register
+from tests.test_portfolio_job import register as _register
 
 SAST_PATH = ".github/workflows/mykronos-sast.yml"
+
+
+def register(client, repo: str, *, scanned_by: str = "github_actions", **kwargs) -> str:
+    """An onboarded repo, scanned by Actions unless said otherwise.
+
+    The column defaults to `concourse` (spec 03 §3a), which the resync skips
+    (#13); every drift test here is about an Actions repository.
+    """
+    from mykronos.db.models import RepoOnboarding
+
+    repo_id = _register(client, repo, **kwargs)
+    with client.app.state.db.session() as session:
+        session.get(RepoOnboarding, repo_id).scanned_by = scanned_by
+        session.commit()
+    return repo_id
 
 
 @pytest.fixture
@@ -312,3 +327,54 @@ class TestThePullRequestBody:
         assert "edited by hand" in body
         assert "compares **content**" in body
         assert "never merges them" in body
+
+
+class TestNotScannedByActions:
+    """#13: keel moved its scans to Concourse. A resync that restored its
+    Actions workflows would have both builders scan and ingest every commit."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("scanned_by", ["concourse", "none"])
+    async def test_it_is_skipped_reported_and_never_written(
+        self, client, admin_auth, github, templates, scanned_by
+    ) -> None:
+        repo_id = register(client, REPO, capabilities=["sast"], scanned_by=scanned_by)
+        # A missing file would otherwise read as drift and open a pull request
+        # putting the workflow back.
+
+        result = await sweep(client, github, templates)
+
+        assert result.checked == 1
+        assert result.opened == []
+        assert result.not_actions == [REPO]
+        assert github.repos[REPO].pull_requests == []
+        note = result.repos[0].skipped_reason or ""
+        assert repr(scanned_by) in note
+        assert f"PATCH /api/repos/{repo_id}" in note
+        assert "not Actions-scanned 1" in result.summary()
+
+    @pytest.mark.anyio
+    async def test_dry_run_reports_the_skip_too(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        register(client, REPO, capabilities=["sast"], scanned_by="concourse")
+
+        result = await sweep(client, github, templates, dry_run=True)
+
+        assert result.not_actions == [REPO]
+        assert "scanned by 'concourse'" in (result.repos[0].skipped_reason or "")
+
+    @pytest.mark.anyio
+    async def test_an_actions_repo_beside_it_is_still_swept(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        other = "example-org/keel-like"
+        github.add_repo(other, files={"README.md": "# x"})
+        register(client, other, capabilities=["sast"], scanned_by="concourse")
+        register(client, REPO, capabilities=["sast"])
+
+        result = await sweep(client, github, templates)
+
+        assert result.not_actions == [other]
+        assert [r.repo_full_name for r in result.opened] == [REPO]
+        assert github.repos[other].pull_requests == []
