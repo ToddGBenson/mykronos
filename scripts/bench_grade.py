@@ -63,6 +63,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+# Builds and writes XML it generates; parses none, so there is no XXE input.
+# nosemgrep: use-defused-xml
 from xml.etree import ElementTree
 
 import yaml

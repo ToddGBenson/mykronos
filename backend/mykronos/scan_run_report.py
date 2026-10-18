@@ -34,6 +34,9 @@ import re
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+
+# Types and ParseError only; every parse goes through defusedxml below.
+# nosemgrep: use-defused-xml
 from xml.etree import ElementTree
 
 from defusedxml import ElementTree as SafeElementTree

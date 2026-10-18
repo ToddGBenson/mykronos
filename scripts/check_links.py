@@ -51,6 +51,8 @@ def junit(root: Path, broken: list[tuple[Path, str]], destination: Path) -> None
     link is a defect and it is not a vulnerability, and giving it a severity
     would put documentation drift into a security risk score.
     """
+    # Builds and writes XML it generates; parses none, so there is no XXE input.
+    # nosemgrep: use-defused-xml
     from xml.etree.ElementTree import Element, ElementTree, SubElement
 
     failures: dict[str, list[str]] = {}

@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import json
 from typing import Any
+
+# Types and ParseError only; every parse goes through defusedxml below.
+# nosemgrep: use-defused-xml
 from xml.etree import ElementTree
 
 from defusedxml import ElementTree as SafeElementTree
