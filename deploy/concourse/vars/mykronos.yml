@@ -8,7 +8,10 @@
 
 # Host IP, not a Docker name: garden task containers resolve through the public
 # servers set in compose and have never heard of `mykronos` or `minio`.
-mykronos-url: http://192.168.0.14:8100
+# 192.168.65.254 is Docker Desktop's host gateway, which reaches this
+# machine's loopback, so the services can publish on 127.0.0.1 (TheHub #60841;
+# see set-pipeline.ps1).
+mykronos-url: http://192.168.65.254:8100
 
 # The pinned uploader tag. `pin-check` is what notices when it goes stale;
 # moving it means moving it in set-pipeline.ps1 and here, in one commit.
@@ -24,6 +27,6 @@ scanned-branch: main
 # `weekly` resource is the only consumer.
 scan-timezone: America/Phoenix
 
-minio-endpoint: http://192.168.0.14:9000
-registry: 192.168.0.14:5000
-demo-host: 192.168.0.14
+minio-endpoint: http://192.168.65.254:9000
+registry: 192.168.65.254:5000
+demo-host: 192.168.65.254

@@ -11,8 +11,8 @@
 #
 # The tunnel's ingress already splits this hostname by path: /api, /webhooks,
 # /healthz and the docs to 8100, everything else to 3100. The frontend is
-# published on 127.0.0.1 only; the backend on all interfaces, because Concourse
-# task containers reach it by host IP (see its `ports:` below).
+# published on 127.0.0.1 only, and so is the backend: Concourse task containers
+# reach it through Docker Desktop's host gateway (see its `ports:` below).
 
 name: mykronos
 
@@ -32,13 +32,17 @@ services:
     cap_drop:
       - ALL
     ports:
-      # All interfaces, not loopback. Concourse task containers reach this by
-      # host IP -- they resolve through public DNS and have never heard of
-      # `host.docker.internal` -- so a loopback publish is invisible to the
-      # pipeline that feeds the lake. The perimeter gate protects it either
-      # way, and it is already reachable from the internet through the tunnel,
-      # so LAN exposure is strictly smaller than what is already true.
-      - "8100:8100"
+      # Loopback only (TheHub #60841). Consumers: cloudflared (127.0.0.1:8100),
+      # deploy.ps1 (127.0.0.1:8100), Concourse tasks (192.168.65.254:8100),
+      # TheHub's backend (host.docker.internal:8100); the frontend uses
+      # backend:8100 on the compose network. Concourse tasks resolve through
+      # public DNS and have never heard of `host.docker.internal`, so they
+      # dial Docker Desktop's host gateway by IP, 192.168.65.254, which lands
+      # on this machine's loopback. Measured 2026-10-18: a 127.0.0.1 publish
+      # answers there and refuses on the LAN address. Nothing on the LAN
+      # reached this anyway: the host firewall has denied 192.168.0.0/24 on
+      # this port since F-15.
+      - "127.0.0.1:8100:8100"
     environment:
       # Secrets come from --env-file, never from this file. The gate token,
       # the admin token and the webhook secret are all in backend/.env, which

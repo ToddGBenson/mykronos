@@ -186,7 +186,15 @@ try {
         # Host IP, not a Docker name: garden task containers resolve through
         # the public servers set in compose and have never heard of
         # `host.docker.internal` or `minio`. An IP needs no resolver.
-        "mykronos-url: http://192.168.0.14:8100",
+        #
+        # 192.168.65.254, not the LAN address 192.168.0.14 (TheHub #60841):
+        # it is the address Docker Desktop answers `host.docker.internal`
+        # with, and it lands on this machine's loopback. That is what lets
+        # 8100, 9000, 5000 and the TheHub ports publish on 127.0.0.1 and
+        # leave the LAN entirely. Measured 2026-10-18 from the worker's own
+        # network namespace: a service published on 127.0.0.1 answers on
+        # 192.168.65.254 and refuses on 192.168.0.14.
+        "mykronos-url: http://192.168.65.254:8100",
         # v4, cut for the pipeline standard (D-078), and the first bump made
         # *before* anything broke: pin-check named `mykronos.junit_stage` as
         # missing the moment the lanes started calling it. The two before it
@@ -236,16 +244,16 @@ try {
         "scan-timezone: America/Phoenix",
         # MinIO is on the compose network, so the task container reaches it by
         # service name rather than through the host.
-        "minio-endpoint: http://192.168.0.14:9000",
+        "minio-endpoint: http://192.168.65.254:9000",
         # Host IP for the same reason MinIO uses one: garden task containers
         # cannot resolve Docker service names.
-        "registry: 192.168.0.14:5000",
+        "registry: 192.168.65.254:5000",
         # The demo environment, rebuilt on the host by
         # deploy/demo/Invoke-DemoRebuild.ps1 because dockerd will not start
         # inside a task on this worker. Reached by host IP for the same
         # reason MinIO and the registry are: a garden task container cannot
         # resolve a Docker service name.
-        "demo-host: 192.168.0.14"
+        "demo-host: 192.168.65.254"
         # slack-webhook-url used to be written here. It is not any more: the
         # notifier posts through chat.postMessage with a bot token in an
         # Authorization header, which Vault can substitute, where a webhook's
