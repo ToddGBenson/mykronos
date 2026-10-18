@@ -33,6 +33,8 @@ from mykronos import image_provenance
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 from mykronos.fingerprint import image_repository
+from mykronos.image_provenance import RULE_ABSENT, RULE_MISMATCH
+from mykronos.schemas import FindingSubmission, Severity
 
 logger = logging.getLogger(__name__)
 
