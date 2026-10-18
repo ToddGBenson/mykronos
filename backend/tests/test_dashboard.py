@@ -2753,6 +2753,78 @@ class TestTheFindingRecord:
         assert out["fixable"] is False
         assert out["fixed_version"] is None
 
+    def _cve_finding(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> tuple[str, str]:
+        """A finding naming Heartbleed, with its NVD vector already fetched."""
+        from mykronos.db.models import ThreatIntelMatch
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={"capabilities": ["sast"]},
+            headers=admin_auth,
+        )
+        token = issue_token(client, REPO, CAPABILITY)
+        auth = {"Authorization": f"Bearer {token}"}
+        post_scan(client, auth, scan_run_id="run-cve")
+        post_findings(
+            client,
+            auth,
+            [finding_payload(rule_id="CVE-2014-0160", severity="high", symbol="a")],
+            scan_run_id="run-cve",
+        )
+        run_compaction()
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            session.add(
+                ThreatIntelMatch(
+                    cve_id="CVE-2014-0160",
+                    cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                )
+            )
+        finding_id = client.get(
+            f"/api/dashboard/repos/{repo_id}/findings", headers=admin_auth
+        ).json()["findings"][0]["finding_id"]
+        return repo_id, finding_id
+
+    def test_severity_here_names_who_stated_the_profile_and_when(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        """A lowered score is only as good as the statement behind it, so the
+        block says whose statement and how old it is (#60823)."""
+        repo_id, finding_id = self._cve_finding(client, admin_auth, run_compaction)
+        put = client.put(
+            f"/api/repos/{repo_id}/risk-profile",
+            json={"internet_facing": False},
+            headers=admin_auth,
+        )
+        assert put.status_code == 200, put.text
+
+        here = client.get(
+            f"/api/dashboard/findings/{finding_id}/record", headers=admin_auth
+        ).json()["severity_here"]
+
+        assert here["stated"] is True
+        assert here["environmental"] < here["base"]
+        assert any("attack vector is adjacent here" in r for r in here["because"])
+        assert here["stated_by"] == put.json()["updated_by"]
+        assert here["stated_by"]
+        assert here["stated_at"]
+
+    def test_severity_here_without_a_profile_names_nobody(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        _, finding_id = self._cve_finding(client, admin_auth, run_compaction)
+
+        here = client.get(
+            f"/api/dashboard/findings/{finding_id}/record", headers=admin_auth
+        ).json()["severity_here"]
+
+        assert here["stated"] is False
+        assert here["environmental"] == here["base"]
+        assert here["stated_by"] is None
+        assert here["stated_at"] is None
+
     def test_an_unknown_finding_is_404(
         self, client: TestClient, admin_auth: dict[str, str]
     ) -> None:

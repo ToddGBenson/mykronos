@@ -8561,6 +8561,10 @@ export interface components {
             stated: boolean;
             /** Because */
             because: string[];
+            /** Stated By */
+            stated_by?: string | null;
+            /** Stated At */
+            stated_at?: string | null;
         };
         /** SnoozeRequest */
         SnoozeRequest: {

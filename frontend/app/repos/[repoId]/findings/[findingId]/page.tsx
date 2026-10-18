@@ -313,11 +313,10 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
               {here.because.join(", ")}.
             </>
           ) : here.stated ? (
-            // Stated and unmoved is a real result, not a missing one.
-            <>
-              Unchanged despite what is known ({here.because.join(", ")}) — the
-              impact sub-score is already at its cap.
-            </>
+            // Stated and unmoved is a real result, not a missing one: the
+            // impact sub-score was already at its cap, or a stated fact could
+            // not make the flaw easier to exploit than its vector says.
+            <>Unchanged despite what is known ({here.because.join(", ")}).</>
           ) : (
             <>
               The same as the base score, because nothing has been stated about
@@ -327,6 +326,23 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
           )}
         </span>
       </div>
+      {here.stated ? (
+        // A lowered score is only as good as the statement behind it: whose
+        // statement, and how old (#60823).
+        <p className="border-t border-rule-soft px-3 py-1.5 text-[12px] text-ink-2">
+          From the risk profile, stated by{" "}
+          <span className="font-medium">
+            {here.stated_by ?? "nobody recorded"}
+          </span>
+          {here.stated_at ? (
+            <>
+              {" "}
+              <RelativeTime value={here.stated_at} />
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
       <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
         {here.vector}
       </p>

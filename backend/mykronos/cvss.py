@@ -16,6 +16,13 @@ says about data classification and business criticality.
 flaw on a service nothing can reach from outside is not network-exploitable
 here.
 
+**Exploitability modifiers only ever lower (D-106, amended 2026-10-17).** The
+standard lets MAV, MAC, MPR and MUI be *more* severe than the base metric. Here
+they come from statements about the system, and "this service is on the LAN"
+cannot make a flaw that needs physical access reachable from the LAN. So each
+of those four takes whichever of base and modified is less severe. Scope (MS)
+and the impact modifiers are left exactly as the standard has them.
+
 **Undefined means the base value, and that is the "assume the worst" rule.**
 Every modifier defaults to `X` — not defined — and the standard says an
 undefined modifier takes the base metric's value. So a repository with no
@@ -59,6 +66,16 @@ _RL = {"X": 1.0, "U": 1.0, "W": 0.97, "T": 0.96, "O": 0.95}
 _RC = {"X": 1.0, "C": 1.0, "R": 0.96, "U": 0.92}
 
 _BASE_KEYS = ("AV", "AC", "PR", "UI", "S", "C", "I", "A")
+
+#: The exploitability modifiers, each with its base metric and a table whose
+#: weights order its values by severity (higher weight, easier to exploit).
+#: PR's order is the same under either scope, so the unchanged table serves.
+_CAPPED = {
+    "mav": ("AV", _AV),
+    "mac": ("AC", _AC),
+    "mpr": ("PR", _PR_UNCHANGED),
+    "mui": ("UI", _UI),
+}
 _VECTOR = re.compile(r"^CVSS:3\.[01]/(?P<body>[A-Z]+:[A-Z]+(?:/[A-Z]+:[A-Z]+)*)$")
 
 
@@ -201,8 +218,12 @@ def score(vector: str, environment: Environment | None = None) -> Scored:
     base = base_score(metrics)
 
     def modified(key: str, fallback: str) -> str:
-        value = getattr(env, key)
-        return metrics[fallback] if value == "X" else value
+        value: str = getattr(env, key)
+        if value == "X":
+            return metrics[fallback]
+        if key in _CAPPED:
+            return _less_severe(key, metrics[fallback], value)
+        return value
 
     m_scope = modified("ms", "S")
     scope_changed = m_scope == "C"
@@ -262,19 +283,64 @@ _LABELS = {
     "mi": "integrity impact is {} here",
     "ma": "availability impact is {} here",
 }
+_CAPPED_NAMES = {
+    "mav": "attack vector",
+    "mac": "attack complexity",
+    "mpr": "privileges required",
+    "mui": "user interaction",
+}
 _WORDS = {
     "H": "high", "M": "medium", "L": "low", "N": "none",
     "A": "adjacent", "P": "physical", "R": "required", "U": "unchanged", "C": "changed",
 }
 
 
+def _less_severe(key: str, base: str, stated: str) -> str:
+    """The less severe of a base exploitability metric and its modifier.
+
+    An unknown stated value falls back to the base rather than raising: the
+    base is the "assume the worst" answer and never a discount.
+    """
+    _, table = _CAPPED[key]
+    if stated not in table:
+        return base
+    return stated if table[stated] < table[base] else base
+
+
+#: Attack Vector's letters mean places, not levels: `MAV:L` is *local*, and
+#: reading it as "low" told the reader the opposite of a network flaw made
+#: harder to reach.
+_AV_WORDS = {"N": "network", "A": "adjacent", "L": "local", "P": "physical"}
+
+
+def _word(value: str, field: str = "") -> str:
+    if field == "mav":
+        return _AV_WORDS.get(value, value)
+    return _WORDS.get(value, value)
+
+
 def _because(env: Environment, metrics: dict[str, str]) -> tuple[str, ...]:
-    """Which stated facts moved the score, in words somebody can check."""
-    reasons = [
-        template.format(_WORDS.get(getattr(env, field), getattr(env, field)))
-        for field, template in _LABELS.items()
-        if getattr(env, field) != "X"
-    ]
+    """Which stated facts moved the score, in words somebody can check.
+
+    A capped exploitability modifier says so. "Attack vector is local here"
+    beside an unmoved score reads as the arithmetic ignoring a fact; it did
+    not, the fact just cannot make the flaw easier to reach than it is.
+    """
+    reasons: list[str] = []
+    for field, template in _LABELS.items():
+        stated = getattr(env, field)
+        if stated == "X":
+            continue
+        if field in _CAPPED:
+            base_key, _ = _CAPPED[field]
+            used = _less_severe(field, metrics[base_key], stated)
+            if used != stated:
+                reasons.append(
+                    f"{_CAPPED_NAMES[field]} stated as {_word(stated, field)}, kept at the base "
+                    f"value, {_word(used, field)}"
+                )
+                continue
+        reasons.append(template.format(_word(stated, field)))
     return tuple(reasons)
 
 
@@ -316,8 +382,11 @@ def environment_for(
 
     **`internet_facing=False` is the one that pays for the whole feature.** A
     network-exploitable flaw on a service nothing outside can reach is not
-    network-exploitable here, and that is `MAV:L` — a real reduction, on a
-    stated fact, attributable to whoever stated it.
+    network-exploitable here. It is still reachable from every other machine
+    on the network, which is `MAV:A` (adjacent), not `MAV:L` (D-106, amended
+    2026-10-17): "not on the internet" says nothing about needing a shell on
+    the host. A real reduction, on a stated fact, attributable to whoever
+    stated it, and capped so it never raises an `AV:L` or `AV:P` flaw.
 
     **`internet_facing=True` sets nothing.** The base vector already says
     `AV:N` where the flaw is network-exploitable, and re-asserting it would be
@@ -331,7 +400,7 @@ def environment_for(
     fields: dict[str, str] = {}
 
     if internet_facing is False:
-        fields["mav"] = "L"
+        fields["mav"] = "A"
 
     if data_classification:
         requirement = _CONFIDENTIALITY.get(data_classification.strip().lower())
