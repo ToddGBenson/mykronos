@@ -1961,24 +1961,24 @@ def render(briefing: Briefing) -> str:
             "  Repair the lane named after 'behind'; these follow on their own.",
             "",
         ]
-        for held in sorted(briefing.blocked, key=lambda b: (b.pipeline, b.root, b.job)):
-            days = held.days_blocked
+        for gated in sorted(briefing.blocked, key=lambda b: (b.pipeline, b.root, b.job)):
+            days = gated.days_blocked
             when = (
-                f" since {held.since:%Y-%m-%d} ({days:.0f} days)"
-                if held.since and days is not None
+                f" since {gated.since:%Y-%m-%d} ({days:.0f} days)"
+                if gated.since and days is not None
                 else ""
             )
-            via = "" if held.blocked_by == held.root else f", via {held.blocked_by}"
+            via = "" if gated.blocked_by == gated.root else f", via {gated.blocked_by}"
             own = (
-                f"its own last build {held.last_status}"
-                if held.last_status
+                f"its own last build {gated.last_status}"
+                if gated.last_status
                 else "it has never finished a build"
             )
-            lines.append(f"  {held.pipeline}/{held.job}")
-            lines.append(f"      behind {held.root} ({held.root_state}){when}{via}")
+            lines.append(f"  {gated.pipeline}/{gated.job}")
+            lines.append(f"      behind {gated.root} ({gated.root_state}){when}{via}")
             lines.append(f"      did not run — {own}")
-            if held.build_url:
-                lines.append(f"      {held.build_url}")
+            if gated.build_url:
+                lines.append(f"      {gated.build_url}")
         lines.append("")
     elif briefing.blocked_unknown:
         lines += [
