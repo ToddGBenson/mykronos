@@ -39,6 +39,9 @@ import argparse
 import pathlib
 import re
 import sys
+
+# Builds and writes XML it generates; parses none, so there is no XXE input.
+# nosemgrep: use-defused-xml
 import xml.etree.ElementTree as ET
 
 #: Enough of the tail to see what failed, bounded so one runaway log cannot

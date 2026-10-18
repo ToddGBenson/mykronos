@@ -31,6 +31,8 @@ other than the things that have actually gone wrong here.
 
 from __future__ import annotations
 
+# Types and ParseError only; every parse goes through defusedxml below.
+# nosemgrep: use-defused-xml
 from xml.etree import ElementTree
 
 from defusedxml import ElementTree as SafeElementTree
