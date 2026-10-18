@@ -40,7 +40,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import inventory, netassess
+from mykronos import environment, inventory, netassess
 from mykronos.adminauth import ActorKind, Principal, Role, current_principal
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
@@ -666,6 +666,10 @@ async def ingest_findings(
     inherit_decisions(request.app.state.catalog, rows, predecessors)
 
     request.app.state.buffer.append("findings", rows)
+    # Rescored after the next compaction puts these rows in the lake
+    # (TheHub #60827); the flag is debounced, so a scan's many batches are
+    # one rescore.
+    environment.mark_dirty(token.repo_full_name, "finding ingest")
 
     # One summary per batch, never one per finding (spec 16 §14). A scan that
     # uploads four hundred criticals is one event a person needs to know about;

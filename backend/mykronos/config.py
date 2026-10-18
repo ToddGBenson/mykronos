@@ -395,6 +395,16 @@ class Settings(BaseSettings):
             "`POST /repos/{id}/threat-model/sync` re-reads one on demand."
         ),
     )
+    environment_rescore_interval_seconds: int = Field(
+        default=86_400,
+        ge=300,
+        description=(
+            "How often every repository's environmental CVSS scores are "
+            "re-resolved from scratch (TheHub #60827). Daily, and required: the "
+            "event triggers cover writes, but only a timed run notices a fact "
+            "that lapsed, and a lapsed lowering fact must raise the score back."
+        ),
+    )
     exposure_probe_interval_seconds: int = Field(
         default=21_600,
         ge=300,
@@ -525,6 +535,17 @@ class Settings(BaseSettings):
             "its loader treats absence as a real state rather than an error - "
             "but it was absent for the same wrong reason rather than the "
             "intended one."
+        ),
+    )
+
+    environment_map_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "environment-map-v1.yaml",
+        description=(
+            "Environmental CVSS mapping judgements (TheHub #60827): which "
+            "statement about the system maps to which CVSS 3.1 metric, and how "
+            "long a fact counts. Reviewed as governance policy, like the STRIDE "
+            "map; the same packaging trap as `stride_map_path`."
         ),
     )
 

@@ -217,6 +217,21 @@ def score(vector: str, environment: Environment | None = None) -> Scored:
     env = environment or Environment()
     base = base_score(metrics)
 
+    temporal = (
+        _E[metrics.get("E", "X")]
+        * _RL[metrics.get("RL", "X")]
+        * _RC[metrics.get("RC", "X")]
+    )
+    if not env.stated:
+        # Nothing stated is the base (or temporal) score, exactly. Not left to
+        # the environmental formula: under a changed scope CVSS 3.1's modified
+        # impact (`(MISS x 0.9731 - 0.02)^13`, capped at 0.915) is not the base
+        # impact, and 80 of the 2,592 base vectors scored 0.1 *above* their
+        # base with every modifier `X` (TheHub #60827's exhaustive property
+        # test found it; e.g. AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H is 9.6 and
+        # came out 9.7). An unstated environment must never move the number.
+        return Scored(base=base, environmental=_roundup(base * temporal), because=())
+
     def modified(key: str, fallback: str) -> str:
         value: str = getattr(env, key)
         if value == "X":
@@ -260,11 +275,6 @@ def score(vector: str, environment: Environment | None = None) -> Scored:
     if scope_changed:
         combined *= 1.08
 
-    temporal = (
-        _E[metrics.get("E", "X")]
-        * _RL[metrics.get("RL", "X")]
-        * _RC[metrics.get("RC", "X")]
-    )
     environmental = _roundup(_roundup(min(combined, 10.0)) * temporal)
 
     return Scored(base=base, environmental=environmental, because=_because(env, metrics))
