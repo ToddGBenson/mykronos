@@ -613,6 +613,10 @@ class ClassSummary:
     #: upgrade to, which is the difference between a day of work and a
     #: dispositioning pass (B-026).
     no_fix_available: int = 0
+    #: (image, base OS, open findings) for each image on an end-of-life base
+    #: OS (#712). Those findings will never get a package fix, which is a
+    #: different instruction from "no fix yet": the image needs a newer base.
+    eol_images: list[tuple[str, str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -1485,6 +1489,28 @@ def _concentration(
     return [(_short(str(name)), int(count)) for name, count in rows]
 
 
+def _eol_images(
+    catalog: Catalog, *, asset_id: str | None = None
+) -> list[tuple[str, str, int]]:
+    """Open container findings the adapter tagged `base_os_eol`, per image (#712)."""
+    if not catalog.all_files("findings"):
+        return []
+    scope = "" if asset_id is None else " AND asset_id = ?"
+    rows = catalog.query(
+        f"""
+        SELECT coalesce(json_extract_string(raw_finding_json, '$.image'), '(unknown image)'),
+               coalesce(json_extract_string(raw_finding_json, '$.base_os'), 'an end-of-life OS'),
+               count(*)
+        FROM findings
+        WHERE status = 'open' AND capability = 'containers'
+          AND json_extract_string(raw_finding_json, '$.base_os_eol') = 'true'{scope}
+        GROUP BY 1, 2 ORDER BY 3 DESC, 1
+        """,
+        [asset_id] if asset_id is not None else None,
+    )
+    return [(str(image), str(base), int(n)) for image, base, n in rows]
+
+
 def _short(identifier: str) -> str:
     """The part of a rule id a person would say out loud.
 
@@ -1584,6 +1610,9 @@ def build(
             concentrated_in=_concentration(catalog, capability, asset_id=asset_id),
             action=CLASS_ACTIONS.get(capability),
             no_fix_available=no_fix.get(capability, 0),
+            eol_images=(
+                _eol_images(catalog, asset_id=asset_id) if capability == "containers" else []
+            ),
         )
         for capability, count in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
@@ -2163,6 +2192,16 @@ def render(briefing: Briefing) -> str:
             lines.append(
                 f"        {entry.no_fix_available} of these have no published fix — "
                 "nothing to upgrade to."
+            )
+        for image, base, count in entry.eol_images:
+            lines += textwrap.wrap(
+                f"{image}: {count} finding(s) will never get a package fix — "
+                f"{base} is end-of-life; the image needs a newer base.",
+                72,
+                initial_indent="        ",
+                subsequent_indent="          ",
+                break_long_words=False,
+                break_on_hyphens=False,
             )
         if entry.action:
             lines.append(f"        → {entry.action.method} {entry.action.path}")
