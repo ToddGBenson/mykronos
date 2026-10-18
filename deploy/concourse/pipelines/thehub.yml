@@ -1890,6 +1890,8 @@ jobs:
         params:
           <<: *mykronos_env
           PIP_CACHE_DIR: /pipcache
+          # #358: a missing node is a failure, not a skip (see the install).
+          REQUIRE_NODE: "1"
         # A build that hangs must fail rather than occupy a worker. One ran for
         # 47 minutes and was still going when it was killed by hand; nothing in
         # the pipeline would ever have stopped it, and `unit` gates build,
@@ -1950,6 +1952,19 @@ jobs:
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git build-essential >/dev/null
+
+                # #358: node, because python:3.14-slim has none and TheHub's
+                # behavioural JS tests (sw.js, the tile renderers, the sync
+                # queue) skip on `shutil.which("node") is None` - so this lane
+                # reported green on tests it never ran. Debian's own `nodejs`
+                # (trixie: 20.x) rather than a downloaded tarball: it comes
+                # from the same signed archive as everything else installed
+                # here, so there is no second checksum to keep current. The
+                # tests drive plain ES modules and need nothing newer.
+                # REQUIRE_NODE=1 (params above) turns that skip into a failure
+                # once TheHub honours it; until then it is inert.
+                apt-get install -y -qq nodejs >/dev/null
+                echo "node $(node --version)"
 
                 # Searched one level down as well as at the root. TheHub keeps
                 # its dependencies in backend/requirements.txt and its tests in
