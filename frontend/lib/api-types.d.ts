@@ -5236,6 +5236,39 @@ export interface components {
             has_reason: boolean;
         };
         /**
+         * EnvironmentalFactOut
+         * @description One statement about one CVSS metric and what became of it (#60827).
+         */
+        EnvironmentalFactOut: {
+            /** Metric */
+            metric: string;
+            /** Value */
+            value: string;
+            /** Direction */
+            direction: string;
+            /** Source Kind */
+            source_kind: string;
+            /** Source Id */
+            source_id: string;
+            /** Tier */
+            tier: string;
+            /** Asserted By */
+            asserted_by: string;
+            /** Verified At */
+            verified_at?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Applied */
+            applied: boolean;
+            /** Not Applied Reason */
+            not_applied_reason?: string | null;
+            /**
+             * Because
+             * @default
+             */
+            because: string;
+        };
+        /**
          * EstateOut
          * @description What exists against what is watched (B-051).
          *
@@ -8671,6 +8704,15 @@ export interface components {
             stated_by?: string | null;
             /** Stated At */
             stated_at?: string | null;
+            /**
+             * Facts
+             * @default []
+             */
+            facts: components["schemas"]["EnvironmentalFactOut"][];
+            /** Effective Severity */
+            effective_severity?: string | null;
+            /** Computed At */
+            computed_at?: string | null;
         };
         /** SnoozeRequest */
         SnoozeRequest: {
