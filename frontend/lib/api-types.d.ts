@@ -68,6 +68,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/control-observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Control Observations
+         * @description Machine-collected evidence about controls (TheHub #60826).
+         *
+         *     Authenticated exactly as `/netassess` and under the same `network` grant:
+         *     an observation can lower a finding's environmental score (S5), so writing
+         *     one is a capability somebody granted, not a side effect of holding any
+         *     token for the repository. The repository comes from the token (spec 05
+         *     §4); there is no field in which to name another.
+         *
+         *     Two shapes, one batch: `observations` a collector has already judged (the
+         *     LAN wrapper, `mykronos.lan_scan`), and/or a `host_document` the host
+         *     collector read and this server judges (`control_observations.
+         *     from_host_document`) - the split `host_controls` makes, so the judging is
+         *     in Python under test. A document that resolves nothing still produces
+         *     `unknown` rows, never a pass. The batch is validated whole and stored
+         *     whole, with one audit entry.
+         *
+         *     Registered before the `/{capability}` catch-all, which would otherwise
+         *     answer this path with a 422.
+         */
+        post: operations["ingest_control_observations_api_ingest_control_observations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/lane-failure": {
         parameters: {
             query?: never;
@@ -1958,6 +1995,26 @@ export interface paths {
          *     repository describes code that is not the code serving traffic.
          */
         get: operations["deployments_page_api_dashboard_deployments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/control-observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Control Observations
+         * @description The latest observation per (subject, assertion) for one repository.
+         */
+        get: operations["repo_control_observations_api_dashboard_repos__repo_id__control_observations_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4634,6 +4691,158 @@ export interface components {
             observed_at: string;
             /** Regression */
             regression: boolean;
+        };
+        /** ControlObservationAccepted */
+        ControlObservationAccepted: {
+            /** Accepted */
+            accepted: number;
+            /** By State */
+            by_state?: {
+                [key: string]: number;
+            };
+            /**
+             * Evidence
+             * @default 0
+             */
+            evidence: number;
+        };
+        /**
+         * ControlObservationBatch
+         * @description What a collector posts: observations it judged, and/or the host
+         *     collector's raw document for the server to judge.
+         */
+        ControlObservationBatch: {
+            /**
+             * Collector
+             * @description Who collected this, e.g. `Publish-ControlObservations.ps1@HOST`.
+             */
+            collector: string;
+            /** Observations */
+            observations?: components["schemas"]["ControlObservationIn"][];
+            /**
+             * Host Document
+             * @description `mykronos.host-observations/1` from deploy/concourse/Publish-ControlObservations.ps1, translated server-side.
+             */
+            host_document?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Run Context
+             * @description Recorded in the audit entry, e.g. a LAN scan's authorization record.
+             */
+            run_context?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * ControlObservationIn
+         * @description One machine-collected fact about a control (TheHub #60826).
+         *
+         *     The vocabularies are `mykronos.control_observations`' and a test pins the
+         *     two together. `state` uses host_controls' five states; only `pass` and
+         *     `fail` are evidence, and `pass` means the assertion is TRUE - a
+         *     `port_published` that passes is a published port.
+         */
+        ControlObservationIn: {
+            /**
+             * Subject
+             * @description `surface:<id>` | `control:<id>` | `host:port` | `hostname`.
+             */
+            subject: string;
+            /**
+             * Assertion
+             * @enum {string}
+             */
+            assertion: "port_published" | "anonymous_401" | "header_csp" | "header_hsts" | "bound_loopback" | "firewall_scope" | "ingress_published";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pass" | "fail" | "unknown" | "not_evidence" | "not_measured";
+            /**
+             * Vantage
+             * @description Where the collector stood: internet | lan | host.
+             * @enum {string}
+             */
+            vantage: "internet" | "lan" | "host";
+            /** Tool */
+            tool: string;
+            /**
+             * Tool Version
+             * @default
+             */
+            tool_version: string;
+            /**
+             * Collected At
+             * Format: date-time
+             */
+            collected_at: string;
+            /**
+             * Raw Ref
+             * @description An `/api/ingest/raw` reference, if archived.
+             * @default
+             */
+            raw_ref: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            };
+            /** Surface Id */
+            surface_id?: string | null;
+            /** Control Id */
+            control_id?: string | null;
+        };
+        /** ControlObservationOut */
+        ControlObservationOut: {
+            /** Id */
+            id: string;
+            /** Subject */
+            subject: string;
+            /** Surface Id */
+            surface_id: string | null;
+            /** Control Id */
+            control_id: string | null;
+            /** Assertion */
+            assertion: string;
+            /** State */
+            state: string;
+            /** Vantage */
+            vantage: string;
+            /** Tool */
+            tool: string;
+            /** Tool Version */
+            tool_version: string;
+            /**
+             * Collected At
+             * Format: date-time
+             */
+            collected_at: string;
+            /** Raw Ref */
+            raw_ref: string;
+            /** Collector */
+            collector: string;
+            /** Detail */
+            detail: string;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Fresh */
+            fresh: boolean;
+            /** Is Evidence */
+            is_evidence: boolean;
+        };
+        /** ControlObservationsOut */
+        ControlObservationsOut: {
+            /** Observations */
+            observations: components["schemas"]["ControlObservationOut"][];
+            /** Fresh Days */
+            fresh_days: number;
         };
         /**
          * ControlOut
@@ -9010,6 +9219,32 @@ export interface components {
             /** Packages */
             packages: components["schemas"]["VulnerablePackageOut"][];
         };
+        /**
+         * SurfaceContradictionOut
+         * @description A fresh observation saying this surface's exposure claim is wrong
+         *     (`surfaces.CONTRADICTED_BY`, TheHub #60826).
+         */
+        SurfaceContradictionOut: {
+            /** Source */
+            source: string;
+            /** Assertion */
+            assertion: string;
+            /** Subject */
+            subject: string;
+            /** Vantage */
+            vantage: string;
+            /** Tool */
+            tool: string;
+            /** Collector */
+            collector: string;
+            /**
+             * Collected At
+             * Format: date-time
+             */
+            collected_at: string;
+            /** Detail */
+            detail: string;
+        };
         /** SurfaceOut */
         SurfaceOut: {
             /** Id */
@@ -9063,6 +9298,8 @@ export interface components {
             read_only: boolean;
             /** Manifest Key */
             manifest_key?: string | null;
+            /** Contradicted By */
+            contradicted_by?: components["schemas"]["SurfaceContradictionOut"][];
         };
         /** SurfaceRequest */
         SurfaceRequest: {
@@ -9865,6 +10102,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NetassessAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_control_observations_api_ingest_control_observations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlObservationBatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlObservationAccepted"];
                 };
             };
             /** @description Validation Error */
@@ -12056,6 +12326,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeploymentsOut"];
+                };
+            };
+        };
+    };
+    repo_control_observations_api_dashboard_repos__repo_id__control_observations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlObservationsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

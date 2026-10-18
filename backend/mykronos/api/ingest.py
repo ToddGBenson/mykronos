@@ -40,7 +40,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import inventory, netassess
+from mykronos import control_observations, inventory, netassess
 from mykronos.adminauth import ActorKind, Principal, Role, current_principal
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
@@ -75,6 +75,8 @@ from mykronos.schemas import (
     Capability,
     CheckRunAccepted,
     CheckRunReport,
+    ControlObservationAccepted,
+    ControlObservationBatch,
     FindingBatch,
     FindingStatus,
     HealthResponse,
@@ -405,6 +407,79 @@ async def ingest_netassess(
                 max_age_days=0,
             ),
         ),
+    )
+
+
+@router.post("/control-observations", response_model=ControlObservationAccepted)
+async def ingest_control_observations(
+    request: Request, body: ControlObservationBatch, token: TokenDep
+) -> ControlObservationAccepted:
+    """Machine-collected evidence about controls (TheHub #60826).
+
+    Authenticated exactly as `/netassess` and under the same `network` grant:
+    an observation can lower a finding's environmental score (S5), so writing
+    one is a capability somebody granted, not a side effect of holding any
+    token for the repository. The repository comes from the token (spec 05
+    §4); there is no field in which to name another.
+
+    Two shapes, one batch: `observations` a collector has already judged (the
+    LAN wrapper, `mykronos.lan_scan`), and/or a `host_document` the host
+    collector read and this server judges (`control_observations.
+    from_host_document`) - the split `host_controls` makes, so the judging is
+    in Python under test. A document that resolves nothing still produces
+    `unknown` rows, never a pass. The batch is validated whole and stored
+    whole, with one audit entry.
+
+    Registered before the `/{capability}` catch-all, which would otherwise
+    answer this path with a 422.
+    """
+    _require_capability(token, Capability.NETWORK.value)
+
+    batch = [
+        control_observations.Observed(**item.model_dump()) for item in body.observations
+    ]
+    if body.host_document is not None:
+        batch.extend(control_observations.from_host_document(body.host_document))
+    if not batch:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "Nothing to record. A collector that resolved nothing posts `unknown` "
+                "observations saying so; an empty batch is no run at all."
+            ),
+        )
+
+    db = request.app.state.db
+    with db.session() as session:
+        try:
+            rows = control_observations.record(
+                session, token.repo_full_name, batch, collector=body.collector
+            )
+        except control_observations.ObservationError as exc:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from None
+        counts = control_observations.by_state(rows)
+        db.audit(
+            session,
+            actor=f"ingest:{token.repo_full_name}",
+            action="control_observation.ingested",
+            entity_type="control_observation_batch",
+            entity_id=rows[0].id,
+            collector=body.collector,
+            accepted=len(rows),
+            by_state=counts,
+            assertions=sorted({r.assertion for r in rows}),
+            vantages=sorted({r.vantage for r in rows}),
+            run_context=body.run_context,
+        )
+        session.commit()
+
+    return ControlObservationAccepted(
+        accepted=len(rows),
+        by_state=counts,
+        evidence=sum(counts.get(s, 0) for s in control_observations.EVIDENCE_STATES),
     )
 
 

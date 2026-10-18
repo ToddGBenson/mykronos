@@ -14,6 +14,7 @@ import {
   selectorsFromInputs,
   type SelectorKind,
 } from "@/lib/selectors";
+import { contradictionLine, contradictionTitle } from "@/lib/surface-contradictions";
 
 /**
  * Assets, entry points and trust boundaries (B-029).
@@ -162,6 +163,7 @@ function SurfaceRow({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const contradicted = row.contradicted_by ?? [];
 
   async function withdraw() {
     setError(null);
@@ -195,6 +197,11 @@ function SurfaceRow({
       >
         {row.exposure}
       </span>
+      {contradicted.length > 0 ? (
+        <Pill tone="critical" title={contradictionTitle(row.exposure, contradicted)}>
+          contradicted
+        </Pill>
+      ) : null}
       {showSensitivity ? (
         <span className="font-mono text-[11px] text-ink-2">{row.sensitivity}</span>
       ) : null}
@@ -231,6 +238,13 @@ function SurfaceRow({
       )}
       <SelectorLine row={row} />
       {error ? <span className="text-[11px] text-critical">{error}</span> : null}
+      {contradicted.length > 0 ? (
+        <ul className="basis-full pl-3 font-mono text-[11px] text-critical">
+          {contradicted.map((c) => (
+            <li key={`${c.assertion}:${c.subject}`}>observed: {contradictionLine(c)}</li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

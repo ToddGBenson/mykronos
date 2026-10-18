@@ -100,6 +100,10 @@ class Answer:
     content_type: str = ""
     body: str = ""
     error: str = ""
+    #: Response headers, names lower-cased. Kept so the control observations
+    #: (`control_observations`) can read CSP and HSTS from the responses the
+    #: probe already fetched rather than asking again.
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 def _json(answer: Answer | None) -> Any:
@@ -220,14 +224,130 @@ async def probe_endpoint(
                 answers[path] = Answer(status=None, error=str(exc))
                 errors.append(f"{path}: {scrub(str(exc))}")
                 continue
+            headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
             answers[path] = Answer(
                 status=response.status_code,
-                content_type=str(response.headers.get("content-type", "")),
+                content_type=headers.get("content-type", ""),
                 body=response.text[:4_000_000],
+                headers=headers,
             )
     if all(a.status is None for a in answers.values()):
         return UNREACHABLE, answers, f"{scrub(url)} could not be reached: " + "; ".join(errors[:2])
     return PROBED, answers, ""
+
+
+#: What the sweep reports itself as on a ControlObservation.
+OBSERVATION_TOOL = "mykronos-exposure"
+OBSERVATION_COLLECTOR = "job:exposure"
+
+
+def control_observations(
+    url: str, status: str, answers: dict[str, Answer]
+) -> list[Any]:
+    """The probe's answers as ControlObservations (TheHub #60826). Pure.
+
+    Read from the responses already fetched - nothing new is asked. All four
+    are `internet` vantage: the probe refuses a hostname that resolves locally
+    (`RESOLVES_LOCALLY`), so what it reached it reached through public DNS.
+
+    * `anonymous_401` (hostname): pass if every answer was 401; fail if any
+      was 2xx (something was served to an anonymous visitor); otherwise
+      unknown - a redirect or a 404 is neither a refusal nor a page.
+    * `header_csp` / `header_hsts` (hostname): pass if every answer carries an
+      enforced header, fail if any lacks it. Report-only CSP is not a policy.
+      HSTS over plain http cannot apply, so it fails.
+    * `port_published` (hostname:port): pass if anything answered. Never fail:
+      unreachability is not observable (`surfaces.CONTRADICTED_BY`).
+
+    A probe that reached nothing records all four as unknown, never pass.
+    """
+    from mykronos.control_observations import Observed
+
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        port = 443 if parts.scheme == "https" else 80
+    now = utcnow()
+    answered = {p: a for p, a in answers.items() if a.status is not None}
+
+    def make(subject: str, assertion: str, state: str, detail: str) -> Observed:
+        return Observed(
+            subject=subject,
+            assertion=assertion,
+            state=state,
+            vantage="internet",
+            tool=OBSERVATION_TOOL,
+            collected_at=now,
+            detail=detail,
+        )
+
+    if status != PROBED or not answered:
+        why = f"The probe reached nothing ({status}); nothing was observed."
+        return [
+            make(host, "anonymous_401", "unknown", why),
+            make(host, "header_csp", "unknown", why),
+            make(host, "header_hsts", "unknown", why),
+            make(f"{host}:{port}", "port_published", "unknown", why),
+        ]
+
+    statuses = {p: int(a.status or 0) for p, a in answered.items()}
+    served = sorted(p for p, code in statuses.items() if 200 <= code < 300)
+    listing = ", ".join(f"{p} {code}" for p, code in sorted(statuses.items()))
+    if served:
+        gate = make(
+            host, "anonymous_401", "fail", f"Served without credentials: {', '.join(served)}."
+        )
+    elif all(code == 401 for code in statuses.values()):
+        gate = make(host, "anonymous_401", "pass", f"Every anonymous GET answered 401 ({listing}).")
+    else:
+        gate = make(
+            host,
+            "anonymous_401",
+            "unknown",
+            f"Neither refused nor served: {listing}.",
+        )
+
+    def header(assertion: str, name: str, applies: bool, why_not: str) -> Observed:
+        if not applies:
+            return make(host, assertion, "fail", why_not)
+        missing = sorted(p for p, a in answered.items() if not a.headers.get(name, "").strip())
+        if missing:
+            return make(host, assertion, "fail", f"No {name} on: {', '.join(missing)}.")
+        return make(host, assertion, "pass", f"{name} on every answer ({len(answered)}).")
+
+    return [
+        gate,
+        header("header_csp", "content-security-policy", True, ""),
+        header(
+            "header_hsts",
+            "strict-transport-security",
+            parts.scheme == "https",
+            "Served over plain http, where Strict-Transport-Security cannot apply.",
+        ),
+        make(
+            f"{host}:{port}",
+            "port_published",
+            "pass",
+            f"Answered over the internet path: {listing}.",
+        ),
+    ]
+
+
+def record_observations(db: Any, endpoint: Any, observed: list[Any]) -> None:
+    """Store the sweep's observations under the endpoint's repository.
+
+    An endpoint registered without a repository has nowhere to file them, and
+    filing them under a guess would put evidence on the wrong threat model.
+    """
+    from mykronos import control_observations as co
+
+    if not endpoint.repo_full_name or not observed:
+        return
+    with db.session() as session:
+        co.record(session, endpoint.repo_full_name, observed, collector=OBSERVATION_COLLECTOR)
+        session.commit()
 
 
 def validate_url(url: str) -> str:
@@ -294,6 +414,11 @@ async def run_sweep(db: Any, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> lis
             status, answers, detail = UNREACHABLE, {}, scrub(str(exc))
         observations = classify(answers) if status == PROBED else []
         record(db, row.id, status, observations, detail)
+        try:
+            record_observations(db, row, control_observations(row.url, status, answers))
+        except Exception:  # noqa: BLE001 - evidence must not stop the sweep
+            logger.warning("Could not record control observations for %s", scrub(row.url),
+                           exc_info=True)
         if any(o.severity in ("critical", "high") for o in observations):
             logger.warning(
                 "Public endpoint %s exposes: %s",

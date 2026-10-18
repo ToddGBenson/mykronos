@@ -664,6 +664,84 @@ class NetassessSubmission(BaseModel):
     )
 
 
+ObservationAssertion = Literal[
+    "port_published",
+    "anonymous_401",
+    "header_csp",
+    "header_hsts",
+    "bound_loopback",
+    "firewall_scope",
+    "ingress_published",
+]
+ObservationState = Literal["pass", "fail", "unknown", "not_evidence", "not_measured"]
+ObservationVantage = Literal["internet", "lan", "host"]
+
+
+class ControlObservationIn(BaseModel):
+    """One machine-collected fact about a control (TheHub #60826).
+
+    The vocabularies are `mykronos.control_observations`' and a test pins the
+    two together. `state` uses host_controls' five states; only `pass` and
+    `fail` are evidence, and `pass` means the assertion is TRUE - a
+    `port_published` that passes is a published port.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(
+        min_length=1,
+        max_length=255,
+        description="`surface:<id>` | `control:<id>` | `host:port` | `hostname`.",
+    )
+    assertion: ObservationAssertion
+    state: ObservationState
+    vantage: ObservationVantage = Field(
+        description="Where the collector stood: internet | lan | host."
+    )
+    tool: str = Field(min_length=1, max_length=64)
+    tool_version: str = Field(default="", max_length=64)
+    collected_at: datetime
+    raw_ref: str = Field(
+        default="", max_length=512, description="An `/api/ingest/raw` reference, if archived."
+    )
+    detail: str = Field(default="", max_length=4000)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    surface_id: str | None = Field(default=None, max_length=36)
+    control_id: str | None = Field(default=None, max_length=36)
+
+
+class ControlObservationBatch(BaseModel):
+    """What a collector posts: observations it judged, and/or the host
+    collector's raw document for the server to judge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    collector: str = Field(
+        min_length=1,
+        max_length=255,
+        description="Who collected this, e.g. `Publish-ControlObservations.ps1@HOST`.",
+    )
+    observations: list[ControlObservationIn] = Field(default_factory=list, max_length=5000)
+    host_document: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "`mykronos.host-observations/1` from deploy/concourse/"
+            "Publish-ControlObservations.ps1, translated server-side."
+        ),
+    )
+    run_context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Recorded in the audit entry, e.g. a LAN scan's authorization record.",
+    )
+
+
+class ControlObservationAccepted(BaseModel):
+    accepted: int
+    by_state: dict[str, int] = Field(default_factory=dict)
+    #: How many of the accepted rows are evidence (pass or fail).
+    evidence: int = 0
+
+
 class NetassessAccepted(BaseModel):
     believable: bool
     problems: list[str] = Field(default_factory=list)

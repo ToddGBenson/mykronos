@@ -73,13 +73,21 @@ SENSITIVITIES = ("pii", "financial", "credentials", "source", "public", "unknown
 #:
 #: What can actually do the job:
 #:
-#: * `network` — a port that answers a scan run from **outside** the network is
-#:   not `internal` and not `local`. This is evidence the lake does not yet
-#:   hold (#306), so the check waits on it.
+#: * `network` — a port that answers from **outside** is not `internal` and
+#:   not `local`: a `port_published` ControlObservation from the `internet`
+#:   vantage (the exposure sweep) contradicts both, and one from the `lan`
+#:   vantage (`mykronos.lan_scan`) contradicts `local` only - `internal`
+#:   *means* reachable on the LAN.
 #: * `published_ingress` — a reverse proxy or tunnel config naming the port is
-#:   a *statement* that it is published, not an inference, and it is readable
-#:   today. TheHub declares `Demo backend (tcp/8002)` as `internal` while
-#:   `~/.cloudflared/config.yml` publishes that exact port (#348).
+#:   a *statement* that it is published, not an inference. The host collector
+#:   (`deploy/concourse/Publish-ControlObservations.ps1`) records each
+#:   cloudflared rule as an `ingress_published` observation. TheHub declares
+#:   `Demo backend (tcp/8002)` as `internal` while `~/.cloudflared/config.yml`
+#:   publishes that exact port (#348).
+#:
+#: Read by `control_observations.contradictions` (TheHub #60826), which takes
+#: only fresh (<= 14 days) `pass` observations and matches them to a surface
+#: by its `selectors`, falling back to the surface's text when it has none.
 #:
 #: `internet` has no key, deliberately. Unreachability is not observable: a
 #: scan that fails to reach something has not shown the internet cannot, and
