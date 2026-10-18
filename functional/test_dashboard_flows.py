@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-TABS = ["findings", "scan-health", "decisions", "sscs", "insider", "remediation"]
+# `remediation` is a retired id (#60820) kept here on purpose: old links to it
+# must still land on a tab (Remediate today), not on "No such tab".
+TABS = ["findings", "scan-health", "decisions", "sscs", "insider", "remediate", "remediation"]
 
 
 class TestTheGate:

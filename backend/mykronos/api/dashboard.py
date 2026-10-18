@@ -2857,7 +2857,9 @@ async def post_deployment_briefing(
                 unactionable=g.unactionable,
                 rules=[RuleGuidanceOut.model_validate(dataclasses.asdict(r)) for r in g.rules],
             )
-            for g in guidance.by_rule(request.app.state.catalog)
+            # Scoped like every other section (#60820). Unscoped, a repository's
+            # Remediate today tab listed the whole estate's fixes under its name.
+            for g in guidance.by_rule(request.app.state.catalog, asset_id=asset_id)
         ],
         fixes=[
             FixGroupOut(
@@ -2870,7 +2872,7 @@ async def post_deployment_briefing(
                 effort=f.effort,
                 steps=f.steps,
             )
-            for f in guidance.fix_groups(request.app.state.catalog)
+            for f in guidance.fix_groups(request.app.state.catalog, asset_id=asset_id)
         ],
         toxic=report.toxic,
         toxic_coverage=report.toxic_coverage,

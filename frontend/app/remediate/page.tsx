@@ -1,9 +1,11 @@
 import Link from "next/link";
 
 import { EmptyState, ErrorPanel, Label, Pill } from "@/components/primitives";
+import { RemediationTab } from "@/components/remediation";
 import { StaleLanes } from "@/components/stale-lanes";
 import { StalledLanes } from "@/components/stalled-lanes";
-import { getBriefing } from "@/lib/server";
+import { closableToday } from "@/lib/repo-tabs";
+import { getBriefing, getRemediation } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -46,9 +48,18 @@ export default async function RemediatePage() {
  * One component rather than two, and one query behind it, because a scoped
  * view that could disagree with the estate view would be a bug nobody would
  * catch — both would look plausible and only one could be right.
+ *
+ * Scoped, it is also the repository page's only remediation tab (#60820). The
+ * "Remediation" tab beside it repeated section 3 from a second endpoint and
+ * added one thing this page lacked — what Patchwork itself did here — which is
+ * now the tail of section 5, fetched alongside rather than after so a
+ * Patchwork failure cannot take the briefing with it.
  */
 export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
-  const briefing = await getBriefing(repoId);
+  const [briefing, patchwork] = await Promise.all([
+    getBriefing(repoId),
+    repoId ? getRemediation(repoId) : Promise.resolve(null),
+  ]);
   if (!briefing.ok) {
     return <ErrorPanel title="Cannot answer that right now" detail={briefing.error} />;
   }
@@ -76,6 +87,7 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
   // `Math.max(0, ...)` below turns that into a quiet undercount rather than a
   // visibly broken number — the worse of the two failure modes.
   const actionable = Math.max(0, total_open - closing_soon_open - blocked_findings);
+  const closable = closableToday(fixes);
 
   return (
     <div className="flex flex-col gap-5">
@@ -172,7 +184,12 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
           that both want a Content-Security-Policy value are one edit, and
           showing them as two rows asks for the work twice (B-028). */}
       <section className="flex flex-col gap-2">
-        <Label>3 · Step by step, one entry per change</Label>
+        <div className="flex flex-wrap items-baseline gap-3">
+          <Label>3 · Step by step, one entry per change</Label>
+          {closable > 0 ? (
+            <Pill tone="warn">{closable} closable today, no judgement needed</Pill>
+          ) : null}
+        </div>
         {fixes.length === 0 ? (
           <EmptyState title="Nothing open" detail="No open findings in scope." />
         ) : (
@@ -226,6 +243,12 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
                 </p>
               </details>
             ))}
+            {fixes.length > 12 ? (
+              <p className="font-mono text-[11px] text-ink-3">
+                …and {fixes.length - 12} more, each also under its rule in
+                section 4.
+              </p>
+            ) : null}
           </div>
         )}
       </section>
@@ -319,6 +342,30 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
           </Link>{" "}
           has the per-fixer coverage table.
         </p>
+
+        {/* What Patchwork did in this repository — the one thing the retired
+            Remediation tab showed that nothing above does. Collapsed: it is
+            history, and this page is ordered by what to do next. Repository
+            scope only; the estate's equivalent is /remediation. */}
+        {patchwork === null ? null : !patchwork.ok ? (
+          <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
+            {patchwork.error}
+          </p>
+        ) : (
+          <details className="border-t border-rule pt-2">
+            <summary className="cursor-pointer font-mono text-[12px] text-ink-2">
+              What it has done here — {patchwork.data.events.length} finding(s)
+              considered, {patchwork.data.open_draft_prs} draft PR(s) awaiting review
+            </summary>
+            <div className="mt-2">
+              <RemediationTab
+                events={patchwork.data.events}
+                openDraftPrs={patchwork.data.open_draft_prs}
+                note={patchwork.data.note}
+              />
+            </div>
+          </details>
+        )}
       </section>
     </div>
   );

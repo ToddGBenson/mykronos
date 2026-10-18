@@ -59,6 +59,10 @@ const NAV: {
       // apart, leading to different pages with different jobs. One is a
       // worklist and one is a library, so they are now named that way: the
       // difference has to be legible before the click, not after it.
+      // #60820 merged the repository page's two remediation tabs; this pair
+      // was left alone because it is not the same redundancy: /remediate is
+      // the estate's worklist, /remediation the cross-repo digest of open
+      // Patchwork PRs grouped by fix, plus fix efficacy.
       { label: "Remediation library", href: "/remediation" },
       { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
