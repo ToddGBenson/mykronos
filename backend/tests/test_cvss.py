@@ -111,11 +111,75 @@ class TestWhatKnowledgeChanges:
             cvss.Environment(mav="L", cr="H"),
         )
 
-        assert any("attack vector is low here" in r for r in result.because)
+        # MAV:L is *local*: "low" read as a level, not a place.
+        assert any("attack vector is local here" in r for r in result.because)
         assert any("confidentiality matters high" in r for r in result.because)
 
     def test_nothing_stated_explains_nothing(self) -> None:
         assert cvss.score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H").because == ()
+
+
+class TestExploitabilityModifiersOnlyLower:
+    """MAV, MAC, MPR and MUI are capped at the base metric (D-106 amended).
+
+    The standard lets a modified metric be more severe than the base. Here
+    those four come from statements about the *system* ("not on the
+    internet"), and a statement about the system cannot make a flaw that needs
+    physical access network-reachable. Whichever of base and modified is less
+    severe is used.
+    """
+
+    @pytest.mark.parametrize(
+        ("vector", "environment"),
+        [
+            # Physical-access flaw, environment says local: still physical.
+            ("CVSS:3.1/AV:P/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", cvss.Environment(mav="L")),
+            ("CVSS:3.1/AV:P/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", cvss.Environment(mav="N")),
+            ("CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", cvss.Environment(mav="A")),
+            # High complexity stays high.
+            ("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N", cvss.Environment(mac="L")),
+            # High privileges stay high.
+            ("CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:N/A:N", cvss.Environment(mpr="N")),
+            ("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N", cvss.Environment(mpr="N")),
+            # Required interaction stays required.
+            ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N", cvss.Environment(mui="N")),
+        ],
+    )
+    def test_a_more_severe_modifier_scores_the_base(
+        self, vector: str, environment: cvss.Environment
+    ) -> None:
+        result = cvss.score(vector, environment)
+
+        assert result.environmental == result.base
+        assert not result.moved
+
+    def test_a_less_severe_modifier_still_lowers(self) -> None:
+        result = cvss.score(
+            "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", cvss.Environment(mav="A")
+        )
+
+        assert result.environmental < result.base
+
+    def test_scope_is_not_capped(self) -> None:
+        """MS is not an exploitability metric and stays as the standard has
+        it: a stated changed scope can raise the score."""
+        result = cvss.score(
+            "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N", cvss.Environment(ms="C")
+        )
+
+        assert result.environmental > result.base
+
+    def test_a_capped_modifier_says_it_was_kept(self) -> None:
+        """A reader seeing "attack vector is local here" beside an unmoved score
+        would assume the arithmetic ignored it. Say what happened."""
+        result = cvss.score(
+            "CVSS:3.1/AV:P/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", cvss.Environment(mav="L")
+        )
+
+        assert any(
+            "attack vector" in r and "kept at the base value, physical" in r
+            for r in result.because
+        )
 
 
 class TestRefusingToGuess:
@@ -156,11 +220,27 @@ class TestProfileMapping:
     rather than being re-derived at each call site.
     """
 
-    def test_an_unreachable_service_is_the_one_that_pays(self) -> None:
+    def test_an_unreachable_service_is_adjacent_not_local(self) -> None:
+        """Not internet-facing means reachable from the LAN, which is `MAV:A`.
+
+        `MAV:L` claimed an attacker needs a shell on the host, which "not on
+        the internet" does not say: every other machine on the network can
+        still reach the service (D-106, amended 2026-10-17).
+        """
         env = cvss.environment_for(internet_facing=False)
 
-        assert env.mav == "L"
+        assert env.mav == "A"
         assert env.stated
+
+    def test_not_internet_facing_never_raises_a_local_flaw(self) -> None:
+        """`MAV:A` on an `AV:L` flaw would claim the flaw got easier to reach
+        because somebody said the service was off the internet. The cap keeps
+        the base value."""
+        vector = "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"
+
+        result = cvss.score(vector, cvss.environment_for(internet_facing=False))
+
+        assert result.environmental == result.base
 
     def test_internet_facing_true_sets_nothing(self) -> None:
         """The base vector already says AV:N where the flaw is network

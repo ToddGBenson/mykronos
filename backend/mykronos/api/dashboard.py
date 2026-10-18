@@ -4811,6 +4811,13 @@ class SeverityHereOut(BaseModel):
     #: equal pair means "nobody has said", not "we checked and it matches".
     stated: bool
     because: list[str]
+    #: Who stated the risk-profile facts `because` cites, and when: the
+    #: profile's `updated_by` and `updated_at`. A lowered score is only as good
+    #: as the statement behind it, so the reader sees whose statement and how
+    #: old it is (#60823). Null when no profile exists; `stated_by` is also
+    #: null for a profile row that never recorded an author.
+    stated_by: str | None = None
+    stated_at: datetime | None = None
 
 
 class FindingRecordOut(BaseModel):
@@ -4884,6 +4891,8 @@ def _severity_here(
         moved=scored.moved,
         stated=environment.stated,
         because=list(scored.because),
+        stated_by=(profile.updated_by or None) if profile is not None else None,
+        stated_at=profile.updated_at if profile is not None else None,
     )
 
 

@@ -4520,6 +4520,35 @@ so. And `internet_facing=True` sets no modifier at all: the base vector already
 says `AV:N` where the flaw is network-exploitable, and re-asserting it would be
 a control that cannot change anything while looking like it might.
 
+**Amended 2026-10-17 (#60823): not internet-facing is `MAV:A`, and the
+exploitability modifiers only ever lower.** Two defects in the arithmetic
+above, fixed before anything builds on it (epic #60822).
+
+`internet_facing=False` mapped to `MAV:L`, which claims an attacker needs a
+shell on the host. "Not on the internet" says no such thing: every other
+machine on the network can still reach the service, and that is `MAV:A`
+(adjacent). `MAV:L` discounted network flaws further than the stated fact
+supports, on the one statement this feature most depends on.
+
+The standard lets `MAV`, `MAC`, `MPR` and `MUI` be *more* severe than the base
+metric, so `MAV:A` on an `AV:L` or `AV:P` flaw raised its score. Here those
+modifiers come from statements about the system, and "this service is on the
+LAN" cannot make a flaw that needs physical access reachable from the LAN. Each
+of the four now takes whichever of base and modified is less severe, and
+`because` says when a stated value was kept at the base rather than listing it
+as if it had applied. This is a deliberate departure from the published
+arithmetic, in the direction this entry already took: a statement can lower a
+score only where it is a real reduction. Scope (`MS`) and the impact and
+requirement metrics are untouched; a stated changed scope can still raise the
+score, as the standard has it.
+
+Two smaller corrections in the same change: `because` read `MAV:L` as "low"
+rather than "local", and the finding's "severity here" now names who stated
+the risk profile and when (`stated_by`, `stated_at` from the profile's
+`updated_by` and `updated_at`), since "every statement is attributable" above
+was true of the data and invisible on the page. Changing the profile data
+itself is not part of this.
+
 ## D-107 — The platform reports on itself, because a caught failure is silent
 
 **2026-09-03.** Mykronos tells four repositories what is wrong with them and had
