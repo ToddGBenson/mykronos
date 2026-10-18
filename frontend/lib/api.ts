@@ -14,6 +14,7 @@
 
 import createClient from "openapi-fetch";
 import type { paths } from "./api-types";
+import type { CheckLane } from "./checks";
 
 /** Server-side only. Never import this from a client component. */
 export function backendClient() {
@@ -484,6 +485,12 @@ export type ScanRun = {
   detail: string | null;
   line_coverage: number | null;
   branch_coverage: number | null;
+  /** The CI job that produced the run (#449); null when the uploader did not say. */
+  job: string | null;
+  /** Where ingest archived the tool's output, as the uploader named it. */
+  raw_output_ref: string | null;
+  /** The commit on GitHub; null when `commit_sha` is not shaped like a SHA. */
+  commit_url: string | null;
   previous_scan_run_id: string | null;
   next_scan_run_id: string | null;
   /** True for the newest run on its lane; the counts are lower bounds otherwise. */
@@ -496,6 +503,58 @@ export type ScanRun = {
     not_reported: SeverityBucket | null;
   };
   raw_files: { filename: string; bytes: number }[];
+  /** The findings this run first or last saw, worst first (TheHub #60819). */
+  findings: {
+    total: number;
+    items: ScanRunFinding[];
+    truncated: boolean;
+  };
+  /** The archived JUnit reports, read case by case; null when there are none. */
+  tests: ScanRunTests | null;
+};
+
+export type ScanRunFinding = {
+  finding_id: string;
+  rule_id: string;
+  title: string;
+  severity: Severity;
+  status: string;
+  file_path: string | null;
+  line_start: number | null;
+  package_name: string | null;
+  package_version: string | null;
+  /** First seen in this run, rather than seen again. */
+  new: boolean;
+};
+
+export type ScanRunTests = {
+  tests: number;
+  passed: number;
+  failures: number;
+  errors: number;
+  skipped: number;
+  suites: {
+    file: string;
+    name: string | null;
+    tests: number;
+    failures: number;
+    errors: number;
+    skipped: number;
+  }[];
+  failing: {
+    suite: string | null;
+    classname: string | null;
+    name: string;
+    outcome: "failure" | "error";
+    message: string | null;
+    /** The tool's own text: absent for roles that may not see raw output. */
+    output?: string | null;
+  }[];
+  failing_truncated: boolean;
+  /** True when failure bodies were withheld from this role (spec 12 §5). */
+  output_withheld: boolean;
+  /** Archived XML files that could not be read as a report. */
+  unreadable: string[];
 };
 
 export type ScanRunRow = Pick<
@@ -503,14 +562,36 @@ export type ScanRunRow = Pick<
   | "scan_run_id"
   | "capability"
   | "tool_name"
+  | "tool_version"
+  | "job"
   | "branch"
   | "commit_sha"
+  | "commit_url"
+  | "pr_number"
+  | "triggered_by"
+  | "github_workflow_run_id"
   | "started_at"
   | "completed_at"
   | "scan_status"
   | "finding_count"
   | "detail"
+  | "line_coverage"
+  | "branch_coverage"
 >;
+
+/** One page of a repository's runs, or of one check's (TheHub #60819). */
+export type ScanRunPage = {
+  repo_full_name: string;
+  capability: string | null;
+  tool: string | null;
+  job: string | null;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  runs: ScanRunRow[];
+  /** The tools and jobs reporting under `capability`; empty without one. */
+  lanes: CheckLane[];
+};
 
 /**
  * One bucket of a lane's pass rate over time (spec 19 §1.1). Hand-typed for

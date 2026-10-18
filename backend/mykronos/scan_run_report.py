@@ -30,9 +30,14 @@ since been closed as fixed. A run that did not complete (`failure`,
 
 from __future__ import annotations
 
+import re
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
+
+from defusedxml import ElementTree as SafeElementTree
+from defusedxml.common import DefusedXmlException
 
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.reconcile import CONFIRMING_STATUSES
@@ -68,6 +73,55 @@ _RUN_COLUMNS = (
 _LANE_ORDER = (
     "coalesce(completed_at, started_at) {d}, ingested_at {d}, scan_run_id {d}"
 )
+
+
+#: The columns a row of a check's run history carries (TheHub #60819): enough
+#: to tell the runs apart and pick one without opening each.
+_LIST_COLUMNS = (
+    "scan_run_id",
+    "capability",
+    "tool_name",
+    "tool_version",
+    "job",
+    "branch",
+    "commit_sha",
+    "pr_number",
+    "triggered_by",
+    "github_workflow_run_id",
+    "started_at",
+    "completed_at",
+    "scan_status",
+    "finding_count",
+    "detail",
+    "line_coverage",
+    "branch_coverage",
+)
+
+#: How many of a run's findings the report lists by name. The counts are
+#: always whole; past this the list says it was cut, and the findings page has
+#: the rest.
+FINDINGS_SHOWN = 500
+
+#: The largest archived XML file read for test results. The archive holds up
+#: to `max_raw_output_bytes`; parsing that on every page view is not worth a
+#: test summary, and the raw file stays one click away.
+JUNIT_MAX_BYTES = 5 * 1024 * 1024
+JUNIT_CASES_SHOWN = 200
+_MESSAGE_CHARS = 500
+_OUTPUT_CHARS = 4000
+
+_SHA = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
+def commit_url(repo_full_name: str, commit_sha: Any) -> str | None:
+    """The commit on GitHub, the same host the portfolio's `github_url` names.
+
+    Only for something shaped like a SHA: a lane that recorded `HEAD` or a tag
+    gets no link rather than a link to a 404.
+    """
+    if not commit_sha or not _SHA.fullmatch(str(commit_sha)):
+        return None
+    return f"https://github.com/{repo_full_name}/commit/{commit_sha}"
 
 
 def _bucket(rows: list[tuple[Any, ...]]) -> dict[str, Any]:
@@ -132,7 +186,12 @@ class ScanRunReport:
         )
         return _bucket(rows)
 
-    def report(self, scan_run_id: str) -> dict[str, Any] | None:
+    def report(
+        self, scan_run_id: str, *, include_output: bool = False
+    ) -> dict[str, Any] | None:
+        """The whole run. `include_output` adds test failure bodies, which are
+        the tool's own output and are withheld from viewers as the raw files
+        are (spec 12 §5); the case names and counts are not."""
         run = self._row(scan_run_id)
         if run is None:
             return None
@@ -157,6 +216,7 @@ class ScanRunReport:
 
         return {
             **run,
+            "commit_url": commit_url(str(run["repo_full_name"]), run["commit_sha"]),
             "lane": {
                 "repo_full_name": run["repo_full_name"],
                 "capability": run["capability"],
@@ -175,38 +235,123 @@ class ScanRunReport:
                 "not_reported": not_reported if observed else None,
             },
             "raw_files": self.raw_files(run),
+            "findings": self._findings(scan_run_id),
+            "tests": self.junit_results(run, include_output=include_output),
+        }
+
+    def _findings(self, scan_run_id: str) -> dict[str, Any]:
+        """The findings this run first or last saw, worst first, by name.
+
+        The same two sets `new` and `still_reported` count, so the list and the
+        counts above it agree.
+        """
+        columns = (
+            "finding_id",
+            "rule_id",
+            "title",
+            "severity",
+            "status",
+            "file_path",
+            "line_start",
+            "package_name",
+            "package_version",
+            "first_seen_scan_run_id",
+        )
+        rank = " ".join(
+            f"WHEN '{severity}' THEN {i}" for i, severity in enumerate(SEVERITIES)
+        )
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM findings "
+            "WHERE first_seen_scan_run_id = ? OR last_seen_scan_run_id = ? "
+            f"ORDER BY CASE severity {rank} ELSE {len(SEVERITIES)} END, "
+            "rule_id, finding_id",
+            [scan_run_id, scan_run_id],
+        )
+        seen: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            record = dict(zip(columns, row, strict=True))
+            # A finding re-written at compaction can be read twice until the
+            # buffer is folded; one row per finding.
+            seen.setdefault(str(record["finding_id"]), record)
+        listed = [
+            {
+                **{k: v for k, v in record.items() if k != "first_seen_scan_run_id"},
+                "new": record["first_seen_scan_run_id"] == scan_run_id,
+            }
+            for record in seen.values()
+        ]
+        return {
+            "total": len(listed),
+            "items": listed[:FINDINGS_SHOWN],
+            "truncated": len(listed) > FINDINGS_SHOWN,
         }
 
     # -- the lane --------------------------------------------------------
 
     def lane_runs(
-        self, repo_full_name: str, capability: str | None = None, limit: int = 50
+        self,
+        repo_full_name: str,
+        capability: str | None = None,
+        limit: int = 50,
+        *,
+        tool: str | None = None,
+        job: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Recent runs of a repository, newest first — the list that makes a
-        run id discoverable without reading the lake."""
-        columns = (
-            "scan_run_id",
-            "capability",
-            "tool_name",
-            "branch",
-            "commit_sha",
-            "started_at",
-            "completed_at",
-            "scan_status",
-            "finding_count",
-            "detail",
-        )
+        run id discoverable without reading the lake, and a check's run
+        history (TheHub #60819) when narrowed to a capability, and to a tool
+        or job where a capability has several.
+
+        One row per run: a run re-POSTed at completion can be read from the
+        buffer and a partition at once until compaction folds it, and the
+        history would otherwise list it twice.
+        """
         params: list[Any] = [repo_full_name]
         where = "repo_full_name = ?"
-        if capability:
-            where += " AND capability = ?"
-            params.append(capability)
+        for column, value in (("capability", capability), ("tool_name", tool), ("job", job)):
+            if value:
+                where += f" AND {column} = ?"
+                params.append(value)
         rows = self.catalog.query(
-            f"SELECT {', '.join(columns)} FROM scan_runs WHERE {where} "
-            f"ORDER BY {_LANE_ORDER.format(d='DESC')} LIMIT ?",
-            [*params, limit],
+            f"""
+            SELECT {', '.join(_LIST_COLUMNS)} FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY scan_run_id
+                    ORDER BY {_LANE_ORDER.format(d='DESC')}
+                ) AS rn
+                FROM scan_runs WHERE {where}
+            ) WHERE rn = 1
+            ORDER BY {_LANE_ORDER.format(d='DESC')}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, limit, offset],
         )
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(zip(_LIST_COLUMNS, row, strict=True))
+            record["commit_url"] = commit_url(repo_full_name, record["commit_sha"])
+            out.append(record)
+        return out
+
+    def lanes(self, repo_full_name: str, capability: str) -> list[dict[str, Any]]:
+        """The tools and jobs that report under one capability, most recently
+        run first — what the history page offers to narrow by when a
+        capability has more than one (`dast-demo` and `dast-staging`, #449)."""
+        rows = self.catalog.query(
+            """
+            SELECT tool_name, job, count(DISTINCT scan_run_id),
+                   max(coalesce(completed_at, started_at)) AS last_run_at
+            FROM scan_runs WHERE repo_full_name = ? AND capability = ?
+            GROUP BY tool_name, job
+            ORDER BY last_run_at DESC NULLS LAST, tool_name, job
+            """,
+            [repo_full_name, capability],
+        )
+        return [
+            {"tool_name": tool, "job": job, "runs": int(runs), "last_run_at": last}
+            for tool, job, runs, last in rows
+        ]
 
     # -- raw output ------------------------------------------------------
 
@@ -260,3 +405,97 @@ class ScanRunReport:
         if run is None:
             return None
         return self._raw_paths(run).get(filename)
+
+    # -- test results ----------------------------------------------------
+
+    def junit_results(
+        self, run: dict[str, Any], *, include_output: bool = False
+    ) -> dict[str, Any] | None:
+        """The JUnit reports archived for a run, read case by case.
+
+        A test lane records a run and a count, never a finding (D-046), so the
+        run's `detail` is all the lake says about which test failed. The
+        archived XML says the rest. Null when the run archived no JUnit report;
+        a file that is not JUnit (SARIF, a Cobertura coverage report) is
+        skipped rather than reported as broken.
+        """
+        suites: list[dict[str, Any]] = []
+        failing: list[dict[str, Any]] = []
+        unreadable: list[str] = []
+        totals = dict.fromkeys(("tests", "failures", "errors", "skipped"), 0)
+        for name, path in self._raw_paths(run).items():
+            if not name.lower().endswith(".xml"):
+                continue
+            try:
+                if path.stat().st_size > JUNIT_MAX_BYTES:
+                    unreadable.append(name)
+                    continue
+                root = SafeElementTree.fromstring(path.read_bytes())
+            except (OSError, ElementTree.ParseError, DefusedXmlException):
+                unreadable.append(name)
+                continue
+            if root.tag == "testsuite":
+                found = [root]
+            elif root.tag == "testsuites":
+                found = list(root.iter("testsuite"))
+            else:
+                continue
+            for suite in found:
+                counts = _junit_counts(suite)
+                for key in totals:
+                    totals[key] += counts[key]
+                suites.append({"file": name, "name": suite.get("name") or None, **counts})
+                for case in suite.findall("testcase"):
+                    outcome = _junit_outcome(case)
+                    if outcome is None:
+                        continue
+                    kind, element = outcome
+                    entry: dict[str, Any] = {
+                        "suite": suite.get("name") or None,
+                        "classname": case.get("classname") or None,
+                        "name": case.get("name") or "",
+                        "outcome": kind,
+                        "message": (element.get("message") or "")[:_MESSAGE_CHARS] or None,
+                    }
+                    if include_output:
+                        entry["output"] = (element.text or "").strip()[:_OUTPUT_CHARS] or None
+                    failing.append(entry)
+        if not suites and not unreadable:
+            return None
+        return {
+            **totals,
+            "passed": max(
+                0, totals["tests"] - totals["failures"] - totals["errors"] - totals["skipped"]
+            ),
+            "suites": suites,
+            "failing": failing[:JUNIT_CASES_SHOWN],
+            "failing_truncated": len(failing) > JUNIT_CASES_SHOWN,
+            "output_withheld": not include_output,
+            "unreadable": unreadable,
+        }
+
+
+def _junit_counts(suite: ElementTree.Element) -> dict[str, int]:
+    """A suite's own totals, or counted from its cases when it gives none."""
+    cases = suite.findall("testcase")
+    counted = {
+        "tests": len(cases),
+        "failures": sum(1 for c in cases if c.find("failure") is not None),
+        "errors": sum(1 for c in cases if c.find("error") is not None),
+        "skipped": sum(1 for c in cases if c.find("skipped") is not None),
+    }
+    out: dict[str, int] = {}
+    for key, fallback in counted.items():
+        try:
+            out[key] = int(suite.get(key) or fallback)
+        except ValueError:
+            out[key] = fallback
+    return out
+
+
+def _junit_outcome(case: ElementTree.Element) -> tuple[str, ElementTree.Element] | None:
+    for kind in ("failure", "error"):
+        element = case.find(kind)
+        if element is not None:
+            return kind, element
+    return None

@@ -1275,8 +1275,13 @@ export interface paths {
          * Repo Scan Runs
          * @description A repository's recent scan runs, newest first (TheHub #60761).
          *
-         *     The list a run id is found in. Each row links to
-         *     `/api/dashboard/scan-runs/{scan_run_id}`.
+         *     The list a run id is found in, and a check's run history (TheHub #60819):
+         *     narrow by `capability`, then by `tool` or `job` where a capability has
+         *     several. Each row links to `/api/dashboard/scan-runs/{scan_run_id}`.
+         *
+         *     Paged by `limit` and `offset`; `has_more` says whether another page
+         *     exists. With a `capability`, `lanes` lists the tools and jobs that report
+         *     under it, so a page can offer to narrow by them.
          */
         get: operations["repo_scan_runs_api_dashboard_repos__repo_id__scan_runs_get"];
         put?: never;
@@ -1317,6 +1322,12 @@ export interface paths {
          *
          *     `raw_files` lists what ingest archived for the run; download one from
          *     `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (not viewers).
+         *
+         *     The full report (TheHub #60819) also carries `commit_url`, `findings`
+         *     (the findings this run first or last saw, worst first, `{total, items,
+         *     truncated}`) and `tests` (the archived JUnit reports read case by case,
+         *     null when there are none). A failing case's `output` is the tool's own
+         *     text and is sent only to roles that may see raw output.
          */
         get: operations["scan_run_detail_api_dashboard_scan_runs__scan_run_id__get"];
         put?: never;
@@ -11160,6 +11171,9 @@ export interface operations {
             query?: {
                 capability?: string | null;
                 limit?: number;
+                tool?: string | null;
+                job?: string | null;
+                offset?: number;
             };
             header?: never;
             path: {

@@ -3814,18 +3814,35 @@ async def repo_scan_runs(
     principal: PrincipalDep,
     capability: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    tool: Annotated[str | None, Query(max_length=100)] = None,
+    job: Annotated[str | None, Query(max_length=200)] = None,
+    offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
 ) -> dict[str, Any]:
     """A repository's recent scan runs, newest first (TheHub #60761).
 
-    The list a run id is found in. Each row links to
-    `/api/dashboard/scan-runs/{scan_run_id}`.
+    The list a run id is found in, and a check's run history (TheHub #60819):
+    narrow by `capability`, then by `tool` or `job` where a capability has
+    several. Each row links to `/api/dashboard/scan-runs/{scan_run_id}`.
+
+    Paged by `limit` and `offset`; `has_more` says whether another page
+    exists. With a `capability`, `lanes` lists the tools and jobs that report
+    under it, so a page can offer to narrow by them.
     """
     repo_full_name = _resolve_repo(request, repo_id)
+    report = _scan_run_report(request)
+    runs = report.lane_runs(
+        repo_full_name, capability, limit=limit + 1, tool=tool, job=job, offset=offset
+    )
     return {
         "repo_full_name": repo_full_name,
-        "runs": _scan_run_report(request).lane_runs(
-            repo_full_name, capability, limit=limit
-        ),
+        "capability": capability,
+        "tool": tool,
+        "job": job,
+        "limit": limit,
+        "offset": offset,
+        "has_more": len(runs) > limit,
+        "runs": runs[:limit],
+        "lanes": report.lanes(repo_full_name, capability) if capability else [],
     }
 
 
@@ -3854,8 +3871,16 @@ async def scan_run_detail(
 
     `raw_files` lists what ingest archived for the run; download one from
     `/api/dashboard/scan-runs/{scan_run_id}/raw/{filename}` (not viewers).
+
+    The full report (TheHub #60819) also carries `commit_url`, `findings`
+    (the findings this run first or last saw, worst first, `{total, items,
+    truncated}`) and `tests` (the archived JUnit reports read case by case,
+    null when there are none). A failing case's `output` is the tool's own
+    text and is sent only to roles that may see raw output.
     """
-    report = _scan_run_report(request).report(scan_run_id)
+    report = _scan_run_report(request).report(
+        scan_run_id, include_output=principal.may_see_raw_output
+    )
     if report is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No scan run {scan_run_id}."

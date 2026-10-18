@@ -234,3 +234,226 @@ class TestDiscovery:
 
         [row] = [c for c in body["capabilities"] if c["capability"] == CAPABILITY]
         assert row["last_scan_run_id"] == "run-2"
+
+
+def _history(client, auth, repo_id, **params):
+    return client.get(
+        f"/api/dashboard/repos/{repo_id}/scan-runs", params=params, headers=auth
+    )
+
+
+class TestCheckHistory:
+    """A check's run history, the list a dashboard tile opens (TheHub #60819)."""
+
+    def test_one_capability_newest_first_with_what_tells_runs_apart(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-1", [A], job="sast-main")
+        _run(client, auth, run_compaction, "run-2", [A], minutes=1, job="sast-main")
+
+        body = _history(client, admin_auth, repo_id, capability=CAPABILITY).json()
+
+        assert [r["scan_run_id"] for r in body["runs"]] == ["run-2", "run-1"]
+        newest = body["runs"][0]
+        assert newest["job"] == "sast-main"
+        assert newest["branch"] == "main"
+        assert newest["commit_sha"] == "a91f2c7"
+        assert newest["commit_url"] == f"https://github.com/{REPO}/commit/a91f2c7"
+        assert newest["finding_count"] == 1
+        assert newest["started_at"]
+        assert "completed_at" in newest
+        assert body["has_more"] is False
+
+    def test_an_empty_history_is_an_empty_list_not_an_error(
+        self, client, admin_auth
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = _history(client, admin_auth, repo_id, capability="dast")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["runs"] == []
+        assert body["lanes"] == []
+        assert body["has_more"] is False
+
+    def test_pages_by_limit_and_offset(self, client, admin_auth, run_compaction) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = _auth(client)
+        for i in range(3):
+            _run(client, auth, run_compaction, f"run-{i}", [], minutes=i)
+
+        first = _history(client, admin_auth, repo_id, capability=CAPABILITY, limit=2).json()
+        second = _history(
+            client, admin_auth, repo_id, capability=CAPABILITY, limit=2, offset=2
+        ).json()
+
+        assert [r["scan_run_id"] for r in first["runs"]] == ["run-2", "run-1"]
+        assert first["has_more"] is True
+        assert [r["scan_run_id"] for r in second["runs"]] == ["run-0"]
+        assert second["has_more"] is False
+
+    def test_a_capability_with_several_jobs_lists_them_and_narrows_by_one(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        """#449: two jobs of one capability, otherwise identical in the lake."""
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-demo", [], job="sast-demo")
+        _run(client, auth, run_compaction, "run-staging", [], minutes=1, job="sast-staging")
+
+        body = _history(client, admin_auth, repo_id, capability=CAPABILITY).json()
+        narrowed = _history(
+            client, admin_auth, repo_id, capability=CAPABILITY, job="sast-demo"
+        ).json()
+
+        assert [(lane["job"], lane["runs"]) for lane in body["lanes"]] == [
+            ("sast-staging", 1),
+            ("sast-demo", 1),
+        ]
+        assert [r["scan_run_id"] for r in narrowed["runs"]] == ["run-demo"]
+
+    def test_a_run_reposted_at_completion_is_listed_once(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-1", [])
+        post_scan(
+            client, auth, scan_run_id="run-1", started_at=later(0), completed_at=later(1)
+        )
+
+        body = _history(client, admin_auth, repo_id, capability=CAPABILITY).json()
+
+        assert [r["scan_run_id"] for r in body["runs"]] == ["run-1"]
+
+    def test_a_commit_that_is_not_a_sha_gets_no_link(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        repo_id = onboard(client, admin_auth).json()["id"]
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-1", [], commit_sha="HEAD")
+
+        [row] = _history(client, admin_auth, repo_id, capability=CAPABILITY).json()["runs"]
+
+        assert row["commit_url"] is None
+
+
+JUNIT = b"""<?xml version="1.0"?>
+<testsuites>
+  <testsuite name="lint-and-types" tests="3" failures="1" errors="0" skipped="1">
+    <testcase classname="lint" name="ruff"/>
+    <testcase classname="lint" name="mypy">
+      <failure message="2 errors">mykronos/x.py:1: error: secret-ish output</failure>
+    </testcase>
+    <testcase classname="lint" name="openapi"><skipped/></testcase>
+  </testsuite>
+</testsuites>
+"""
+
+
+class TestTheFullReport:
+    def test_the_findings_a_run_reported_by_name_worst_first(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        onboard(client, admin_auth)
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-1", [A, B])
+        _run(client, auth, run_compaction, "run-2", [B, C], minutes=1)
+
+        body = _detail(client, admin_auth, "run-2").json()
+
+        findings = body["findings"]
+        assert findings["total"] == 2
+        assert findings["truncated"] is False
+        assert [(f["rule_id"], f["severity"], f["new"]) for f in findings["items"]] == [
+            ("CWE-79", "high", False),
+            ("CWE-22", "low", True),
+        ]
+        assert body["commit_url"] == f"https://github.com/{REPO}/commit/a91f2c7"
+        assert body["tests"] is None
+
+    def test_job_and_coverage_are_on_the_report(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        onboard(client, admin_auth)
+        auth = _auth(client)
+        _run(
+            client,
+            auth,
+            run_compaction,
+            "run-1",
+            [],
+            job="unit",
+            line_coverage=0.81,
+            branch_coverage=0.5,
+        )
+
+        body = _detail(client, admin_auth, "run-1").json()
+
+        assert body["job"] == "unit"
+        assert body["line_coverage"] == 0.81
+        assert body["branch_coverage"] == 0.5
+
+    def _junit_run(self, client, admin_auth, run_compaction) -> None:
+        onboard(client, admin_auth)
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-1", [])
+        response = client.post(
+            "/api/ingest/raw",
+            params={"scan_run_id": "run-1", "capability": CAPABILITY, "filename": "lint.xml"},
+            content=JUNIT,
+            headers=auth,
+        )
+        assert response.status_code == 200
+
+    def test_junit_results_are_read_case_by_case(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        self._junit_run(client, admin_auth, run_compaction)
+
+        tests = _detail(client, admin_auth, "run-1").json()["tests"]
+
+        assert tests["tests"] == 3
+        assert tests["passed"] == 1
+        assert tests["failures"] == 1
+        assert tests["skipped"] == 1
+        assert tests["suites"][0]["name"] == "lint-and-types"
+        [failing] = tests["failing"]
+        assert failing["name"] == "mypy"
+        assert failing["message"] == "2 errors"
+        assert "secret-ish output" in failing["output"]
+        assert tests["output_withheld"] is False
+
+    def test_a_viewer_gets_the_cases_but_not_the_tool_output(
+        self, client, admin_auth, viewer_auth, run_compaction
+    ) -> None:
+        """spec 12 §5: a failure body is raw tool output."""
+        self._junit_run(client, admin_auth, run_compaction)
+
+        tests = _detail(client, viewer_auth, "run-1").json()["tests"]
+
+        [failing] = tests["failing"]
+        assert failing["name"] == "mypy"
+        assert "output" not in failing
+        assert tests["output_withheld"] is True
+
+    def test_an_unparseable_xml_file_is_named_not_fatal(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        onboard(client, admin_auth)
+        auth = _auth(client)
+        _run(client, auth, run_compaction, "run-1", [])
+        client.post(
+            "/api/ingest/raw",
+            params={"scan_run_id": "run-1", "capability": CAPABILITY, "filename": "bad.xml"},
+            content=b"<testsuite",
+            headers=auth,
+        )
+
+        response = _detail(client, admin_auth, "run-1")
+
+        assert response.status_code == 200
+        assert response.json()["tests"]["unreadable"] == ["bad.xml"]
