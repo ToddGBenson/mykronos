@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from mykronos import (
     briefing,
@@ -81,6 +82,7 @@ from mykronos.db.models import (
     JobRun,
     RepoControl,
     RepoOnboarding,
+    RepoSurface,
     RiskProfile,
     capability_config_for,
 )
@@ -525,6 +527,15 @@ class FindingLocationOut(BaseModel):
     #: row until this told them apart.
     version_basis: str | None = None
     first_seen_at: datetime | None = None
+    effective_severity: Severity | None = Field(
+        default=None,
+        description=(
+            "The scanner's severity shifted by the bands the stored "
+            "environmental score moved (TheHub #60828). Null when no score is "
+            "stored: the finding is not rescorable, and the scanner's word in "
+            "its place would claim a re-reading nobody did."
+        ),
+    )
 
 
 #: `classify()`'s own vocabulary (`patchwork/triage.py`) plus the
@@ -538,6 +549,12 @@ DueFilter = Literal["overdue", "due_soon", "on_track", "no_target"]
 TriageFilter = Literal[
     "true_positive", "likely_false_positive", "needs_human_judgment", "toxic_combination"
 ]
+
+#: Where a finding's stored environmental score left its severity (#60828).
+RescoredFilter = Literal["down", "up", "unchanged", "not_rescorable"]
+
+#: `none`: findings no declared surface places (#60828).
+ComponentFilter = Literal["none"]
 
 
 class PriorDispositionOut(BaseModel):
@@ -580,6 +597,13 @@ class FindingGroupOut(BaseModel):
     severity: Severity = Field(
         description="The worst member's. Two scanners disagreeing about one "
         "CVE is common, and the lower number is never the safe one to show."
+    )
+    effective_severity: Severity | None = Field(
+        default=None,
+        description=(
+            "The worst effective severity among the occurrences that have a "
+            "stored environmental score (TheHub #60828); null when none does."
+        ),
     )
     package_name: str | None = None
     cvss_score: float | None = None
@@ -722,6 +746,24 @@ class OpenFindingsPage(BaseModel):
         default_factory=dict,
         description="Findings of this status per scan type, before filters — "
         "the same scope as `total` and `by_severity`, so each sums to `total`.",
+    )
+    by_rescoring: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Findings of this status by where the stored environmental score "
+            "left their severity: `down`, `up`, `unchanged`, `not_rescorable` "
+            "(TheHub #60828). Same scope as `total`, so it sums to it, and "
+            "each count is what `rescored=<state>` lists. `down` is verified "
+            "by the resolver's rule: a lowering fact applies only when "
+            "observed or confirmed. Scores are kept for open findings only."
+        ),
+    )
+    by_effective_severity: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Findings of this status per stored effective severity, before "
+            "filters. Not-rescorable findings are in no bucket."
+        ),
     )
     groups: list[FindingGroupOut]
     toxic_combinations: list[ToxicCombinationOut]
@@ -905,6 +947,25 @@ class ThreatModelCategoryOut(BaseModel):
     reason: str = Field(default="", description="Why this category is in this state.")
 
 
+class ComponentCoverageOut(BaseModel):
+    """How much of the open backlog the declared surfaces place (#60828)."""
+
+    open_findings: int
+    unplaced: int = Field(
+        description=(
+            "Open findings no declared surface's selectors place. They are "
+            "rescored on repository-level facts only, where lowering needs "
+            "observed evidence. The Findings tab lists them with "
+            "`component=none`."
+        )
+    )
+    surfaces: int = Field(description="Surfaces declared for this repository.")
+    located_surfaces: int = Field(
+        description="Of those, how many carry at least one selector. A surface "
+        "with none places nothing."
+    )
+
+
 class ThreatModelOut(BaseModel):
     """A STRIDE-categorized attack-surface inventory (spec 18 §6)."""
 
@@ -939,6 +1000,7 @@ class ThreatModelOut(BaseModel):
         ),
     )
     supply_chain: ThreatModelSupplyChainOut | None = None
+    component_coverage: ComponentCoverageOut | None = None
 
 
 #: What an acceptance rests on (spec 24 §3.2).
@@ -3018,7 +3080,11 @@ async def repo_threat_model(
     repo_full_name = _resolve_repo(request, repo_id)
     with request.app.state.db.session() as session:
         declared = controls.for_repo(session, repo_full_name)
-        page = _queries(request).threat_model(repo_full_name, controls=declared)
+        page = _queries(request).threat_model(
+            repo_full_name,
+            controls=declared,
+            surfaces=surface_rows(session, repo_full_name),
+        )
     return ThreatModelOut.model_validate(page)
 
 
@@ -3816,6 +3882,9 @@ async def repo_open_findings(
     fixable: Annotated[bool | None, Query()] = None,
     due: Annotated[DueFilter | None, Query()] = None,
     owner: Annotated[str | None, Query(max_length=255)] = None,
+    effective: Annotated[Severity | None, Query()] = None,
+    rescored: Annotated[RescoredFilter | None, Query()] = None,
+    component: Annotated[ComponentFilter | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -3848,6 +3917,12 @@ async def repo_open_findings(
             fixable=fixable,
             due=due,
             owner=owner,
+            effective=effective.value if effective else None,
+            rescored=rescored,
+            component=component,
+            surfaces=(
+                surface_rows(session, repo_full_name) if component is not None else None
+            ),
         )
     return OpenFindingsPage.model_validate(page)
 
@@ -4902,6 +4977,17 @@ async def threat_intel(request: Request, principal: PrincipalDep) -> list[dict[s
         return _queries(request).threat_intel(session)
 
 
+def surface_rows(session: Session, repo_full_name: str) -> list[RepoSurface]:
+    """The repository's declared surfaces, for placing findings (#60828)."""
+    return list(
+        session.scalars(
+            select(RepoSurface)
+            .where(RepoSurface.repo_full_name == repo_full_name)
+            .order_by(RepoSurface.id)
+        )
+    )
+
+
 def _resolve_repo(request: Request, repo_id: str) -> str:
     """Map an onboarding id to its repo full name.
 
@@ -5073,6 +5159,10 @@ class EnvironmentalFactOut(BaseModel):
     applied: bool
     not_applied_reason: str | None = None
     because: str = ""
+    #: The surface the fact belongs to; null for the whole repository.
+    scope: str | None = None
+    #: The control observation that verified it, when one did (#60828).
+    evidence_id: str | None = None
 
 
 class SeverityHereOut(BaseModel):
@@ -5242,6 +5332,8 @@ def _severity_here(
                 applied=f.applied,
                 not_applied_reason=f.not_applied_reason,
                 because=f.because,
+                scope=f.scope,
+                evidence_id=f.evidence_id,
             )
             for f in facts
         ],
