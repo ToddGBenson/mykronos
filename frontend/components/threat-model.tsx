@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ControlList } from "@/components/controls";
 import { CAPABILITY_META, Pill, Section, SeverityText } from "@/components/primitives";
 import type { Severity, ThreatModelCategory, ThreatModelPage } from "@/lib/api";
+import { coverageLine, type Coverage } from "@/lib/environmental-severity";
 
 /**
  * The Threat Model tab (spec 18 §6, spec 28).
@@ -31,6 +32,42 @@ const STRIDE_LABEL: Record<string, string> = {
   denial_of_service: "Denial of Service",
   elevation_of_privilege: "Elevation of Privilege",
 };
+
+/**
+ * "N open findings map to no component" (TheHub #60828), linked to exactly
+ * those findings on the Findings tab. A finding no surface places is rescored
+ * on repository-level facts only, so this line is how much of the backlog the
+ * declared surfaces leave to the coarsest reading. Counted by the backend
+ * over the same scope as the `component=none` list it links to.
+ */
+export function ComponentCoverage({
+  repoId,
+  coverage,
+}: {
+  repoId: string;
+  coverage: Coverage;
+}) {
+  const line = coverageLine(coverage);
+  return (
+    <p
+      className={`max-w-prose border-l-2 px-3 py-2 text-[14px] leading-relaxed text-ink-2 ${
+        line.link ? "border-high bg-high-wash" : "border-rule bg-paper-2"
+      }`}
+    >
+      {line.link ? (
+        <Link
+          href={`/repos/${repoId}?tab=findings&component=none`}
+          className="font-semibold text-ink underline decoration-dotted underline-offset-2 hover:text-accent"
+        >
+          {line.text}
+        </Link>
+      ) : (
+        <strong className="text-ink">{line.text}</strong>
+      )}
+      . {line.detail}
+    </p>
+  );
+}
 
 export function ThreatModelTab({
   repoId,

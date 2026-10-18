@@ -4639,6 +4639,29 @@ export interface components {
              */
             introduced_blocking: boolean;
         };
+        /**
+         * ComponentCoverageOut
+         * @description How much of the open backlog the declared surfaces place (#60828).
+         */
+        ComponentCoverageOut: {
+            /** Open Findings */
+            open_findings: number;
+            /**
+             * Unplaced
+             * @description Open findings no declared surface's selectors place. They are rescored on repository-level facts only, where lowering needs observed evidence. The Findings tab lists them with `component=none`.
+             */
+            unplaced: number;
+            /**
+             * Surfaces
+             * @description Surfaces declared for this repository.
+             */
+            surfaces: number;
+            /**
+             * Located Surfaces
+             * @description Of those, how many carry at least one selector. A surface with none places nothing.
+             */
+            located_surfaces: number;
+        };
         /** ConsultAnswerOut */
         ConsultAnswerOut: {
             /** Key */
@@ -5476,6 +5499,10 @@ export interface components {
              * @default
              */
             because: string;
+            /** Scope */
+            scope?: string | null;
+            /** Evidence Id */
+            evidence_id?: string | null;
         };
         /**
          * EstateOut
@@ -5645,6 +5672,8 @@ export interface components {
             description?: string | null;
             /** @description The worst member's. Two scanners disagreeing about one CVE is common, and the lower number is never the safe one to show. */
             severity: components["schemas"]["Severity"];
+            /** @description The worst effective severity among the occurrences that have a stored environmental score (TheHub #60828); null when none does. */
+            effective_severity?: components["schemas"]["Severity"] | null;
             /** Package Name */
             package_name?: string | null;
             /** Cvss Score */
@@ -5759,6 +5788,8 @@ export interface components {
             version_basis?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
+            /** @description The scanner's severity shifted by the bands the stored environmental score moved (TheHub #60828). Null when no score is stored: the finding is not rescorable, and the scanner's word in its place would claim a re-reading nobody did. */
+            effective_severity?: components["schemas"]["Severity"] | null;
         };
         /**
          * FindingOut
@@ -6651,6 +6682,20 @@ export interface components {
              * @description Findings of this status per scan type, before filters — the same scope as `total` and `by_severity`, so each sums to `total`.
              */
             by_capability?: {
+                [key: string]: number;
+            };
+            /**
+             * By Rescoring
+             * @description Findings of this status by where the stored environmental score left their severity: `down`, `up`, `unchanged`, `not_rescorable` (TheHub #60828). Same scope as `total`, so it sums to it, and each count is what `rescored=<state>` lists. `down` is verified by the resolver's rule: a lowering fact applies only when observed or confirmed. Scores are kept for open findings only.
+             */
+            by_rescoring?: {
+                [key: string]: number;
+            };
+            /**
+             * By Effective Severity
+             * @description Findings of this status per stored effective severity, before filters. Not-rescorable findings are in no bucket.
+             */
+            by_effective_severity?: {
                 [key: string]: number;
             };
             /** Groups */
@@ -9583,6 +9628,7 @@ export interface components {
              */
             nothing_scanned: boolean;
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
+            component_coverage?: components["schemas"]["ComponentCoverageOut"] | null;
         };
         /**
          * ThreatModelSupplyChainOut
@@ -11649,6 +11695,9 @@ export interface operations {
                 fixable?: boolean | null;
                 due?: ("overdue" | "due_soon" | "on_track" | "no_target") | null;
                 owner?: string | null;
+                effective?: components["schemas"]["Severity"] | null;
+                rescored?: ("down" | "up" | "unchanged" | "not_rescorable") | null;
+                component?: "none" | null;
                 limit?: number;
             };
             header?: never;

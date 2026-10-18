@@ -28,7 +28,7 @@ import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { Surfaces } from "@/components/surfaces";
 import { SsdfTab } from "@/components/ssdf";
 import { TestEstate } from "@/components/test-estate";
-import { ThreatModelTab } from "@/components/threat-model";
+import { ComponentCoverage, ThreatModelTab } from "@/components/threat-model";
 import {
   ALL_CAPABILITIES,
   Crumb,
@@ -621,6 +621,9 @@ async function FindingsTab({
       min_epss: query.min_epss ? Number(query.min_epss) : undefined,
       triage: query.triage,
       fixable: query.fixable === "1" ? true : undefined,
+      effective: query.effective,
+      rescored: query.rescored,
+      component: query.component,
     }),
     getRepoGuidance(repoId),
   ]);
@@ -680,6 +683,9 @@ function ExportLinks({ repoId, query }: { repoId: string; query: FindingsQuery }
     query.triage && "triage",
     query.fixable && "fixable",
     query.owner && "owner",
+    query.effective && "effective severity",
+    query.rescored && "rescoring",
+    query.component && "component",
   ].filter(Boolean);
   const href = (format: string) =>
     `/api/repos/${repoId}/findings/export?format=${format}&${params.toString()}`;
@@ -858,6 +864,11 @@ async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
           {surfaces.error}
         </p>
       )}
+      {/* Under the register it measures: how much of the open backlog
+          the declared surfaces actually place (TheHub #60828). */}
+      {result.data.component_coverage ? (
+        <ComponentCoverage repoId={repoId} coverage={result.data.component_coverage} />
+      ) : null}
       <ThreatModelTab
         repoId={repoId}
         page={result.data}

@@ -156,6 +156,12 @@ export async function getOpenFindings(
     min_epss?: number;
     triage?: string;
     fixable?: boolean;
+    /** A stored effective severity (TheHub #60828). */
+    effective?: string;
+    /** down | up | unchanged | not_rescorable (TheHub #60828). */
+    rescored?: string;
+    /** `none`: findings no declared surface places (TheHub #60828). */
+    component?: string;
   },
 ): Promise<Result<OpenFindingsPage>> {
   try {
@@ -173,6 +179,9 @@ export async function getOpenFindings(
             min_epss: query.min_epss as never,
             triage: query.triage as never,
             fixable: query.fixable as never,
+            effective: query.effective as never,
+            rescored: query.rescored as never,
+            component: query.component as never,
           },
         },
         cache: "no-store",

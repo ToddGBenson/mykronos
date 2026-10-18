@@ -179,7 +179,11 @@ function SurfaceRow({
   }
 
   return (
-    <div className="flex flex-wrap items-baseline gap-2 border-b border-rule-soft py-1 last:border-0">
+    <div
+      // The anchor a finding's "Severity here" facts link to (TheHub #60828).
+      id={`surface-${row.id}`}
+      className="flex scroll-mt-4 flex-wrap items-baseline gap-2 border-b border-rule-soft py-1 last:border-0 target:bg-accent-wash"
+    >
       <span className="font-mono text-[12px] text-ink">{row.name}</span>
       <span
         className={`font-mono text-[11px] ${
