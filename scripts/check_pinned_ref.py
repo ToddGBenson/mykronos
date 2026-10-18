@@ -21,11 +21,15 @@ message names the missing thing and the fix (cut a new tag).
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib
 import importlib.metadata
 import io
 import json
+import re
+import subprocess
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 #: Modules a pipeline or workflow template invokes with `python -m`.
 #:
@@ -153,6 +157,138 @@ def _missing_adapters() -> list[str]:
     return missing
 
 
+#: `(capability, tool)` pairs the GitHub Actions workflow templates upload,
+#: rendered with their defaults (`workflow-templates/*.j2`). The Actions
+#: workflows install the runner from a DIFFERENT pin from the one this script
+#: introspects: `mykronos_package_spec` and `upload_action_ref` in
+#: `backend/mykronos/config.py`, stamped into every rendered workflow.
+#:
+#: That is the fourth way the pin goes stale (#337). Concourse moved to v14 and
+#: this check went green, while the Actions pins sat on v8 -- a commit with no
+#: ShellCheck and no PSScriptAnalyzer adapter -- so the `sast-shell` and
+#: `sast-powershell` templates installed a runner that could not normalise
+#: their output. `test_pinned_ref_check` renders the templates and fails if
+#: this list stops matching them.
+ACTIONS_TEMPLATE_ADAPTERS: tuple[tuple[str, str], ...] = (
+    ("ai", "mykronos-ai-checks"),
+    ("atlas", "osv-scanner"),
+    ("cloud", "prowler"),
+    ("containers", "trivy"),
+    ("dast", "zap"),
+    ("functional", "junit"),
+    ("iac", "checkov"),
+    ("qa", "junit"),
+    ("sast", "codeql"),
+    ("sast", "psscriptanalyzer"),
+    ("sast", "shellcheck"),
+    ("secrets", "gitleaks"),
+    ("unit", "junit"),
+)
+
+#: The two settings that pin the runner every Actions workflow installs.
+ACTIONS_PIN_SETTINGS: tuple[str, ...] = ("mykronos_package_spec", "upload_action_ref")
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_CONFIG_SOURCE = _REPO_ROOT / "backend" / "mykronos" / "config.py"
+_REGISTRY_PATH = "backend/mykronos/adapters/registry.py"
+_SHA = re.compile(r"@([0-9a-f]{40})\b")
+
+
+def actions_pins(config_source: str | None = None) -> dict[str, str]:
+    """The commit each Actions pin names, read from the SOURCE checkout.
+
+    From the file, not from `mykronos.config`: in the pin-check job the
+    importable package is the Concourse pin, whose settings are whatever that
+    tag shipped -- not the ones this checkout will render into workflows.
+    """
+    source = config_source if config_source is not None else _CONFIG_SOURCE.read_text("utf-8")
+    pins: dict[str, str] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)):
+            continue
+        if node.target.id not in ACTIONS_PIN_SETTINGS or not isinstance(node.value, ast.Call):
+            continue
+        for keyword in node.value.keywords:
+            if keyword.arg == "default" and isinstance(keyword.value, ast.Constant):
+                match = _SHA.search(str(keyword.value.value))
+                if match:
+                    pins[node.target.id] = match.group(1)
+    return pins
+
+
+def registry_pairs(registry_source: str) -> set[tuple[str, str]]:
+    """The `(capability, tool)` pairs a version of `registry.py` registers.
+
+    Parsed rather than imported: the commit being asked about is not the one
+    installed. Every entry is an `AdapterSpec("<capability>", "<tool>", ...)`
+    call, which the registry's own docstring calls "a list you can read".
+    """
+    pairs: set[tuple[str, str]] = set()
+    for node in ast.walk(ast.parse(registry_source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AdapterSpec"
+            and len(node.args) >= 2
+            and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args[:2])
+        ):
+            pairs.add((node.args[0].value, node.args[1].value))
+    return pairs
+
+
+def registry_source_at(commit: str) -> str | None:
+    """`registry.py` as it is at `commit`, or None if it cannot be read here.
+
+    The local object store first (a full clone has every tagged commit), then
+    the raw URL `_missing_scripts` already uses. Fails open, for that
+    function's reason: "GitHub was slow" must not turn this red.
+    """
+    try:
+        shown = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "show", f"{commit}:{_REGISTRY_PATH}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        if shown.returncode == 0 and shown.stdout:
+            return shown.stdout
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    try:
+        import httpx2
+
+        url = f"https://raw.githubusercontent.com/ToddGBenson/mykronos/{commit}/{_REGISTRY_PATH}"
+        with httpx2.Client(timeout=15.0, follow_redirects=True) as client:
+            response = client.get(url)
+        if response.status_code == 200:
+            return response.text
+    except Exception:  # noqa: BLE001 - any transport failure means "cannot determine"
+        pass
+    return None
+
+
+def _actions_pin_problems() -> list[str]:
+    """Which template adapters each Actions pin's commit does not register."""
+    problems: list[str] = []
+    for setting, commit in sorted(actions_pins().items()):
+        source = registry_source_at(commit)
+        if source is None:
+            print(f"Cannot read the registry at {setting}'s pin ({commit[:12]}); skipping it.")
+            continue
+        have = registry_pairs(source)
+        problems.extend(
+            f"config.py `{setting}` pins {commit[:12]}, which has no adapter for "
+            f"capability '{capability}' with tool '{tool}' - every GitHub Actions "
+            f"workflow uploading it fails at upload (#337)"
+            for capability, tool in ACTIONS_TEMPLATE_ADAPTERS
+            if (capability, tool) not in have
+        )
+    return problems
+
+
 def _installed_commit() -> str:
     """The commit the installed package was built from, if pip recorded one."""
     try:
@@ -261,6 +397,7 @@ def check(commit: str = "") -> list[str]:
 
     problems.extend(_missing_scripts(commit))
     problems.extend(_missing_adapters())
+    problems.extend(_actions_pin_problems())
 
     return problems
 
@@ -309,7 +446,9 @@ def main(argv: list[str] | None = None) -> int:
         "Cut a new tag at a commit that has these, and point `mykronos-ref` at "
         "it in all three set-pipeline scripts. Do not move the existing tag: a "
         "pin that moves is not a pin, and a scan has to be reproducible "
-        "(D-051, D-074)."
+        "(D-051, D-074). A `config.py` line is the GitHub Actions pin instead: "
+        "move `mykronos_package_spec` and `upload_action_ref` together to the "
+        "commit of a tag that has the adapter (#337)."
     )
     return 1
 

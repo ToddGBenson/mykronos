@@ -441,7 +441,7 @@ class Settings(BaseSettings):
     mykronos_package_spec: str = Field(
         default=(
             "mykronos @ git+https://github.com/ToddGBenson/mykronos"
-            "@cce7495afafb3f22b014847bd91624ced9b8e2dd"  # v8
+            "@8e2e41261b9f3695a1ab3616be2db7d8095cd486"  # v14
             "#subdirectory=backend"
         ),
         description=(
@@ -667,7 +667,7 @@ class Settings(BaseSettings):
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"
-            "cce7495afafb3f22b014847bd91624ced9b8e2dd"  # v8
+            "8e2e41261b9f3695a1ab3616be2db7d8095cd486"  # v14
         ),
         description=(
             "Commit-pinned reference to the shared upload composite action "
@@ -690,7 +690,13 @@ class Settings(BaseSettings):
             "WHEN UPDATING: v1 is an ANNOTATED tag, so the tag-object SHA "
             "(926d214…) is NOT the commit. Dereference it — "
             "`gh api repos/ToddGBenson/mykronos/commits/v1 --jq .sha` — or you "
-            "pin a valid-looking 40-char ref that never resolves as a commit."
+            "pin a valid-looking 40-char ref that never resolves as a commit.\n\n"
+            "It went stale a third way (#337): Concourse moved to v14 while "
+            "this stayed on v8, which has no ShellCheck or PSScriptAnalyzer "
+            "adapter, so the `sast-shell` and `sast-powershell` workflows "
+            "failed at upload. `scripts/check_pinned_ref.py` now reads this "
+            "commit's adapter registry and fails if any template's "
+            "(capability, tool) is missing from it."
         ),
     )
 
