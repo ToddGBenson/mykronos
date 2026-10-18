@@ -2714,7 +2714,11 @@ jobs:
               - -ec
               - |
                 SHA=$(cat meta/sha)
-                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --destination "${REGISTRY}/mykronos-frontend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
+                # --build-arg MYKRONOS_BUILD_SHA: as publish-backend does
+                # (#361), so the frontend image can name its own commit too
+                # (#382). frontend/Dockerfile declares the ARG in its runtime
+                # stage.
+                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --build-arg "MYKRONOS_BUILD_SHA=${SHA}"                   --destination "${REGISTRY}/mykronos-frontend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
 
   # -- Stage 5: the images this pipeline just published --------------------
   #
