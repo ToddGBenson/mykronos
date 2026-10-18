@@ -8743,6 +8743,8 @@ export interface components {
              * @default
              */
             repo_id: string;
+            /** Held Behind */
+            held_behind?: string[];
             action?: components["schemas"]["BriefingActionOut"] | null;
         };
         /** StatusChange */
