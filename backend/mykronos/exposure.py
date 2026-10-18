@@ -319,6 +319,7 @@ def summary(db: Any) -> list[dict[str, Any]]:
                 "url": row.url,
                 "repo_full_name": row.repo_full_name,
                 "label": row.label,
+                "surface_id": row.surface_id,
                 "last_status": row.last_status,
                 "last_probed_at": row.last_probed_at.isoformat() if row.last_probed_at else None,
                 "last_detail": row.last_detail,

@@ -1046,7 +1046,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Repo Controls
+         * @description The controls register as a list (TheHub #60825).
+         *
+         *     The Threat Model tab reads controls inside their STRIDE categories; an
+         *     agent declaring one needs the flat list and the vocabulary.
+         */
+        get: operations["repo_controls_api_dashboard_repos__repo_id__controls_get"];
         put?: never;
         /**
          * Declare Control
@@ -1117,6 +1124,31 @@ export interface paths {
          *     is the part that matters.
          */
         delete: operations["withdraw_control_api_dashboard_repos__repo_id__controls__control_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/threat-model/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Threat Model
+         * @description Re-read the repository's `.sdlc/threat-model.yaml` now, instead of
+         *     waiting for the `threat-model-sync` job (spec 28 §8).
+         *
+         *     Upserts the rows the manifest declares (`declared_by: manifest`) and
+         *     removes the ones it no longer does. Never touches a row declared through
+         *     this API. Audited as `threat_model.sync`.
+         */
+        post: operations["sync_threat_model_api_dashboard_repos__repo_id__threat_model_sync_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4656,6 +4688,28 @@ export interface components {
              * Format: date-time
              */
             declared_at: string;
+            /**
+             * Applies To Surface Id
+             * @description The surface this control guards, when it guards one rather than the whole repository (TheHub #60825). Null is repository scope.
+             */
+            applies_to_surface_id?: string | null;
+            /**
+             * Declared Via
+             * @description `manifest` when `.sdlc/threat-model.yaml` declared it. Such a control is read-only here: it changes by pull request.
+             * @default api
+             * @enum {string}
+             */
+            declared_via: "api" | "manifest";
+            /**
+             * Read Only
+             * @default false
+             */
+            read_only: boolean;
+            /**
+             * Manifest Key
+             * @description The control's `id` in the manifest, if it has one.
+             */
+            manifest_key?: string | null;
         };
         /** ControlRequest */
         ControlRequest: {
@@ -4674,6 +4728,11 @@ export interface components {
              * @default
              */
             evidence_ref: string;
+            /**
+             * Applies To Surface Id
+             * @description A surface on this repository the control guards (TheHub #60825), e.g. the entry point a perimeter gate sits in front of. Omitted is repository scope.
+             */
+            applies_to_surface_id?: string | null;
         };
         /**
          * ControlStateOut
@@ -4704,6 +4763,19 @@ export interface components {
              * @description CIS Software Supply Chain Security Benchmark v1.0 §1.1 recommendations this control speaks to. A cross-reference on the same footing as an SSDF practice's `nist_800_53` families, and not a claim: whether a setting as configured satisfies a recommendation is an assessor's judgement. Deliberately not totalled into a benchmark score — fourteen settings reach fourteen of nineteen recommendations, and a percentage built from that would be a number nobody can check.
              */
             cis_supply_chain?: string[];
+        };
+        /**
+         * ControlsOut
+         * @description Every declared control on one repository, API and manifest alike.
+         */
+        ControlsOut: {
+            /** Controls */
+            controls: components["schemas"]["ControlOut"][];
+            /**
+             * Kinds
+             * @description `controls.CONTROL_KINDS`, in order.
+             */
+            kinds: string[];
         };
         /** CreateRequest */
         CreateRequest: {
@@ -5104,6 +5176,11 @@ export interface components {
              * @default
              */
             label: string;
+            /**
+             * Surface Id
+             * @description The declared surface (usually an entry point) this URL is the public face of (TheHub #60825). Must belong to `repo_full_name`.
+             */
+            surface_id?: string | null;
         };
         /** EntriesPage */
         EntriesPage: {
@@ -8535,6 +8612,35 @@ export interface components {
             unknown: components["schemas"]["WorkUnknownOut"][];
         };
         /**
+         * SelectorsModel
+         * @description Where a surface is, so a finding can be placed in it (TheHub #60825).
+         *
+         *     Each list is one way a capability locates its findings; see
+         *     `surface_match` for which capability reads which.
+         */
+        SelectorsModel: {
+            /**
+             * Paths
+             * @description Repository path globs (`backend/**`), for SAST, secrets, IaC and SCA.
+             */
+            paths?: string[];
+            /**
+             * Images
+             * @description Image repositories (`toddgbenson/mykronos-backend`), for containers.
+             */
+            images?: string[];
+            /**
+             * Addresses
+             * @description `host:port` (`10.0.0.5:5433`, `*:22`), for network and DAST.
+             */
+            addresses?: string[];
+            /**
+             * Hostnames
+             * @description DNS names (`app.example.net`, `*.example.net`), for DAST and network.
+             */
+            hostnames?: string[];
+        };
+        /**
          * Severity
          * @enum {string}
          */
@@ -8918,6 +9024,36 @@ export interface components {
              * Format: date-time
              */
             declared_at: string;
+            selectors?: components["schemas"]["SelectorsModel"];
+            /**
+             * Cr
+             * @description Confidentiality Requirement override (assets only).
+             */
+            cr?: ("H" | "M" | "L") | null;
+            /**
+             * Ir
+             * @description Integrity Requirement override (assets only).
+             */
+            ir?: ("H" | "M" | "L") | null;
+            /**
+             * Ar
+             * @description Availability Requirement override (assets only).
+             */
+            ar?: ("H" | "M" | "L") | null;
+            /**
+             * Declared Via
+             * @description `manifest` when `.sdlc/threat-model.yaml` declared it. Such a surface is read-only here: it changes by pull request.
+             * @default api
+             * @enum {string}
+             */
+            declared_via: "api" | "manifest";
+            /**
+             * Read Only
+             * @default false
+             */
+            read_only: boolean;
+            /** Manifest Key */
+            manifest_key?: string | null;
         };
         /** SurfaceRequest */
         SurfaceRequest: {
@@ -8950,6 +9086,23 @@ export interface components {
              * @default
              */
             evidence_ref: string;
+            /** @description Where this surface is (TheHub #60825). Omitted or empty matches no finding, which is the honest default for a surface nobody located. */
+            selectors?: components["schemas"]["SelectorsModel"] | null;
+            /**
+             * Cr
+             * @description Confidentiality Requirement override, assets only. Omitted, the environmental resolver derives one from sensitivity.
+             */
+            cr?: ("H" | "M" | "L") | null;
+            /**
+             * Ir
+             * @description Integrity Requirement override, assets only.
+             */
+            ir?: ("H" | "M" | "L") | null;
+            /**
+             * Ar
+             * @description Availability Requirement override, assets only.
+             */
+            ar?: ("H" | "M" | "L") | null;
         };
         /** SurfacesOut */
         SurfacesOut: {
@@ -8967,6 +9120,17 @@ export interface components {
             unknowns: number;
             /** Complete */
             complete: boolean;
+        };
+        /** SyncCountsOut */
+        SyncCountsOut: {
+            /** Added */
+            added: number;
+            /** Updated */
+            updated: number;
+            /** Removed */
+            removed: number;
+            /** Unchanged */
+            unchanged: number;
         };
         /** TemplateOut */
         TemplateOut: {
@@ -9149,6 +9313,31 @@ export interface components {
              * @default 0
              */
             vulnerable_dependency_count: number;
+        };
+        /**
+         * ThreatModelSyncOut
+         * @description What re-reading `.sdlc/threat-model.yaml` did (TheHub #60825).
+         */
+        ThreatModelSyncOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Path
+             * @description Always `.sdlc/threat-model.yaml`, on the default branch.
+             */
+            path: string;
+            /**
+             * State
+             * @description `invalid` and `unreadable` change nothing: a typo must not delete a threat model, and a failed read is not evidence of absence. `absent` removes the manifest's rows; API-declared rows stay.
+             * @enum {string}
+             */
+            state: "valid" | "invalid" | "absent" | "unreadable";
+            /** Error */
+            error?: string | null;
+            /** Applied */
+            applied: boolean;
+            surfaces: components["schemas"]["SyncCountsOut"];
+            controls: components["schemas"]["SyncCountsOut"];
         };
         /**
          * TokenDeliveryOut
@@ -10880,6 +11069,37 @@ export interface operations {
             };
         };
     };
+    repo_controls_api_dashboard_repos__repo_id__controls_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     declare_control_api_dashboard_repos__repo_id__controls_post: {
         parameters: {
             query?: never;
@@ -10965,6 +11185,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_threat_model_api_dashboard_repos__repo_id__threat_model_sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatModelSyncOut"];
+                };
             };
             /** @description Validation Error */
             422: {

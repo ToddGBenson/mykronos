@@ -823,6 +823,12 @@ class PublicEndpoint(Base):
     last_probed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     last_detail: Mapped[str] = mapped_column(Text, default="")
     observations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    #: The `RepoSurface` (usually an entry point) this URL is the public face
+    #: of (TheHub #60825). Nullable and not a database foreign key, for the
+    #: reason `RepoControl.applies_to_surface_id` gives: a surface withdrawn
+    #: while an endpoint still points at it nulls the link
+    #: (`surfaces.remove`) rather than refusing the withdrawal.
+    surface_id: Mapped[str | None] = mapped_column(String(36), default=None)
 
 
 class RepoSurface(Base):
@@ -877,6 +883,24 @@ class RepoSurface(Base):
     #: `RepoControl.evidence_ref` is: requiring it means the register only ever
     #: holds what somebody had time to document.
     evidence_ref: Mapped[str] = mapped_column(String(512), default="")
+    #: What a finding has to look like to be *in* this surface (TheHub
+    #: #60825): `{"paths": [...], "images": [...], "addresses": [...],
+    #: "hostnames": [...]}`, validated and normalised by
+    #: `surface_match.normalize_selectors`. Empty matches nothing, which is
+    #: the honest default: a surface nobody has located is not a surface every
+    #: finding is in.
+    selectors: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: CVSS 3.1 Security Requirements, per asset: H | M | L, or null for "not
+    #: overridden" (the environmental resolver then derives one from
+    #: sensitivity or the repository's RiskProfile). Only an asset carries
+    #: them; a requirement on a way in is not a property anybody can act on.
+    cr: Mapped[str | None] = mapped_column(String(1), default=None)
+    ir: Mapped[str | None] = mapped_column(String(1), default=None)
+    ar: Mapped[str | None] = mapped_column(String(1), default=None)
+    #: The `id` this row has in `.sdlc/threat-model.yaml`, when the manifest
+    #: declared it (`declared_by == "manifest"`). The sync's upsert key, and
+    #: null for a row declared through the API.
+    manifest_key: Mapped[str | None] = mapped_column(String(128), default=None)
     declared_by: Mapped[str] = mapped_column(String(255), default="")
     declared_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -928,8 +952,7 @@ class RepoControl(Base):
     #: rather than a control, and declaring it four times is both honest and
     #: individually verifiable.
     stride: Mapped[str] = mapped_column(String(32), index=True)
-    #: authentication | authorization | input_validation | output_encoding |
-    #: secrets_management | logging | rate_limiting | encryption
+    #: One of `controls.CONTROL_KINDS`.
     kind: Mapped[str] = mapped_column(String(32))
     description: Mapped[str] = mapped_column(Text, default="")
     #: A file path, a route, a policy document, a test id. Optional on
@@ -942,6 +965,15 @@ class RepoControl(Base):
     #: one. Empty means nothing in the platform can check it, which the tab
     #: says rather than implying the control is verified.
     verified_by_capability: Mapped[str] = mapped_column(String(32), default="")
+    #: The surface this control guards, when it guards one rather than the
+    #: whole repository (TheHub #60825) — a perimeter gate in front of one
+    #: entry point, not every port the repository has. Nullable and not a
+    #: database foreign key: withdrawing the surface nulls this
+    #: (`surfaces.remove`), so the control falls back to repository scope
+    #: rather than blocking the withdrawal or vanishing with it.
+    applies_to_surface_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    #: The control's `id` in `.sdlc/threat-model.yaml`, for a manifest row.
+    manifest_key: Mapped[str | None] = mapped_column(String(128), default=None)
     #: When a person last confirmed this is still true. A mitigation nobody has
     #: checked since last year is a belief, and the tab should say which of the
     #: two it is showing.

@@ -488,3 +488,27 @@ class TestModuleGuards:
                 stride="spoofing",
                 kind="vibes",
             )
+
+    def test_every_kind_has_typical_stride_categories_that_exist(self) -> None:
+        """TheHub #60825: the manifest defaults `stride` from this map, so a
+        kind missing from it would fail a sync rather than a test."""
+        assert set(controls.TYPICAL_STRIDE) == set(controls.CONTROL_KINDS)
+        for kind, categories in controls.TYPICAL_STRIDE.items():
+            assert categories, kind
+            assert set(categories) <= set(STRIDE_CATEGORIES), kind
+
+    @pytest.mark.parametrize(
+        ("kind", "capability"),
+        [
+            ("perimeter_gate", "dast"),
+            ("network_segmentation", "network"),
+            ("security_headers", "dast"),
+            ("container_hardening", "containers"),
+            ("waf", ""),
+        ],
+    )
+    def test_the_rescoring_kinds_name_what_could_contradict_them(
+        self, kind: str, capability: str
+    ) -> None:
+        assert kind in controls.CONTROL_KINDS
+        assert controls.CONTRADICTED_BY[kind] == capability

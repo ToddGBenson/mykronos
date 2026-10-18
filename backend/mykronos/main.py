@@ -592,6 +592,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("Governance sweep: %s", result.summary())
 
+        async def _threat_model_sync() -> None:
+            # `.sdlc/threat-model.yaml` from every default branch (spec 28 §8).
+            # HTTP-bound, one call per repository, like governance.
+            from mykronos import threat_model_manifest
+
+            result = await threat_model_manifest.sweep(
+                app.state.db, app.state.github_factory
+            )
+            logger.info("Threat-model sync: %s", result.summary())
+
         async def _stale_drafts() -> None:
             await close_superseded_fixes(
                 app.state.db,
@@ -685,6 +695,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
+            # Only against a real GitHub, for the reason `installations` is:
+            # the fake answers nothing for the demo's placeholder installs.
+            *(
+                []
+                if isinstance(app.state.github_factory, FakeGitHubClientFactory)
+                else [
+                    (
+                        "threat-model-sync",
+                        settings.threat_model_sync_interval_seconds,
+                        _threat_model_sync,
+                    )
+                ]
+            ),
             ("pull-request-stamps", 120, _pull_request_stamps),
             ("exposure", settings.exposure_probe_interval_seconds, _exposure),
             # Only with a Concourse to read. Without one the job would fail

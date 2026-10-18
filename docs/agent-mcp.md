@@ -84,10 +84,14 @@ id-only (TheHub #60739). `repos()` maps one to the other. `accept` and `request_
 | `scan_run(scan_run_id)` | `GET /api/dashboard/scan-runs/{id}` | One run and what it changed against the previous run on its lane. A `lane_stalled` work item cites its latest run. `new` is exact; the rest are lower bounds unless `exact`. `raw_files` are listed, not returned; fetch one from `/api/dashboard/scan-runs/{id}/raw/{filename}` with the same credential (refused to viewers). |
 | `playbook(kind)` | `GET /api/agent/playbooks/{kind}` | How to work one kind of work item (spec 36 §5): ordered steps, the check between them, when to stop and when to escalate. A work item's `playbook` is `<kind>@<version>`; pass the kind. An unknown kind is the API's 404, naming the kinds; an unloadable playbooks file is its 503. |
 | `scorecard(family?, instance?)` | `GET /api/agent/scorecard` | The agents' track record per model family and per instance (spec 36 §6). Both filters are passed through. A metric the records cannot support is `unavailable`, never zero. |
+| `surfaces(repo_id)` | `GET /api/dashboard/repos/{id}/surfaces` | Assets, entry points, trust boundaries, each with `selectors` and CR/IR/AR overrides (TheHub #60825). `read_only: true` rows come from the repository's `.sdlc/threat-model.yaml`. |
+| `controls(repo_id)` | `GET /api/dashboard/repos/{id}/controls` | The controls register as a flat list, with the kinds a control can be. |
 | `claim(finding_id)` | `POST /api/dashboard/triage/{id}/claim` | Claimed in the agent's actor name. |
 | `disposition(finding_id, status, reason)` | `PATCH /api/dashboard/findings/{id}/status`, or `POST …/disposition-requests` | Reads severity first. Critical or high goes to the governed route (`finding_disposition`, #713). `status` is `false_positive` or `suppressed`. |
 | `accept(...)` | `POST /api/risk-acceptances` | The route's own rules: a deviation type (the reason code), a review date (`requested_until`, required, since this route has no indefinite option), a named person as risk owner, and a milestone that ends the weakness. |
 | `request_pr_review(repo, number, statement)` | `POST /api/approvals/pull-requests` | |
+| `declare_surface(repo_id, kind, name, ...)` | `POST /api/dashboard/repos/{id}/surfaces` | Direct write in the agent's name, audited `surface.declare`. Takes `selectors` and, for an asset, `cr`/`ir`/`ar`. Where the repository has a `.sdlc/threat-model.yaml`, a pull request to it is the better route (D4). |
+| `declare_control(repo_id, stride, kind, ...)` | `POST /api/dashboard/repos/{id}/controls` | Direct write, audited `control.declare`. Optional `applies_to_surface_id`. |
 
 Every write tool takes `dry_run`. A dry run returns the method, path, body and `governed_by` the real
 call would meet, and sends no write. `disposition` still reads the finding, because its route

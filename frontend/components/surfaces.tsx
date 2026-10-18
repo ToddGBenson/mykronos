@@ -5,6 +5,15 @@ import { useState, useTransition } from "react";
 
 import { EmptyState, Label, Pill } from "@/components/primitives";
 import type { RepoSurfaces, Surface } from "@/lib/api";
+import {
+  requirementsLabel,
+  SELECTOR_KINDS,
+  SELECTOR_LABELS,
+  SELECTOR_PLACEHOLDERS,
+  selectorChips,
+  selectorsFromInputs,
+  type SelectorKind,
+} from "@/lib/selectors";
 
 /**
  * Assets, entry points and trust boundaries (B-029).
@@ -34,6 +43,7 @@ const KINDS = [
 ] as const;
 
 const EXPOSURES = ["unknown", "internet", "internal", "local"] as const;
+const LEVELS = ["", "H", "M", "L"] as const;
 const SENSITIVITIES = [
   "unknown",
   "pii",
@@ -62,6 +72,7 @@ export function Surfaces({ repoId, data }: { repoId: string; data: RepoSurfaces 
             incomplete — a model needs all three
           </span>
         ) : null}
+        <ManifestSync repoId={repoId} />
       </div>
 
       <p className="max-w-prose text-[12px] leading-relaxed text-ink-2">
@@ -195,17 +206,113 @@ function SurfaceRow({
       {row.evidence_ref ? (
         <span className="font-mono text-[11px] text-ink-3">{row.evidence_ref}</span>
       ) : null}
-      <button
-        type="button"
-        onClick={() => void withdraw()}
-        disabled={pending}
-        title="Withdraw this declaration — a correction, not a deletion of evidence"
-        className="ml-auto border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-critical hover:text-critical disabled:opacity-40"
-      >
-        withdraw
-      </button>
+      {requirementsLabel(row) ? (
+        <span
+          className="font-mono text-[11px] text-ink-2"
+          title="CVSS Security Requirements this asset overrides. A dash is derived, not set."
+        >
+          {requirementsLabel(row)}
+        </span>
+      ) : null}
+      {row.read_only ? (
+        <span title="Declared in .sdlc/threat-model.yaml. Change it there, by pull request.">
+          <Pill tone="muted">manifest</Pill>
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void withdraw()}
+          disabled={pending}
+          title="Withdraw this declaration — a correction, not a deletion of evidence"
+          className="ml-auto border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-critical hover:text-critical disabled:opacity-40"
+        >
+          withdraw
+        </button>
+      )}
+      <SelectorLine row={row} />
       {error ? <span className="text-[11px] text-critical">{error}</span> : null}
     </div>
+  );
+}
+
+/**
+ * Where the surface is (TheHub #60825). A surface with no selectors is shown
+ * as "not located" rather than nothing: it matches no finding, so the
+ * findings above cannot be placed inside it.
+ */
+function SelectorLine({ row }: { row: Surface }) {
+  const chips = selectorChips(row.selectors);
+  if (chips.length === 0) {
+    return (
+      <span className="w-full font-mono text-[11px] text-ink-3">
+        not located — no selectors, so no finding is placed in it
+      </span>
+    );
+  }
+  return (
+    <span className="flex w-full flex-wrap gap-1">
+      {chips.map((chip) => (
+        <span
+          key={`${chip.kind}:${chip.value}`}
+          className="border border-rule-soft px-1 font-mono text-[11px] text-ink-2"
+          title={SELECTOR_LABELS[chip.kind]}
+        >
+          <span className="text-ink-3">{SELECTOR_LABELS[chip.kind]} </span>
+          {chip.value}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Re-read `.sdlc/threat-model.yaml` now rather than waiting for the job. An
+ * invalid file changes nothing and the reason is shown, word for word.
+ */
+function ManifestSync({ repoId }: { repoId: string }) {
+  const router = useRouter();
+  const [message, setMessage] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  async function sync() {
+    setMessage(null);
+    const response = await fetch(
+      `/api/repos/${encodeURIComponent(repoId)}/threat-model/sync`,
+      { method: "POST" },
+    );
+    const body = (await response.json().catch(() => null)) as {
+      state?: string;
+      error?: string | null;
+      applied?: boolean;
+      detail?: string;
+    } | null;
+    if (!response.ok || !body) {
+      setMessage(body?.detail ?? `The sync was refused (HTTP ${response.status}).`);
+      return;
+    }
+    setMessage(
+      body.applied
+        ? body.state === "absent"
+          ? "No .sdlc/threat-model.yaml on the default branch."
+          : "Synced from .sdlc/threat-model.yaml."
+        : `Not applied (${body.state}): ${body.error ?? "no reason given"}`,
+    );
+    startTransition(() => router.refresh());
+  }
+
+  return (
+    <span className="ml-auto flex items-baseline gap-2">
+      {message ? <span className="text-[11px] text-ink-3">{message}</span> : null}
+      <button
+        type="button"
+        onClick={() => void sync()}
+        disabled={pending}
+        title="Re-read .sdlc/threat-model.yaml from the default branch"
+        className="border border-rule px-1.5 py-0.5 font-mono text-[11px] text-ink-3 hover:border-accent hover:text-accent disabled:opacity-40"
+      >
+        sync manifest
+      </button>
+    </span>
   );
 }
 
@@ -217,6 +324,14 @@ function DeclareForm({ repoId }: { repoId: string }) {
   const [description, setDescription] = useState("");
   const [exposure, setExposure] = useState("unknown");
   const [sensitivity, setSensitivity] = useState("unknown");
+  const [selectorInputs, setSelectorInputs] = useState<Partial<Record<SelectorKind, string>>>(
+    {},
+  );
+  const [levels, setLevels] = useState<{ cr: string; ir: string; ar: string }>({
+    cr: "",
+    ir: "",
+    ar: "",
+  });
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -225,7 +340,23 @@ function DeclareForm({ repoId }: { repoId: string }) {
     const response = await fetch(`/api/repos/${encodeURIComponent(repoId)}/surfaces`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, name, description, exposure, sensitivity }),
+      body: JSON.stringify({
+        kind,
+        name,
+        description,
+        exposure,
+        sensitivity,
+        selectors: selectorsFromInputs(selectorInputs),
+        // Only an asset carries Security Requirements; the backend refuses
+        // them anywhere else, so they are not sent.
+        ...(kind === "asset"
+          ? {
+              cr: levels.cr || null,
+              ir: levels.ir || null,
+              ar: levels.ar || null,
+            }
+          : {}),
+      }),
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { detail?: string } | null;
@@ -234,6 +365,8 @@ function DeclareForm({ repoId }: { repoId: string }) {
     }
     setName("");
     setDescription("");
+    setSelectorInputs({});
+    setLevels({ cr: "", ir: "", ar: "" });
     setOpen(false);
     startTransition(() => router.refresh());
   }
@@ -314,6 +447,54 @@ function DeclareForm({ repoId }: { repoId: string }) {
           className="min-w-[16rem] flex-1 border border-rule bg-paper px-1.5 py-1 font-mono text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
         />
       </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {SELECTOR_KINDS.map((selector) => (
+          <label
+            key={selector}
+            className="flex min-w-[14rem] flex-1 items-center gap-1 font-mono text-[11px] text-ink-3"
+          >
+            {SELECTOR_LABELS[selector]}
+            <input
+              type="text"
+              value={selectorInputs[selector] ?? ""}
+              onChange={(event) =>
+                setSelectorInputs({ ...selectorInputs, [selector]: event.target.value })
+              }
+              placeholder={SELECTOR_PLACEHOLDERS[selector]}
+              className="flex-1 border border-rule bg-paper px-1.5 py-1 text-[12px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
+            />
+          </label>
+        ))}
+      </div>
+
+      {kind === "asset" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {(["cr", "ir", "ar"] as const).map((metric) => (
+            <label
+              key={metric}
+              className="flex items-center gap-1 font-mono text-[11px] text-ink-3"
+            >
+              {metric.toUpperCase()}
+              <select
+                value={levels[metric]}
+                onChange={(event) => setLevels({ ...levels, [metric]: event.target.value })}
+                className="border border-rule bg-paper p-1 text-[12px] text-ink"
+              >
+                {LEVELS.map((value) => (
+                  <option key={value} value={value}>
+                    {value || "derive"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+          <span className="font-mono text-[11px] text-ink-3">
+            Leave as <span className="text-ink-2">derive</span> unless you know the
+            requirement: it is then taken from what the asset holds.
+          </span>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
         <button

@@ -59,12 +59,23 @@ EXPECTED_TOOLS = {
     "scan_run",
     "playbook",
     "scorecard",
+    "surfaces",
+    "controls",
     "claim",
     "disposition",
     "accept",
     "request_pr_review",
+    "declare_surface",
+    "declare_control",
 }
-WRITE_TOOLS = {"claim", "disposition", "accept", "request_pr_review"}
+WRITE_TOOLS = {
+    "claim",
+    "disposition",
+    "accept",
+    "request_pr_review",
+    "declare_surface",
+    "declare_control",
+}
 #: #319 and spec 36 §4: what no tool may do, and so what no tool may say.
 FORBIDDEN_VERBS = ("dispatch", "revoke", "purge", "grant", "decide", "approve", "mint", "delete")
 
@@ -159,6 +170,21 @@ def test_the_literals_match_the_platform() -> None:
     assert get_args(tools.PremiseType) == ra.PREMISE_TYPES
 
 
+def test_the_threat_model_literals_match_the_register() -> None:
+    """TheHub #60825: an agent reads these in the schema; the routes validate
+    against the module tuples. They must be the same list."""
+    from mykronos import controls, surfaces
+    from mykronos.dashboard import STRIDE_CATEGORIES
+    from mykronos.surface_match import REQUIREMENT_LEVELS
+
+    assert get_args(tools.SurfaceKind) == surfaces.SURFACE_KINDS
+    assert get_args(tools.Exposure) == surfaces.EXPOSURES
+    assert get_args(tools.Sensitivity) == surfaces.SENSITIVITIES
+    assert get_args(tools.RequirementLevel) == REQUIREMENT_LEVELS
+    assert get_args(tools.ControlKind) == controls.CONTROL_KINDS
+    assert get_args(tools.StrideCategory) == STRIDE_CATEGORIES
+
+
 def test_every_named_duty_is_in_the_approval_policy() -> None:
     policy = yaml.safe_load((REPO_ROOT / "approval-policy-v1.yaml").read_text(encoding="utf-8"))
     named = {d for d in tools.GOVERNED_MEANS if d is not None}
@@ -226,6 +252,10 @@ EVERY_TOOL_CALL: list[tuple[str, dict[str, Any]]] = [
     ("disposition", {"finding_id": "f1", "status": "false_positive", "reason": "x"}),
     ("accept", ACCEPT_ARGS),
     ("request_pr_review", {"repo": "acme/api", "number": 7}),
+    ("surfaces", {"repo_id": "r1"}),
+    ("controls", {"repo_id": "r1"}),
+    ("declare_surface", {"repo_id": "r1", "kind": "asset", "name": "db"}),
+    ("declare_control", {"repo_id": "r1", "stride": "spoofing", "kind": "perimeter_gate"}),
 ]
 
 
@@ -272,6 +302,8 @@ async def test_every_path_a_tool_calls_is_a_route_the_api_serves() -> None:
         ("finding", {"finding_id": "f1"}, "/api/dashboard/findings/f1/record", {}),
         ("playbook", {"kind": "lane_stalled"}, "/api/agent/playbooks/lane_stalled", {}),
         ("scorecard", {}, "/api/agent/scorecard", {}),
+        ("surfaces", {"repo_id": "r1"}, "/api/dashboard/repos/r1/surfaces", {}),
+        ("controls", {"repo_id": "r1"}, "/api/dashboard/repos/r1/controls", {}),
         ("scorecard", {"family": "claude-opus-5.5"}, "/api/agent/scorecard",
          {"family": "claude-opus-5.5"}),
         ("scorecard", {"family": "claude-opus-5.5", "instance": "abc12345"},
@@ -527,6 +559,51 @@ async def test_a_dry_run_makes_no_request(
         duty,
     )
     assert "response" not in out
+
+
+async def test_declare_surface_sends_selectors_and_overrides() -> None:
+    fake = FakeMykronos()
+    args = {
+        "repo_id": "r1",
+        "kind": "asset",
+        "name": "Findings database",
+        "sensitivity": "source",
+        "selectors": {"paths": ["backend/mykronos/db/**"], "addresses": ["10.0.0.5:5433"]},
+        "cr": "H",
+    }
+    out = (await _call(fake, "declare_surface", args)).structured_content
+    assert fake.calls == [("POST", "/api/dashboard/repos/r1/surfaces")]
+    body = fake.body()
+    assert body["selectors"] == {
+        "paths": ["backend/mykronos/db/**"],
+        "images": [],
+        "addresses": ["10.0.0.5:5433"],
+        "hostnames": [],
+    }
+    assert (body["cr"], body["ir"], out["governed_by"]) == ("H", None, None)
+
+
+async def test_declare_control_names_its_surface_only_when_given() -> None:
+    fake = FakeMykronos()
+    await _call(
+        fake,
+        "declare_control",
+        {"repo_id": "r1", "stride": "spoofing", "kind": "perimeter_gate",
+         "applies_to_surface_id": "s-1"},
+    )
+    await _call(fake, "declare_control", {"repo_id": "r1", "stride": "spoofing",
+                                          "kind": "waf"})
+    assert fake.body(0)["applies_to_surface_id"] == "s-1"
+    assert "applies_to_surface_id" not in fake.body(1)
+
+
+async def test_an_invented_control_kind_is_refused_before_any_request() -> None:
+    fake = FakeMykronos()
+    result = await _call(
+        fake, "declare_control", {"repo_id": "r1", "stride": "spoofing", "kind": "vibes"}
+    )
+    assert result.is_error
+    assert fake.calls == []
 
 
 async def test_accept_sends_the_routes_body() -> None:

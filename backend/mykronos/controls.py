@@ -34,8 +34,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos.db.models import RepoControl
+from mykronos.db.models import RepoControl, RepoSurface
 from mykronos.schemas import utcnow
+from mykronos.surfaces import MANIFEST_ACTOR, DeclaredInManifestError, declared_via
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,14 @@ CONTROL_KINDS = (
     "logging",
     "rate_limiting",
     "encryption",
+    # TheHub #60825: the controls environmental CVSS rescoring reads. Each one
+    # sits in front of or around the code rather than in it, which is why
+    # none of the eight above could say it.
+    "perimeter_gate",
+    "network_segmentation",
+    "security_headers",
+    "container_hardening",
+    "waf",
 )
 
 #: The capability that could contradict a control of each kind. Empty for the
@@ -67,6 +76,44 @@ CONTRADICTED_BY: dict[str, str] = {
     "encryption": "sast",
     "logging": "",
     "rate_limiting": "",
+    # A gate that lets an anonymous request through is exactly what an
+    # unauthenticated DAST finding is.
+    "perimeter_gate": "dast",
+    # A port answering a scan from the wrong side of a boundary contradicts a
+    # segmentation claim; that is the network capability's whole subject.
+    "network_segmentation": "network",
+    # ZAP reports a missing CSP or HSTS header as a finding (10038, 10035).
+    "security_headers": "dast",
+    # Trivy's misconfiguration checks and the container-privilege lanes report
+    # a root user, a writable root filesystem, an added capability.
+    "container_hardening": "containers",
+    # Nothing here can tell a WAF that blocked a probe from an application
+    # that was never vulnerable, so nothing can contradict one. Said, not
+    # implied.
+    "waf": "",
+}
+
+#: The STRIDE categories each kind typically mitigates (TheHub #60825). Used as
+#: the default `stride` when the manifest omits one, and shown as a hint; never
+#: a restriction: `stride` stays the declarer's call, as it always was.
+#:
+#: Deliberately here and not in `stride-map-v1.yaml`: that file maps a CWE (a
+#: weakness) to STRIDE, and a control kind is not a weakness. Adding these
+#: kinds needed no change to it.
+TYPICAL_STRIDE: dict[str, tuple[str, ...]] = {
+    "authentication": ("spoofing",),
+    "authorization": ("elevation_of_privilege",),
+    "input_validation": ("tampering",),
+    "output_encoding": ("tampering",),
+    "secrets_management": ("information_disclosure",),
+    "logging": ("repudiation",),
+    "rate_limiting": ("denial_of_service",),
+    "encryption": ("information_disclosure",),
+    "perimeter_gate": ("spoofing", "elevation_of_privilege"),
+    "network_segmentation": ("elevation_of_privilege", "information_disclosure"),
+    "security_headers": ("tampering", "information_disclosure"),
+    "container_hardening": ("elevation_of_privilege", "tampering"),
+    "waf": ("tampering", "denial_of_service"),
 }
 
 #: After this, a declared control is shown as stale. Ninety days rather than
@@ -127,19 +174,19 @@ def declare(
     evidence_ref: str = "",
     declared_by: str = "",
     known_categories: tuple[str, ...] = (),
+    applies_to_surface_id: str | None = None,
+    manifest_key: str | None = None,
     now: datetime | None = None,
 ) -> RepoControl:
     """Record a control. Returns the row."""
-    if known_categories and stride not in known_categories:
-        raise ControlError(
-            f"{stride!r} is not a STRIDE category. Expected one of: "
-            f"{', '.join(known_categories)}."
-        )
-    if kind not in CONTROL_KINDS:
-        raise ControlError(
-            f"{kind!r} is not a control kind. Expected one of: "
-            f"{', '.join(CONTROL_KINDS)}."
-        )
+    validate(
+        session,
+        repo_full_name=repo_full_name,
+        stride=stride,
+        kind=kind,
+        known_categories=known_categories,
+        applies_to_surface_id=applies_to_surface_id,
+    )
 
     stamp = now or utcnow()
     control = RepoControl(
@@ -153,6 +200,8 @@ def declare(
         # not something a declarer gets to choose. Letting it be set would let
         # a control name a capability that cannot see it and look checked.
         verified_by_capability=CONTRADICTED_BY.get(kind, ""),
+        applies_to_surface_id=applies_to_surface_id or None,
+        manifest_key=manifest_key,
         declared_by=declared_by,
         declared_at=stamp,
         # Declaring is confirming. Left null the row would read as stale from
@@ -164,13 +213,48 @@ def declare(
     return control
 
 
+def validate(
+    session: Session | None,
+    *,
+    repo_full_name: str,
+    stride: str,
+    kind: str,
+    known_categories: tuple[str, ...] = (),
+    applies_to_surface_id: str | None = None,
+) -> None:
+    """Every rule a control meets, API or manifest."""
+    if known_categories and stride not in known_categories:
+        raise ControlError(
+            f"{stride!r} is not a STRIDE category. Expected one of: "
+            f"{', '.join(known_categories)}."
+        )
+    if kind not in CONTROL_KINDS:
+        raise ControlError(
+            f"{kind!r} is not a control kind. Expected one of: "
+            f"{', '.join(CONTROL_KINDS)}."
+        )
+    if applies_to_surface_id:
+        surface = session.get(RepoSurface, applies_to_surface_id) if session else None
+        # One answer for "no such surface" and "another repository's": an id
+        # from elsewhere must not learn that it exists.
+        if surface is None or surface.repo_full_name != repo_full_name:
+            raise ControlError("applies_to_surface_id names no surface on this repository.")
+
+
 def confirm(
     session: Session, control_id: str, *, now: datetime | None = None
 ) -> RepoControl:
-    """Somebody re-read this and it is still true."""
+    """Somebody re-read this and it is still true.
+
+    Refused for a manifest control: re-confirming one is a change to the file
+    (its `reviewed_at`), so the confirmation lands in git history with a name
+    on it, not as a click nobody can trace back to the source of truth.
+    """
     control = session.get(RepoControl, control_id)
     if control is None:
         raise ControlError("No such control.")
+    if control.declared_by == MANIFEST_ACTOR:
+        raise DeclaredInManifestError("control")
     control.last_verified_at = now or utcnow()
     session.flush()
     return control
@@ -188,6 +272,8 @@ def withdraw(session: Session, control_id: str) -> None:
     control = session.get(RepoControl, control_id)
     if control is None:
         raise ControlError("No such control.")
+    if control.declared_by == MANIFEST_ACTOR:
+        raise DeclaredInManifestError("control")
     session.delete(control)
     session.flush()
 
@@ -230,6 +316,10 @@ def as_dict(control: RepoControl, *, now: datetime | None = None) -> dict[str, A
         "stale": stale,
         "declared_by": control.declared_by,
         "declared_at": control.declared_at,
+        "applies_to_surface_id": control.applies_to_surface_id,
+        "declared_via": declared_via(control),
+        "read_only": declared_via(control) == "manifest",
+        "manifest_key": control.manifest_key,
     }
 
 

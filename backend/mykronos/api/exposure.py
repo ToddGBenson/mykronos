@@ -25,6 +25,14 @@ class EndpointIn(BaseModel):
     url: str = Field(max_length=512, description="Base URL as the internet reaches it.")
     repo_full_name: str = Field(default="", max_length=255)
     label: str = Field(default="", max_length=255)
+    surface_id: str | None = Field(
+        default=None,
+        max_length=36,
+        description=(
+            "The declared surface (usually an entry point) this URL is the "
+            "public face of (TheHub #60825). Must belong to `repo_full_name`."
+        ),
+    )
 
 
 def _require_writer(principal: Any, what: str) -> None:
@@ -50,7 +58,7 @@ async def register_endpoint(
     request: Request, body: EndpointIn, principal: PrincipalDep
 ) -> dict[str, Any]:
     _require_writer(principal, "Registering a public endpoint")
-    from mykronos.db.models import PublicEndpoint
+    from mykronos.db.models import PublicEndpoint, RepoSurface
 
     try:
         url = exposure.validate_url(body.url)
@@ -60,11 +68,19 @@ async def register_endpoint(
     with db.session() as session:
         if session.scalars(select(PublicEndpoint).where(PublicEndpoint.url == url)).first():
             raise HTTPException(status_code=409, detail=f"{url} is already registered.")
+        if body.surface_id:
+            surface = session.get(RepoSurface, body.surface_id)
+            if surface is None or surface.repo_full_name != body.repo_full_name.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="surface_id names no surface on that repository.",
+                )
         row = PublicEndpoint(
             url=url,
             repo_full_name=body.repo_full_name.strip(),
             label=body.label.strip(),
             declared_by=principal.actor,
+            surface_id=body.surface_id or None,
         )
         session.add(row)
         session.flush()
@@ -76,9 +92,15 @@ async def register_endpoint(
             entity_id=row.id,
             url=url,
             repo_full_name=row.repo_full_name,
+            surface_id=row.surface_id,
         )
         session.commit()
-        return {"id": row.id, "url": url, "last_status": row.last_status}
+        return {
+            "id": row.id,
+            "url": url,
+            "last_status": row.last_status,
+            "surface_id": row.surface_id,
+        }
 
 
 @router.delete("/endpoints/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -7,7 +7,7 @@ names (§5) and the agents' track record (§6). Repository-scoped tools
 take the onboarding **id** (the API's routes are id-only, TheHub #60739);
 `repos()` maps names to ids.
 
-**Write tools** are four, and each takes `dry_run`. A dry run names the
+**Write tools** are six, and each takes `dry_run`. A dry run names the
 method, path, body and `governed_by` the real call would meet, and writes
 nothing. `governed_by` is computed with the route's own rule
 (`finding_disposition.governed`), so the tool and the route cannot disagree
@@ -53,11 +53,16 @@ TOOL_NAMES = frozenset(
         "scan_run",
         "playbook",
         "scorecard",
+        "surfaces",
+        "controls",
         # write, governed
         "claim",
         "disposition",
         "accept",
         "request_pr_review",
+        # write, direct: the threat-model register (TheHub #60825)
+        "declare_surface",
+        "declare_control",
     }
 )
 
@@ -124,6 +129,35 @@ PremiseType = Literal[
     "epss_below",
     "path_unreachable",
 ]
+#: The threat-model register's vocabularies (`surfaces`, `controls`), pinned
+#: to the module tuples by tests.
+SurfaceKind = Literal["asset", "entry_point", "trust_boundary"]
+Exposure = Literal["internet", "internal", "local", "unknown"]
+Sensitivity = Literal["pii", "financial", "credentials", "source", "public", "unknown"]
+RequirementLevel = Literal["H", "M", "L"]
+ControlKind = Literal[
+    "authentication",
+    "authorization",
+    "input_validation",
+    "output_encoding",
+    "secrets_management",
+    "logging",
+    "rate_limiting",
+    "encryption",
+    "perimeter_gate",
+    "network_segmentation",
+    "security_headers",
+    "container_hardening",
+    "waf",
+]
+StrideCategory = Literal[
+    "spoofing",
+    "tampering",
+    "repudiation",
+    "information_disclosure",
+    "denial_of_service",
+    "elevation_of_privilege",
+]
 TriageVerdict = Literal[
     "true_positive", "likely_false_positive", "needs_human_judgment", "toxic_combination"
 ]
@@ -184,6 +218,25 @@ class Milestone(BaseModel):
     title: str = Field(min_length=1)
     due: date | None = None
     ends_weakness: bool = False
+
+
+class SurfaceSelectors(BaseModel):
+    """Where a surface is, so findings can be placed in it (TheHub #60825)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(
+        default_factory=list, description="Repository path globs, e.g. backend/**."
+    )
+    images: list[str] = Field(
+        default_factory=list, description="Image repositories, e.g. acme/api."
+    )
+    addresses: list[str] = Field(
+        default_factory=list, description="host:port, e.g. 10.0.0.5:5433 or *:22."
+    )
+    hostnames: list[str] = Field(
+        default_factory=list, description="DNS names, e.g. app.example.net or *.example.net."
+    )
 
 
 class Premise(BaseModel):
@@ -489,6 +542,31 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         )
         return result
 
+    @server.tool(annotations=_READ)
+    async def surfaces(repo_id: RepoId) -> dict[str, Any]:
+        """One repository's assets, entry points and trust boundaries, each with
+        its selectors (where it is) and CR/IR/AR overrides (TheHub #60825).
+
+        GET /api/dashboard/repos/{id}/surfaces. A row with `read_only: true` was
+        declared in the repository's `.sdlc/threat-model.yaml` and changes only
+        there, by pull request.
+        """
+        path = f"/api/dashboard/repos/{_segment(repo_id)}/surfaces"
+        result: dict[str, Any] = await _call(api, "GET", path)
+        return result
+
+    @server.tool(annotations=_READ)
+    async def controls(repo_id: RepoId) -> dict[str, Any]:
+        """One repository's declared controls and the kinds a control can be.
+
+        GET /api/dashboard/repos/{id}/controls. `checkable: false` means no
+        capability here could contradict the control; `read_only: true` means
+        the repository's manifest declared it.
+        """
+        path = f"/api/dashboard/repos/{_segment(repo_id)}/controls"
+        result: dict[str, Any] = await _call(api, "GET", path)
+        return result
+
     # -- write --------------------------------------------------------------
 
     @server.tool(annotations=_WRITE)
@@ -626,5 +704,84 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         return await _write(
             api, "POST", "/api/approvals/pull-requests", body, PULL_REQUEST_DUTY, dry_run
         )
+
+    @server.tool(annotations=_WRITE)
+    async def declare_surface(
+        repo_id: RepoId,
+        kind: SurfaceKind,
+        name: Annotated[str, Field(min_length=1, max_length=255)],
+        description: Annotated[str, Field(max_length=2000)] = "",
+        exposure: Annotated[
+            Exposure,
+            Field(description="unknown is a real answer; guessing internal understates risk."),
+        ] = "unknown",
+        sensitivity: Annotated[
+            Sensitivity, Field(description="What an asset holds. Ignored for other kinds.")
+        ] = "unknown",
+        evidence_ref: Annotated[str, Field(max_length=512)] = "",
+        selectors: SurfaceSelectors | None = None,
+        cr: Annotated[RequirementLevel | None, Field(description="Assets only.")] = None,
+        ir: Annotated[RequirementLevel | None, Field(description="Assets only.")] = None,
+        ar: Annotated[RequirementLevel | None, Field(description="Assets only.")] = None,
+        dry_run: DryRun = False,
+    ) -> dict[str, Any]:
+        """Declare an asset, entry point or trust boundary on one repository.
+
+        POST /api/dashboard/repos/{id}/surfaces, in your actor name, audited as
+        `surface.declare`. A declaration is an assertion, never a verification.
+        Where the repository has a `.sdlc/threat-model.yaml`, prefer a pull
+        request to that file: it is the source of truth (D4).
+        """
+        body: dict[str, Any] = {
+            "kind": kind,
+            "name": name,
+            "description": description,
+            "exposure": exposure,
+            "sensitivity": sensitivity,
+            "evidence_ref": evidence_ref,
+            "cr": cr,
+            "ir": ir,
+            "ar": ar,
+        }
+        if selectors is not None:
+            body["selectors"] = selectors.model_dump(mode="json")
+        path = f"/api/dashboard/repos/{_segment(repo_id)}/surfaces"
+        return await _write(api, "POST", path, body, None, dry_run)
+
+    @server.tool(annotations=_WRITE)
+    async def declare_control(
+        repo_id: RepoId,
+        stride: StrideCategory,
+        kind: ControlKind,
+        description: Annotated[str, Field(max_length=2000)] = "",
+        evidence_ref: Annotated[
+            str,
+            Field(max_length=512, description="A file, route, policy or test. Strongly advised."),
+        ] = "",
+        applies_to_surface_id: Annotated[
+            str | None,
+            Field(
+                max_length=36,
+                description="A surface id from `surfaces()`; omit for repository scope.",
+            ),
+        ] = None,
+        dry_run: DryRun = False,
+    ) -> dict[str, Any]:
+        """Declare a control (a mitigation) on one repository (spec 28 §3).
+
+        POST /api/dashboard/repos/{id}/controls, in your actor name, audited as
+        `control.declare`. Which capability could contradict it is set by the
+        kind, not by you.
+        """
+        body: dict[str, Any] = {
+            "stride": stride,
+            "kind": kind,
+            "description": description,
+            "evidence_ref": evidence_ref,
+        }
+        if applies_to_surface_id:
+            body["applies_to_surface_id"] = applies_to_surface_id
+        path = f"/api/dashboard/repos/{_segment(repo_id)}/controls"
+        return await _write(api, "POST", path, body, None, dry_run)
 
     return server
