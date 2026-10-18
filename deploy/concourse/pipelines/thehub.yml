@@ -2563,6 +2563,14 @@ jobs:
                 #                          missing variable, so a future edit
                 #                          that drops the token goes red rather
                 #                          than green-over-nothing.
+                #   REDIS_URL=memory://    slowapi's in-process store. The limiter
+                #                          stores in Redis and fails OPEN when it
+                #                          cannot reach it (swallow_errors, #59983),
+                #                          and this task has no Redis: in build 324
+                #                          four 429 tests got 200/201/401 and logged
+                #                          "Failed to rate limit. Swallowing error".
+                #                          One serial pytest process, so the memory
+                #                          store counts exactly what Redis would.
                 #
                 # Skipped only if the unit tier already hit its soft timeout:
                 # the job exits 124 below either way, and the line says so.
@@ -2583,6 +2591,7 @@ jobs:
                     HUB_API_TOKEN="ci-$(python -c 'import secrets; print(secrets.token_hex(16))')"
                     export HUB_API_TOKEN
                     export HUB_REQUIRE_ARMED_GATE=1
+                    export REDIS_URL=memory://
                     if command -v timeout >/dev/null 2>&1; then
                       timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
                         python -m pytest tests/security -q -p no:cacheprovider -ra \
