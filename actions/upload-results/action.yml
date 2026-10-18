@@ -49,6 +49,14 @@ inputs:
       is advisory-only, per the platform-wide default in spec 04 §5.
     required: false
     default: "false"
+  scan-run-id:
+    description: >-
+      Use this id for the ScanRun instead of a fresh UUID. For a workflow that
+      also writes raw evidence under its own id (Atlas archives the SBOM under
+      the workflow run id) and needs the two to match (#13). Empty means a
+      UUID, as before.
+    required: false
+    default: ""
   mykronos-ref:
     description: >-
       Version of the mykronos package to install. Mykronos-generated workflows
@@ -142,6 +150,7 @@ runs:
         INGESTION_URL: ${{ inputs.ingestion-url }}
         SEVERITY_THRESHOLD: ${{ inputs.severity-threshold }}
         BLOCKING: ${{ inputs.blocking }}
+        SCAN_RUN_ID: ${{ inputs.scan-run-id }}
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         BRANCH: ${{ github.head_ref || github.ref_name }}
@@ -150,4 +159,4 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
         WORKSPACE: ${{ github.workspace }}
       run: |
-        python -m mykronos.upload           --capability "$CAPABILITY"           --tool "$TOOL"           --tool-version "$TOOL_VERSION"           --results-path "$RESULTS_PATH"           --ingestion-url "$INGESTION_URL"           --token "$MYKRONOS_TOKEN"           --repo "$REPO"           --commit-sha "$COMMIT_SHA"           --branch "$BRANCH"           --workflow-run-id "$WORKFLOW_RUN_ID"           --triggered-by "$TRIGGERED_BY"           --pr-number "$PR_NUMBER"           --workspace "$WORKSPACE"           --severity-threshold "$SEVERITY_THRESHOLD"           --blocking "$BLOCKING"
+        python -m mykronos.upload           --capability "$CAPABILITY"           --tool "$TOOL"           --tool-version "$TOOL_VERSION"           --results-path "$RESULTS_PATH"           --ingestion-url "$INGESTION_URL"           --token "$MYKRONOS_TOKEN"           --repo "$REPO"           --commit-sha "$COMMIT_SHA"           --branch "$BRANCH"           --workflow-run-id "$WORKFLOW_RUN_ID"           --triggered-by "$TRIGGERED_BY"           --pr-number "$PR_NUMBER"           --workspace "$WORKSPACE"           --severity-threshold "$SEVERITY_THRESHOLD"           --blocking "$BLOCKING"           --scan-run-id "$SCAN_RUN_ID"

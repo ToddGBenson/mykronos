@@ -80,6 +80,9 @@ def onboarding(session: Session) -> RepoOnboarding:
         enabled_capabilities=[],
         default_branch="main",
         onboarded_by="tgb",
+        # Explicit: the column defaults to `concourse` (spec 03 §3a), and the
+        # installer refuses to write Actions workflows into such a repo (#13).
+        scanned_by="github_actions",
     )
     session.add(row)
     session.flush()

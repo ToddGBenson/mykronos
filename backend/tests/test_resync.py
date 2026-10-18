@@ -23,6 +23,21 @@ from tests.test_portfolio_job import register
 SAST_PATH = ".github/workflows/mykronos-sast.yml"
 
 
+def register(client, repo: str, *, scanned_by: str = "github_actions", **kwargs) -> str:
+    """An onboarded repo, scanned by Actions unless said otherwise.
+
+    The column defaults to `concourse` (spec 03 §3a), which the resync skips
+    (#13); every drift test here is about an Actions repository.
+    """
+    from mykronos.db.models import RepoOnboarding
+
+    repo_id = _register(client, repo, **kwargs)
+    with client.app.state.db.session() as session:
+        session.get(RepoOnboarding, repo_id).scanned_by = scanned_by
+        session.commit()
+    return repo_id
+
+
 @pytest.fixture
 def templates() -> TemplateLibrary:
     return TemplateLibrary(get_settings().workflow_templates_dir)

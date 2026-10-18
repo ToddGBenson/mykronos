@@ -183,6 +183,18 @@ class WorkflowInstaller:
         configs: dict[str, dict[str, object]] | None = None,
     ) -> InstallPlan:
         """Compute the diff and stage file changes. Writes nothing."""
+        if onboarding.scanned_by != "github_actions":
+            # The API never calls the installer for these (spec 03 §3a); this
+            # is the backstop for any caller that forgets. Writing Actions
+            # workflows into a repository another CI scans makes both scan and
+            # ingest every commit (#13).
+            raise InstallerError(
+                f"{onboarding.github_repo_full_name} is scanned by "
+                f"{onboarding.scanned_by!r}, so Mykronos installs no GitHub "
+                "Actions workflows into it (spec 03 §3a). If that is wrong, "
+                f'PATCH /api/repos/{onboarding.id} {{"scanned_by": '
+                '"github_actions"} first.'
+            )
         unknown = requested - self.templates.available
         if unknown:
             raise InstallerError(
