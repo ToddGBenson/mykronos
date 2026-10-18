@@ -1333,7 +1333,9 @@ def main(argv: list[str] | None = None) -> int:
                     r.repo_full_name,
                     ", ".join(r.drifted) or "-",
                     f"#{r.pull_request_number}" if r.pull_request_number else "-",
-                    r.error or r.skipped_reason or "",
+                    "; ".join(
+                        part for part in (r.error or r.skipped_reason, r.note()) if part
+                    ),
                 ]
                 for r in sweep.repos
             ]
