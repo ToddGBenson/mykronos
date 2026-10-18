@@ -941,6 +941,16 @@ async def update_capabilities(
                 "become active when it merges; ingestion grants are already live. "
                 + _stranding_note(stranded, restored)
             ).strip()
+            if plan.pins_kept:
+                # #376: say it here as well as in the pull request body. The
+                # caller is the person who can bump the template.
+                detail += (
+                    f" Kept {len(plan.pins_kept)} action pin(s) at this "
+                    "repository's newer release rather than downgrading to the "
+                    "template's: "
+                    + "; ".join(d.describe() for d in plan.pins_kept)
+                    + "."
+                )
 
         return CapabilityUpdateResult(
             repo=_summary(row),

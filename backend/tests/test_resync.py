@@ -17,6 +17,7 @@ from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.installer import BRANCH_PREFIX
 from mykronos.installer.resync import RESYNC_BRANCH_PREFIX, resync_templates
 from tests.conftest import REPO
+from tests.test_action_pins import INIT, NEW_SHA, OLD_SHA, _bump, _repin, _template_pin
 from tests.test_portfolio_job import register
 
 SAST_PATH = ".github/workflows/mykronos-sast.yml"
@@ -312,3 +313,67 @@ class TestThePullRequestBody:
         assert "edited by hand" in body
         assert "compares **content**" in body
         assert "never merges them" in body
+
+
+class TestActionPins:
+    """#376 on the bulk path, plus: say which template was compared."""
+
+    @pytest.mark.anyio
+    async def test_target_newer_pin_is_kept_and_reported(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        register(client, REPO, capabilities=["sast"])
+        content = rendered(templates)
+        _, template_version = _template_pin(content)
+        newer = _bump(template_version, +1)
+        # Ahead by a pin AND hand-edited elsewhere, so a pull request opens.
+        drifted = _repin(content, INIT, NEW_SHA, newer).replace(
+            "runs-on: ubuntu-latest", "runs-on: self-hosted"
+        )
+        put(github, SAST_PATH, drifted)
+
+        result = await sweep(client, github, templates)
+
+        entry = result.repos[0]
+        assert [(d.action, d.target_version) for d in entry.pins_kept] == [(INIT, newer)]
+        version = templates.spec("sast").version
+        assert entry.template_versions == {SAST_PATH: version}
+        assert f"mykronos-sast.yml v{version}" in entry.note()
+        assert newer in entry.note()
+
+        repo = github.repos[REPO]
+        branch = repo.pull_requests[-1].head_branch
+        assert _template_pin(repo.branches[branch][SAST_PATH]) == (NEW_SHA, newer)
+        assert newer in github.pull_request_bodies[repo.pull_requests[-1].number]
+
+    @pytest.mark.anyio
+    async def test_ahead_only_by_a_pin_opens_nothing_but_is_reported(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        register(client, REPO, capabilities=["sast"])
+        content = rendered(templates)
+        _, template_version = _template_pin(content)
+        put(github, SAST_PATH, _repin(content, INIT, NEW_SHA, _bump(template_version, +1)))
+
+        result = await sweep(client, github, templates)
+
+        assert result.up_to_date == 1
+        assert result.opened == []
+        assert len(result.repos[0].pins_kept) == 1
+
+    @pytest.mark.anyio
+    async def test_template_newer_pin_is_applied(
+        self, client, admin_auth, github, templates
+    ) -> None:
+        register(client, REPO, capabilities=["sast"])
+        content = rendered(templates)
+        template_pin = _template_pin(content)
+        put(github, SAST_PATH, _repin(content, INIT, OLD_SHA, _bump(template_pin[1], -1)))
+
+        result = await sweep(client, github, templates)
+
+        assert len(result.opened) == 1
+        assert result.opened[0].pins_kept == []
+        repo = github.repos[REPO]
+        branch = repo.pull_requests[-1].head_branch
+        assert _template_pin(repo.branches[branch][SAST_PATH]) == template_pin
