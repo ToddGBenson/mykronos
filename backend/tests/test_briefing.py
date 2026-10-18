@@ -1318,3 +1318,46 @@ class TestMigrationDdlIsSchema:
         assert [row["unread"] for row in body["unread"]] == [
             [["PLpgSQL", len(self.FUNCTION)]]
         ]
+
+
+class TestARepositoryScopedBriefingIsScopedThroughout:
+    """#60820: the repository's Remediate today tab is the briefing with
+    `repo_id`, and its fix and rule sections ignored the scope — so one
+    service's tab listed every other service's fixes under its own name."""
+
+    OTHER = "example-org/ledger"
+
+    def test_fixes_and_rule_guidance_name_only_that_repository(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+        assert onboard(client, admin_auth, repo=self.OTHER).status_code in (200, 201)
+
+        mine = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
+        theirs = {"Authorization": f"Bearer {issue_token(client, self.OTHER, 'sast')}"}
+        _scan(client, mine, "run-mine", [finding_payload()])
+        post_scan(client, theirs, scan_run_id="run-theirs", repo_full_name=self.OTHER)
+        post_findings(
+            client,
+            theirs,
+            [finding_payload(rule_id="CWE-79", title="Reflected XSS")],
+            scan_run_id="run-theirs",
+        )
+        run_compaction()
+
+        estate = client.get("/api/dashboard/briefing", headers=admin_auth).json()
+        scoped = client.get(
+            "/api/dashboard/briefing", params={"repo_id": repo_id}, headers=admin_auth
+        ).json()
+
+        def rules(body: dict[str, Any]) -> set[str]:
+            return {r["rule_id"] for cap in body["guidance"] for r in cap["rules"]}
+
+        # Both repositories are in the estate view, so the scoped one has
+        # something to leave out.
+        assert rules(estate) == {"CWE-89", "CWE-79"}
+        assert rules(scoped) == {"CWE-89"}
+        assert scoped["fixes"], "the scoped view should still have a fix"
+        assert all(fix["repos"] == [REPO] for fix in scoped["fixes"])

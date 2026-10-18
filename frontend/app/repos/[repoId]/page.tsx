@@ -14,8 +14,6 @@ import {
   OpenFindings,
   type FindingsQuery,
 } from "@/components/open-findings";
-import { RecommendedFixes } from "@/components/recommended-fixes";
-import { RemediationTab } from "@/components/remediation";
 import { RemediateToday } from "@/app/remediate/page";
 import { AgeForecast } from "@/components/forecast";
 import { GovernancePanel, MergeCounts } from "@/components/governance";
@@ -41,6 +39,7 @@ import {
   Section,
 } from "@/components/primitives";
 import type { CiPage, ScanHealth, WorkflowsPage } from "@/lib/api";
+import { canonicalTab } from "@/lib/repo-tabs";
 import {
   getCi,
   getDecisions,
@@ -48,7 +47,6 @@ import {
   getInsiderRisk,
   getOpenFindings,
   getProductOwner,
-  getRemediation,
   getRepoGuidance,
   getRepo,
   getReachability,
@@ -89,13 +87,16 @@ const TABS = [
   // question. Findings says what is outstanding here; this says which of it is
   // work today — and it is the estate page's reasoning applied to one
   // repository rather than a second, quietly different, ranking.
+  //
+  // The only remediation tab (#60820). A separate "Remediation" tab showed the
+  // same fix list again beside Patchwork's history; the history is a section
+  // of this one now, and `?tab=remediation` lands here (`lib/repo-tabs.ts`).
   { id: "remediate", label: "Remediate today" },
   { id: "harness", label: "Harness" },
   { id: "threat-model", label: "Threat Model" },
   { id: "sscs", label: "Supply chain" },
   { id: "insider", label: "Insider Threat" },
   { id: "decisions", label: "Risk Decision" },
-  { id: "remediation", label: "Remediation" },
   // Last, because it is the only tab nobody opens to do work: it answers
   // "what can we show an assessor" rather than "what should I fix". Its own
   // tab rather than a panel under Insider Threat — that tab is about who
@@ -118,7 +119,7 @@ export default async function RepoPage({
 }) {
   const { repoId } = await params;
   const query = await searchParams;
-  const tab = query.tab ?? "dashboard";
+  const tab = canonicalTab(query.tab);
 
   // An unknown id used to fall through the ternary below and render Dashboard,
   // so a wrong link looked like a working one. The incident page shipped with
@@ -229,8 +230,6 @@ export default async function RepoPage({
         <SupplyChainTab repoId={repoId} />
       ) : tab === "insider" ? (
         <AegisTab repoId={repoId} />
-      ) : tab === "remediation" ? (
-        <PatchworkTab repoId={repoId} />
       ) : tab === "threat-model" ? (
         <ThreatModelTabPanel repoId={repoId} />
       ) : tab === "findings" ? (
@@ -952,37 +951,5 @@ async function ProductOwnerTabPanel({
     <ProductOwnerTab repoId={repoId} view={chosen as PoViewId} data={result.data}>
       {phase2}
     </ProductOwnerTab>
-  );
-}
-
-async function PatchworkTab({ repoId }: { repoId: string }) {
-  const [result, guidance] = await Promise.all([
-    getRemediation(repoId),
-    getRepoGuidance(repoId),
-  ]);
-  if (!result.ok) {
-    return <ErrorPanel title="Remediation unavailable" detail={result.error} />;
-  }
-  return (
-    <div className="flex flex-col gap-5">
-      {/* What the reports recommend, above what Patchwork managed. The tab was
-          only ever the second of those, and across this estate the second is
-          almost always "nothing" — four fixers covering four narrow classes,
-          reporting zero beside reports full of advice nobody read (B-030). */}
-      {guidance.ok ? (
-        <RecommendedFixes data={guidance.data} />
-      ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
-          {guidance.error}
-        </p>
-      )}
-      <div className="border-t border-rule pt-4">
-        <RemediationTab
-          events={result.data.events}
-          openDraftPrs={result.data.open_draft_prs}
-          note={result.data.note}
-        />
-      </div>
-    </div>
   );
 }

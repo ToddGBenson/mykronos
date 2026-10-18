@@ -75,7 +75,7 @@ query-parameter driven and share one server render.
 | 5 | `sscs` | Supply chain | `SupplyChainTab` | repoId |
 | 6 | `insider` | Insider Threat | **`AegisTab`** | repoId |
 | 7 | `decisions` | Risk Decision | `RiskDecisionsTab` | repoId |
-| 8 | `remediation` | Remediation | **`PatchworkTab`** | repoId |
+| 8 | ~~`remediation`~~ | ~~Remediation~~ | ~~**`PatchworkTab`**~~ | retired in #60820 — merged into `remediate` (Remediate today), which now carries the Patchwork history; `?tab=remediation` still resolves there (`frontend/lib/repo-tabs.ts`) |
 
 The in-code comment cites "spec 18 §2" and records that `Dashboard` was
 formerly called "Harness", and that `Harness` now means specifically
@@ -168,7 +168,7 @@ across three layers:
 | UI label | page-local wrapper | shared component / file |
 |---|---|---|
 | Insider Threat | `AegisTab` | `InsiderRiskTab` / `insider-risk.tsx` |
-| Remediation | `PatchworkTab` | `RemediationTab` / `remediation.tsx` |
+| ~~Remediation~~ (#60820: now a section of Remediate today) | ~~`PatchworkTab`~~ | `RemediationTab` / `remediation.tsx` |
 | Risk Decision | `RiskDecisionsTab` | `DecisionsTab` / `decisions.tsx` |
 | Supply chain | `SupplyChainTab` | `SscsTab` / `sscs.tsx` |
 
