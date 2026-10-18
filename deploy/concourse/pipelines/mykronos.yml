@@ -3102,6 +3102,11 @@ jobs:
                   # findings are listed but not scored.
                   PYTHONPATH="$PWD/source/backend" python -m mykronos.estate_images \
                     --root source --output /dev/null --annotate results
+                  # #382: stamp each published image's report with the build
+                  # SHA it records, so the adapter can report an image that
+                  # records none apart from one that records the wrong one.
+                  PYTHONPATH="$PWD/source/backend" python -m mykronos.image_provenance \
+                    --annotate results
                   MYKRONOS_JOB=containers python -m mykronos.upload \
                     --capability containers --tool trivy \
                     --results-path results \
