@@ -29,7 +29,7 @@ from mykronos import (
     control_observations,
     controls,
     cvss,
-    cvss_vectors,
+    environment,
     finding_disposition,
     finding_record,
     findings_export,
@@ -47,7 +47,6 @@ from mykronos import (
     test_estate,
     worklist,
 )
-from mykronos import threat_intel as threat_intel_feed
 from mykronos.adapters.registry import default_tool
 from mykronos.adminauth import PrincipalDep
 from mykronos.analysers import read_languages
@@ -78,11 +77,11 @@ from mykronos.dashboard import (
 )
 from mykronos.db.models import (
     CapabilityGrant,
+    EnvironmentalScore,
     JobRun,
     RepoControl,
     RepoOnboarding,
     RiskProfile,
-    ThreatIntelMatch,
     capability_config_for,
 )
 from mykronos.deployments import DeploymentState, latest_scanned_revisions
@@ -5059,6 +5058,23 @@ class PackageOut(BaseModel):
     advisories: int | None = None
 
 
+class EnvironmentalFactOut(BaseModel):
+    """One statement about one CVSS metric and what became of it (#60827)."""
+
+    metric: str
+    value: str
+    direction: str
+    source_kind: str
+    source_id: str
+    tier: str
+    asserted_by: str
+    verified_at: datetime | None = None
+    expires_at: datetime | None = None
+    applied: bool
+    not_applied_reason: str | None = None
+    because: str = ""
+
+
 class SeverityHereOut(BaseModel):
     """This vulnerability's CVSS score, re-read for this system.
 
@@ -5092,6 +5108,16 @@ class SeverityHereOut(BaseModel):
     vector_version: str
     #: False for v4.0: shown, never fed to the v3 environmental formula.
     rescored: bool
+    #: Every fact the environmental resolver considered, applied or not, each
+    #: with its source, tier and reason (TheHub #60827). The arithmetic above
+    #: rests only on the applied ones.
+    facts: list[EnvironmentalFactOut] = []
+    #: The scanner's severity shifted by as many bands as the environment
+    #: moved the score, clamped to low..critical.
+    effective_severity: str | None = None
+    #: When the stored score was computed; null when it was computed on read
+    #: because no rescore has reached this finding yet.
+    computed_at: datetime | None = None
 
 
 class FindingRecordOut(BaseModel):
@@ -5129,23 +5155,29 @@ def _severity_here(
     alert never will), or NVD has none and the lookup found or reached
     nothing yet. A v4.0-only vector is returned shown and not rescored (D1).
     Inventing a vector from the severity word would produce a figure that
-    looks like a published standard and is not one — which is the single worst thing this could do,
-    because the number would be quoted.
+    looks like a published standard and is not one — which is the single
+    worst thing this could do, because the number would be quoted.
+
+    **The stored score first** (TheHub #60827): `environment.rescore` keeps
+    one `EnvironmentalScore` per finding. Read it when it was computed on the
+    vector the finding has now; otherwise resolve the same facts on read, so
+    the page never waits for a rescore and never shows a different rule.
     """
-    cve_id = threat_intel_feed.extract_cve(row.get("rule_id"), row.get("title"))
-    match = None
-    if cve_id:
-        with request.app.state.db.session() as session:
-            match = session.get(ThreatIntelMatch, cve_id)
-    # NVD 3.x > advisory 3.x > v4.0 shown only (TheHub #60824, D1).
-    choice = cvss_vectors.choose_vector(
-        nvd_v3=match.cvss_vector if match else None,
-        nvd_v4=match.cvss_v4_vector if match else None,
-        nvd_v4_base_score=match.cvss_v4_base_score if match else None,
-        advisory=DashboardQueries(request.app.state.catalog).cvss_vectors(
-            str(row.get("finding_id") or "")
-        ),
-    )
+    finding_id = str(row.get("finding_id") or "")
+    finding = environment.finding_by_id(request.app.state.catalog, finding_id) or {
+        **row,
+        "asset_id": row.get("repo_full_name"),
+    }
+
+    with request.app.state.db.session() as session:
+        # NVD 3.x > advisory 3.x > v4.0 shown only (TheHub #60824, D1), chosen
+        # in one place for the record page and the stored scores alike.
+        choice = environment.choose_vectors(session, [finding]).get(finding_id)
+        stored = (
+            session.get(EnvironmentalScore, finding_id)
+            if choice is not None and choice.rescored
+            else None
+        )
     if choice is None:
         return None
     if not choice.rescored:
@@ -5160,37 +5192,61 @@ def _severity_here(
             vector_version=choice.version,
             rescored=False,
         )
-    vector = choice.vector
 
-    environment = (
-        cvss.environment_for(
-            internet_facing=profile.internet_facing,
-            data_classification=profile.data_classification,
-            business_criticality=profile.business_criticality,
-            compliance_scope=profile.compliance_scope,
+    if stored is not None and stored.vector == choice.vector:
+        facts = [environment.Fact.from_dict(raw) for raw in stored.facts_json or []]
+        base, env_score = stored.base, stored.environmental
+        effective, computed_at = stored.effective_severity, stored.computed_at
+    else:
+        on_read = environment.score_on_read(
+            request.app.state.db, request.app.state.catalog, finding
         )
-        if profile is not None
-        else cvss.Environment()
-    )
+        if on_read is None:
+            logger.warning("Stored vector for %s is unscoreable", scrub(finding_id[:12]))
+            return None
+        facts = list(on_read.facts)
+        base, env_score = on_read.scored.base, on_read.scored.environmental
+        effective, computed_at = on_read.effective_severity, None
 
     try:
-        scored = cvss.score(vector, environment)
+        because = environment.score_vector(choice.vector, facts).because
     except cvss.VectorError:
-        logger.warning("Stored vector for %s is unscoreable", scrub(cve_id or "?"))
         return None
 
     return SeverityHereOut(
-        vector=vector,
-        base=scored.base,
-        environmental=scored.environmental,
-        moved=scored.moved,
-        stated=environment.stated,
-        because=list(scored.because),
+        vector=choice.vector,
+        base=base,
+        environmental=env_score,
+        moved=round(env_score, 1) != round(base, 1),
+        # Somebody stated something, applied or not. False with an equal pair
+        # is "nobody has said", which is a different sentence from "what was
+        # said is not yet evidence".
+        stated=bool(facts),
+        because=list(because),
         stated_by=(profile.updated_by or None) if profile is not None else None,
         stated_at=profile.updated_at if profile is not None else None,
         vector_source=choice.source,
         vector_version=choice.version,
         rescored=True,
+        facts=[
+            EnvironmentalFactOut(
+                metric=f.metric,
+                value=f.value,
+                direction=f.direction,
+                source_kind=f.source_kind,
+                source_id=f.source_id,
+                tier=f.tier,
+                asserted_by=f.asserted_by,
+                verified_at=f.verified_at,
+                expires_at=f.expires_at,
+                applied=f.applied,
+                not_applied_reason=f.not_applied_reason,
+                because=f.because,
+            )
+            for f in facts
+        ],
+        effective_severity=effective or None,
+        computed_at=computed_at,
     )
 
 
