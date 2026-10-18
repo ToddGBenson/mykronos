@@ -1,0 +1,153 @@
+# Environmental CVSS: what a statement about the system is allowed to say
+# about a CVSS 3.1 metric (TheHub #60827, S5 of epic #60822).
+#
+# A file, not a dict in a module, for the reason `stride-map-v1.yaml` is one:
+# every line below is a judgement. That a credentials store has a High
+# confidentiality requirement, that "internal" means Adjacent, that a
+# perimeter gate answering 401 to an anonymous request turns PR:N into PR:L:
+# each of these lowers or raises a score somebody will quote, so each belongs
+# where it is argued with in a pull request and approved as policy (the
+# `governance` change class, as D-164 did for the STRIDE map).
+#
+# ---------------------------------------------------------------------------
+# What this file does NOT decide
+# ---------------------------------------------------------------------------
+#
+# The rules are code (`backend/mykronos/environment.py`) and they are not
+# configurable here, on purpose:
+#
+#   1. No fact -> X (the base value).
+#   2. A raising fact always applies.
+#   3. A lowering fact applies only when it is observed (machine-collected,
+#      fresh) or, for a Security Requirement (CR/IR/AR) only, declared and
+#      confirmed within the window below. Lowering MAV/MPR/MAC needs an
+#      observation. A contradicted fact never applies.
+#   4. Exploitability modifiers never raise above the base vector (cvss.py).
+#   5. Every fact is returned, applied or not, with its reason.
+#
+# A mapping here can only name *which* fact maps to *which* value. It cannot
+# turn a declaration into evidence.
+
+version: "1.0"
+
+# How long a statement counts for lowering. Raising facts ignore both: a
+# stale statement that the data is sensitive is still not a reason for the
+# score to fall.
+freshness:
+  # A machine observation (ControlObservation, an adapter tag) lowers a score
+  # for this many days after it was collected. Fourteen: the host collector
+  # and the exposure sweep both run at least daily, so a fact older than two
+  # weeks means the collector stopped, not that the fact is settled.
+  observation_days: 14
+  # A declared Security Requirement (a surface's CR/IR/AR, the risk profile's
+  # criticality) lowers only if somebody confirmed it this recently. Ninety,
+  # the same quarterly review `controls.STALE_AFTER_DAYS` uses.
+  declaration_confirmed_days: 90
+
+# ---------------------------------------------------------------------------
+# Security Requirements (CR / IR / AR). H raises, M is neutral, L lowers.
+# ---------------------------------------------------------------------------
+security_requirements:
+  cr:
+    # From the matched asset's sensitivity. `unknown` is absent: no fact.
+    by_sensitivity:
+      credentials: H
+      pii: H
+      financial: H
+      source: M
+      public: M
+    # Else from the repository's risk profile.
+    by_classification:
+      regulated: H
+      confidential: H
+      internal: M
+      public: M
+    # Values this metric may never take from any source. Confidentiality is
+    # never Low here: "public" data is still somebody's (cvss.py, D-106).
+    never: [L]
+  ir:
+    by_sensitivity:
+      credentials: H
+      financial: H
+    # Any regime in the profile's compliance scope.
+    compliance_scope: H
+    never: []
+  ar:
+    by_criticality:
+      critical: H
+      high: H
+      medium: M
+      low: L
+    never: []
+
+# ---------------------------------------------------------------------------
+# Modified Attack Vector. Lowering only; needs a fresh observation.
+# ---------------------------------------------------------------------------
+modified_attack_vector:
+  # The matched surface's declared exposure. `internet` and `unknown` are
+  # absent: they state nothing the base vector does not already assume.
+  by_exposure:
+    internal: A
+    local: L
+  # The risk profile's `internet_facing: false`. Declared and repository-wide,
+  # so on its own it never lowers; it is returned so the reader sees why.
+  profile_not_internet_facing: A
+  # A container finding in an image the adapter tagged `image_role: tool`
+  # (a build or scan tool, never deployed as a service).
+  tool_image: L
+  # Which fresh `pass` observations about the surface verify each value.
+  # `bound_loopback` (the service listens only on 127.0.0.1/::1) supports
+  # local and, being stronger, adjacent; `firewall_scope` (the host firewall
+  # scopes the port to the LAN) supports adjacent only.
+  evidence:
+    A: [firewall_scope, bound_loopback]
+    L: [bound_loopback]
+
+# ---------------------------------------------------------------------------
+# Modified Privileges Required.
+# ---------------------------------------------------------------------------
+modified_privileges_required:
+  perimeter_gate:
+    enabled: true
+    control_kind: perimeter_gate
+    # Only a flaw that needs no privileges is changed, and only to Low: the
+    # gate token is a shared credential (D-131), not an account.
+    from: N
+    to: L
+    # The observation that verifies the gate, and from where.
+    evidence: anonymous_401
+    evidence_vantages: [internet]
+    # Never for these capabilities: a leaked secret is the gate's own failure
+    # mode, so a secrets finding is never scored as behind it.
+    not_for_capabilities: [secrets]
+    # Paths the gate lets through without a token (D-131: Next's build assets
+    # and the health check). A DAST finding on one of these is not behind it.
+    exempt_paths:
+      - "/_next/static/**"
+      - "/_next/image**"
+      - "/api/healthz"
+      - "/healthz"
+
+# ---------------------------------------------------------------------------
+# Modified Attack Complexity: CWE-class pairings. DISABLED by default.
+# ---------------------------------------------------------------------------
+#
+# Each pairing says "a control of this kind, observed, makes this class of
+# weakness harder to exploit". They are the most arguable lines in the file,
+# so each ships off and is switched on by a reviewed change to this file.
+modified_attack_complexity:
+  pairings:
+    - name: csp_blunts_xss
+      enabled: false
+      cwes: [CWE-79]
+      value: H
+      evidence: header_csp
+      evidence_vantages: [internet]
+    - name: rate_limit_blunts_bruteforce
+      enabled: false
+      cwes: [CWE-307, CWE-799]
+      value: H
+      # No collector observes rate limiting yet, so this cannot apply even
+      # when enabled: a declared rate_limiting control is not evidence.
+      evidence: null
+      evidence_vantages: []

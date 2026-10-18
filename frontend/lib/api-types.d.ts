@@ -2027,6 +2027,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/executive-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Executive Summary
+         * @description A plain-language posture summary of one repository, for printing.
+         *
+         *     Severity, trend, what is driving it, how much can be fixed today, accepted
+         *     risk, whether each scanner is running, recent progress and what is waiting
+         *     on a person. Every count is read from the platform at request time, and
+         *     what cannot be established is listed in `gaps` rather than estimated.
+         */
+        get: operations["executive_summary_api_dashboard_repos__repo_id__executive_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exposure": {
         parameters: {
             query?: never;
@@ -4643,6 +4668,29 @@ export interface components {
              */
             introduced_blocking: boolean;
         };
+        /**
+         * ComponentCoverageOut
+         * @description How much of the open backlog the declared surfaces place (#60828).
+         */
+        ComponentCoverageOut: {
+            /** Open Findings */
+            open_findings: number;
+            /**
+             * Unplaced
+             * @description Open findings no declared surface's selectors place. They are rescored on repository-level facts only, where lowering needs observed evidence. The Findings tab lists them with `component=none`.
+             */
+            unplaced: number;
+            /**
+             * Surfaces
+             * @description Surfaces declared for this repository.
+             */
+            surfaces: number;
+            /**
+             * Located Surfaces
+             * @description Of those, how many carry at least one selector. A surface with none places nothing.
+             */
+            located_surfaces: number;
+        };
         /** ConsultAnswerOut */
         ConsultAnswerOut: {
             /** Key */
@@ -5449,6 +5497,43 @@ export interface components {
             has_reason: boolean;
         };
         /**
+         * EnvironmentalFactOut
+         * @description One statement about one CVSS metric and what became of it (#60827).
+         */
+        EnvironmentalFactOut: {
+            /** Metric */
+            metric: string;
+            /** Value */
+            value: string;
+            /** Direction */
+            direction: string;
+            /** Source Kind */
+            source_kind: string;
+            /** Source Id */
+            source_id: string;
+            /** Tier */
+            tier: string;
+            /** Asserted By */
+            asserted_by: string;
+            /** Verified At */
+            verified_at?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Applied */
+            applied: boolean;
+            /** Not Applied Reason */
+            not_applied_reason?: string | null;
+            /**
+             * Because
+             * @default
+             */
+            because: string;
+            /** Scope */
+            scope?: string | null;
+            /** Evidence Id */
+            evidence_id?: string | null;
+        };
+        /**
          * EstateOut
          * @description What exists against what is watched (B-051).
          *
@@ -5582,6 +5667,185 @@ export interface components {
              */
             requester_statement: string;
         };
+        /** ExecutiveAcceptedOut */
+        ExecutiveAcceptedOut: {
+            /** Findings */
+            findings: number;
+            /** Serious */
+            serious: number;
+            /** No Review Date */
+            no_review_date: number;
+            /** Overdue */
+            overdue: number;
+            /** Now Fixable */
+            now_fixable: number;
+            /** Next Expiries */
+            next_expiries: components["schemas"]["ExecutiveExpiryOut"][];
+            /** Decisions Active */
+            decisions_active: number;
+            /** Decisions Review Due */
+            decisions_review_due: number;
+            /** Decisions Pending */
+            decisions_pending: number;
+            /** Nearest Decision Expiry */
+            nearest_decision_expiry: string | null;
+        };
+        /** ExecutiveDecisionOut */
+        ExecutiveDecisionOut: {
+            /** Kind */
+            kind: string;
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Summary */
+            summary: string;
+            /** Created At */
+            created_at: string | null;
+            /** Due */
+            due: string | null;
+            /** Overdue */
+            overdue: boolean;
+        };
+        /** ExecutiveDriverOut */
+        ExecutiveDriverOut: {
+            /** Capability */
+            capability: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Findings */
+            findings: number;
+            /** Critical */
+            critical: number;
+            /** High */
+            high: number;
+        };
+        /** ExecutiveExpiryOut */
+        ExecutiveExpiryOut: {
+            /**
+             * On
+             * Format: date
+             */
+            on: string;
+            /** Findings */
+            findings: number;
+        };
+        /** ExecutiveFixBucketOut */
+        ExecutiveFixBucketOut: {
+            /** Key */
+            key: string;
+            /** Findings */
+            findings: number;
+            /** Serious */
+            serious: number;
+        };
+        /** ExecutiveLaneOut */
+        ExecutiveLaneOut: {
+            /** Capability */
+            capability: string;
+            /** Status */
+            status: string;
+            /** Last Run At */
+            last_run_at: string | null;
+            /** Last Run Status */
+            last_run_status: string | null;
+            /** Last Success At */
+            last_success_at: string | null;
+            /** Open Findings */
+            open_findings: number;
+            /** Blocked By */
+            blocked_by: string;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+            /** Stale Reason */
+            stale_reason: string;
+        };
+        /** ExecutiveProgressOut */
+        ExecutiveProgressOut: {
+            /** Days */
+            days: number;
+            /** Fixed */
+            fixed: number;
+            /** Fixed Serious */
+            fixed_serious: number;
+            /** False Positive */
+            false_positive: number;
+            /** Accepted */
+            accepted: number;
+            /** New */
+            new: number;
+            /** New Serious */
+            new_serious: number;
+            /** Reidentified */
+            reidentified: number;
+            /** Window Starts */
+            window_starts: string | null;
+        };
+        /**
+         * ExecutiveSummaryOut
+         * @description One repository's security posture, every number read at request time.
+         */
+        ExecutiveSummaryOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Open By Severity */
+            open_by_severity: {
+                [key: string]: number;
+            };
+            /** Open Total */
+            open_total: number;
+            /** History Since */
+            history_since: string | null;
+            /** Trend */
+            trend: components["schemas"]["ExecutiveTrendPointOut"][];
+            /** Drivers */
+            drivers: components["schemas"]["ExecutiveDriverOut"][];
+            /** Drivers Basis */
+            drivers_basis: string;
+            /** Drivers Basis Total */
+            drivers_basis_total: number;
+            /** Basis By Capability */
+            basis_by_capability: {
+                [key: string]: number;
+            };
+            /** Fixability */
+            fixability: components["schemas"]["ExecutiveFixBucketOut"][];
+            /** Closing On Their Own */
+            closing_on_their_own: number;
+            accepted: components["schemas"]["ExecutiveAcceptedOut"];
+            /** Lanes */
+            lanes: components["schemas"]["ExecutiveLaneOut"][];
+            progress: components["schemas"]["ExecutiveProgressOut"];
+            /** Decisions */
+            decisions: components["schemas"]["ExecutiveDecisionOut"][];
+            /** Gaps */
+            gaps: string[];
+        };
+        /** ExecutiveTrendPointOut */
+        ExecutiveTrendPointOut: {
+            /** Days Ago */
+            days_ago: number;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Available */
+            available: boolean;
+            /** Open By Severity */
+            open_by_severity: {
+                [key: string]: number;
+            } | null;
+            /** Open Total */
+            open_total: number | null;
+        };
         /**
          * FindingBatch
          * @description A batch of findings for one scan run.
@@ -5616,6 +5880,8 @@ export interface components {
             description?: string | null;
             /** @description The worst member's. Two scanners disagreeing about one CVE is common, and the lower number is never the safe one to show. */
             severity: components["schemas"]["Severity"];
+            /** @description The worst effective severity among the occurrences that have a stored environmental score (TheHub #60828); null when none does. */
+            effective_severity?: components["schemas"]["Severity"] | null;
             /** Package Name */
             package_name?: string | null;
             /** Cvss Score */
@@ -5730,6 +5996,8 @@ export interface components {
             version_basis?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
+            /** @description The scanner's severity shifted by the bands the stored environmental score moved (TheHub #60828). Null when no score is stored: the finding is not rescorable, and the scanner's word in its place would claim a re-reading nobody did. */
+            effective_severity?: components["schemas"]["Severity"] | null;
         };
         /**
          * FindingOut
@@ -6622,6 +6890,20 @@ export interface components {
              * @description Findings of this status per scan type, before filters — the same scope as `total` and `by_severity`, so each sums to `total`.
              */
             by_capability?: {
+                [key: string]: number;
+            };
+            /**
+             * By Rescoring
+             * @description Findings of this status by where the stored environmental score left their severity: `down`, `up`, `unchanged`, `not_rescorable` (TheHub #60828). Same scope as `total`, so it sums to it, and each count is what `rescored=<state>` lists. `down` is verified by the resolver's rule: a lowering fact applies only when observed or confirmed. Scores are kept for open findings only.
+             */
+            by_rescoring?: {
+                [key: string]: number;
+            };
+            /**
+             * By Effective Severity
+             * @description Findings of this status per stored effective severity, before filters. Not-rescorable findings are in no bucket.
+             */
+            by_effective_severity?: {
                 [key: string]: number;
             };
             /** Groups */
@@ -8893,6 +9175,15 @@ export interface components {
             vector_version: string;
             /** Rescored */
             rescored: boolean;
+            /**
+             * Facts
+             * @default []
+             */
+            facts: components["schemas"]["EnvironmentalFactOut"][];
+            /** Effective Severity */
+            effective_severity?: string | null;
+            /** Computed At */
+            computed_at?: string | null;
         };
         /** SnoozeRequest */
         SnoozeRequest: {
@@ -9545,6 +9836,7 @@ export interface components {
              */
             nothing_scanned: boolean;
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
+            component_coverage?: components["schemas"]["ComponentCoverageOut"] | null;
         };
         /**
          * ThreatModelSupplyChainOut
@@ -11611,6 +11903,9 @@ export interface operations {
                 fixable?: boolean | null;
                 due?: ("overdue" | "due_soon" | "on_track" | "no_target") | null;
                 owner?: string | null;
+                effective?: components["schemas"]["Severity"] | null;
+                rescored?: ("down" | "up" | "unchanged" | "not_rescorable") | null;
+                component?: "none" | null;
                 limit?: number;
             };
             header?: never;
@@ -12352,6 +12647,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ControlObservationsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    executive_summary_api_dashboard_repos__repo_id__executive_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutiveSummaryOut"];
                 };
             };
             /** @description Validation Error */

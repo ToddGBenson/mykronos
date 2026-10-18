@@ -44,6 +44,7 @@ import type {
   Severity,
   ToxicCombination,
 } from "@/lib/api";
+import { rescoreChips, shift } from "@/lib/environmental-severity";
 import { findingsSummary, type SummaryCount } from "@/lib/findings-summary";
 
 /**
@@ -113,6 +114,12 @@ export type FindingsQuery = {
   owner?: string;
   /** overdue | due_soon | on_track | no_target (spec 24 §2.4). */
   due?: string;
+  /** A stored effective severity (TheHub #60828). */
+  effective?: string;
+  /** down | up | unchanged | not_rescorable (TheHub #60828). */
+  rescored?: string;
+  /** `none`: findings no declared surface places (TheHub #60828). */
+  component?: string;
   /** Which deduplicated row is open. */
   group?: string;
   /** Which occurrence inside that row is open. */
@@ -206,7 +213,10 @@ export function OpenFindings({
             query.kev_only ||
             query.min_epss ||
             query.triage ||
-            query.fixable
+            query.fixable ||
+            query.effective ||
+            query.rescored ||
+            query.component
               ? "Nothing matches these filters"
               : `No ${(query.status ?? "open").replace("_", " ")} findings`
           }
@@ -217,7 +227,10 @@ export function OpenFindings({
             query.kev_only ||
             query.min_epss ||
             query.triage ||
-            query.fixable
+            query.fixable ||
+            query.effective ||
+            query.rescored ||
+            query.component
               ? "Clear the filters to see everything outstanding."
               : "Either nothing has been found, or nothing has scanned yet — the scan health boxes above say which."
           }
@@ -344,6 +357,44 @@ function Summary({
           summary.byCapability.map((entry) => chip(entry, "capability"))
         )}
       </div>
+      {/* From the stored environmental scores, over the same scope as the
+          counts above (TheHub #60828): each chip lists exactly that many. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>Here</Label>
+        {rescoreChips(page.by_rescoring, query).map((entry) => (
+          <Link
+            key={entry.value}
+            href={href({
+              rescored: entry.active ? undefined : entry.value,
+              ...CLEAR_SELECTION,
+            })}
+            aria-current={entry.active ? "true" : undefined}
+            title={
+              entry.value === "down"
+                ? "The environment lowered the severity word. Only observed or confirmed facts can lower a score."
+                : entry.value === "not_rescorable"
+                  ? "No CVSS vector, so nothing to re-read for this system."
+                  : "The environment raised the severity word."
+            }
+            className={`inline-flex items-baseline gap-1.5 border px-1.5 py-0.5 font-mono text-[12px] ${
+              entry.active ? "border-accent bg-accent-wash" : "border-rule hover:border-accent"
+            } ${entry.count === 0 ? "opacity-60" : ""}`}
+          >
+            <span className="font-bold text-ink">{entry.count}</span>
+            <span className="text-ink-2">{entry.label}</span>
+          </Link>
+        ))}
+        {query.component === "none" ? (
+          <Link
+            href={href({ component: undefined, ...CLEAR_SELECTION })}
+            aria-current="true"
+            title="Showing findings no declared surface places — click to clear"
+            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[12px] text-accent"
+          >
+            in no component ✕
+          </Link>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -403,6 +454,19 @@ function Filters({
             (severity) => ({
               value: severity,
               label: `${severity} (${page.by_severity[severity] ?? 0})`,
+            }),
+          )}
+        />
+        <FilterSelect
+          label="Effective"
+          name="effective"
+          value={query.effective}
+          anyLabel="Any effective severity"
+          clears={["group", "finding"]}
+          options={(["critical", "high", "medium", "low", "info"] as Severity[]).map(
+            (severity) => ({
+              value: severity,
+              label: `${severity} (${page.by_effective_severity?.[severity] ?? 0})`,
             }),
           )}
         />
@@ -582,6 +646,44 @@ function ToxicCombinations({
 }
 
 /**
+ * The effective severity beside the scanner's (TheHub #60828): `→ medium here`
+ * when the environment moved the word, `here too` when a score is stored and
+ * left it, nothing when there is no score. Nothing rather than the scanner's
+ * word again: a finding with no vector was never re-read, and repeating its
+ * severity under another label would claim it had been.
+ */
+function EffectiveMark({
+  scanner,
+  effective,
+}: {
+  scanner: string;
+  effective?: string | null;
+}) {
+  if (!effective) return null;
+  const moved = shift(scanner, effective);
+  if (moved === "same") {
+    return (
+      <span
+        className="font-mono text-[10px] uppercase tracking-wide text-ink-3"
+        title="Rescored for this system; the severity word is unchanged"
+      >
+        here too
+      </span>
+    );
+  }
+  return (
+    <span
+      className={`font-mono text-[10px] uppercase tracking-wide ${
+        moved === "down" ? "text-pass" : "text-critical"
+      }`}
+      title={`The environment moved this ${moved}: ${effective} here, ${scanner} as scanned`}
+    >
+      → {effective} here
+    </span>
+  );
+}
+
+/**
  * KEV / EPSS, next to severity (spec 17 §4.4). Renders nothing for a group
  * naming no CVE — `in_kev === null` — rather than a dash on every row; the
  * absence of a badge already says "no exploitability data for this one."
@@ -654,6 +756,7 @@ function GroupList({
             >
               <span className="flex flex-wrap items-baseline gap-1.5">
                 <SeverityText severity={group.severity} />
+                <EffectiveMark scanner={group.severity} effective={group.effective_severity} />
                 {group.toxic_combination_ids?.length ? (
                   <span
                     className="font-mono text-[10px] uppercase tracking-wide text-critical"
@@ -712,6 +815,7 @@ function GroupDetail({
       <div>
         <span className="flex flex-wrap items-baseline gap-1.5">
           <SeverityText severity={group.severity} />
+          <EffectiveMark scanner={group.severity} effective={group.effective_severity} />
           {/* Renders nothing unless KEV or EPSS ≥ 0.5, so it costs no room when
               there is nothing to say — and when there is, it outranks the
               severity beside it. */}
@@ -841,6 +945,12 @@ function GroupDetail({
               ) : null}
               <span className="ml-1.5 text-ink-3">
                 {location.capability} ·{" "}
+                {location.effective_severity ? (
+                  <>
+                    here {location.effective_severity}
+                    {" · "}
+                  </>
+                ) : null}
                 <RelativeTime value={location.first_seen_at ?? null} />
                 {/* The whole record for this one occurrence (B-032): whether
                     its lane can close it, whether a fix exists, what the

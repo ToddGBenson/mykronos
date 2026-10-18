@@ -11,7 +11,18 @@ import {
 } from "@/components/primitives";
 import type { Severity } from "@/lib/api";
 import type { components } from "@/lib/api-types";
-import { notRescoredLine, vectorProvenance } from "@/lib/severity-here";
+import {
+  NO_VECTOR,
+  factAttribution,
+  factOutcome,
+  factSetting,
+  factSource,
+  factsHeadline,
+  notRescoredLine,
+  shift,
+  splitFacts,
+  vectorProvenance,
+} from "@/lib/environmental-severity";
 import { PinRegressionTest } from "@/components/pin-regression-test";
 import { RemediationAction } from "@/components/remediation-action";
 
@@ -103,7 +114,11 @@ export default async function FindingRecordPage({
         </section>
       ) : null}
 
-      {here ? <SeverityHere here={here} /> : null}
+      {here ? (
+        <SeverityHere here={here} repoId={repoId} scannerSeverity={finding.severity} />
+      ) : (
+        <NoVector />
+      )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.3fr_1fr]">
         <div className="flex flex-col gap-3">
@@ -262,14 +277,25 @@ export default async function FindingRecordPage({
 }
 
 type SeverityHereData = components["schemas"]["SeverityHereOut"];
+type FactData = components["schemas"]["EnvironmentalFactOut"];
 
 /**
- * The CVSS score, re-read for this system.
+ * The CVSS score, re-read for this system (TheHub #60827, #60828).
  *
  * A base score is a statement about a vulnerability in the abstract — the same
  * number whether the affected service faces the internet holding card data or
  * sits on a laptop that has been off for a year. This is the standard's own
  * answer to that, computed rather than approximated.
+ *
+ * Three severities, because each answers a different question: the scanner's
+ * word (what the tool said), the base and environmental scores (what the
+ * vector says, before and after this system), and the effective severity (the
+ * scanner's word moved by as many bands as the environment moved the score).
+ *
+ * **Every fact is shown, applied or not**, each with its reason and a link to
+ * what said it. A lowered score is only as good as the statements behind it,
+ * and a statement that was not counted is as informative as one that was: it
+ * is the evidence somebody could go and get.
  *
  * **The equal case is the one that needs words.** When nothing is known the two
  * numbers are identical by construction: every undefined modifier takes the
@@ -277,7 +303,15 @@ type SeverityHereData = components["schemas"]["SeverityHereOut"];
  * figures with no explanation would read as "we checked and it matches", which
  * is the opposite of what happened.
  */
-function SeverityHere({ here }: { here: SeverityHereData }) {
+function SeverityHere({
+  here,
+  repoId,
+  scannerSeverity,
+}: {
+  here: SeverityHereData;
+  repoId: string;
+  scannerSeverity: string;
+}) {
   const shownOnly = notRescoredLine(here);
   if (shownOnly !== null || here.base == null || here.environmental == null) {
     // v4.0 only (TheHub #60824, D1): shown as published, never rescored. Two
@@ -306,11 +340,24 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
   const base = here.base;
   const environmental = here.environmental;
   const lower = environmental < base;
+  const facts = here.facts ?? [];
+  const { applied, notApplied } = splitFacts(facts);
+  const effective = here.effective_severity ?? null;
+  const moved = shift(scannerSeverity, effective);
 
   return (
     <section className="border border-rule bg-paper-2">
-      <div className="border-b border-rule-soft px-3 py-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-1.5">
         <Label as="h2">Severity here</Label>
+        <span className="font-mono text-[11px] text-ink-3">
+          {here.computed_at ? (
+            <>
+              scored <RelativeTime value={here.computed_at} />
+            </>
+          ) : (
+            "computed on read: no rescore has reached this finding yet"
+          )}
+        </span>
       </div>
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-3 py-2.5">
         <span className="flex items-baseline gap-2">
@@ -323,7 +370,7 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
         </span>
         <span className="flex items-baseline gap-2">
           <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
-            here
+            environmental
           </span>
           <span
             className={`tabular text-xl font-bold leading-none ${
@@ -333,6 +380,23 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
             {environmental.toFixed(1)}
           </span>
         </span>
+        <span className="flex items-baseline gap-2">
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
+            effective
+          </span>
+          {effective ? (
+            <>
+              <SeverityText severity={effective as Severity} />
+              <span className="font-mono text-[11px] text-ink-3">
+                {moved === "same"
+                  ? "as the scanner said"
+                  : `${moved} from the scanner’s ${scannerSeverity}`}
+              </span>
+            </>
+          ) : (
+            <span className="font-mono text-[12px] text-ink-3">not computed</span>
+          )}
+        </span>
 
         <span className="max-w-prose text-[13px] text-ink-2">
           {here.moved ? (
@@ -340,40 +404,151 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
               {lower ? "Lower" : "Higher"} here because{" "}
               {here.because.join(", ")}.
             </>
-          ) : here.stated ? (
-            // Stated and unmoved is a real result, not a missing one: the
-            // impact sub-score was already at its cap, or a stated fact could
-            // not make the flaw easier to exploit than its vector says.
-            <>Unchanged despite what is known ({here.because.join(", ")}).</>
+          ) : facts.length > 0 ? (
+            // Stated and unmoved is a real result, not a missing one: nothing
+            // stated was evidence enough, the impact sub-score was already at
+            // its cap, or a fact could not make the flaw easier to exploit
+            // than its vector says.
+            <>
+              Unchanged despite what is stated
+              {here.because.length ? ` (${here.because.join(", ")})` : ""}.
+            </>
           ) : (
             <>
-              The same as the base score, because nothing has been stated about
-              this system. Every undefined metric takes the base value, so this
-              is an upper bound and never a discount.
+              The same as the base score. Every undefined metric takes the base
+              value, so this is an upper bound and never a discount.
             </>
           )}
         </span>
       </div>
-      {here.stated ? (
-        // A lowered score is only as good as the statement behind it: whose
-        // statement, and how old (#60823).
-        <p className="border-t border-rule-soft px-3 py-1.5 text-[12px] text-ink-2">
-          From the risk profile, stated by{" "}
-          <span className="font-medium">
-            {here.stated_by ?? "nobody recorded"}
-          </span>
-          {here.stated_at ? (
-            <>
-              {" "}
-              <RelativeTime value={here.stated_at} />
-            </>
-          ) : null}
-          .
-        </p>
-      ) : null}
+
+      <div className="border-t border-rule-soft px-3 py-2">
+        <p className="text-[13px] text-ink-2">{factsHeadline(facts)}</p>
+        {facts.length === 0 ? (
+          <p className="mt-1 max-w-prose text-[12px] text-ink-3">
+            Declare the surface this runs in and the controls in front of it on
+            the{" "}
+            <Link
+              href={`/repos/${repoId}?tab=threat-model`}
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              Threat Model tab
+            </Link>
+            , or record the{" "}
+            <Link
+              href={`/repos/${repoId}?tab=decisions#risk-profile`}
+              className="text-accent underline-offset-2 hover:underline"
+            >
+              risk profile
+            </Link>
+            .
+          </p>
+        ) : (
+          <div className="mt-1.5 flex flex-col gap-2">
+            {applied.length > 0 ? (
+              <FactList title="Applied" facts={applied} repoId={repoId} />
+            ) : null}
+            {notApplied.length > 0 ? (
+              <FactList title="Not applied" facts={notApplied} repoId={repoId} />
+            ) : null}
+          </div>
+        )}
+      </div>
+
       <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
         {vectorProvenance(here)} · {here.vector}
       </p>
+    </section>
+  );
+}
+
+function FactList({
+  title,
+  facts,
+  repoId,
+}: {
+  title: string;
+  facts: FactData[];
+  repoId: string;
+}) {
+  return (
+    <div>
+      <Label>{title}</Label>
+      <ul className="mt-0.5 flex flex-col gap-1">
+        {facts.map((fact) => {
+          const source = factSource(repoId, fact);
+          return (
+            <li
+              key={`${fact.metric}:${fact.value}:${fact.source_kind}:${fact.source_id}`}
+              className="text-[12px] leading-relaxed text-ink-2"
+            >
+              <span
+                className={`font-mono font-semibold ${
+                  fact.applied ? "text-ink" : "text-ink-3 line-through"
+                }`}
+              >
+                {factSetting(fact)}
+              </span>{" "}
+              {fact.because ? <span>{fact.because}</span> : null}
+              <span className="ml-1.5 font-mono text-[11px] text-ink-3">
+                {factAttribution(fact)}
+                {fact.verified_at ? (
+                  <>
+                    {" · verified "}
+                    <RelativeTime value={fact.verified_at} />
+                  </>
+                ) : null}
+                {fact.expires_at ? (
+                  <>
+                    {" · lapses "}
+                    <RelativeTime value={fact.expires_at} />
+                  </>
+                ) : null}
+                {" · "}
+                {source.href ? (
+                  <Link
+                    href={source.href}
+                    className="underline decoration-dotted underline-offset-2 hover:text-accent"
+                  >
+                    {source.label}
+                  </Link>
+                ) : (
+                  source.label
+                )}
+                {fact.evidence_id ? ` · evidence ${fact.evidence_id.slice(0, 12)}` : ""}
+              </span>
+              {!fact.applied ? (
+                <span className="block pl-4 text-[12px] text-high">{factOutcome(fact)}</span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * No vector, so nothing to re-read. Said rather than omitted: a page with no
+ * "Severity here" block reads as "it does not matter here", and the truth is
+ * that nobody published a vector to re-read — a Semgrep pattern or a ZAP alert
+ * never will, and NVD has not scored every CVE.
+ */
+function NoVector() {
+  return (
+    <section className="border border-rule bg-paper-2">
+      <div className="border-b border-rule-soft px-3 py-1.5">
+        <Label as="h2">Severity here</Label>
+      </div>
+      <div className="flex flex-col gap-1 px-3 py-2.5">
+        <span className="text-[14px] font-semibold text-ink">{NO_VECTOR}</span>
+        <span className="max-w-prose text-[13px] text-ink-2">
+          Neither NVD nor the scanner published a CVSS vector for this finding,
+          so there is nothing to re-read for this system. The scanner&rsquo;s
+          severity stands as reported; a figure made up from it would look like
+          a published standard and is not one.
+        </span>
+      </div>
     </section>
   );
 }

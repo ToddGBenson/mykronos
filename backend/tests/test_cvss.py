@@ -305,3 +305,19 @@ class TestProfileMapping:
         # It still says what was stated, so a reader can see why it did not
         # move rather than assuming nothing was known.
         assert full.because
+
+
+def test_an_unstated_environment_is_the_base_for_every_base_vector() -> None:
+    """Under a changed scope the 3.1 environmental formula is not the base
+    formula; 80 of 2,592 vectors used to score 0.1 above base with every
+    modifier `X` (found by TheHub #60827's property test)."""
+    import itertools
+
+    for av, ac, pr, ui, s, c, i, a in itertools.product(
+        "NALP", "LH", "NLH", "NR", "UC", "HLN", "HLN", "HLN"
+    ):
+        vector = f"CVSS:3.1/AV:{av}/AC:{ac}/PR:{pr}/UI:{ui}/S:{s}/C:{c}/I:{i}/A:{a}"
+        result = cvss.score(vector)
+        assert result.environmental == result.base, vector
+    with_temporal = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:U/RL:O/RC:R"
+    assert cvss.score(with_temporal).environmental == 8.2

@@ -1001,6 +1001,75 @@ class RepoControl(Base):
         return f"<RepoControl {self.repo_full_name} {self.stride}/{self.kind}>"
 
 
+class ScoringContext(Base):
+    """Everything known about one repository that a score could rest on,
+    at one moment (TheHub #60827).
+
+    **Append-only.** A new row only when the resolved facts change, so the
+    table is the history of what the platform believed about this repository's
+    environment: "the gate was observed answering 401" appearing, then lapsing
+    fifteen days later, is two rows and the dates between them. An
+    `EnvironmentalScore` names the context it was computed in, so a score can
+    always be traced to the exact facts behind it, even after they changed.
+
+    `context_id` is a hash of the resolved facts and the repository, and is
+    the skip rule: a rescore that resolves the same facts writes nothing.
+    Not unique on its own: facts can lapse and come back, and the second time
+    is a second row.
+    """
+
+    __tablename__ = "scoring_contexts"
+
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    context_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: The resolved facts as `environment.Fact` dicts, applied or not.
+    facts_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EnvironmentalScore(Base):
+    """This finding's CVSS score re-read for its environment, as last computed
+    (TheHub #60827).
+
+    **Current value, not history.** One row per finding, overwritten by each
+    rescore; the history of *why* lives in `ScoringContext`. Operational, not
+    a lake column, for the reason `TriageState` is: it is derived from
+    operational facts that change without any scan running, and rewriting
+    Parquet partitions every time a gate observation lapsed would be the
+    wrong storage for it.
+
+    Absent is a real state: the finding has no vector (no CVE, or NVD never
+    scored it), or no rescore has reached it yet. `_severity_here` then
+    computes on read.
+    """
+
+    __tablename__ = "environmental_scores"
+
+    finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    vector: Mapped[str] = mapped_column(String(256), default="")
+    #: `3.1` or `3.0`: the CVSS version the vector states.
+    vector_version: Mapped[str] = mapped_column(String(8), default="")
+    #: nvd | advisory | analyst. Only `nvd` until #917's chooser lands.
+    vector_source: Mapped[str] = mapped_column(String(16), default="")
+    base: Mapped[float] = mapped_column(Float, default=0.0)
+    environmental: Mapped[float] = mapped_column(Float, default=0.0)
+    #: none | low | medium | high | critical (CVSS 3.1 qualitative bands).
+    base_band: Mapped[str] = mapped_column(String(16), default="")
+    env_band: Mapped[str] = mapped_column(String(16), default="")
+    #: The scanner's own severity word, as last scored. Kept so a re-ingest
+    #: that changes it is noticed by the skip rule.
+    scanner_severity: Mapped[str] = mapped_column(String(16), default="")
+    #: The scanner's severity shifted by (env_band - base_band), clamped to
+    #: low..critical.
+    effective_severity: Mapped[str] = mapped_column(String(16), default="")
+    #: This finding's facts, applied or not, each with its reason.
+    facts_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    context_id: Mapped[str] = mapped_column(String(64), default="")
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class NetassessRun(Base):
     """The last network-assessment run this platform accepted (spec 32 §4.4).
 

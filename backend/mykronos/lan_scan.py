@@ -45,7 +45,6 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from defusedxml import ElementTree as SafeElementTree
 from defusedxml.common import DefusedXmlException
@@ -111,7 +110,9 @@ def observations_from_xml(
     root = None
     try:
         root = SafeElementTree.fromstring(xml_text) if xml_text.strip() else None
-    except (ElementTree.ParseError, DefusedXmlException):
+    # defusedxml's ParseError is the stdlib class, re-exported: no stdlib xml
+    # import here at all, so nothing for semgrep's use-defused-xml to match.
+    except (SafeElementTree.ParseError, DefusedXmlException):
         root = None
     version = _tool_version(root)
 

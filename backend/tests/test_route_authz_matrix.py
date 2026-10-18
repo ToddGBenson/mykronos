@@ -148,6 +148,7 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/ssdf": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/tests": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/consult": PRINCIPAL,
+    "GET /api/dashboard/repos/{repo_id}/executive-summary": PRINCIPAL,
     "GET /api/dashboard/platform-health": PRINCIPAL,
     "GET /api/dashboard/deployments": PRINCIPAL,
     # -- product owner -----------------------------------------------------

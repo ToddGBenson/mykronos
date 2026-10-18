@@ -18,10 +18,10 @@ from fastapi import FastAPI, Request
 
 from mykronos import (
     __version__,
+    environment,
     finding_disposition,
     logsafe,
     platform_health,
-    premise_monitor,
     risk_acceptance,
 )
 from mykronos.adminauth import (
@@ -37,6 +37,7 @@ from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
 from mykronos.api.control_observations import router as control_observations_router
 from mykronos.api.dashboard import router as dashboard_router
+from mykronos.api.executive import router as executive_router
 from mykronos.api.exposure import router as exposure_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
@@ -278,6 +279,19 @@ async def _compaction_loop(app: FastAPI, interval: int) -> None:
             raise
         except Exception:
             logger.exception("Scheduled compaction failed; buffer retained, will retry")
+        # After compaction, so an ingest's findings are in the lake before the
+        # repository it dirtied is rescored (TheHub #60827). Separate from the
+        # compaction's own error handling: a rescore failing loses nothing.
+        try:
+            rescored = await asyncio.to_thread(
+                environment.drain, app.state.db, app.state.catalog
+            )
+            for outcome in rescored:
+                logger.info("Environmental rescore: %s", outcome.summary())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Environmental rescore after compaction failed")
 
 
 def _build_github_factory(settings: Settings) -> GitHubClientFactory:
@@ -610,6 +624,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             logger.info("Threat-model sync: %s", result.summary())
 
+        async def _environment() -> None:
+            # Every repository's environmental CVSS from scratch (TheHub
+            # #60827). The event triggers cover writes; only this notices a
+            # fact that lapsed, so only this raises a score back. Raises if
+            # any repository failed, so `job_runs` says so.
+            results = await asyncio.to_thread(
+                environment.rescore_all, app.state.db, app.state.catalog
+            )
+            changed = [r for r in results if r.context_changed or r.scored or r.removed]
+            logger.info(
+                "Environmental rescore: %s repositories, %s changed%s",
+                len(results),
+                len(changed),
+                "".join(f"; {r.summary()}" for r in changed),
+            )
+
         async def _stale_drafts() -> None:
             await close_superseded_fixes(
                 app.state.db,
@@ -747,6 +777,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             ("pull-request-stamps", 120, _pull_request_stamps),
             ("exposure", settings.exposure_probe_interval_seconds, _exposure),
+            ("environment", settings.environment_rescore_interval_seconds, _environment),
             # Only with a Concourse to read. Without one the job would fail
             # every day for a reason that is configuration, not a finding;
             # unscheduled, platform health reads it as disabled instead.
@@ -836,6 +867,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
     app.include_router(control_observations_router)
+    app.include_router(executive_router)
     app.include_router(exposure_router)
     app.include_router(knowledge_router)
     app.include_router(oracle_router)

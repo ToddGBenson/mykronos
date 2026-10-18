@@ -36,7 +36,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius, prior_disposition, toxic, worklist
+from mykronos import blast_radius, environment_view, prior_disposition, toxic, worklist
 from mykronos.config import get_settings
 from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
@@ -47,6 +47,7 @@ from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 from mykronos.patchwork.triage import classify
 from mykronos.schemas import Capability, Severity, utcnow
+from mykronos.surface_match import surface_for
 from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
@@ -921,6 +922,10 @@ class DashboardQueries:
         fixable: bool | None = None,
         due: str | None = None,
         owner: str | None = None,
+        effective: str | None = None,
+        rescored: str | None = None,
+        component: str | None = None,
+        surfaces: list[Any] | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
 
@@ -954,6 +959,13 @@ class DashboardQueries:
         classification already rendered per group, now also queryable. It is a
         property of the group, not a column any row carries, so — like
         `kev_only`/`min_epss` — it is applied after grouping, not in SQL.
+
+        `effective`, `rescored` and `component` (TheHub #60828) narrow by facts
+        held outside the lake — the stored `EnvironmentalScore` and the declared
+        surfaces — so they filter occurrences in Python, *before* grouping:
+        each is a fact about one finding, and `by_rescoring` counts findings,
+        so filtering to a count lists exactly that many. `component=none` keeps
+        findings no declared surface's selectors place (`surface_match`).
         """
         columns = [
             "finding_id",
@@ -979,6 +991,22 @@ class DashboardQueries:
         counts = self._severity_counts(repo_full_name, finding_status)
         total = sum(counts.values())
         by_capability = self._capability_counts(repo_full_name, finding_status)
+
+        # The stored environmental scores, counted over the same scope as
+        # `total`: every finding of this status, before any filter (#60828).
+        stored = (
+            environment_view.stored_scores(session, repo_full_name)
+            if session is not None
+            else {}
+        )
+        status_ids = self._status_finding_ids(repo_full_name, finding_status)
+        by_rescoring = environment_view.count_states(status_ids, stored)
+        by_effective = environment_view.count_effective(status_ids, stored)
+        unplaced: set[str] | None = (
+            self.unplaced_finding_ids(repo_full_name, finding_status, surfaces or [])
+            if component == "none"
+            else None
+        )
 
         # The correlation pool is fetched separately from the rows on screen,
         # for the reason Patchwork's pipeline does the same (spec 08 §5a): a
@@ -1033,6 +1061,9 @@ class DashboardQueries:
             or triage is not None
             or fixable is not None
             or due is not None
+            or effective is not None
+            or rescored is not None
+            or unplaced is not None
         )
 
         if wants_group_filter:
@@ -1047,6 +1078,21 @@ class DashboardQueries:
                 limit=CORRELATION_CEILING,
             )
             pool_truncated = len(rows) >= CORRELATION_CEILING
+            if effective is not None:
+                rows = [
+                    r
+                    for r in rows
+                    if (score := stored.get(str(r["finding_id"]))) is not None
+                    and score.effective_severity == effective
+                ]
+            if rescored is not None:
+                rows = [
+                    r
+                    for r in rows
+                    if environment_view.state_of(str(r["finding_id"]), stored) == rescored
+                ]
+            if unplaced is not None:
+                rows = [r for r in rows if str(r["finding_id"]) in unplaced]
         else:
             rows = self._finding_rows(
                 repo_full_name,
@@ -1073,6 +1119,7 @@ class DashboardQueries:
             # so it is one query per page, not one per row.
             prior_of=prior_disposition.for_findings(self.catalog, repo_full_name, rows),
         )
+        self._attach_effective(groups, stored)
         if session is not None:
             self._attach_threat_intel(session, groups)
         elif wants_threat_intel_filter:
@@ -1128,6 +1175,8 @@ class DashboardQueries:
             "deduplicated": max(0, len(rows) - len(groups)),
             "by_severity": counts,
             "by_capability": by_capability,
+            "by_rescoring": by_rescoring,
+            "by_effective_severity": by_effective,
             "groups": groups,
             "toxic_combinations": [
                 self._describe_combination(combo, by_id, kev_cves) for combo in combinations
@@ -1138,7 +1187,11 @@ class DashboardQueries:
     # -- threat model -----------------------------------------------------
 
     def threat_model(
-        self, repo_full_name: str, *, controls: list[Any] | None = None
+        self,
+        repo_full_name: str,
+        *,
+        controls: list[Any] | None = None,
+        surfaces: list[Any] | None = None,
     ) -> dict[str, Any]:
         """A STRIDE-categorized attack-surface inventory (spec 18 §6).
 
@@ -1226,6 +1279,24 @@ class DashboardQueries:
         evidence = self.sscs_evidence(repo_full_name, limit=1)
         latest = evidence[0] if evidence else None
 
+        # Which open findings no declared surface places (TheHub #60828). Over
+        # every open finding, not only the STRIDE-mapped capabilities above:
+        # it is the same scope as the Findings tab's `component=none` filter
+        # the line links to, so the count and the list agree.
+        declared_surfaces = list(surfaces or [])
+        coverage = {
+            "open_findings": len(self._status_finding_ids(repo_full_name, "open")),
+            "unplaced": len(
+                self.unplaced_finding_ids(repo_full_name, "open", declared_surfaces)
+            ),
+            "surfaces": len(declared_surfaces),
+            "located_surfaces": sum(
+                1
+                for surface in declared_surfaces
+                if any((getattr(surface, "selectors", None) or {}).values())
+            ),
+        }
+
         # Four states rather than "empty or not" (spec 28 §4). A category with
         # no findings because nothing ever looked and one with no findings
         # because the code is clean rendered identically, and the data that
@@ -1262,6 +1333,7 @@ class DashboardQueries:
             # (spec 28 §6). A repository nothing has ever scanned is one fact
             # about the repository, not six about its categories.
             "nothing_scanned": all(s["state"] == "unscanned" for s in states),
+            "component_coverage": coverage,
             # Context for the Tampering/Information Disclosure categories'
             # atlas-derived findings, not a finding itself — the dependency
             # graph as a whole, distinct from the vulnerable slice of it the
@@ -1398,6 +1470,63 @@ class DashboardQueries:
                 params,
             )
         }
+
+    def _status_finding_ids(self, repo_full_name: str, finding_status: str) -> list[str]:
+        """Every finding id of this status: the scope `total` counts."""
+        clause, params = self._status_clause(repo_full_name, finding_status)
+        return [
+            str(row[0])
+            for row in self.catalog.query(
+                f"SELECT finding_id FROM findings WHERE {clause}", params
+            )
+        ]
+
+    def unplaced_finding_ids(
+        self, repo_full_name: str, finding_status: str, surfaces: list[Any]
+    ) -> set[str]:
+        """Findings of this status that no declared surface places (#60828).
+
+        The same `surface_for` the environmental resolver uses, so "maps to no
+        component" here and "repository-level facts only" there are the same
+        finding. Raw output is read to place a container or DAST finding and
+        never leaves this method: only ids are returned.
+        """
+        clause, params = self._status_clause(repo_full_name, finding_status)
+        columns = [
+            "finding_id",
+            "capability",
+            "file_path",
+            "address",
+            "port",
+            "raw_finding_json",
+        ]
+        unplaced: set[str] = set()
+        for row in self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM findings WHERE {clause}", params
+        ):
+            finding = dict(zip(columns, row, strict=True))
+            if not surfaces or surface_for(finding, surfaces) is None:
+                unplaced.add(str(finding["finding_id"]))
+        return unplaced
+
+    @staticmethod
+    def _attach_effective(
+        groups: list[dict[str, Any]], stored: dict[str, environment_view.StoredScore]
+    ) -> None:
+        """Each occurrence's stored effective severity, and the group's worst.
+
+        Null where no score is stored: the finding is not rescorable, and
+        showing the scanner's word there would claim a re-reading nobody did.
+        """
+        for group in groups:
+            worst: str | None = None
+            for location in group["locations"]:
+                score = stored.get(str(location["finding_id"]))
+                effective = score.effective_severity if score is not None else None
+                location["effective_severity"] = effective
+                if effective is not None and (worst is None or _worse(effective, worst)):
+                    worst = effective
+            group["effective_severity"] = worst
 
     def _finding_rows(
         self,

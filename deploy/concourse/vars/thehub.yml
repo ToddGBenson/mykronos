@@ -51,4 +51,4 @@ deploy-timeout-minutes: 25
 
 minio-endpoint: http://192.168.65.254:9000
 mykronos-url: http://192.168.65.254:8100
-mykronos-ref: v14
+mykronos-ref: v15

@@ -96,7 +96,9 @@ export function ControlList({
       {controls.map((control) => (
         <div
           key={control.control_id}
-          className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-rule-soft px-3 py-2 last:border-b-0"
+          // The anchor a finding's "Severity here" facts link to (TheHub #60828).
+          id={`control-${control.control_id}`}
+          className="flex scroll-mt-4 flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-rule-soft px-3 py-2 last:border-b-0 target:bg-accent-wash"
         >
           <Pill tone="accent">{kindLabel(control.kind)}</Pill>
           {control.read_only ? (

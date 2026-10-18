@@ -2805,8 +2805,14 @@ class TestTheFindingRecord:
         ).json()["severity_here"]
 
         assert here["stated"] is True
-        assert here["environmental"] < here["base"]
-        assert any("attack vector is adjacent here" in r for r in here["because"])
+        # Since TheHub #60827 a declaration cannot lower exploitability: the
+        # statement is reported, attributed, and not applied until something
+        # observes it.
+        assert here["environmental"] == here["base"]
+        mav = next(f for f in here["facts"] if f["metric"] == "MAV")
+        assert (mav["value"], mav["applied"], mav["source_kind"]) == ("A", False, "risk_profile")
+        assert mav["asserted_by"] == put.json()["updated_by"]
+        assert mav["not_applied_reason"].startswith("unverified:")
         assert here["stated_by"] == put.json()["updated_by"]
         assert here["stated_by"]
         assert here["stated_at"]

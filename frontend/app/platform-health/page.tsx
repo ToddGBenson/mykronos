@@ -36,6 +36,8 @@ const CONSEQUENCE: Record<string, string> = {
   governance: "A control coming off goes unnoticed until somebody opens the panel.",
   "threat-model-sync":
     "A change to a repository's .sdlc/threat-model.yaml never reaches the register, so scoring reads last month's threat model.",
+  environment:
+    "A lapsed observation keeps lowering scores, so a finding reads less severe than the evidence still supports.",
   "threat-intel": "KEV and EPSS go stale, so urgency is scored against last week's world.",
   portfolio: "Risk scores stop moving and every repository keeps yesterday's number.",
   rotation: "Ingestion tokens pass their rotation date and eventually stop being accepted.",

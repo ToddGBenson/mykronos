@@ -1,0 +1,31 @@
+# The Python ZAP's wrapper scripts need (zap-api-scan.py, zap-baseline.py,
+# zap_common.py import zapv2, yaml and six; zapv2 brings requests). The
+# versions are the ones upstream's weekly image (D-2026-10-08) carries, so the
+# scripts run against the client they were released with; awscli, which
+# upstream also installs, is used by none of them and is left out.
+#
+# Installed with --require-hashes --only-binary :all:, so pip takes exactly
+# these files and compiles nothing. PyYAML and charset-normalizer are the
+# cp314 musllinux wheels for the base's Python 3.14 (Alpine 3.24); a base
+# whose Python is another minor version fails the build here rather than
+# installing something unreviewed. charset-normalizer also lists its pure
+# wheel.
+zaproxy==0.6.0 \
+    --hash=sha256:1a9123f4fe31605143e6cefe5adbc31af0d62bd6f86e10bdce7ec99573b74310
+PyYAML==6.0.3 \
+    --hash=sha256:5190d403f121660ce8d1d2c1bb2ef1bd05b5f68533fc5c2ea899bd15f4399b35 \
+    --hash=sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65
+requests==2.34.2 \
+    --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
+certifi==2026.7.22 \
+    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
+idna==3.20 \
+    --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
+charset-normalizer==3.5.2 \
+    --hash=sha256:ddc7dacc8ece3a182e7f15cb862d1fd616b46d076cb1ae9dd232b2c38b655874 \
+    --hash=sha256:f5ec61164adcec446f8969a3358ec3f9b26bbda3b9213e5586d219afa8df2915 \
+    --hash=sha256:b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685

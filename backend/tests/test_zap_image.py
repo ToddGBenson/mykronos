@@ -1,14 +1,16 @@
 """The ZAP the demo-and-dast lane runs is our build, from one pinned digest.
 
 Every container finding the lake held against MyKronos was in the upstream
-ZAP image, and no upstream tag is better. So `deploy/zap/Dockerfile` takes the
-pinned weekly, applies Debian's fixes and removes what our usage never runs.
-A nightly workflow builds that recipe and publishes it, and
-`deploy/zap-pinned/Dockerfile` adopts one published date by digest.
-These hold what makes that safe to rely on: each FROM is one exact pin
-(D-114/D-128), what was removed stays removed, the recipe's baseline is the
-image in use, and the containers lane scans the image the lane actually runs,
-under the name its findings already carry.
+ZAP image, and no upstream tag is better; with a current Trivy DB even the
+patched Debian derivative kept 76 HIGH that Debian has no fix for. So
+`deploy/zap/Dockerfile` copies ZAP out of the pinned weekly and runs it on a
+slim Alpine JRE, with only what our usage needs installed. A nightly workflow
+builds that recipe and publishes it, and `deploy/zap-pinned/Dockerfile` adopts
+one published date by digest. These hold what makes that safe to rely on: each
+FROM is one exact pin (D-114/D-128), no Debian and nothing our usage never
+runs reaches the image, the recipe's baseline is the image in use, and the
+containers lane scans the image the lane actually runs, under the name its
+findings already carry.
 """
 
 from __future__ import annotations
@@ -28,8 +30,11 @@ DEMO_COMPOSE = REPO_ROOT / "deploy" / "demo" / "docker-compose.yml"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "demo-and-dast.yml"
 REBUILD = REPO_ROOT / "deploy" / "demo" / "Invoke-DemoRebuild.ps1"
 PIPELINE = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+REQUIREMENTS = DOCKERFILE.parent / "requirements.txt"
 
 PINNED_FROM = re.compile(r"^ghcr\.io/zaproxy/zaproxy:[\w.-]+@sha256:[0-9a-f]{64}$")
+#: The runtime base: a JRE 21 on Alpine, held at one digest.
+JRE_FROM = re.compile(r"^eclipse-temurin:21[\w.-]*-jre-alpine[\w.-]*@sha256:[0-9a-f]{64}$")
 #: What the nightly workflow publishes, held at one digest.
 PUBLISHED_FROM = re.compile(
     r"^ghcr\.io/[a-z0-9-]+/mykronos-zap:weekly-p\d{8}@sha256:[0-9a-f]{64}$"
@@ -57,8 +62,30 @@ def _instructions(dockerfile: Path = DOCKERFILE) -> list[tuple[str, str]]:
     return pairs
 
 
-def _run_body() -> str:
-    return " ".join(arg for word, arg in _instructions() if word == "RUN")
+def _stages() -> list[tuple[str, list[tuple[str, str]]]]:
+    """(FROM argument, that stage's instructions), in order."""
+    stages: list[tuple[str, list[tuple[str, str]]]] = []
+    for word, arg in _instructions():
+        if word == "FROM":
+            stages.append((arg, []))
+        elif stages:
+            stages[-1][1].append((word, arg))
+    return stages
+
+
+def _image(name: str) -> str:
+    """`ref AS name` -> `ref`."""
+    return name.split()[0]
+
+
+def _runtime() -> list[tuple[str, str]]:
+    """The last stage: what is actually shipped."""
+    return _stages()[-1][1]
+
+
+def _run_body(instructions: list[tuple[str, str]] | None = None) -> str:
+    pairs = _instructions() if instructions is None else instructions
+    return " ".join(arg for word, arg in pairs if word == "RUN")
 
 
 def _zap_service() -> dict:
@@ -66,36 +93,54 @@ def _zap_service() -> dict:
 
 
 class TestTheDockerfile:
-    def test_there_is_one_from_and_it_is_the_pinned_digest(self) -> None:
-        froms = [arg for word, arg in _instructions() if word == "FROM"]
-        assert len(froms) == 1, froms
-        assert PINNED_FROM.match(froms[0]), f"FROM {froms[0]!r} is not held at one digest"
+    def test_zap_comes_from_one_stage_and_it_is_the_pinned_digest(self) -> None:
+        """The estate's one ZAP pin (D-128): ZAP is taken from upstream's
+        weekly at one digest, the digest TheHub's `zap` resource also pins."""
+        zap = [_image(ref) for ref, _ in _stages() if "zaproxy" in ref]
+        assert len(zap) == 1, zap
+        assert PINNED_FROM.match(zap[0]), f"FROM {zap[0]!r} is not held at one digest"
 
-    def test_debian_s_fixes_are_applied(self) -> None:
-        body = _run_body()
-        assert "apt-get update" in body
-        assert re.search(r"apt-get -y [^;]*upgrade", body)
-        assert "rm -rf /var/lib/apt/lists/*" in body
+    def test_every_from_is_held_at_one_digest(self) -> None:
+        froms = [_image(ref) for ref, _ in _stages()]
+        assert len(froms) == 2, froms
+        assert all("@sha256:" in ref for ref in froms), froms
 
-    def test_what_our_usage_never_runs_is_purged(self) -> None:
-        """Each of these carried HIGH findings and nothing in the lane uses it:
-        no AJAX spider (browser, X server), no SSH, no PostScript, no compiler,
-        no wget. Purged, with their orphans, in the same layer as the upgrade."""
-        body = _run_body()
-        purge = body[body.index("purge --auto-remove") :]
-        for package in (
-            "firefox-esr",
-            "xvfb",
-            "xserver-common",
-            "openssh-client",
-            "libgs10",
-            "linux-libc-dev",
-            "python3.13-dev",
-            "libexpat1-dev",
-            "wget",
-            "openjdk-21-jdk",
-        ):
-            assert re.search(rf"(?<![\w.-]){re.escape(package)}(?![\w.-])", purge), package
+    def test_what_ships_is_a_slim_jre_not_debian(self) -> None:
+        """The Debian derivative kept 76 HIGH with no Debian fix (python3.13,
+        util-linux, curl, perl, ncurses, systemd), several in Essential
+        packages no purge can remove. The shipped stage is a JRE on Alpine,
+        and upstream's image is only a source of files."""
+        base = _image(_stages()[-1][0])
+        assert JRE_FROM.match(base), f"the runtime FROM {base!r} is not the pinned Alpine JRE"
+        assert "apt-get" not in _run_body(_runtime())
+        copies = [arg for word, arg in _runtime() if word == "COPY" and "--from=" in arg]
+        assert copies, "ZAP is no longer copied from the pinned stage"
+        assert all("--from=upstream" in arg for arg in copies), copies
+
+    def test_alpine_s_fixes_are_applied(self) -> None:
+        assert "apk upgrade --no-cache" in _run_body(_runtime())
+
+    def test_only_what_our_usage_runs_is_installed(self) -> None:
+        """bash for zap.sh, curl for the healthchecks, python3 for the wrapper
+        scripts, and pip only for as long as it takes to install their
+        libraries. No browser, X server, compiler, SSH client or wget."""
+        body = _run_body(_runtime())
+        added = re.findall(r"apk add --no-cache ([^;]+);", body)
+        assert added, "no apk add in the runtime stage"
+        packages = {name for line in added for name in line.split()}
+        assert packages == {"bash", "curl", "python3", "py3-pip"}, packages
+        assert "apk del --no-cache py3-pip" in body
+        assert re.search(r"pip --version[^;]*; then [^;]*; exit 1", body), "pip may survive"
+
+    def test_the_python_libraries_are_pinned_by_hash(self) -> None:
+        """pip installs exactly the reviewed files and compiles nothing."""
+        body = _run_body(_runtime())
+        assert "--require-hashes" in body and "--only-binary :all:" in body
+        text = REQUIREMENTS.read_text(encoding="utf-8")
+        requirements = re.findall(r"(?m)^([A-Za-z0-9_.-]+)==(\S+) \\\r?$", text)
+        names = {name.lower() for name, _ in requirements}
+        assert {"zaproxy", "pyyaml", "requests", "six"} <= names, names
+        assert text.count("--hash=sha256:") >= len(requirements)
 
     def test_webswing_is_removed_and_the_build_proves_it(self) -> None:
         """Webswing is ZAP's GUI-in-a-browser. Nothing here runs it, and its
@@ -106,19 +151,37 @@ class TestTheDockerfile:
         assert re.search(r"rm -rf /zap/webswing(?![\w/-])", body)
         assert re.search(r"\[ -e /zap/webswing \]; then [^;]*; exit 1", body)
 
-    def test_the_jre_zap_runs_on_is_kept(self) -> None:
-        """Dropping the JDK must not take the headless JRE with it."""
-        assert "apt-mark manual openjdk-21-jre-headless" in _run_body()
-
-    def test_the_build_fails_if_a_purged_package_survived(self) -> None:
+    def test_the_launcher_the_wrapper_scripts_use_is_kept(self) -> None:
+        """zap_common.py starts every zap-baseline.py and zap-api-scan.py run
+        through /zap/zap-x.sh; deleting it as a GUI launcher fails every scan
+        with "Failed to start ZAP"."""
         body = _run_body()
-        assert "still installed" in body and "exit 1" in body
+        assert not re.search(r"rm [^;]*/zap/zap-x\.sh", body)
+        assert "test -x /zap/zap-x.sh" in body
+
+    def test_the_build_fails_if_java_or_the_client_is_missing(self) -> None:
+        body = _run_body()
         assert "java -version" in body
         assert "import zapv2" in body
+        assert "curl --version" in body
 
-    def test_it_runs_as_zap_not_root(self) -> None:
+    def test_it_runs_as_zap_uid_1000_not_root(self) -> None:
+        """Upstream's user and ids: the DAST lane chowns /zap/wrk to 1000."""
         users = [arg for word, arg in _instructions() if word == "USER"]
         assert users and users[-1] == "zap"
+        body = _run_body(_runtime())
+        assert "addgroup -g 1000 zap" in body
+        assert re.search(r"adduser [^;]*-u 1000 -G zap -h /home/zap\b", body)
+
+    def test_upstream_s_environment_and_entrypoint(self) -> None:
+        """`docker run <image> zap-api-scan.py` must run the script, not
+        Temurin's entrypoint, and ZAP_PORT is what the HEALTHCHECK reads."""
+        runtime = _runtime()
+        env = " ".join(arg for word, arg in runtime if word == "ENV")
+        assert "ZAP_PORT=8080" in env and "IS_CONTAINERIZED=true" in env
+        assert "HOME=/home/zap/" in env and "/zap/" in env.split("PATH=", 1)[1]
+        assert ("ENTRYPOINT", "[]") in runtime
+        assert any(word == "HEALTHCHECK" and "${ZAP_PORT}" in arg for word, arg in runtime)
 
 
 class TestTheLaneRunsOnePublishedBuild:

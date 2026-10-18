@@ -94,7 +94,8 @@ export function RiskProfileCard({
 
   if (!editing) {
     return (
-      <div className="border border-rule bg-paper-2">
+      // The anchor a finding's "Severity here" facts link to (TheHub #60828).
+      <div id="risk-profile" className="scroll-mt-4 border border-rule bg-paper-2">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule-soft px-3 py-2">
           <h2 className="font-mono text-[12px] font-bold uppercase tracking-[0.12em] text-ink">
             Risk profile

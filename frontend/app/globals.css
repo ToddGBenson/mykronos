@@ -233,3 +233,87 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * Printing the Executive report.
+ *
+ * Scoped to a page that contains one (`[data-print-report]`), so printing any
+ * other page behaves exactly as it did. The report is read on paper or as a
+ * PDF by somebody who never sees the app, so:
+ *
+ * - the site header and side navigation go (`data-chrome` in layout.tsx), as
+ *   does the repository page's own navigation (`print:hidden` there);
+ * - the light palette is forced, whatever the viewer's theme: a dark ground
+ *   does not print, and its pale text on white paper is unreadable;
+ * - sections flow across pages (keeping each whole cost two pages of white
+ *   space on TheHub's report), but no table row, list item or tile row is split,
+ *   and no section title is left alone at the foot of a page;
+ * - the print button goes: `.tap` is unlayered and so outranks Tailwind's
+ *   `print:hidden`, which is why this says it outright.
+ */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 12mm;
+  }
+
+  :root:has([data-print-report]) {
+    --color-paper: #ffffff;
+    --color-paper-2: #ffffff;
+    --color-paper-3: #f2f1ec;
+    --color-ink: #121715;
+    --color-ink-2: #3f4a46;
+    --color-ink-3: #5f6b67;
+    --color-rule: #c8c9c0;
+    --color-rule-soft: #dad9d1;
+    --color-accent: #8a5a12;
+    --color-accent-2: #a97220;
+    --color-accent-wash: #f5ecd9;
+    --color-critical: #a8342a;
+    --color-high: #8a5a12;
+    --color-medium: #6f6420;
+    --color-low: #5f6b67;
+    --color-info: #8b948f;
+    --color-pass: #2c6b4a;
+    --color-critical-wash: #f6e3e0;
+    --color-high-wash: #f5ecd9;
+    --color-pass-wash: #e0efe6;
+  }
+
+  :root:has([data-print-report]) [data-chrome] {
+    display: none !important;
+  }
+
+  :root:has([data-print-report]) body {
+    background: #ffffff;
+    font-size: 10pt;
+  }
+
+  /* The screen sizes are set in px, so the body's font size does not reach
+     them; scaling the report is what brings a full one onto two A4 pages. */
+  [data-print-report] {
+    zoom: 0.8;
+  }
+
+  [data-print-report] button {
+    display: none !important;
+  }
+
+  :root:has([data-print-report]) main {
+    padding: 0;
+  }
+
+  [data-print-report] tr,
+  [data-print-report] li,
+  [data-print-report] [data-print-keep] {
+    break-inside: avoid;
+  }
+
+  [data-print-report] h2 {
+    break-after: avoid;
+  }
+
+  [data-print-report] .scroll-x {
+    overflow: visible;
+  }
+}
