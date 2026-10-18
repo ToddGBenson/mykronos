@@ -243,7 +243,7 @@ def test_the_jobs_this_repository_runs_are_actually_covered() -> None:
     assert {"mykronos.yml", "personal-soc.yml", "thehub.yml"} <= found
 
 
-#: keel's three uploading lanes, and the capability each task DECLARES in its
+#: keel's uploading lanes, and the capability each task DECLARES in its
 #: `CAPABILITY:` param. Read off the running server with
 #: `fly get-pipeline -p keel` on 2026-09-17, because keel's pipeline lives in
 #: keel's own repo and nothing in this repository can see it.
@@ -251,6 +251,8 @@ KEEL_UPLOADING_LANES = {
     "mykronos-sast": "sast",
     "mykronos-secrets": "secrets",
     "mykronos-atlas": "atlas",
+    # mykronos#414 / keel#134: grype, uploading `atlas` alongside osv-scanner.
+    "mykronos-sca": "atlas",
 }
 
 
