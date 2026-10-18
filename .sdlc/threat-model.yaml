@@ -1,0 +1,568 @@
+# MyKronos's threat model, declared in the repository (spec 28 §8, schema v1).
+#
+# The threat-model-sync job reads this file from `main` every six hours and
+# loads it read-only: rows declared here are changed by pull request, not
+# through the API or the UI. An invalid file changes nothing (the last valid
+# version's rows stay); deleting the file withdraws every row it declared.
+#
+# Authored for TheHub #60834 (S11b of epic #60822) from a read-only recon of the
+# running host on 2026-10-17 (21:21-21:33 -07:00): docker ps/inspect, host
+# firewall rules, anonymous HTTP probes of both public hostnames and the local
+# origins, Vault seal-status and Concourse anonymous reads. Statements are what
+# was observed then. Where the compose files on `main` say something different
+# from what was running (several services are declared on 127.0.0.1 here but
+# were observed bound to 0.0.0.0, i.e. not yet redeployed), both are said and
+# `exposure` follows what was observed.
+#
+# Selectors place findings in a surface (surface_match): `paths` for
+# sast/secrets/iac/sca, `images` for containers (registry host and tag dropped,
+# so `localhost:5000/mykronos-backend` is the image `mykronos-backend`),
+# `addresses` and `hostnames` for network and DAST.
+#
+# Re-confirming a control is editing its `reviewed_at`.
+
+version: 1
+
+assets:
+  - id: data-lake
+    name: Data lake (DuckDB + Parquet)
+    description: >-
+      Findings, SBOMs and code snippets for every onboarded repository, under
+      /data/datalake in the mykronos-data volume. Read through the gated API.
+      No backup of the volume was found running on 2026-10-17.
+    exposure: local
+    sensitivity: source
+    cr: H
+    ir: H
+    evidence_ref: backend/mykronos/lake/tables.py
+    selectors:
+      paths:
+        - backend/mykronos/lake/**
+
+  - id: decisions-and-audit
+    name: Gate decisions, oracle verdicts, risk acceptances and audit log
+    description: >-
+      MyKronos's verdicts gate TheHub promotion and its risk acceptances
+      suppress findings. Integrity is the concern: a forged go verdict or
+      acceptance ships a vulnerable build, and the registry it guards feeds
+      TheHub prod every 5 minutes.
+    exposure: local
+    sensitivity: source
+    ir: H
+    evidence_ref: backend/mykronos/oracle/engine.py
+    selectors:
+      paths:
+        - backend/mykronos/oracle/**
+        - backend/mykronos/risk_acceptance.py
+        - backend/mykronos/db/**
+        - backend/mykronos/api/oracle.py
+        - backend/mykronos/api/risk_acceptances.py
+
+  - id: github-app-key
+    name: GitHub App private key
+    description: >-
+      The App's private key, mounted into the backend at /secrets/github-app.pem
+      from the operator's Downloads folder (outside Vault). Grants the App's
+      installation permissions on every onboarded repository.
+    exposure: local
+    sensitivity: credentials
+    cr: H
+    ir: H
+    evidence_ref: deploy/mykronos/docker-compose.yml
+    selectors:
+      paths:
+        - backend/mykronos/github/**
+
+  - id: ingestion-tokens
+    name: Per-repo ingestion tokens
+    description: >-
+      Tokens CI uses to upload findings, stored only as SHA-256 hashes. A leaked
+      token writes findings for one repository; it cannot read or approve.
+    exposure: local
+    sensitivity: credentials
+    evidence_ref: backend/mykronos/auth.py
+    selectors:
+      paths:
+        - backend/mykronos/auth.py
+
+  - id: vault-kv
+    name: Vault KV (personal/ API keys and recovery codes, concourse/* credentials)
+    description: >-
+      Personal API keys, account recovery codes, ingestion tokens and Concourse
+      credentials. Observed 2026-10-17: initialized and unsealed, Shamir 1-of-1,
+      file storage, TLS disabled in the container, UI enabled, mlock disabled.
+    exposure: local
+    sensitivity: credentials
+    cr: H
+    ir: H
+    evidence_ref: deploy/concourse/vault/config.hcl
+    selectors:
+      paths:
+        - deploy/concourse/vault/**
+        - deploy/concourse/vault-secret.ps1
+        - deploy/concourse/Import-EnvSecretsToVault.ps1
+
+  - id: vault-unseal-material
+    name: Vault unseal key and root token (deploy/concourse/vault/init.json)
+    description: >-
+      vault-init.ps1 writes the single unseal key and the root token to
+      deploy/concourse/vault/init.json in plaintext (git-ignored). The file was
+      present on 2026-10-17 (391 bytes, ACL SYSTEM/Administrators/tgb_;
+      contents not read). Anyone who can read it as tgb_ owns every secret in
+      Vault, and can unseal it after any restart, so "seals on every restart"
+      is not a control while it exists.
+    exposure: local
+    sensitivity: credentials
+    cr: H
+    ir: H
+    evidence_ref: deploy/concourse/vault-init.ps1
+    selectors:
+      paths:
+        - deploy/concourse/vault-init.ps1
+        - deploy/concourse/vault-unseal.ps1
+        - deploy/concourse/Install-VaultUnsealTask.ps1
+
+  - id: platform-secrets
+    name: Platform secrets in env/.env (gate token, admin token, TheHub HUB_API_TOKEN, Concourse local user)
+    description: >-
+      backend/.env, deploy/concourse/.env and deploy/thehub/.env are plaintext
+      on disk. MYKRONOS_GATE_TOKEN is identical in thehub-backend and
+      mykronos-backend, and MyKronos holds TheHub's HUB_API_TOKEN. The Concourse
+      local user password is in plain container env (CONCOURSE_ADD_LOCAL_USER).
+    exposure: local
+    sensitivity: credentials
+    cr: H
+    evidence_ref: backend/mykronos/config.py
+
+  - id: netassess-inventory
+    name: Home network inventory (netassess runs)
+    description: >-
+      Weekly personal-soc network assessments land here (MinIO plus the
+      netassess ingest): MAC addresses, open services and known weaknesses of
+      every device on the home LAN. A ready-made attack map of the network.
+    exposure: local
+    sensitivity: pii
+    cr: H
+    evidence_ref: backend/mykronos/netassess.py
+    selectors:
+      paths:
+        - backend/mykronos/netassess.py
+        - deploy/concourse/publish-netassess-run.ps1
+
+  - id: minio-objects
+    name: MinIO object storage (netassess runs, release artifacts)
+    description: >-
+      Image pgsty/silo. Holds netassess run archives and release artifacts.
+      Anonymous GET / answered 403 on 2026-10-17; a non-default root user is the
+      only identity in use.
+    exposure: internal
+    sensitivity: source
+    evidence_ref: deploy/concourse/docker-compose.yml
+    selectors:
+      images:
+        - pgsty/silo
+
+  - id: registry-images
+    name: Container images in mykronos-registry (thehub, thehub-postgres, mykronos-*)
+    description: >-
+      The deploy artifacts TheHub prod and demo run. Integrity is the concern:
+      an overwritten tag is executed by TheHub's 5-minute pull deploy. Anonymous
+      read and push (no auth block); delete disabled.
+    exposure: internal
+    sensitivity: source
+    ir: H
+    evidence_ref: deploy/concourse/docker-compose.yml
+
+  - id: concourse-db
+    name: Concourse database (postgres:15.19, Docker network only)
+    description: >-
+      mykronos-concourse-db: pipeline definitions, build history and logs for
+      all four pipelines (mykronos, thehub, personal-soc, keel). Not published
+      to the host; reachable on the concourse Docker network.
+    exposure: local
+    sensitivity: source
+    evidence_ref: deploy/concourse/docker-compose.yml
+    selectors:
+      images:
+        - postgres
+
+entry_points:
+  - id: platform-api
+    name: Platform API (mykronos.toddbenson.net via Cloudflare tunnel -> tcp/8100)
+    description: >-
+      The backend. cloudflared routes ^/api, /webhooks, /healthz, /docs and
+      /redoc on mykronos.toddbenson.net to :8100. Observed 2026-10-17 over the
+      tunnel: /healthz 200, everything else 401 from the perimeter gate. API
+      responses carry CSP default-src 'none', X-Frame-Options DENY and nosniff;
+      no HSTS. The running container was bound 0.0.0.0:8100 (compose on main
+      declares 127.0.0.1:8100; LAN blocked by the host firewall either way).
+    exposure: internet
+    evidence_ref: backend/mykronos/gate.py
+    selectors:
+      paths:
+        - backend/**
+        - deploy/mykronos/**
+      images:
+        - localhost:5000/mykronos-backend
+      addresses:
+        - 127.0.0.1:8100
+        - 192.168.0.14:8100
+      hostnames:
+        - mykronos.toddbenson.net
+
+  - id: ingestion-api
+    name: Ingestion API /api/ingest/* (tcp/8100, internet via mykronos.toddbenson.net)
+    description: >-
+      Gate-exempt: CI uploads authenticate with a per-repo ingestion token
+      instead of the gate token. The tunnel routes ^/api on
+      mykronos.toddbenson.net to :8100, so this is internet-reachable (public
+      GET /api/ingest/ answered 404 from the app on 2026-10-17), not internal.
+      In-memory rate limit of 100/min per token.
+    exposure: internet
+    evidence_ref: backend/mykronos/api/ingest.py
+    selectors:
+      paths:
+        - backend/mykronos/api/ingest.py
+        - backend/mykronos/upload.py
+        - backend/mykronos/adapters/**
+
+  - id: dashboard
+    name: Dashboard (mykronos-app.toddbenson.net via Cloudflare tunnel -> 127.0.0.1:3100)
+    description: >-
+      Internet-facing since D-131 (2026-10-07). Every probed path answered 401
+      from the frontend gate (frontend/proxy.ts) over the tunnel and on
+      127.0.0.1:3100 on 2026-10-17. No Cloudflare Access, no HSTS. Behind the
+      gate the Next.js server calls the backend with MYKRONOS_ADMIN_TOKEN, so
+      anyone past the gate acts as admin. Stale statements elsewhere: the
+      cloudflared config comment calling the dashboard 'LAN-only' and the hosts
+      file pin of mykronos.toddbenson.net to 127.0.0.1 both predate D-131.
+    exposure: internet
+    evidence_ref: frontend/proxy.ts
+    selectors:
+      paths:
+        - frontend/**
+      images:
+        - localhost:5000/mykronos-frontend
+      addresses:
+        - 127.0.0.1:3100
+      hostnames:
+        - mykronos-app.toddbenson.net
+
+  - id: registry
+    name: Docker registry (registry:3, tcp/5000)
+    description: >-
+      mykronos-registry, image registry:3, no authentication: anonymous catalog
+      read and push. Observed bound 0.0.0.0:5000 on 2026-10-17 (compose on main
+      declares 127.0.0.1:5000); LAN access is blocked by three host firewall
+      rules. Loopback, every Docker bridge and the privileged Concourse workers
+      still reach it, and TheHub prod pulls from it every 5 minutes.
+    exposure: internal
+    evidence_ref: deploy/concourse/docker-compose.yml
+    selectors:
+      paths:
+        - deploy/images/registry-src/**
+        - deploy/concourse/Set-RegistryScope.ps1
+      images:
+        - registry
+      addresses:
+        - 127.0.0.1:5000
+        - 192.168.0.14:5000
+
+  - id: minio-api
+    name: MinIO S3 API (tcp/9000) and console (127.0.0.1:9001)
+    description: >-
+      S3 API observed bound 0.0.0.0/[::]:9000 on 2026-10-17, with LAN access
+      blocked by 'Mykronos app ports - deny the LAN' (port 9000), and forwarded
+      by netsh portproxy 127.0.0.1:9000 -> 172.20.112.1:9000. Console on
+      127.0.0.1:9001. Compose on main declares both on 127.0.0.1. Exposure kept
+      `internal` because only the firewall rule keeps the LAN out of what is
+      running.
+    exposure: internal
+    evidence_ref: deploy/concourse/docker-compose.yml
+    selectors:
+      addresses:
+        - 127.0.0.1:9000
+        - 192.168.0.14:9000
+        - 127.0.0.1:9001
+
+  - id: concourse
+    name: Concourse web/API (127.0.0.1:8080)
+    description: >-
+      Concourse 8.3 bound to loopback, single local user. All four pipelines
+      (mykronos, thehub, personal-soc, keel) are public=true, so pipeline config
+      and build metadata are anonymously readable from the host (2026-10-17).
+      Workers are privileged, uid 0, label=disable.
+    exposure: local
+    evidence_ref: deploy/concourse/docker-compose.yml
+    selectors:
+      paths:
+        - deploy/concourse/**
+      images:
+        - concourse/concourse
+      addresses:
+        - 127.0.0.1:8080
+
+  - id: vault-api
+    name: Vault API (127.0.0.1:8200)
+    description: >-
+      Loopback-published on the host and reachable on the concourse Docker
+      network over plaintext HTTP (listener 0.0.0.0 in-container,
+      tls_disable=1), so every container on that network, including the
+      privileged workers and mykronos-backend, can reach it.
+      GET /v1/sys/seal-status answered sealed=false on 2026-10-17.
+    exposure: local
+    evidence_ref: deploy/concourse/vault/config.hcl
+    selectors:
+      images:
+        - hashicorp/vault
+      addresses:
+        - 127.0.0.1:8200
+
+  - id: zap-api
+    name: ZAP scanner (mykronos-zap image, API on 127.0.0.1:8290)
+    description: >-
+      The DAST scanner, built from deploy/zap-pinned (FROM the nightly
+      derivative of deploy/zap). Run by the demo stack and the DAST lane with
+      the ZAP API key disabled, so the port is published on loopback only: a
+      reachable ZAP API can load and run scripts. Not running at recon time.
+      Its image carries most of this repository's open container findings.
+    exposure: local
+    evidence_ref: deploy/demo/docker-compose.yml
+    selectors:
+      paths:
+        - deploy/zap/**
+        - deploy/zap-pinned/**
+        - deploy/demo/**
+      images:
+        - localhost:5000/mykronos-zap
+        - mykronos-zap
+      addresses:
+        - 127.0.0.1:8290
+
+trust_boundaries:
+  - id: cloudflare-edge
+    name: Cloudflare edge -> tunnel -> backend :8100 / frontend :3100
+    description: >-
+      Both MyKronos hostnames cross into the host through cloudflared with no
+      Cloudflare Access. The perimeter gate is the only authentication; no HSTS
+      on either hostname.
+    exposure: internet
+    evidence_ref: backend/mykronos/gate.py
+
+  - id: perimeter-gate
+    name: Perimeter gate (X-Hub-Token)
+    description: >-
+      MYKRONOS_GATE_TOKEN as X-Hub-Token, hub_token cookie or ?_token= on the
+      backend (gate.py) and the frontend (proxy.ts). It now fronts two internet
+      hostnames, not just the LAN. Exemptions (/healthz, /api/ingest/*,
+      /api/oracle/*, /api/patchwork/run, /api/repo-read/posture-summary,
+      /webhooks/github) each carry their own token or HMAC. Fails open if the
+      token is unset.
+    exposure: internet
+    evidence_ref: backend/mykronos/gate.py
+
+  - id: registry-to-thehub-prod
+    name: Concourse workers -> registry -> TheHub prod pull
+    description: >-
+      Privileged Concourse workers build and push images to the
+      unauthenticated registry on the same Docker network; TheHub's scheduled
+      task pulls and redeploys from it every 5 minutes. Nothing signs or
+      verifies images across this boundary, so a compromised pipeline job, or
+      anything else that can reach :5000, can replace TheHub prod code.
+    exposure: local
+    evidence_ref: deploy/thehub/Invoke-RegistryPullDeploy.ps1
+    selectors:
+      paths:
+        - deploy/thehub/**
+
+  - id: backend-concourse-network
+    name: mykronos-backend <-> concourse network (Vault, MinIO, registry, privileged workers)
+    description: >-
+      mykronos-backend is joined to mykronos-concourse_concourse alongside
+      Vault, MinIO, the registry and the privileged workers, as well as to
+      mykronos_default with the frontend. A backend compromise reaches Vault
+      over plaintext HTTP and the registry; a worker escape reaches the backend.
+    exposure: local
+    evidence_ref: deploy/mykronos/docker-compose.yml
+
+  - id: frontend-admin-token
+    name: Frontend server -> backend admin API (MYKRONOS_ADMIN_TOKEN)
+    description: >-
+      The Next.js server holds MYKRONOS_ADMIN_TOKEN and calls the backend with
+      it, so the admin/viewer split collapses for browser users: anyone past
+      the gate on mykronos-app.toddbenson.net acts as admin.
+    exposure: local
+    evidence_ref: frontend/lib/api.ts
+
+  - id: shared-credentials-thehub
+    name: Shared credentials between TheHub and MyKronos
+    description: >-
+      MYKRONOS_GATE_TOKEN is identical in thehub-backend and mykronos-backend
+      (observed by prefix and length, values redacted), and MyKronos holds
+      TheHub's HUB_API_TOKEN. Compromise of either app's environment yields the
+      other's perimeter credential, so the two gates are one boundary.
+    exposure: local
+    evidence_ref: backend/mykronos/config.py
+
+controls:
+  - id: backend-gate
+    kind: authentication
+    stride: spoofing
+    description: >-
+      Backend perimeter gate: every request outside the scoped exemptions needs
+      the gate token. Observed 2026-10-17: 401 on /api/* over
+      mykronos.toddbenson.net. Weaknesses: one static token shared with TheHub,
+      fail-open if unset.
+    evidence_ref: backend/mykronos/gate.py
+    applies_to: platform-api
+    reviewed_at: 2026-10-17
+
+  - id: backend-perimeter
+    kind: perimeter_gate
+    description: >-
+      The gate is the whole perimeter of mykronos.toddbenson.net (no Cloudflare
+      Access); only /healthz answered anonymously over the tunnel on
+      2026-10-17.
+    evidence_ref: backend/mykronos/gate.py
+    applies_to: platform-api
+    reviewed_at: 2026-10-17
+
+  - id: dashboard-perimeter
+    kind: perimeter_gate
+    description: >-
+      Frontend gate (proxy.ts) on mykronos-app.toddbenson.net: every probed
+      path answered 401 with WWW-Authenticate X-Hub-Token anonymously over the
+      tunnel and on 127.0.0.1:3100 (2026-10-17). Same static token as the
+      backend gate. Past it, the frontend acts with MYKRONOS_ADMIN_TOKEN.
+    evidence_ref: frontend/proxy.ts
+    applies_to: dashboard
+    reviewed_at: 2026-10-17
+
+  - id: ingestion-token-auth
+    kind: authentication
+    stride: spoofing
+    description: >-
+      /api/ingest/* is gate-exempt and requires a per-repo ingestion token,
+      stored hashed (SHA-256); a token writes findings for its own repository
+      only.
+    evidence_ref: backend/mykronos/auth.py
+    applies_to: ingestion-api
+    reviewed_at: 2026-10-17
+
+  - id: minio-auth
+    kind: authentication
+    stride: spoofing
+    description: >-
+      MinIO refuses anonymous access (GET / answered 403 on 2026-10-17) and
+      uses a non-default root user with a long password. Root credentials are
+      the only identity in use.
+    evidence_ref: deploy/concourse/docker-compose.yml
+    applies_to: minio-api
+    reviewed_at: 2026-10-17
+
+  - id: xml-parsing
+    kind: input_validation
+    stride: tampering
+    description: >-
+      Scanner XML (nmap, JUnit) is parsed with defusedxml, so entity expansion
+      and external entities in an uploaded archive are refused.
+    evidence_ref: backend/mykronos/adapters/network_nmap.py
+    applies_to: ingestion-api
+    reviewed_at: 2026-10-17
+
+  - id: dispositions-logged
+    kind: logging
+    stride: repudiation
+    description: >-
+      Dispositions, acceptances and gate decisions require a written reason and
+      audited with the acting principal (operator or a per-instance agent
+      credential). logsafe keeps untrusted text from forging log lines: scrub()
+      at trust-boundary call sites and a control-character filter on the root
+      logger.
+    evidence_ref: backend/mykronos/logsafe.py
+    applies_to: decisions-and-audit
+    reviewed_at: 2026-10-17
+
+  - id: api-security-headers
+    kind: security_headers
+    stride: tampering
+    description: >-
+      API responses carry CSP default-src 'none'; frame-ancestors 'none',
+      X-Frame-Options DENY and nosniff (observed over the tunnel 2026-10-17).
+      No HSTS on mykronos.toddbenson.net.
+    evidence_ref: backend/mykronos/headers.py
+    applies_to: platform-api
+    reviewed_at: 2026-10-17
+
+  - id: dashboard-security-headers
+    kind: security_headers
+    stride: tampering
+    description: >-
+      Dashboard responses carry X-Frame-Options DENY, COEP require-corp, COOP
+      same-origin, CORP same-origin, nosniff, Referrer-Policy and
+      Permissions-Policy. A nonce-based CSP exists in code but was not observed
+      on the gated 401 response, and there is no HSTS. Treat CSP as unverified
+      for XSS purposes.
+    evidence_ref: frontend/next.config.ts
+    applies_to: dashboard
+    reviewed_at: 2026-10-17
+
+  - id: secret-redaction
+    kind: secrets_management
+    stride: information_disclosure
+    description: >-
+      Secret values in gitleaks results are redacted before they are stored, so
+      the lake holds where a secret is, not the secret.
+    evidence_ref: backend/mykronos/adapters/secrets_gitleaks.py
+    applies_to: data-lake
+    reviewed_at: 2026-10-17
+
+  - id: vault
+    kind: secrets_management
+    stride: information_disclosure
+    description: >-
+      Vault holds platform and personal secrets; Concourse reads concourse/*
+      with a scoped read/list token. Weakly protected as observed 2026-10-17:
+      unsealed, Shamir 1-of-1, file storage, TLS disabled, UI on, mlock
+      disabled, and init.json beside the compose file holds the unseal key and
+      root token in plaintext. Plaintext .env files and the GitHub App key sit
+      outside Vault.
+    evidence_ref: deploy/concourse/VAULT.md
+    applies_to: vault-kv
+    reviewed_at: 2026-10-17
+
+  - id: ingestion-rate-limit
+    kind: rate_limiting
+    stride: denial_of_service
+    description: >-
+      Partial. In-memory per-token sliding window on ingestion (100/min). No
+      rate limiting on the admin API or the gate itself, and the state resets
+      on restart. Not a brute-force control for the gate token.
+    evidence_ref: backend/mykronos/ratelimit.py
+    applies_to: ingestion-api
+    reviewed_at: 2026-10-17
+
+  - id: admin-bearer
+    kind: authorization
+    stride: elevation_of_privilege
+    description: >-
+      Writes on the API need the admin bearer in addition to the gate token
+      (a single configured token, one role; fails closed with 503 when unset).
+      Holds for direct API callers; does NOT hold on the dashboard path,
+      because the frontend server presents MYKRONOS_ADMIN_TOKEN for every gated
+      browser session.
+    evidence_ref: backend/mykronos/adminauth.py
+    applies_to: platform-api
+    reviewed_at: 2026-10-17
+
+  - id: app-container-hardening
+    kind: container_hardening
+    stride: elevation_of_privilege
+    description: >-
+      mykronos-backend (user mykronos) and mykronos-frontend (user nonroot) run
+      non-root with cap_drop ALL and no-new-privileges (docker inspect,
+      2026-10-17). Does not cover the Concourse workers (privileged, uid 0,
+      label=disable), the Concourse web node (uid 0) or MinIO (uid 0).
+    evidence_ref: deploy/mykronos/docker-compose.yml
+    applies_to: platform-api
+    reviewed_at: 2026-10-17
