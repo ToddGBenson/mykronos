@@ -187,6 +187,7 @@ structured as its inputs.
 | Ownership looks wrong | `POST /api/dashboard/repos/{id}/reown?dry_run=true` re-derives it. Manual assignments are never overwritten |
 | Component inventory looks thin | `POST /api/dashboard/inventory/reindex?dry_run=true` rebuilds from archived SBOMs |
 | Are we affected by this CVE? | Threat intelligence → look it up. Repositories with no SBOM report as *not checked*, which is not the same as clear |
+| Backups | Nightly: create at 03:00, restore drill at 04:00. Both log to `%USERPROFILE%\Backups\mykronos\logs`; exit 0 is good. Setup, exit codes and restore: [deploy/backup/BACKUP.md](../deploy/backup/BACKUP.md) |
 
 ## Things that will surprise you
 
