@@ -29,7 +29,7 @@ import {
   type RiskProfile,
   type ScanHealth,
   type ScanRun,
-  type ScanRunRow,
+  type ScanRunPage,
   type ScanRunTrend,
   type ShadowModeReport,
   type SscsPage,
@@ -709,17 +709,27 @@ export async function getScanRun(scanRunId: string): Promise<Result<ScanRun>> {
 export async function getScanRuns(
   repoId: string,
   capability?: string,
-): Promise<Result<{ repo_full_name: string; runs: ScanRunRow[] }>> {
+  options: { tool?: string | null; job?: string | null; offset?: number; limit?: number } = {},
+): Promise<Result<ScanRunPage>> {
   try {
     const { data, response } = await backendClient().GET(
       "/api/dashboard/repos/{repo_id}/scan-runs",
       {
-        params: { path: { repo_id: repoId }, query: { capability, limit: 20 } },
+        params: {
+          path: { repo_id: repoId },
+          query: {
+            capability,
+            limit: options.limit ?? 20,
+            tool: options.tool ?? undefined,
+            job: options.job ?? undefined,
+            offset: options.offset ?? 0,
+          },
+        },
         cache: "no-store",
       },
     );
     if (!data) return { ok: false, error: describe(response, "Could not load scan runs") };
-    return { ok: true, data: data as { repo_full_name: string; runs: ScanRunRow[] } };
+    return { ok: true, data: data as ScanRunPage };
   } catch (error) {
     return failure(error);
   }

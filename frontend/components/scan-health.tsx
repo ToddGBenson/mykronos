@@ -16,6 +16,7 @@ import Link from "next/link";
 
 import { CAPABILITY_META, Label, RelativeTime } from "@/components/primitives";
 import type { ScanHealth } from "@/lib/api";
+import { checkHref, scanRunHref } from "@/lib/checks";
 
 type Row = ScanHealth["capabilities"][number];
 
@@ -41,7 +42,8 @@ export function ScanHealthBoxes({
   capabilities,
   health,
 }: {
-  /** Links each box to its latest run (TheHub #60761). */
+  /** Links each box to its latest run (TheHub #60761) and to its run
+   *  history (TheHub #60819). */
   repoId: string;
   /** Everything enabled for this repo, plus anything that has reported. */
   capabilities: string[];
@@ -73,7 +75,14 @@ export function ScanHealthBoxes({
           >
             <span className="flex items-baseline gap-1.5">
               <span aria-hidden>{meta?.icon ?? "•"}</span>
-              <Label>{capability}</Label>
+              {/* The check itself opens its run history (TheHub #60819). */}
+              <Link
+                href={checkHref(repoId, capability)}
+                className="hover:text-accent"
+                title={`${capability}: every run, newest first`}
+              >
+                <Label>{capability}</Label>
+              </Link>
               {row?.flaky ? (
                 <span
                   className="border border-high bg-high-wash px-1 font-mono text-[10px] uppercase tracking-[0.08em] text-high"
@@ -84,11 +93,12 @@ export function ScanHealthBoxes({
               ) : null}
             </span>
 
-            <span
-              className={`tabular text-2xl font-bold leading-none tracking-tight ${colours.text}`}
+            <Link
+              href={checkHref(repoId, capability)}
+              className={`tabular text-2xl font-bold leading-none tracking-tight hover:underline ${colours.text}`}
             >
               {success === null ? "—" : `${Math.round(success * 100)}%`}
-            </span>
+            </Link>
 
             <span className="font-mono text-[11px] leading-relaxed text-ink-3">
               {row && row.runs > 0 ? (
@@ -109,14 +119,15 @@ export function ScanHealthBoxes({
                   {row.last_scan_run_id ? (
                     <>
                       {" · "}
-                      <Link
-                        className="underline"
-                        href={`/repos/${repoId}/scan-runs/${encodeURIComponent(row.last_scan_run_id)}`}
-                      >
+                      <Link className="underline" href={scanRunHref(repoId, row.last_scan_run_id)}>
                         open run
                       </Link>
                     </>
                   ) : null}
+                  {" · "}
+                  <Link className="underline" href={checkHref(repoId, capability)}>
+                    history
+                  </Link>
                   {/* The most recent run's own message (spec 19 §1.2) — a
                       failed lane says why, not just that. */}
                   {row.detail ? (

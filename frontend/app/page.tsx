@@ -187,6 +187,7 @@ export default async function PortfolioPage({
 
                   <td className="px-2 py-2">
                     <CapabilityGrid
+                      repoId={repo.repo_id}
                       enabled={repo.enabled_capabilities}
                       pending={repo.pending_capabilities ?? []}
                       live={repo.capability_states

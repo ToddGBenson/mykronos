@@ -9,6 +9,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { SEVERITY_ORDER, type Severity } from "@/lib/api";
+import { checkHref } from "@/lib/checks";
 
 // Re-exported so callers have one import for display primitives, even
 // though this one has to be a client component.
@@ -220,9 +221,16 @@ export function CapabilityGrid({
   enabled,
   pending = [],
   live = [],
+  repoId,
 }: {
   enabled: string[];
   pending?: string[];
+  /**
+   * When given, every cell is a link to that check's run history on this
+   * repository (TheHub #60819) — including cells for checks that are not
+   * enabled, whose history says plainly that there is none.
+   */
+  repoId?: string;
   /**
    * Capabilities that have actually reported a scan. Implemented-but-silent
    * and implemented-and-reporting are different facts: the first is drawn as
@@ -258,13 +266,25 @@ export function CapabilityGrid({
               ? "border-dotted border-accent bg-accent-wash"
               : "border-rule bg-paper";
 
-        return (
+        const label = `${meta.label}: ${state}`;
+        const title = `${meta.label} — ${state}${"note" in meta ? ` (${meta.note})` : ""}`;
+        const className = `${CAP_CELL} h-[15px] border ${skin}`;
+
+        return repoId ? (
+          <Link
+            key={capability}
+            href={checkHref(repoId, capability)}
+            aria-label={`${label} — open run history`}
+            title={`${title} · click for run history`}
+            className={`${className} block hover:outline hover:outline-1 hover:outline-accent`}
+          />
+        ) : (
           <span
             key={capability}
             role="img"
-            aria-label={`${meta.label}: ${state}`}
-            title={`${meta.label} — ${state}${"note" in meta ? ` (${meta.note})` : ""}`}
-            className={`${CAP_CELL} h-[15px] border ${skin}`}
+            aria-label={label}
+            title={title}
+            className={className}
           />
         );
       })}
