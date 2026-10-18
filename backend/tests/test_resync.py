@@ -18,7 +18,7 @@ from mykronos.installer.installer import BRANCH_PREFIX
 from mykronos.installer.resync import RESYNC_BRANCH_PREFIX, resync_templates
 from tests.conftest import REPO
 from tests.test_action_pins import INIT, NEW_SHA, OLD_SHA, _bump, _repin, _template_pin
-from tests.test_portfolio_job import register
+from tests.test_portfolio_job import register as _register
 
 SAST_PATH = ".github/workflows/mykronos-sast.yml"
 
