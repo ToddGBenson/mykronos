@@ -1868,18 +1868,18 @@ def render(briefing: Briefing) -> str:
         pairs = [(lane, _held_behind(lane, briefing.blocked)) for lane in idle]
         # Stable, so lanes holding equally many keep the order `stalled_lanes` gave.
         gating = sorted((pair for pair in pairs if pair[1]), key=lambda pair: -len(pair[1]))
-        quiet = [lane for lane, held in pairs if not held]
+        quiet = [lane for lane, held_jobs in pairs if not held_jobs]
         # "Also" needs something to be also to. With nothing printed above it
         # the word is a dangling reference to a section that never rendered.
         preceded = bool(holding)
-        for lane, held in gating:
+        for lane, held_jobs in gating:
             lead = "Also stalled" if preceded else "Stalled"
             preceded = True
-            jobs = "1 job is" if len(held) == 1 else f"{len(held)} jobs are"
+            jobs = "1 job is" if len(held_jobs) == 1 else f"{len(held_jobs)} jobs are"
             lines += textwrap.wrap(
                 f"  {lead}, holding nothing open: {lane.repo_full_name} "
                 f"{lane.capability}. {jobs} held behind it and cannot run until "
-                f"it is green: {', '.join(held)}.",
+                f"it is green: {', '.join(held_jobs)}.",
                 72,
                 subsequent_indent="  ",
             )
