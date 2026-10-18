@@ -28,6 +28,7 @@ from mykronos import (
     consult,
     controls,
     cvss,
+    cvss_vectors,
     finding_disposition,
     finding_record,
     findings_export,
@@ -5026,8 +5027,11 @@ class SeverityHereOut(BaseModel):
     """
 
     vector: str
-    base: float
-    environmental: float
+    #: Null only for a v4.0 vector with no published score.
+    base: float | None
+    #: Null when not rescored (v4.0, D1): an equal pair would claim a
+    #: calculation nobody did.
+    environmental: float | None
     moved: bool
     #: Whether anything about this system was actually stated. False with an
     #: equal pair means "nobody has said", not "we checked and it matches".
@@ -5040,6 +5044,12 @@ class SeverityHereOut(BaseModel):
     #: null for a profile row that never recorded an author.
     stated_by: str | None = None
     stated_at: datetime | None = None
+    #: Where the vector came from: NVD, or the advisory the scanner matched
+    #: (TheHub #60824). NVD 3.x > advisory 3.x > v4.0.
+    vector_source: Literal["nvd", "advisory"]
+    vector_version: str
+    #: False for v4.0: shown, never fed to the v3 environmental formula.
+    rescored: bool
 
 
 class FindingRecordOut(BaseModel):
@@ -5057,8 +5067,8 @@ class FindingRecordOut(BaseModel):
     closure: ClosureOut
     fix: FixOut | None
     package: PackageOut | None
-    #: Absent where NVD has no v3 vector for this CVE, or where the finding
-    #: names no CVE at all — a Semgrep pattern and a ZAP alert never will.
+    #: Absent where neither NVD nor the scanner's advisory published a vector
+    #: — a Semgrep pattern and a ZAP alert never will.
     #: Absent is the honest answer; a fabricated vector would produce a number
     #: that looks like a standard and is not one.
     severity_here: SeverityHereOut | None = None
@@ -5072,22 +5082,43 @@ def _severity_here(
 ) -> SeverityHereOut | None:
     """This finding's CVSS score re-read for this repository, where possible.
 
-    Three ways this is `None`, all of them honest: the finding names no CVE
-    (a Semgrep pattern or a ZAP alert never will), NVD has published no v3
-    vector for it, or the lookup has not reached it yet. Inventing a vector
-    from the severity word would produce a figure that looks like a published
-    standard and is not one — which is the single worst thing this could do,
+    `None` when no vector exists for it anywhere — the finding names no CVE
+    and its scanner published no advisory vector (a Semgrep pattern or a ZAP
+    alert never will), or NVD has none and the lookup found or reached
+    nothing yet. A v4.0-only vector is returned shown and not rescored (D1).
+    Inventing a vector from the severity word would produce a figure that
+    looks like a published standard and is not one — which is the single worst thing this could do,
     because the number would be quoted.
     """
     cve_id = threat_intel_feed.extract_cve(row.get("rule_id"), row.get("title"))
-    if not cve_id:
+    match = None
+    if cve_id:
+        with request.app.state.db.session() as session:
+            match = session.get(ThreatIntelMatch, cve_id)
+    # NVD 3.x > advisory 3.x > v4.0 shown only (TheHub #60824, D1).
+    choice = cvss_vectors.choose_vector(
+        nvd_v3=match.cvss_vector if match else None,
+        nvd_v4=match.cvss_v4_vector if match else None,
+        nvd_v4_base_score=match.cvss_v4_base_score if match else None,
+        advisory=DashboardQueries(request.app.state.catalog).cvss_vectors(
+            str(row.get("finding_id") or "")
+        ),
+    )
+    if choice is None:
         return None
-
-    with request.app.state.db.session() as session:
-        match = session.get(ThreatIntelMatch, cve_id)
-    vector = match.cvss_vector if match else None
-    if not vector:
-        return None
+    if not choice.rescored:
+        return SeverityHereOut(
+            vector=choice.vector,
+            base=choice.base_score,
+            environmental=None,
+            moved=False,
+            stated=False,
+            because=[],
+            vector_source=choice.source,
+            vector_version=choice.version,
+            rescored=False,
+        )
+    vector = choice.vector
 
     environment = (
         cvss.environment_for(
@@ -5103,7 +5134,7 @@ def _severity_here(
     try:
         scored = cvss.score(vector, environment)
     except cvss.VectorError:
-        logger.warning("Stored vector for %s is unscoreable", scrub(cve_id))
+        logger.warning("Stored vector for %s is unscoreable", scrub(cve_id or "?"))
         return None
 
     return SeverityHereOut(
@@ -5115,6 +5146,9 @@ def _severity_here(
         because=list(scored.because),
         stated_by=(profile.updated_by or None) if profile is not None else None,
         stated_at=profile.updated_at if profile is not None else None,
+        vector_source=choice.source,
+        vector_version=choice.version,
+        rescored=True,
     )
 
 

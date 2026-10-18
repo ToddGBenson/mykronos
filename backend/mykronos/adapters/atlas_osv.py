@@ -30,7 +30,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from mykronos import atlas_constraints
+from mykronos import atlas_constraints, cvss_vectors
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 
@@ -346,6 +346,10 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                 "by rule id and package. Dependency findings will report no "
                 "available fix."
             )
+
+    # osv-scanner 2.2's SARIF publishes `security-severity` and no vector, so
+    # this finds nothing today; it keeps one if that changes (TheHub #60824).
+    cvss_vectors.attach(outcome.findings, raw_output, source="osv-scanner")
 
     _report_broken_constraints(outcome, context)
 

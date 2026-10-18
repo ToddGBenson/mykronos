@@ -8658,9 +8658,9 @@ export interface components {
             /** Vector */
             vector: string;
             /** Base */
-            base: number;
+            base: number | null;
             /** Environmental */
-            environmental: number;
+            environmental: number | null;
             /** Moved */
             moved: boolean;
             /** Stated */
@@ -8671,6 +8671,15 @@ export interface components {
             stated_by?: string | null;
             /** Stated At */
             stated_at?: string | null;
+            /**
+             * Vector Source
+             * @enum {string}
+             */
+            vector_source: "nvd" | "advisory";
+            /** Vector Version */
+            vector_version: string;
+            /** Rescored */
+            rescored: boolean;
         };
         /** SnoozeRequest */
         SnoozeRequest: {

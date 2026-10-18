@@ -411,3 +411,102 @@ class TestVectorLookup:
         row = session.get(ThreatIntelMatch, "CVE-2014-0160")
         assert found == 0
         assert row is not None and row.vector_checked_at is None
+
+
+V40 = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+
+
+def _nvd(**metrics: object) -> dict[str, object]:
+    return {"vulnerabilities": [{"cve": {"metrics": metrics}}]}
+
+
+def _v40(vector: str = V40, score: float = 9.3) -> list[dict[str, object]]:
+    return [{"cvssData": {"version": "4.0", "vectorString": vector, "baseScore": score}}]
+
+
+class TestV4Capture:
+    """CVSS v4.0 is stored and shown, never rescored (TheHub #60824, D1).
+
+    NVD publishes `cvssMetricV40` for a growing share of new CVEs, some with
+    no v3 beside it. Reading only V31/V30 recorded those as "looked, found
+    nothing" -- the same answer as a reserved CVE NVD has never heard of.
+    """
+
+    def test_v4_is_read_alongside_v31(self) -> None:
+        vectors = threat_intel.parse_nvd_vectors(
+            _nvd(cvssMetricV31=[{"cvssData": {"vectorString": V31}}], cvssMetricV40=_v40())
+        )
+
+        assert vectors == threat_intel.NvdVectors(v3=V31, v4=V40, v4_base_score=9.3)
+
+    def test_a_v4_only_cve_has_a_v4_and_no_v3(self) -> None:
+        vectors = threat_intel.parse_nvd_vectors(_nvd(cvssMetricV40=_v40()))
+
+        assert vectors.v3 is None
+        assert vectors.v4 == V40
+        # The v3 reader is unchanged: v4 is never handed to the v3 formula.
+        assert threat_intel.parse_nvd_vector(_nvd(cvssMetricV40=_v40())) is None
+
+    def test_a_v4_metric_that_is_not_a_v4_vector_is_ignored(self) -> None:
+        vectors = threat_intel.parse_nvd_vectors(_nvd(cvssMetricV40=_v40(vector=V31)))
+
+        assert vectors.v4 is None
+
+    def test_a_non_numeric_v4_score_is_dropped_but_the_vector_kept(self) -> None:
+        payload = _nvd(cvssMetricV40=[{"cvssData": {"vectorString": V40, "baseScore": "x"}}])
+
+        vectors = threat_intel.parse_nvd_vectors(payload)
+
+        assert vectors.v4 == V40 and vectors.v4_base_score is None
+
+    def test_a_v4_only_cve_no_longer_reads_as_found_nothing(self, session) -> None:
+        session.add(ThreatIntelMatch(cve_id="CVE-2025-0001"))
+        session.flush()
+
+        found = threat_intel.refresh_vectors(
+            session, fetch=lambda _: _nvd(cvssMetricV40=_v40()), sleep=lambda _: None
+        )
+
+        row = session.get(ThreatIntelMatch, "CVE-2025-0001")
+        assert found == 1
+        assert row is not None
+        assert row.cvss_vector is None
+        assert row.cvss_v4_vector == V40
+        assert row.cvss_v4_base_score == 9.3
+        assert row.vector_checked_at is not None
+        assert row.v4_checked_at is not None
+
+    def test_a_cve_checked_before_v4_was_read_is_asked_once_more(self, session) -> None:
+        """A row stamped by the v3-only lookup may have had a v4 it dropped.
+        It is eligible exactly once again -- then it is a true miss."""
+        session.add(
+            ThreatIntelMatch(
+                cve_id="CVE-2025-0002", vector_checked_at=datetime(2026, 10, 1)
+            )
+        )
+        session.flush()
+
+        asked: list[str] = []
+
+        def fetch(cve_id: str) -> object:
+            asked.append(cve_id)
+            return _nvd(cvssMetricV40=_v40())
+
+        threat_intel.refresh_vectors(session, fetch=fetch, sleep=lambda _: None)
+        threat_intel.refresh_vectors(session, fetch=fetch, sleep=lambda _: None)
+
+        assert asked == ["CVE-2025-0002"]
+        row = session.get(ThreatIntelMatch, "CVE-2025-0002")
+        assert row is not None and row.cvss_v4_vector == V40
+
+    def test_a_true_miss_is_still_asked_only_once(self, session) -> None:
+        session.add(ThreatIntelMatch(cve_id="CVE-2025-0003"))
+        session.flush()
+
+        asked: list[str] = []
+        for _ in range(2):
+            threat_intel.refresh_vectors(
+                session, fetch=lambda c: asked.append(c) or {}, sleep=lambda _: None
+            )
+
+        assert asked == ["CVE-2025-0003"]
