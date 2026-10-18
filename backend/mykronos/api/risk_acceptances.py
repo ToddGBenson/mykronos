@@ -110,6 +110,8 @@ async def propose(request: Request, body: ProposeIn, principal: PrincipalDep) ->
         "approval_request_id": approval.id,
         "tier": approval.tier,
         "evidence_digest": approval.evidence_digest,
+        # #712: reasons the premise is doubtful, as the approver will see them.
+        "flags": list((approval.evidence or {}).get("flags") or []),
     }
 
 

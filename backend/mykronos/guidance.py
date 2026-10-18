@@ -33,6 +33,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from mykronos.fingerprint import image_repository
 from mykronos.lake.catalog import Catalog
 
 #: ZAP writes HTML into `solution`; Trivy writes a flat block. Neither is
@@ -168,6 +169,22 @@ def _containers(raw: dict[str, Any]) -> tuple[str, str, str]:
     if fixed_version and not fixed_version.startswith("Link"):
         now = f" (from {installed.group(1)})" if installed else ""
         return (f"Upgrade {package} to {fixed_version}{now}.", "scanner", "upgrade")
+
+    # #712: no fix published *and* none ever will be. The base OS release is
+    # end-of-life, so the fix is the image's base, not the package -- and the
+    # `no_vendor_fix` advice below would park it waiting for a vendor that
+    # will not ship.
+    if raw.get("base_os_eol"):
+        base = str(raw.get("base_os") or "its base OS")
+        image = str(raw.get("image") or "this image")
+        return (
+            f"{base} is end-of-life, so no fix will ever ship for "
+            f"{package or 'this package'}. Rebuild {image} on a supported base "
+            "image — usually a newer major tag upstream. Not a `no_vendor_fix` "
+            "acceptance: no vendor will ship.",
+            "scanner",
+            "upgrade",
+        )
 
     return (
         f"No fixed version published for {package or 'this package'}. "
@@ -384,6 +401,14 @@ def _fix_key(capability: str, rule: RuleGuidance, raw: dict[str, Any]) -> tuple[
                 f"header:{header.lower()}",
                 f"Set the {header} response header",
             )
+    if capability == "containers" and raw.get("base_os_eol"):
+        # Every end-of-life finding in one image is one change: the base.
+        image = str(raw.get("image") or "")
+        base = str(raw.get("base_os") or "an end-of-life OS")
+        return (
+            f"base_image:{image_repository(image) if image else '(unknown image)'}",
+            f"Move {image or 'the image'} off {base} to a supported base image",
+        )
     if capability in ("containers", "atlas"):
         text = message_text(raw)
         package = _PACKAGE.search(text)
@@ -425,6 +450,15 @@ _STEPS: dict[str, list[str]] = {
         "Run the test suite. A version bump that closes an advisory and breaks "
         "the build has not made anything safer.",
         "Re-run the dependency lane. Two consecutive successful scans close "
+        "these.",
+    ],
+    "base_image": [
+        "Find the image's current upstream tag on a supported release -- for a "
+        "third-party image, usually the next major tag; for one built here, the "
+        "`FROM` line.",
+        "Rebuild or re-pin to it and redeploy. Package-level upgrades cannot "
+        "close these: the distribution release no longer receives fixes.",
+        "Re-run the containers lane. Two consecutive successful scans close "
         "these.",
     ],
     "rotate": [

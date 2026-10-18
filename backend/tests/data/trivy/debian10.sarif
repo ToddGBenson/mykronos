@@ -1,0 +1,145 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://github.com/aquasecurity/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "CVE-2019-8457",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "sqlite: heap out-of-bound read in function rtreenode()"
+              },
+              "fullDescription": {
+                "text": "SQLite3 from 3.6.0 to and including 3.27.2 is vulnerable to heap out-of-bound read in the rtreenode() function when handling invalid rtree tables."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/nvd/cve-2019-8457",
+              "help": {
+                "text": "Vulnerability CVE-2019-8457\nSeverity: CRITICAL\nPackage: libdb5.3\nFixed Version: \nLink: [CVE-2019-8457](https://avd.aquasec.com/nvd/cve-2019-8457)\nSQLite3 from 3.6.0 to and including 3.27.2 is vulnerable to heap out-of-bound read in the rtreenode() function when handling invalid rtree tables.",
+                "markdown": "**Vulnerability CVE-2019-8457**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|CRITICAL|libdb5.3||[CVE-2019-8457](https://avd.aquasec.com/nvd/cve-2019-8457)|\n\nSQLite3 from 3.6.0 to and including 3.27.2 is vulnerable to heap out-of-bound read in the rtreenode() function when handling invalid rtree tables."
+              },
+              "properties": {
+                "cvssv2_score": 7.5,
+                "cvssv2_vector": "AV:N/AC:L/Au:N/C:P/I:P/A:P",
+                "cvssv3_baseScore": 9.8,
+                "cvssv3_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                "precision": "very-high",
+                "security-severity": "9.8",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "CRITICAL"
+                ]
+              }
+            },
+            {
+              "id": "CVE-2023-45853",
+              "name": "OsPackageVulnerability",
+              "shortDescription": {
+                "text": "zlib: integer overflow and resultant heap-based buffer overflow in zipOpenNewFileInZip4_6"
+              },
+              "fullDescription": {
+                "text": "MiniZip in zlib through 1.3 has an integer overflow and resultant heap-based buffer overflow in zipOpenNewFileInZip4_64 via a long filename, comment, or extra field. NOTE: MiniZip is not a supported part of the zlib product. NOTE: pyminizip through 0.2.6 is also vulnerable because it bundles an affected zlib version, and exposes the applicable MiniZip code through its compress API."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/nvd/cve-2023-45853",
+              "help": {
+                "text": "Vulnerability CVE-2023-45853\nSeverity: CRITICAL\nPackage: zlib1g\nFixed Version: \nLink: [CVE-2023-45853](https://avd.aquasec.com/nvd/cve-2023-45853)\nMiniZip in zlib through 1.3 has an integer overflow and resultant heap-based buffer overflow in zipOpenNewFileInZip4_64 via a long filename, comment, or extra field. NOTE: MiniZip is not a supported part of the zlib product. NOTE: pyminizip through 0.2.6 is also vulnerable because it bundles an affected zlib version, and exposes the applicable MiniZip code through its compress API.",
+                "markdown": "**Vulnerability CVE-2023-45853**\n| Severity | Package | Fixed Version | Link |\n| --- | --- | --- | --- |\n|CRITICAL|zlib1g||[CVE-2023-45853](https://avd.aquasec.com/nvd/cve-2023-45853)|\n\nMiniZip in zlib through 1.3 has an integer overflow and resultant heap-based buffer overflow in zipOpenNewFileInZip4_64 via a long filename, comment, or extra field. NOTE: MiniZip is not a supported part of the zlib product. NOTE: pyminizip through 0.2.6 is also vulnerable because it bundles an affected zlib version, and exposes the applicable MiniZip code through its compress API."
+              },
+              "properties": {
+                "cvssv3_baseScore": 9.8,
+                "cvssv3_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                "precision": "very-high",
+                "security-severity": "9.8",
+                "tags": [
+                  "vulnerability",
+                  "security",
+                  "CRITICAL"
+                ]
+              }
+            }
+          ],
+          "version": "0.73.0"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2019-8457",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Package: libdb5.3\nInstalled Version: 5.3.28+dfsg1-0.5\nVulnerability CVE-2019-8457\nSeverity: CRITICAL\nFixed Version: \nLink: [CVE-2019-8457](https://avd.aquasec.com/nvd/cve-2019-8457)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "library/debian",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "library/debian: libdb5.3@5.3.28+dfsg1-0.5"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2023-45853",
+          "ruleIndex": 1,
+          "level": "error",
+          "message": {
+            "text": "Package: zlib1g\nInstalled Version: 1:1.2.11.dfsg-1+deb10u2\nVulnerability CVE-2023-45853\nSeverity: CRITICAL\nFixed Version: \nLink: [CVE-2023-45853](https://avd.aquasec.com/nvd/cve-2023-45853)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "library/debian",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "library/debian: zlib1g@1:1.2.11.dfsg-1+deb10u2"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "properties": {
+        "imageID": "sha256:e1a7bb630c8baa947c5430a7f0965ef6afe71e88e90547aced2e601a89b68399",
+        "imageName": "debian:buster-slim",
+        "repoDigests": [
+          "debian@sha256:bb3dc79fddbca7e8903248ab916bb775c96ec61014b3d02b4f06043b604726dc"
+        ],
+        "repoTags": [
+          "debian:buster-slim"
+        ]
+      }
+    }
+  ]
+}
