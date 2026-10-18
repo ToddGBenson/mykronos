@@ -18,6 +18,7 @@
     mykronos enable-workflow <owner/repo> <capability>
     mykronos disable-workflow <owner/repo> <capability>
     mykronos query "SELECT ..."
+    mykronos oracle shadow-report [--days N] [--repo owner/repo] [--json]
     mykronos stats
 
 The three `workflow` commands are the off switch of spec 32 §6, here as well
@@ -59,7 +60,7 @@ from mykronos.ci import (
     pipeline_name_for,
     reconcile,
 )
-from mykronos.config import get_settings
+from mykronos.config import Settings, get_settings
 from mykronos.dashboard import DashboardQueries
 from mykronos.db import Database
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_config_for
@@ -410,6 +411,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Recent builds to read per lane. Must exceed --threshold.",
     )
 
+    oracle = sub.add_parser("oracle", help="Risk-decision reports (spec 09)")
+    oracle_sub = oracle.add_subparsers(dest="oracle_command", required=True)
+    shadow_report = oracle_sub.add_parser(
+        "shadow-report",
+        help=(
+            "Environmental-severity shadow verdicts against live ones, and "
+            "against merge outcomes (TheHub #60830)"
+        ),
+    )
+    shadow_report.add_argument(
+        "--days", type=int, default=30, help="Decisions from the last N days (default 30)."
+    )
+    shadow_report.add_argument("--repo", default=None, help="Limit to one repository.")
+    shadow_report.add_argument(
+        "--limit", type=int, default=1000, help="At most this many decisions (default 1000)."
+    )
+    shadow_report.add_argument("--json", action="store_true", help="Emit JSON")
+
     sub.add_parser("stats", help="Row counts and buffer depth")
 
     query = sub.add_parser("query", help="Run read-only SQL against the lake")
@@ -424,6 +443,75 @@ def _build_parser() -> argparse.ArgumentParser:
 #: Actions lanes here are push- and schedule-driven, so a quiet afternoon is
 #: normal and must not be read as an outage.
 _ACTIONS_UPLOAD_GRACE_HOURS = 6.0
+
+
+def _shadow_report(
+    args: argparse.Namespace,
+    catalog: Catalog,
+    buffer: WriteAheadBuffer,
+    db: Database,
+    settings: Settings,
+) -> int:
+    """`mykronos oracle shadow-report` (TheHub #60830): the same report as
+    GET /api/oracle/environmental-shadow, for an operator at the host."""
+    from datetime import timedelta
+
+    from mykronos.schemas import utcnow
+
+    since = utcnow() - timedelta(days=args.days)
+    service = OracleService(
+        catalog, buffer, load_policy(settings.oracle_policy_path), db=db
+    )
+    report = service.environmental_shadow_report(
+        since=since, repo_full_name=args.repo, limit=args.limit
+    )
+    report = {"window_days": args.days, "since": since.isoformat(), **report}
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+        return 0
+
+    print(
+        f"Environmental shadow (policy {report['policy_version']}, mode "
+        f"{report['mode']}), last {args.days} day(s)"
+        + (f", {args.repo}" if args.repo else "")
+    )
+    print(
+        f"Decisions {report['decisions']}: {report['shadowed']} shadowed, "
+        f"{report['not_shadowed']} not; {report['agree']} agree, "
+        f"{report['differ']} differ."
+    )
+    if report["transitions"]:
+        print("")
+        _print_table(
+            ["live -> shadow", "decisions"], sorted(report["transitions"].items())
+        )
+    outcome = report["against_gate_outcome"]
+    print(
+        f"\nWith a recorded gate outcome: {outcome['decisions_with_a_known_outcome']}; "
+        f"differing and merged {outcome['differing_and_merged']}; shadow no_go merged "
+        f"{outcome['shadow_no_go_merged']}; live no_go merged {outcome['live_no_go_merged']}."
+    )
+    if report["differences"]:
+        print("")
+        _print_table(
+            ["evaluated", "repo", "type", "pr", "live", "shadow", "outcome", "why"],
+            [
+                [
+                    str(d["evaluated_at"])[:16],
+                    d["repo_full_name"],
+                    d["decision_type"],
+                    d["pr_number"],
+                    f"{d['live']} ({d['live_score']})",
+                    f"{d['shadow']} ({d['shadow_score']})",
+                    d["gate_outcome"],
+                    (d["why"] or [""])[0],
+                ]
+                for d in report["differences"]
+            ],
+        )
+        if report["differences_not_listed"]:
+            print(f"...and {report['differences_not_listed']} more; use --json.")
+    return 0
 
 
 def ingestion_verdict(hours_since_actions_upload: float | None) -> list[str]:
@@ -1344,6 +1432,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 print("\nDry run — nothing was opened.")
             return 0
+
+        if args.command == "oracle" and args.oracle_command == "shadow-report":
+            return _shadow_report(args, catalog, buffer, db, settings)
 
         if args.command == "stats":
             _print_table(

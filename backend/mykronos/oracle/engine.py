@@ -226,6 +226,131 @@ def _band_contribution(weight: float, count: float) -> float:
     return weight * math.log2(1 + count)
 
 
+def finding_band_terms(
+    counts: dict[str, int],
+    dampened_counts: dict[str, int],
+    covered_counts: dict[str, int],
+    unfixable_counts: dict[str, int],
+    policy: Policy,
+) -> tuple[list[Term], dict[str, float]]:
+    """One term per severity band with open findings, worst first, and the
+    effective (discounted) count each was scored on.
+
+    A function of per-severity tallies alone, so the environmental shadow
+    (TheHub #60830) can re-run exactly this arithmetic on tallies counted by
+    effective severity: with nothing moved, its terms are these terms.
+    """
+    terms: list[Term] = []
+    effective_by_severity: dict[str, float] = {}
+    factor = policy.dampening.dampening_factor
+    for severity in reversed(policy.severities_in_scope()):
+        count = counts.get(severity, 0)
+        weight = policy.severity_weights.get(severity, 0.0)
+        if count == 0 or weight == 0:
+            continue
+
+        # A dismissed-often rule counts for less, not for nothing. Applied
+        # to the *count* inside the curve rather than to the band's weight
+        # outside it, because only some of a band's findings are dampened
+        # and halving the whole band would quieten the real ones too.
+        quiet = dampened_counts.get(severity, 0)
+        # A fix already in flight lowers urgency, not risk (spec 09 §5).
+        # Capped at the undampened remainder so a finding that is both
+        # dampened and being fixed cannot be discounted twice.
+        in_flight = max(0, min(covered_counts.get(severity, 0), count - quiet))
+        discount = policy.remediation_discount
+        # No fix exists upstream (D-077). Capped at what is left after the
+        # first two for the same reason they cap each other: a finding
+        # discounted twice would be quieter than the sum of its reasons.
+        unfixable_factor = policy.unfixable.factor
+        unfixable = max(
+            0, min(unfixable_counts.get(severity, 0), count - quiet - in_flight)
+        )
+        effective = (
+            (count - quiet - in_flight - unfixable)
+            + quiet * (1.0 - factor)
+            + in_flight * (1.0 - discount)
+            + unfixable * (1.0 - unfixable_factor)
+        )
+        contribution = _band_contribution(weight, effective)
+        effective_by_severity[severity] = effective
+
+        plural = "s" if count != 1 else ""
+        detail = f"{weight:g} × log2(1 + {count}) = {contribution:.1f}"
+        label = f"{count} open {severity} finding{plural}"
+        if quiet or in_flight or (unfixable and unfixable_factor):
+            parts = []
+            if quiet:
+                parts.append(f"{quiet} from dampened rules at {1.0 - factor:g}×")
+                label += f", {quiet} from a dampened rule"
+            if in_flight:
+                parts.append(f"{in_flight} being fixed at {1.0 - discount:g}×")
+                label += f", {in_flight} with a fix in flight"
+            if unfixable and unfixable_factor:
+                parts.append(
+                    f"{unfixable} with no upstream fix at {1.0 - unfixable_factor:g}×"
+                )
+                label += f", {unfixable} with no upstream fix"
+            detail = (
+                f"{weight:g} × log2(1 + {effective:g}) = {contribution:.1f} "
+                f"({'; '.join(parts)})"
+            )
+
+        terms.append(
+            Term(
+                key=f"findings.{severity}",
+                label=label,
+                contribution=contribution,
+                detail=detail,
+                inputs={
+                    "count": count,
+                    "weight": weight,
+                    "dampened": quiet,
+                    "remediation_in_flight": in_flight,
+                    "no_upstream_fix": unfixable,
+                    "effective_count": round(effective, 2),
+                },
+            )
+        )
+    return terms, effective_by_severity
+
+
+#: Which severities age, after how many days. Shared by the live aging terms,
+#: the aged-count query and the environmental shadow's re-count.
+AGE_DAYS = {"critical": 30, "high": 90}
+
+
+def age_terms(aged: dict[str, int], policy: Policy) -> list[Term]:
+    """Flat points once any finding of a severity passes its age (spec 09 §5)."""
+    terms: list[Term] = []
+    for severity, points in (
+        ("critical", policy.age.over_30_days_critical),
+        ("high", policy.age.over_90_days_high),
+    ):
+        days = AGE_DAYS[severity]
+        count = aged.get(severity, 0)
+        if count == 0 or points == 0:
+            continue
+        terms.append(
+            Term(
+                key=f"age.{severity}",
+                label=f"{count} {severity} finding{'s' if count != 1 else ''} "
+                f"open over {days} days",
+                contribution=points,
+                detail=f"+{points:g} (flat, once any {severity} passes {days} days)",
+                inputs={"count": count, "days": days},
+            )
+        )
+    return terms
+
+
+def kev_boost(severity: str, weights: dict[str, float]) -> tuple[str, float]:
+    """The band a KEV-listed finding is boosted to, and the points that adds
+    (spec 17 §5.4): one band's worth, nothing past critical."""
+    boosted_to = _NEXT_SEVERITY_BAND.get(severity, severity)
+    return boosted_to, max(0.0, weights.get(boosted_to, 0.0) - weights.get(severity, 0.0))
+
+
 def _dampening_snapshot(
     dampened: dict[str, Any] | None,
     *,
@@ -1918,12 +2043,9 @@ class OracleEngine:
             in_kev = bool(match and match.in_kev)
             for finding in findings:
                 severity = finding["severity"]
-                boosted_to = _NEXT_SEVERITY_BAND.get(severity, severity)
-                boost = (
-                    max(0.0, weights.get(boosted_to, 0.0) - weights.get(severity, 0.0))
-                    if in_kev
-                    else 0.0
-                )
+                boosted_to, boost = kev_boost(severity, weights)
+                if not in_kev:
+                    boost = 0.0
                 matched.append(
                     {
                         "finding_id": finding["finding_id"],
@@ -1994,101 +2116,18 @@ class OracleEngine:
         terms: list[Term] = []
 
         # 1. Findings, worst band first so the reasoning reads in the order a
-        #    person would care about.
-        factor = self.policy.dampening.dampening_factor
-        # Kept for the path-to-green projection (spec 26 §1): it has to start
-        # from the same effective counts the score was built from, not from
-        # the raw ones, or the arithmetic it publishes will not match.
-        effective_by_severity: dict[str, float] = {}
-        for severity in reversed(self.policy.severities_in_scope()):
-            count = counts.get(severity, 0)
-            weight = self.policy.severity_weights.get(severity, 0.0)
-            if count == 0 or weight == 0:
-                continue
-
-            # A dismissed-often rule counts for less, not for nothing. Applied
-            # to the *count* inside the curve rather than to the band's weight
-            # outside it, because only some of a band's findings are dampened
-            # and halving the whole band would quieten the real ones too.
-            quiet = dampened_counts.get(severity, 0)
-            # A fix already in flight lowers urgency, not risk (spec 09 §5).
-            # Capped at the undampened remainder so a finding that is both
-            # dampened and being fixed cannot be discounted twice.
-            in_flight = max(0, min(covered_counts.get(severity, 0), count - quiet))
-            discount = self.policy.remediation_discount
-            # No fix exists upstream (D-077). Capped at what is left after the
-            # first two for the same reason they cap each other: a finding
-            # discounted twice would be quieter than the sum of its reasons.
-            unfixable_factor = self.policy.unfixable.factor
-            unfixable = max(
-                0, min(unfixable_counts.get(severity, 0), count - quiet - in_flight)
-            )
-            effective = (
-                (count - quiet - in_flight - unfixable)
-                + quiet * (1.0 - factor)
-                + in_flight * (1.0 - discount)
-                + unfixable * (1.0 - unfixable_factor)
-            )
-            contribution = _band_contribution(weight, effective)
-            effective_by_severity[severity] = effective
-
-            plural = "s" if count != 1 else ""
-            detail = f"{weight:g} × log2(1 + {count}) = {contribution:.1f}"
-            label = f"{count} open {severity} finding{plural}"
-            if quiet or in_flight or (unfixable and unfixable_factor):
-                parts = []
-                if quiet:
-                    parts.append(f"{quiet} from dampened rules at {1.0 - factor:g}×")
-                    label += f", {quiet} from a dampened rule"
-                if in_flight:
-                    parts.append(f"{in_flight} being fixed at {1.0 - discount:g}×")
-                    label += f", {in_flight} with a fix in flight"
-                if unfixable and unfixable_factor:
-                    parts.append(
-                        f"{unfixable} with no upstream fix at {1.0 - unfixable_factor:g}×"
-                    )
-                    label += f", {unfixable} with no upstream fix"
-                detail = (
-                    f"{weight:g} × log2(1 + {effective:g}) = {contribution:.1f} "
-                    f"({'; '.join(parts)})"
-                )
-
-            terms.append(
-                Term(
-                    key=f"findings.{severity}",
-                    label=label,
-                    contribution=contribution,
-                    detail=detail,
-                    inputs={
-                        "count": count,
-                        "weight": weight,
-                        "dampened": quiet,
-                        "remediation_in_flight": in_flight,
-                        "no_upstream_fix": unfixable,
-                        "effective_count": round(effective, 2),
-                    },
-                )
-            )
+        #    person would care about. `effective_by_severity` is kept for the
+        #    path-to-green projection (spec 26 §1): it has to start from the
+        #    same effective counts the score was built from, not from the raw
+        #    ones, or the arithmetic it publishes will not match.
+        band_terms, effective_by_severity = finding_band_terms(
+            counts, dampened_counts, covered_counts, unfixable_counts, self.policy
+        )
+        terms.extend(band_terms)
 
         # 2. Aging. An unresolved critical is worse at 90 days than at 9, and
         #    this is what stops "accepted for now" becoming permanent.
-        for severity, days, points in (
-            ("critical", 30, self.policy.age.over_30_days_critical),
-            ("high", 90, self.policy.age.over_90_days_high),
-        ):
-            count = aged.get(severity, 0)
-            if count == 0 or points == 0:
-                continue
-            terms.append(
-                Term(
-                    key=f"age.{severity}",
-                    label=f"{count} {severity} finding{'s' if count != 1 else ''} "
-                    f"open over {days} days",
-                    contribution=points,
-                    detail=f"+{points:g} (flat, once any {severity} passes {days} days)",
-                    inputs={"count": count, "days": days},
-                )
-            )
+        terms.extend(age_terms(aged, self.policy))
 
         # 2b. Accepted risk that is not a decision (B-040).
         #
@@ -2496,6 +2535,28 @@ class OracleEngine:
             tool_images=self._tool_images(repo_full_name),
         )
 
+        # 11. Environmental severity, in shadow (TheHub #60830). Computed only
+        #     now, from the settled decision, and written beside it: nothing
+        #     here can reach `terms`, `score` or `recommendation`, and
+        #     `render_reasoning` does not read this block.
+        snapshot["environmental"] = self._environmental_shadow(
+            repo_full_name,
+            for_gate=for_gate,
+            terms=terms,
+            raw_score=raw_score,
+            score=score,
+            recommendation=recommendation,
+            counts=counts,
+            aged=aged,
+            dampened_counts=dampened_counts,
+            covered_counts=covered_counts,
+            unfixable_counts=unfixable_counts,
+            dampened_rules=set(dampened),
+            covered=covered,
+            toxic_snapshot=toxic_snapshot,
+            evidence_available=bool(evidence["available"]),
+        )
+
         decision = Decision(
             decision_id=decision_id or str(uuid.uuid4()),
             repo_full_name=repo_full_name,
@@ -2517,6 +2578,70 @@ class OracleEngine:
             scrub(decision.summary()),
         )
         return decision
+
+    def _environmental_shadow(
+        self,
+        repo_full_name: str,
+        *,
+        for_gate: bool,
+        terms: list[Term],
+        raw_score: float,
+        score: int,
+        recommendation: str,
+        counts: dict[str, int],
+        aged: dict[str, int],
+        dampened_counts: dict[str, int],
+        covered_counts: dict[str, int],
+        unfixable_counts: dict[str, int],
+        dampened_rules: set[str],
+        covered: set[str],
+        toxic_snapshot: dict[str, Any],
+        evidence_available: bool,
+    ) -> dict[str, Any]:
+        """The `environmental` snapshot block (TheHub #60830).
+
+        Imported here rather than at module level: `oracle.environmental`
+        builds on this module's term helpers. Any failure is recorded as the
+        block being unavailable - a shadow that cannot be computed must never
+        cost the live decision it sits beside.
+        """
+        from mykronos.oracle import environmental
+
+        try:
+            return environmental.shadow(
+                self.catalog,
+                self.db,
+                self.policy,
+                environmental.LiveDecision(
+                    repo_full_name=repo_full_name,
+                    as_of=self._as_of,
+                    terms=list(terms),
+                    raw_score=raw_score,
+                    score=score,
+                    recommendation=recommendation,
+                    counts=dict(counts),
+                    aged=dict(aged),
+                    dampened_counts=dict(dampened_counts),
+                    covered_counts=dict(covered_counts),
+                    unfixable_counts=dict(unfixable_counts),
+                    dampened_rules=set(dampened_rules),
+                    covered=set(covered),
+                    toxic_snapshot=toxic_snapshot,
+                    evidence_available=evidence_available,
+                    excluded_sql=self._excluded(for_gate),
+                    statuses=tuple(self.policy.statuses_considered),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - the live decision must survive
+            logger.exception(
+                "Environmental shadow failed for %s; the live decision is unaffected",
+                scrub(repo_full_name),
+            )
+            return environmental.unavailable(
+                self.policy,
+                f"The shadow could not be computed ({type(exc).__name__}). The live "
+                "decision is unaffected.",
+            )
 
     def _build_snapshot(
         self,
