@@ -149,7 +149,7 @@ class TestTheScore:
     def test_tool_findings_do_not_count_and_are_reported(
         self, client, auth, catalog, run_compaction, policy
     ) -> None:
-        assert policy.exclude_tool_images is True, "the shipped policy (1.12) turns it on"
+        assert policy.exclude_tool_images is True, "the shipped policy (1.12 onward) turns it on"
         _seed(client, auth, run_compaction)
 
         decision = OracleEngine(catalog, policy).evaluate(REPO)

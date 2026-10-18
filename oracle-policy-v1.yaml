@@ -90,7 +90,13 @@
 # listed, and counted in decision_scope.tool_images. On 2026-10-01 this was
 # the ZAP scanner image alone: 30 of the mykronos repository's 39 open highs.
 # Live from the first containers scan that carries the role.
-version: "1.12"
+#
+# 1.13 - adds `environmental` (TheHub #60830, epic #60822 decision D2) in
+# shadow mode. No score or verdict changes: every decision additionally
+# records, in inputs_snapshot.environmental, the score and verdict it would
+# have reached counting findings by their environmental effective_severity.
+# See the block at the end of this file for what flipping it to live requires.
+version: "1.13"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -487,3 +493,58 @@ scope:
   # role is declared, never guessed, and an image any compose file runs as a
   # service counts. Each decision records how many it left out.
   exclude_tool_images: true
+
+# ---------------------------------------------------------------------------
+# Environmental severity (TheHub #60830; epic #60822, decision D2)
+# ---------------------------------------------------------------------------
+#
+# A governance-class setting: this file matches `*-policy-v1.yaml` in
+# approval-policy-v1.yaml, so changing `mode` needs a person's approval, never
+# an agent's.
+#
+# Oracle counts open findings by the scanner's severity word. TheHub #60827
+# stores, per finding, an environmental CVSS re-reading of that word -
+# `effective_severity`, the scanner's word shifted by as many bands as this
+# repository's resolved facts (exposure, controls, data sensitivity) move the
+# CVSS score. Lowering facts lapse on their own (14-day observations, 90-day
+# confirmations), and a lapsed score is not used.
+#
+# `mode: shadow` (the only mode besides `off` that this version implements)
+# leaves every live score and verdict exactly as before and records beside
+# each decision, in inputs_snapshot.environmental:
+#   - open findings counted by effective_severity, falling back to the
+#     scanner's word where no current, unlapsed environmental score exists;
+#   - the ScoringContext ids those scores were computed in;
+#   - the score and verdict Oracle would have reached counting that way.
+#     Re-derived: the finding bands, aging, the KEV boost and toxic
+#     combinations. Carried over unchanged: every other term.
+# Two safety rules hold in the shadow and will hold when it goes live:
+#   - a KEV-listed finding is never counted below high (or below its own
+#     scanner severity, where that is lower): the environment cannot argue an
+#     actively exploited vulnerability down;
+#   - a toxic combination's severity - and so whether it forces no_go - uses
+#     max(scanner, effective) for each member: the environment can make a
+#     combination worse, never better.
+# `mykronos oracle shadow-report` and GET /api/oracle/environmental-shadow
+# compare the shadow verdicts with the live ones, and with gate_outcome where
+# a pull request's merge was recorded.
+#
+# Going live is a separate pull request, and must not happen until:
+#   1. at least 30 days of shadow decisions exist across every onboarded
+#      repository with environmental scores, and the report has been read;
+#   2. every decision where shadow and live differ has been reviewed, and no
+#      reviewed case lowers a verdict on facts a person would not sign;
+#   3. no shadow `go` sits on a decision whose live verdict was `no_go`
+#      because of a KEV-listed or toxic-combination term (the safety rules
+#      above make this impossible by construction; the report must show it);
+#   4. the environmental scores are being refreshed daily (`environment` job
+#      green for 14 consecutive days), so lapsed facts revert on time.
+# That PR adds `mode: live`, switching the finding bands to effective_severity,
+# and trims the risk_profile points that would then count the same fact twice:
+# `internet_facing_points` (exposure already moves MAV) and the
+# data_classification_points (classification already sets CR) - reduced or
+# zeroed for repositories whose findings carry environmental scores, kept for
+# those that do not. It bumps `version` and re-baselines the golden values.
+# Not implemented here on purpose.
+environmental:
+  mode: shadow

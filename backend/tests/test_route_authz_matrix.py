@@ -180,6 +180,7 @@ ROUTES: dict[str, str] = {
     "GET /api/oracle/policy": PRINCIPAL,
     "GET /api/oracle/policy/history": PRINCIPAL,
     "GET /api/oracle/shadow-mode": PRINCIPAL,
+    "GET /api/oracle/environmental-shadow": PRINCIPAL,
     "GET /api/oracle/term-analytics": PRINCIPAL,
     "GET /api/oracle/decisions/by-commit/{commit_sha}": PRINCIPAL,
     "GET /api/oracle/decisions/{repo_id}": PRINCIPAL,
