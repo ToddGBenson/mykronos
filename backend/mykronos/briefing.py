@@ -278,6 +278,12 @@ class StalledLane:
     #: (`_resolve_repo`). Empty when the repository has no onboarding row, and
     #: then the lane gets no path at all (#60739).
     repo_id: str = ""
+    #: The CI jobs held back behind this lane, by name, sorted (#330) --
+    #: `_held_behind`'s answer, set by `build` once the blocked list is known.
+    #: A field rather than something only `render` works out, so `--json`,
+    #: the dashboard API and the page all carry it and cannot disagree with
+    #: the terminal about whether anything is stuck behind an idle lane.
+    held_behind: list[str] = field(default_factory=list)
     #: Why the dispatch below is not offered, empty when it is. Serialised, so
     #: a UI can say the same sentence the terminal does instead of deciding for
     #: itself whether the button works.
@@ -1617,19 +1623,24 @@ def build(
         for capability, count in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
 
+    stalled = _only(
+        stalled_lanes(
+            catalog,
+            now=stamp,
+            scanned_by=scanned_by,
+            concourse_token=concourse_token,
+            repo_ids=repo_ids,
+        ),
+        asset_id,
+    )
+    gates = list(blocked_jobs or [])
+    for lane in stalled:
+        lane.held_behind = _held_behind(lane, gates)
+
     return Briefing(
         generated_at=stamp,
         total_open=sum(totals.values()),
-        stalled=_only(
-            stalled_lanes(
-                catalog,
-                now=stamp,
-                scanned_by=scanned_by,
-                concourse_token=concourse_token,
-                repo_ids=repo_ids,
-            ),
-            asset_id,
-        ),
+        stalled=stalled,
         stale=_only(
             stale_lanes(
                 catalog, now=stamp, default_branches=default_branches, repo_ids=repo_ids

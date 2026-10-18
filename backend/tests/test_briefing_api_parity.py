@@ -20,7 +20,7 @@ import mykronos.cli as cli
 from mykronos import briefing_sources
 from mykronos.briefing import BlockedLane, FailingLane, PausedLane, TokenDelivery
 from mykronos.platform_health import JobHealth
-from tests.conftest import REPO
+from tests.conftest import REPO, finding_payload, post_findings, post_scan
 from tests.test_onboarding import onboard
 
 #: Section name in both outputs -> the fields that identify an entry.
@@ -141,3 +141,55 @@ def test_a_source_that_cannot_be_read_is_listed_in_unknown(
     for source, flags in UNKNOWN_FLAGS.items():
         assert all(terminal[flag] for flag in flags), source
     assert all(entry["detail"] for entry in api["unknown"])
+
+
+def test_the_jobs_held_behind_a_stalled_lane_reach_the_api(
+    client, auth, admin_auth, settings, monkeypatch: pytest.MonkeyPatch, capsys,
+    run_compaction,
+) -> None:
+    """#330's sentence on the page, not only in the terminal.
+
+    `mykronos briefing` says "N jobs are held behind it" for a stalled lane
+    that gates others, and the dashboard said "Nothing is stuck behind these"
+    for the same lane because the API carried no such fact. Both now read the
+    lane's `held_behind`, built once from the blocked list.
+    """
+    post_scan(client, auth, scan_run_id="run-1", scan_status="failure")
+    post_findings(client, auth, [finding_payload()], scan_run_id="run-1")
+    run_compaction()
+    pipeline = REPO.rsplit("/", 1)[-1].lower()
+    inputs = briefing_sources.OperationalInputs(
+        blocked_jobs=[
+            # Behind the lane directly, behind it transitively, and on another
+            # pipeline -- the last must not count.
+            BlockedLane(pipeline=pipeline, job="secrets", blocked_by="sast", root="sast",
+                        root_state="failing"),
+            BlockedLane(pipeline=pipeline, job="iac", blocked_by="secrets", root="sast",
+                        root_state="failing"),
+            BlockedLane(pipeline="elsewhere", job="dast", blocked_by="sast", root="sast",
+                        root_state="failing"),
+        ],
+    )
+
+    api, terminal = _both(client, admin_auth, settings, monkeypatch, capsys, inputs)
+
+    assert [lane["capability"] for lane in api["stalled"]] == ["sast"]
+    assert api["stalled"][0]["held_behind"] == ["iac", "secrets"]
+    assert [lane["held_behind"] for lane in api["stalled"]] == [
+        lane["held_behind"] for lane in terminal["stalled"]
+    ]
+
+
+def test_a_lane_nothing_waits_on_holds_nothing_behind_it(
+    client, auth, admin_auth, settings, monkeypatch: pytest.MonkeyPatch, capsys,
+    run_compaction,
+) -> None:
+    """Empty, not absent: the page keeps "nothing is stuck" only for this."""
+    post_scan(client, auth, scan_run_id="run-1", scan_status="failure")
+    post_findings(client, auth, [finding_payload()], scan_run_id="run-1")
+    run_compaction()
+
+    api, terminal = _both(client, admin_auth, settings, monkeypatch, capsys, _nothing_read())
+
+    assert api["stalled"][0]["held_behind"] == []
+    assert terminal["stalled"][0]["held_behind"] == []
