@@ -306,6 +306,64 @@ def refresh(
     return RefreshResult(written=written, kev_error=kev_error, epss_error=epss_error)
 
 
+@dataclass(frozen=True)
+class NvdVectors:
+    """The base vectors one NVD CVE response publishes (TheHub #60824).
+
+    `v3` is the one scored; `v4` is stored and shown, never rescored (D1).
+    `v4_base_score` is NVD's own figure for the v4 vector.
+    """
+
+    v3: str | None = None
+    v4: str | None = None
+    v4_base_score: float | None = None
+
+
+def _metrics(payload: object) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    vulnerabilities = payload.get("vulnerabilities")
+    if not isinstance(vulnerabilities, list) or not vulnerabilities:
+        return None
+    entry = vulnerabilities[0]
+    if not isinstance(entry, dict):
+        return None
+    metrics = (entry.get("cve") or {}).get("metrics")
+    return metrics if isinstance(metrics, dict) else None
+
+
+def parse_nvd_vectors(payload: object) -> NvdVectors:
+    """Both the v3.x vector (`parse_nvd_vector`) and NVD's `cvssMetricV40`.
+
+    A CVE NVD scored only in v4.0 used to come out of this as nothing at all,
+    indistinguishable from a reserved CVE NVD has never heard of. It is now a
+    v4 vector with no v3 -- shown, not rescored.
+    """
+    v3 = parse_nvd_vector(payload)
+    metrics = _metrics(payload) or {}
+    candidates = metrics.get("cvssMetricV40")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            data = candidate.get("cvssData")
+            if not isinstance(data, dict):
+                continue
+            vector = data.get("vectorString")
+            if isinstance(vector, str) and vector.startswith("CVSS:4.0/"):
+                score = data.get("baseScore")
+                return NvdVectors(
+                    v3=v3,
+                    v4=vector,
+                    v4_base_score=(
+                        float(score)
+                        if isinstance(score, (int, float)) and not isinstance(score, bool)
+                        else None
+                    ),
+                )
+    return NvdVectors(v3=v3)
+
+
 def parse_nvd_vector(payload: object) -> str | None:
     """Pull the CVSS v3.x base vector out of one NVD CVE response.
 
@@ -318,16 +376,8 @@ def parse_nvd_vector(payload: object) -> str | None:
     this estate is full of — and it must be storable as "looked, found nothing"
     rather than retried forever.
     """
-    if not isinstance(payload, dict):
-        return None
-    vulnerabilities = payload.get("vulnerabilities")
-    if not isinstance(vulnerabilities, list) or not vulnerabilities:
-        return None
-    entry = vulnerabilities[0]
-    if not isinstance(entry, dict):
-        return None
-    metrics = (entry.get("cve") or {}).get("metrics")
-    if not isinstance(metrics, dict):
+    metrics = _metrics(payload)
+    if metrics is None:
         return None
 
     for key in ("cvssMetricV31", "cvssMetricV30"):
@@ -381,6 +431,11 @@ def refresh_vectors(
     estate's container findings carry Debian `TEMP-` identifiers that NVD has
     no record of, and retrying those daily would be the whole budget.
 
+    **v4.0 too** (TheHub #60824). NVD's `cvssMetricV40` is stored beside the
+    v3 vector and shown, never rescored. A row the v3-only lookup stamped has
+    `v4_checked_at` null and may have had a v4 it dropped, so it is eligible
+    once more; this lookup stamps both, so the once-only rule still holds.
+
     Degrades rather than raises: a failed lookup leaves the row untouched and
     the next sweep tries again.
     """
@@ -389,7 +444,7 @@ def refresh_vectors(
             select(ThreatIntelMatch)
             .where(
                 ThreatIntelMatch.cvss_vector.is_(None),
-                ThreatIntelMatch.vector_checked_at.is_(None),
+                ThreatIntelMatch.v4_checked_at.is_(None),
             )
             .order_by(ThreatIntelMatch.cve_id)
             .limit(limit)
@@ -403,15 +458,21 @@ def refresh_vectors(
         if index:
             sleep(NVD_DELAY_SECONDS)
         try:
-            vector = parse_nvd_vector(fetch(row.cve_id))
+            vectors = parse_nvd_vectors(fetch(row.cve_id))
         except Exception as exc:  # noqa: BLE001 - a feed failure degrades
             logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
             continue
         # Stamped even when nothing was found: that is the record of having
         # looked, and it is what stops this retrying for ever.
-        row.vector_checked_at = now()
-        if vector:
-            row.cvss_vector = vector
+        checked = now()
+        row.vector_checked_at = checked
+        row.v4_checked_at = checked
+        if vectors.v3:
+            row.cvss_vector = vectors.v3
+        if vectors.v4:
+            row.cvss_v4_vector = vectors.v4
+            row.cvss_v4_base_score = vectors.v4_base_score
+        if vectors.v3 or vectors.v4:
             found += 1
 
     session.flush()

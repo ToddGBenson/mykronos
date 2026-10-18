@@ -46,6 +46,7 @@ import logging
 import re
 from typing import Any
 
+from mykronos import cvss_vectors
 from mykronos.adapters.atlas_osv import _basis, _pick_fix
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
@@ -148,6 +149,10 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             raw["fixed_version"] = (
                 _pick_fix(finding.package_version, rule["fix"]) if rule["fix"] else ""
             )
+
+    # grype 0.87-0.120 SARIF publishes no vector, so this finds nothing today;
+    # it keeps one the day grype starts writing them (TheHub #60824).
+    cvss_vectors.attach(outcome.findings, raw_output, source="grype")
 
     floors = sum(1 for f in outcome.findings if f.version_basis == "declared_floor")
     if floors:

@@ -11,6 +11,7 @@ import {
 } from "@/components/primitives";
 import type { Severity } from "@/lib/api";
 import type { components } from "@/lib/api-types";
+import { notRescoredLine, vectorProvenance } from "@/lib/severity-here";
 import { PinRegressionTest } from "@/components/pin-regression-test";
 import { RemediationAction } from "@/components/remediation-action";
 
@@ -277,7 +278,34 @@ type SeverityHereData = components["schemas"]["SeverityHereOut"];
  * is the opposite of what happened.
  */
 function SeverityHere({ here }: { here: SeverityHereData }) {
-  const lower = here.environmental < here.base;
+  const shownOnly = notRescoredLine(here);
+  if (shownOnly !== null || here.base == null || here.environmental == null) {
+    // v4.0 only (TheHub #60824, D1): shown as published, never rescored. Two
+    // equal numbers here would claim a re-reading nobody did.
+    return (
+      <section className="border border-rule bg-paper-2">
+        <div className="border-b border-rule-soft px-3 py-1.5">
+          <Label as="h2">Severity here</Label>
+        </div>
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-3 py-2.5">
+          <span className="tabular text-[15px] font-semibold">
+            {shownOnly ?? "Not rescored"}
+          </span>
+          <span className="max-w-prose text-[13px] text-ink-2">
+            Only a CVSS v4.0 vector is published for this vulnerability. It is shown
+            as published; the re-reading for this system uses CVSS 3.1, so no
+            figure for here is given.
+          </span>
+        </div>
+        <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
+          {vectorProvenance(here)} · {here.vector}
+        </p>
+      </section>
+    );
+  }
+  const base = here.base;
+  const environmental = here.environmental;
+  const lower = environmental < base;
 
   return (
     <section className="border border-rule bg-paper-2">
@@ -290,7 +318,7 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
             base
           </span>
           <span className="tabular text-xl font-bold leading-none">
-            {here.base.toFixed(1)}
+            {base.toFixed(1)}
           </span>
         </span>
         <span className="flex items-baseline gap-2">
@@ -302,7 +330,7 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
               here.moved ? (lower ? "text-pass" : "text-critical") : ""
             }`}
           >
-            {here.environmental.toFixed(1)}
+            {environmental.toFixed(1)}
           </span>
         </span>
 
@@ -344,7 +372,7 @@ function SeverityHere({ here }: { here: SeverityHereData }) {
         </p>
       ) : null}
       <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
-        {here.vector}
+        {vectorProvenance(here)} · {here.vector}
       </p>
     </section>
   );

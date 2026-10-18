@@ -143,6 +143,44 @@ class TestAColumnAddedLater:
         assert any("status" in n for n in names)
 
 
+class TestTheV4Columns:
+    """TheHub #60824: threat intel gained three nullable columns for CVSS v4.0.
+
+    Every deployed database has `threat_intel_matches` populated by the daily
+    sweep, so these must arrive through the upgrade path, and the rows already
+    there must come out with nothing found and nothing looked for -- which is
+    what makes a v3-only lookup's miss eligible for one more lookup.
+    """
+
+    NEW = ("cvss_v4_vector", "cvss_v4_base_score", "v4_checked_at")
+
+    def test_they_are_added_to_a_populated_table(self, open_db) -> None:
+        from datetime import datetime
+
+        from mykronos.db.models import ThreatIntelMatch
+
+        db = open_db()
+        db.create_all()
+        with db.session() as session:
+            session.add(
+                ThreatIntelMatch(
+                    cve_id="CVE-2014-0160", vector_checked_at=datetime(2026, 10, 1)
+                )
+            )
+        for column in self.NEW:
+            drop_column(db, "threat_intel_matches", column)
+
+        added = open_db().add_missing_columns()
+
+        assert sorted(added) == sorted(f"threat_intel_matches.{c}" for c in self.NEW)
+        with open_db().session() as session:
+            row = session.get(ThreatIntelMatch, "CVE-2014-0160")
+            assert row is not None
+            assert row.cvss_v4_vector is None
+            assert row.cvss_v4_base_score is None
+            assert row.v4_checked_at is None
+
+
 class TestItIsSafeToRunEveryTime:
     def test_an_up_to_date_database_is_left_alone(self, open_db) -> None:
         db = open_db()

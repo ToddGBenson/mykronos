@@ -670,6 +670,18 @@ class ThreatIntelMatch(Base):
     #: When the vector lookup last ran for this CVE, successful or not. Without
     #: it a CVE NVD has no record of would be retried on every sweep forever.
     vector_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: NVD's CVSS v4.0 base vector (TheHub #60824). Stored and shown, never
+    #: rescored: the environmental formula here is v3's (D1). Null when NVD
+    #: published none. Longer than the v3 column because v4 vectors are.
+    cvss_v4_vector: Mapped[str | None] = mapped_column(String(255), default=None)
+    #: The base score NVD published beside the v4.0 vector. Copied rather than
+    #: computed -- v4 scoring is not implemented here -- so it is shown as
+    #: NVD's figure, never as this platform's.
+    cvss_v4_base_score: Mapped[float | None] = mapped_column(Float, default=None)
+    #: When a lookup that reads v4.0 last ran. Null on every row stamped by the
+    #: v3-only lookup, which may have dropped a v4 vector: those are eligible
+    #: for exactly one more lookup, then a miss is a miss.
+    v4_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

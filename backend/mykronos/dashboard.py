@@ -2744,6 +2744,20 @@ class DashboardQueries:
                 record["raw_finding_json"] = json.loads(record["raw_finding_json"])
         return record
 
+    def cvss_vectors(self, finding_id: str) -> list[dict[str, Any]]:
+        """The advisory CVSS vectors kept on one finding (TheHub #60824).
+
+        Read out of `raw_finding_json` here, and only the vectors returned,
+        because the raw record is admin-only (spec 12 §5) and the vectors in
+        it are public advisory data every viewer's severity block needs.
+        """
+        from mykronos import cvss_vectors
+
+        rows = self.catalog.query(
+            "SELECT raw_finding_json FROM findings WHERE finding_id = ?", [finding_id]
+        )
+        return cvss_vectors.from_raw(rows[0][0]) if rows else []
+
     # -- threat intelligence ---------------------------------------------
 
     @staticmethod

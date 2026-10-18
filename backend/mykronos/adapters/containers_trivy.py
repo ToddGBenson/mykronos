@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mykronos import image_provenance
+from mykronos import cvss_vectors, image_provenance
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 from mykronos.fingerprint import image_repository
@@ -139,6 +139,11 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             "image (usually a newer major tag upstream); a `no_vendor_fix` acceptance "
             "would wait for a vendor that will not ship (#712)."
         )
+
+    # The advisory's CVSS vectors, which Trivy writes as rule properties and
+    # this adapter used to drop (TheHub #60824). Not identity: see
+    # `cvss_vectors`.
+    cvss_vectors.attach(outcome.findings, raw_output, source="trivy")
 
     if outcome.findings and not enriched:
         outcome.warn(
