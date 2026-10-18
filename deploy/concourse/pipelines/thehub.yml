@@ -3171,7 +3171,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: evidence }]
+          outputs: [{ name: evidence }, { name: sbom-out }]
           run:
             path: bash
             args:
@@ -3253,6 +3253,77 @@ jobs:
                   rc=0
                 fi
 
+                # mykronos#322: the same advisories again, against the
+                # versions an SBOM records rather than the ones a manifest
+                # declares. `--no-resolve` assesses `redis>=8.1.0` as 8.1.0;
+                # the SBOM is what says 6.4.0 is installed, and an advisory
+                # against 6.4.0 fixed before 8.1.0 was invisible to this lane
+                # by construction.
+                #
+                # Syft runs here rather than in `sbom-and-evidence` so both
+                # SARIF files go up in ONE upload under one tool tag. A
+                # second `osv-scanner` ScanRun for the same commit would be
+                # its own run in the reconcile partition, and a declared
+                # finding would count as absent from "two consecutive scans"
+                # after a single push - the B-051 halving, one tool over.
+                #
+                # Best effort throughout: a syft or SBOM-scan failure costs
+                # this evidence, never the declared scan's findings above.
+                # `sbom-and-evidence` still refuses a missing or empty SBOM.
+                SHORT=$(git rev-parse --short HEAD)
+                if curl -sSfL -o /tmp/syft.tar.gz \
+                     https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz \
+                   && echo "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f  /tmp/syft.tar.gz" \
+                     | sha256sum -c - \
+                   && tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft \
+                   && syft scan dir:. \
+                     --exclude './**/node_modules' --exclude './**/.venv' \
+                     --exclude './**/venv' --exclude './**/vendor' \
+                     --output cyclonedx-json > "../sbom-out/sbom-${SHORT}.cdx.json"; then
+                  echo "SBOM generated: sbom-${SHORT}.cdx.json"
+                else
+                  echo "::warning::SBOM generation failed; installed versions are not assessed this run."
+                fi
+
+                # The generated SBOM first, preferred; a committed one second.
+                # Syft over a checkout records only what a lockfile or an
+                # `==` pin states, so a requirements.txt of `>=` floors leaves
+                # it nothing to say about Python - TheHub's installed Python
+                # set is the committed environment SBOM. Copied to a fixed
+                # path because the scan records the path and a finding's
+                # identity derives from it: `sbom-<sha>` would make every
+                # SBOM finding new on every commit.
+                SBOMS=""
+                mkdir -p /tmp/sbom
+                if [ -s "../sbom-out/sbom-${SHORT}.cdx.json" ]; then
+                  cp "../sbom-out/sbom-${SHORT}.cdx.json" /tmp/sbom/generated.cdx.json
+                  SBOMS="/tmp/sbom/generated.cdx.json"
+                fi
+                if [ -s docs/sbom/latest-python.cdx.json ]; then
+                  SBOMS="$SBOMS $PWD/docs/sbom/latest-python.cdx.json"
+                fi
+                OSV_SBOM_ARGS=""
+                UPLOAD_SBOM_ARGS=""
+                for f in $SBOMS; do
+                  OSV_SBOM_ARGS="$OSV_SBOM_ARGS -L $f"
+                  UPLOAD_SBOM_ARGS="$UPLOAD_SBOM_ARGS --sbom $f"
+                done
+                if [ -n "$OSV_SBOM_ARGS" ]; then
+                  set +e
+                  # shellcheck disable=SC2086  # deliberate word splitting
+                  osv-scanner scan source $OSV_SBOM_ARGS \
+                    --format sarif --output-file /tmp/results/osv-sbom.sarif
+                  sbom_rc=$?
+                  set -e
+                  # 0 clean, 1 found something, 128 nothing to scan. Anything
+                  # else is a scan that did not happen; its partial output is
+                  # dropped rather than uploaded as if it were the answer.
+                  if [ "$sbom_rc" -gt 1 ] && [ "$sbom_rc" -ne 128 ]; then
+                    echo "::warning::osv-scanner exited $sbom_rc on the SBOM; installed versions were not assessed this run."
+                    rm -f /tmp/results/osv-sbom.sarif
+                  fi
+                fi
+
                 # PS-3: the verdict is deferred to after the upload. It used
                 # to `exit "$rc"` here, so a scanner that broke skipped its own
                 # upload and `atlas` read as `never_reported` -
@@ -3271,6 +3342,7 @@ jobs:
                   --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
+                  $UPLOAD_SBOM_ARGS \
                   --severity-threshold low --blocking false
 
                 # 1 means vulnerabilities were found, which is a result.
@@ -3306,8 +3378,7 @@ jobs:
         params: *mykronos_env
         config:
           platform: linux
-          inputs: [{ name: source }, { name: evidence }]
-          outputs: [{ name: sbom-out }]
+          inputs: [{ name: source }, { name: evidence }, { name: sbom-out }]
           run:
             path: bash
             args:
@@ -3325,25 +3396,16 @@ jobs:
                 SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 SHORT=$(git -C source rev-parse --short HEAD)
 
-                # Syft, pinned, scanning the checkout. `cyclonedx-py
+                # Syft, pinned and checksummed, scanning the checkout -
+                # generated by the osv-scanner task above so its SBOM scan
+                # shares that task's upload (mykronos#322). `cyclonedx-py
                 # environment` would document the interpreter this task runs
                 # in rather than the repository -- a plausible SBOM of
                 # entirely the wrong software (D-034).
-                # The release tarball, checksummed - not
-                # `curl raw.githubusercontent.com/.../main/install.sh | sh`
-                # (PS-8). That form pinned the syft *version* while piping an
-                # unpinned installer script from a third party's `main` branch
-                # straight into a shell, inside the lane that produces this
-                # repository's supply-chain evidence.
-                curl -sSfL -o /tmp/syft.tar.gz \
-                  https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz
-                echo "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f  /tmp/syft.tar.gz" \
-                  | sha256sum -c -
-                tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
-                syft scan dir:source \
-                  --exclude './**/node_modules' --exclude './**/.venv' \
-                  --exclude './**/venv' --exclude './**/vendor' \
-                  --output cyclonedx-json > "sbom-out/sbom-${SHORT}.cdx.json"
+                if [ ! -s "sbom-out/sbom-${SHORT}.cdx.json" ]; then
+                  echo "::error::No SBOM from the osv-scanner task; refusing to publish evidence without one."
+                  exit 1
+                fi
 
                 COMPONENTS=$(jq '((.components // []) | length)' "sbom-out/sbom-${SHORT}.cdx.json")
                 echo "SBOM lists $COMPONENTS component(s)"

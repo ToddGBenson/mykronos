@@ -30,6 +30,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from mykronos import atlas_constraints
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 
@@ -82,6 +83,46 @@ _MANIFESTS = frozenset(
     }
 )
 
+#: SBOM file names osv-scanner recognises for `-L` (it detects the format by
+#: name). A finding located in one was assessed against the SBOM's version,
+#: which -- unlike a manifest's -- can describe what is installed (#322).
+_SBOM_SUFFIXES = (".cdx.json", ".spdx.json")
+_SBOM_NAMES = frozenset({"bom.json", "sbom.json"})
+
+#: How many constraint facts are written before "and N more". Each is a
+#: warning on the ScanRun, and a page of them would read as noise.
+_CONSTRAINT_FACTS_NAMED = 5
+
+
+def _is_sbom(name: str) -> bool:
+    return name in _SBOM_NAMES or name.endswith(_SBOM_SUFFIXES)
+
+
+Installed = dict[tuple[str, str], set[str]]
+
+
+def _installed_index(context: ScanContext) -> Installed:
+    """Every (ecosystem, name) -> versions the supplied SBOMs say are installed."""
+    index: Installed = {}
+    for path in context.sbom_paths:
+        document = atlas_constraints.load_sbom(path)
+        if document is None:
+            continue
+        for key, versions in atlas_constraints.installed_versions(document).items():
+            index.setdefault(key, set()).update(versions)
+    return index
+
+
+def _installed(index: Installed, package: str, version: str | None) -> bool:
+    if not version:
+        return False
+    for ecosystem in ("pypi", "npm"):
+        key = (ecosystem, atlas_constraints.normalise_name(ecosystem, package))
+        if version in index.get(key, ()):
+            return True
+    return False
+
+
 #: An exact requirement. `==1.2.3` in Python, a bare `1.2.3` in npm. Anything
 #: else -- `>=`, `^`, `~`, `*`, a bare name -- permits something newer, so the
 #: version osv-scanner assessed is the oldest the repository accepts.
@@ -109,7 +150,11 @@ def _requirement_line(text: str, package: str) -> str | None:
 
 
 def _basis(
-    file_path: str, package: str | None, workspace: Path | None
+    file_path: str,
+    package: str | None,
+    workspace: Path | None,
+    version: str | None = None,
+    installed: Installed | None = None,
 ) -> Literal["resolved", "declared_floor", "declared_pin"] | None:
     """What the assessed version is a statement about (B-063).
 
@@ -125,6 +170,16 @@ def _basis(
 
     if name in _LOCKFILES:
         return "resolved"
+    if _is_sbom(name):
+        # `resolved` only where the SBOM itself records this package at this
+        # version as installed. Syft transcribes `==` pins out of
+        # requirements.txt into the SBOM it generates from a checkout, and a
+        # finding on one of those is still about a declaration. Without the
+        # SBOM to look in -- reprocessing an archived scan, say -- the answer
+        # is not established.
+        if package and installed and _installed(installed, package, version):
+            return "resolved"
+        return None
     if name not in _MANIFESTS:
         return None
     if not package or workspace is None:
@@ -256,9 +311,14 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
 
     # Separate pass: every finding gets a basis, including the ones that
     # already carried a package name and skipped the enrichment above.
+    installed = _installed_index(context) if context.sbom_paths else {}
     for finding in outcome.findings:
         finding.version_basis = _basis(
-            finding.file_path or "", finding.package_name, context.workspace
+            finding.file_path or "",
+            finding.package_name,
+            context.workspace,
+            finding.package_version,
+            installed,
         )
 
     # Remediation, from the rule rather than the result (mykronos#256).
@@ -287,6 +347,8 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
                 "available fix."
             )
 
+    _report_broken_constraints(outcome, context)
+
     floors = sum(1 for f in outcome.findings if f.version_basis == "declared_floor")
     if floors:
         # Said out loud on the scan rather than left to be noticed per
@@ -314,3 +376,32 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     warn_if_identity_degrades(outcome, outcome.findings, context)
 
     return outcome
+
+
+def _report_broken_constraints(outcome: AdapterResult, context: ScanContext) -> None:
+    """Lane-health facts for installed versions outside the declared range (#322).
+
+    Skipped when no SBOM was supplied: without one there is nothing to compare
+    the declarations with, and silence is the honest answer. Written to the
+    *front* of the warnings, because only the first reaches the ScanRun's
+    `detail`, and this is the one direction of the floor-vs-installed gap that
+    hides vulnerabilities rather than inventing them. Never a finding, never a
+    gate.
+    """
+    if not context.sbom_paths:
+        return
+    violations = atlas_constraints.constraint_violations(
+        context.workspace, context.sbom_paths
+    )
+    if not violations:
+        return
+    facts = [v.fact() for v in violations[:_CONSTRAINT_FACTS_NAMED]]
+    if len(violations) > _CONSTRAINT_FACTS_NAMED:
+        rest = violations[_CONSTRAINT_FACTS_NAMED:]
+        facts.append(
+            f"{len(rest)} more installed version(s) violate a declared constraint: "
+            + ", ".join(f"{v.name} {'/'.join(v.installed)} vs `{v.spec}`" for v in rest)
+        )
+    for fact in facts:
+        logger.warning("adapter: %s", fact)
+    outcome.warnings[0:0] = facts

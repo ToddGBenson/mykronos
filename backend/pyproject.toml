@@ -36,6 +36,10 @@ dependencies = [
     # dependency rather than a dev one because the adapters that use it ship
     # in the backend image.
     "defusedxml>=0.7",
+    # PEP 440 specifier matching for the installed-vs-declared constraint
+    # check (mykronos#322). Hand-rolling PEP 440 is how a comparison quietly
+    # gets epochs, post-releases and local versions wrong.
+    "packaging>=24.0",
     # The platform-started independent reviewer (spec 34 §4.3). 1.x is the
     # httpx2 line, which is what the rest of the backend already runs on.
     "anthropic>=1.8.0",
