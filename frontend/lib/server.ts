@@ -911,6 +911,30 @@ export async function getConsult(repoId: string): Promise<Result<ConsultView>> {
   }
 }
 
+export type ExecutiveSummary =
+  paths["/api/dashboard/repos/{repo_id}/executive-summary"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * One repository's posture on one printable page.
+ *
+ * Uncached, for the reason Consult is: a printed page outlives the moment it
+ * was read, so the moment has to be the request, and the page prints when.
+ */
+export async function getExecutiveSummary(repoId: string): Promise<Result<ExecutiveSummary>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/executive-summary",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not build the executive report") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type PlatformHealthView =
   paths["/api/dashboard/platform-health"]["get"]["responses"]["200"]["content"]["application/json"];
 

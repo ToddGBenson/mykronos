@@ -245,6 +245,23 @@ def _for(capability: str, raw: dict[str, Any], title: str) -> tuple[str, str, st
     return ("No standing guidance recorded for this class.", "standing", "judgement")
 
 
+def rule_title(title: str) -> str:
+    """A finding's title as the rule it belongs to: tags, entities and the
+    location ZAP appends stripped, short enough for a table cell."""
+    return _clean(_AT_LOCATION.sub("", str(title or "")), 90)
+
+
+def remediation_for(capability: str, raw: dict[str, Any], title: str) -> tuple[str, str, str]:
+    """(fix, source, effort) for one finding, by the rule `by_rule` applies.
+
+    Public for a caller that needs the effort per finding rather than per rule
+    (the executive summary): `by_rule` decides a rule's fix from its first row,
+    and a container rule is a CVE that can have a fix in one image and none in
+    another.
+    """
+    return _for(capability, raw, rule_title(title))
+
+
 def by_rule(catalog: Catalog, *, asset_id: str | None = None) -> list[CapabilityGuidance]:
     """Open findings grouped by rule, with the scanner's remediation attached.
 
@@ -274,7 +291,7 @@ def by_rule(catalog: Catalog, *, asset_id: str | None = None) -> list[Capability
                 raw = json.loads(raw_json) if raw_json else {}
             except (ValueError, TypeError):
                 raw = {}
-            clean_title = _clean(_AT_LOCATION.sub("", str(title or "")), 90)
+            clean_title = rule_title(str(title or ""))
             fix, source, effort = _for(str(capability), raw, clean_title)
             entry = groups[key] = {
                 "title": clean_title or str(rule_id),

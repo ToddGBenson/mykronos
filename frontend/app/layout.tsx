@@ -162,7 +162,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body className="min-h-screen antialiased">
         <div className="flex min-h-screen flex-col">
-          <header className="flex flex-wrap items-center gap-4 border-b border-rule bg-paper-2 px-4 py-2.5">
+          {/* `data-chrome` marks what a printed report leaves out (globals.css). */}
+          <header
+            data-chrome
+            className="flex flex-wrap items-center gap-4 border-b border-rule bg-paper-2 px-4 py-2.5"
+          >
             <Link href="/" className="font-mono text-xs font-bold tracking-[0.14em]">
               MYKRONOS
             </Link>
@@ -189,6 +193,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
           <div className="flex flex-1 flex-col md:flex-row">
             <nav
+              data-chrome
               aria-label="Sections"
               className="shrink-0 border-b border-rule bg-paper-2 py-2 md:w-44 md:border-b-0 md:border-r"
             >

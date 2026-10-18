@@ -2023,6 +2023,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/executive-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Executive Summary
+         * @description A plain-language posture summary of one repository, for printing.
+         *
+         *     Severity, trend, what is driving it, how much can be fixed today, accepted
+         *     risk, whether each scanner is running, recent progress and what is waiting
+         *     on a person. Every count is read from the platform at request time, and
+         *     what cannot be established is listed in `gaps` rather than estimated.
+         */
+        get: operations["executive_summary_api_dashboard_repos__repo_id__executive_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exposure": {
         parameters: {
             query?: never;
@@ -5610,6 +5635,185 @@ export interface components {
              * @description The requester's claim - not evidence.
              */
             requester_statement: string;
+        };
+        /** ExecutiveAcceptedOut */
+        ExecutiveAcceptedOut: {
+            /** Findings */
+            findings: number;
+            /** Serious */
+            serious: number;
+            /** No Review Date */
+            no_review_date: number;
+            /** Overdue */
+            overdue: number;
+            /** Now Fixable */
+            now_fixable: number;
+            /** Next Expiries */
+            next_expiries: components["schemas"]["ExecutiveExpiryOut"][];
+            /** Decisions Active */
+            decisions_active: number;
+            /** Decisions Review Due */
+            decisions_review_due: number;
+            /** Decisions Pending */
+            decisions_pending: number;
+            /** Nearest Decision Expiry */
+            nearest_decision_expiry: string | null;
+        };
+        /** ExecutiveDecisionOut */
+        ExecutiveDecisionOut: {
+            /** Kind */
+            kind: string;
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Summary */
+            summary: string;
+            /** Created At */
+            created_at: string | null;
+            /** Due */
+            due: string | null;
+            /** Overdue */
+            overdue: boolean;
+        };
+        /** ExecutiveDriverOut */
+        ExecutiveDriverOut: {
+            /** Capability */
+            capability: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Findings */
+            findings: number;
+            /** Critical */
+            critical: number;
+            /** High */
+            high: number;
+        };
+        /** ExecutiveExpiryOut */
+        ExecutiveExpiryOut: {
+            /**
+             * On
+             * Format: date
+             */
+            on: string;
+            /** Findings */
+            findings: number;
+        };
+        /** ExecutiveFixBucketOut */
+        ExecutiveFixBucketOut: {
+            /** Key */
+            key: string;
+            /** Findings */
+            findings: number;
+            /** Serious */
+            serious: number;
+        };
+        /** ExecutiveLaneOut */
+        ExecutiveLaneOut: {
+            /** Capability */
+            capability: string;
+            /** Status */
+            status: string;
+            /** Last Run At */
+            last_run_at: string | null;
+            /** Last Run Status */
+            last_run_status: string | null;
+            /** Last Success At */
+            last_success_at: string | null;
+            /** Open Findings */
+            open_findings: number;
+            /** Blocked By */
+            blocked_by: string;
+            /** Consecutive Failures */
+            consecutive_failures: number;
+            /** Stale Reason */
+            stale_reason: string;
+        };
+        /** ExecutiveProgressOut */
+        ExecutiveProgressOut: {
+            /** Days */
+            days: number;
+            /** Fixed */
+            fixed: number;
+            /** Fixed Serious */
+            fixed_serious: number;
+            /** False Positive */
+            false_positive: number;
+            /** Accepted */
+            accepted: number;
+            /** New */
+            new: number;
+            /** New Serious */
+            new_serious: number;
+            /** Reidentified */
+            reidentified: number;
+            /** Window Starts */
+            window_starts: string | null;
+        };
+        /**
+         * ExecutiveSummaryOut
+         * @description One repository's security posture, every number read at request time.
+         */
+        ExecutiveSummaryOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Open By Severity */
+            open_by_severity: {
+                [key: string]: number;
+            };
+            /** Open Total */
+            open_total: number;
+            /** History Since */
+            history_since: string | null;
+            /** Trend */
+            trend: components["schemas"]["ExecutiveTrendPointOut"][];
+            /** Drivers */
+            drivers: components["schemas"]["ExecutiveDriverOut"][];
+            /** Drivers Basis */
+            drivers_basis: string;
+            /** Drivers Basis Total */
+            drivers_basis_total: number;
+            /** Basis By Capability */
+            basis_by_capability: {
+                [key: string]: number;
+            };
+            /** Fixability */
+            fixability: components["schemas"]["ExecutiveFixBucketOut"][];
+            /** Closing On Their Own */
+            closing_on_their_own: number;
+            accepted: components["schemas"]["ExecutiveAcceptedOut"];
+            /** Lanes */
+            lanes: components["schemas"]["ExecutiveLaneOut"][];
+            progress: components["schemas"]["ExecutiveProgressOut"];
+            /** Decisions */
+            decisions: components["schemas"]["ExecutiveDecisionOut"][];
+            /** Gaps */
+            gaps: string[];
+        };
+        /** ExecutiveTrendPointOut */
+        ExecutiveTrendPointOut: {
+            /** Days Ago */
+            days_ago: number;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Available */
+            available: boolean;
+            /** Open By Severity */
+            open_by_severity: {
+                [key: string]: number;
+            } | null;
+            /** Open Total */
+            open_total: number | null;
         };
         /**
          * FindingBatch
@@ -12390,6 +12594,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ControlObservationsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    executive_summary_api_dashboard_repos__repo_id__executive_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutiveSummaryOut"];
                 };
             };
             /** @description Validation Error */

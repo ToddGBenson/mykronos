@@ -3,6 +3,7 @@ import Link from "next/link";
 import { CapabilityManager } from "@/components/capability-manager";
 import { Consult } from "@/components/consult";
 import { DecisionsTab } from "@/components/decisions";
+import { ExecutiveReport } from "@/components/executive-report";
 import { InsiderRiskTab } from "@/components/insider-risk";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
 import { TestCoverage } from "@/components/test-coverage";
@@ -43,6 +44,7 @@ import { canonicalTab } from "@/lib/repo-tabs";
 import {
   getCi,
   getDecisions,
+  getExecutiveSummary,
   getFinding,
   getInsiderRisk,
   getOpenFindings,
@@ -68,7 +70,8 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Twelve tabs, in this order (spec 18 §2; the twelfth, Product Owner, is spec 35).
+ * Thirteen tabs, in this order (spec 18 §2; Product Owner is spec 35, and the
+ * Executive report the one written for a reader outside the team).
  *
  * `Dashboard` is what spec 18's first pass called "Harness" — enable/disable,
  * scan health, enabled jobs — promoted to the default landing tab rather than
@@ -82,6 +85,10 @@ const TABS = [
   // Nine tabs is a filing system; this is the answer, and every line of it
   // links back to the tab that produced it.
   { id: "consult", label: "Consult" },
+  // Beside Consult, because it is the same idea for a different reader:
+  // Consult answers the operator's questions, this the executive's, on one
+  // page that prints. Every number on it is one another tab already shows.
+  { id: "executive", label: "Executive report" },
   { id: "findings", label: "Findings" },
   // Directly after Findings, because it is the same backlog asked the next
   // question. Findings says what is outstanding here; this says which of it is
@@ -174,7 +181,9 @@ export default async function RepoPage({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-baseline gap-3">
+      {/* Everything above the tab's own content is navigation, and none of it
+          prints: the Executive report carries its own title (globals.css). */}
+      <div className="flex flex-wrap items-baseline gap-3 print:hidden">
         <Crumb href="/">Portfolio</Crumb>
         <span className="text-ink-3">/</span>
         <h1 className="font-mono text-base font-bold">{repo.data.github_repo_full_name}</h1>
@@ -183,16 +192,18 @@ export default async function RepoPage({
         </Pill>
       </div>
 
-      {ci.ok ? (
-        <PipelineLinks ci={ci.data} />
-      ) : (
-        <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
-          {ci.error}
-        </p>
-      )}
+      <div className="print:hidden">
+        {ci.ok ? (
+          <PipelineLinks ci={ci.data} />
+        ) : (
+          <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
+            {ci.error}
+          </p>
+        )}
+      </div>
 
       {repo.data.pending_capabilities?.length ? (
-        <div className="border border-high bg-high-wash px-3 py-2 text-[13px] text-ink-2">
+        <div className="border border-high bg-high-wash px-3 py-2 text-[13px] text-ink-2 print:hidden">
           <strong className="text-high">Awaiting merge.</strong>{" "}
           {repo.data.pending_capabilities.join(", ")} will start running once
           pull request{" "}
@@ -202,7 +213,10 @@ export default async function RepoPage({
         </div>
       ) : null}
 
-      <nav className="flex flex-wrap border-b-2 border-ink-2" aria-label="Repository views">
+      <nav
+        className="flex flex-wrap border-b-2 border-ink-2 print:hidden"
+        aria-label="Repository views"
+      >
         {TABS.map((entry) => (
           <Link
             key={entry.id}
@@ -224,6 +238,8 @@ export default async function RepoPage({
 
       {tab === "consult" ? (
         <ConsultTab repoId={repoId} />
+      ) : tab === "executive" ? (
+        <ExecutiveTab repoId={repoId} />
       ) : tab === "decisions" ? (
         <RiskDecisionsTab repoId={repoId} />
       ) : tab === "sscs" ? (
@@ -922,6 +938,14 @@ async function ConsultTab({ repoId }: { repoId: string }) {
     return <ErrorPanel title="Consult unavailable" detail={result.error} />;
   }
   return <Consult repoId={repoId} data={result.data} />;
+}
+
+async function ExecutiveTab({ repoId }: { repoId: string }) {
+  const result = await getExecutiveSummary(repoId);
+  if (!result.ok) {
+    return <ErrorPanel title="Executive report unavailable" detail={result.error} />;
+  }
+  return <ExecutiveReport data={result.data} />;
 }
 
 async function AdherenceTab({ repoId }: { repoId: string }) {
