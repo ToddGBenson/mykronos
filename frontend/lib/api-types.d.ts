@@ -2052,6 +2052,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/rule-vectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Rule Vectors
+         * @description Rules whose open findings nothing publishes a CVSS vector for.
+         *
+         *     SAST, DAST and secrets rules, mostly: no CVE, so no NVD vector, so no
+         *     environmental score (D-106). Each rule says how many open findings it
+         *     holds, which template would pre-fill a proposal, and any rule vector
+         *     already proposed or confirmed for it. A confirmed one is listed as
+         *     `applies`; until one is, the rule's findings stay unscored.
+         */
+        get: operations["repo_rule_vectors_api_dashboard_repos__repo_id__rule_vectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/rule-vectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Rule Vectors
+         * @description Every rule vector across the estate, newest first; optionally one state.
+         */
+        get: operations["list_rule_vectors_api_dashboard_rule_vectors_get"];
+        put?: never;
+        /**
+         * Propose Rule Vector
+         * @description Propose a CVSS 3.1 base vector for one rule. **Changes no score.**
+         *
+         *     Any writer, agents included. From a template (`template_id`), by hand
+         *     (`vector`), or a template edited (both). Only a person's confirmation
+         *     makes it count.
+         */
+        post: operations["propose_rule_vector_api_dashboard_rule_vectors_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/rule-vectors/{rule_vector_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit Rule Vector
+         * @description Edit a proposal. A confirmed vector is changed by proposing its
+         *     replacement and confirming that, never in place.
+         */
+        patch: operations["edit_rule_vector_api_dashboard_rule_vectors__rule_vector_id__patch"];
+        trace?: never;
+    };
+    "/api/dashboard/rule-vectors/{rule_vector_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Rule Vector
+         * @description A person confirms a proposal, optionally editing its vector first.
+         *
+         *     **A person only.** An agent's or automation's credential is refused here
+         *     whatever else it may write. From this moment the rule's findings that no
+         *     published source gives a vector are scored from this one, and the stored
+         *     score names this row as its `vector_ref`. A confirmed vector this
+         *     replaces is retired in the same transaction.
+         */
+        post: operations["confirm_rule_vector_api_dashboard_rule_vectors__rule_vector_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/rule-vectors/{rule_vector_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire Rule Vector
+         * @description Withdraw a proposal (any writer) or a confirmed vector (a person only:
+         *     its findings go back to unscored).
+         */
+        post: operations["retire_rule_vector_api_dashboard_rule_vectors__rule_vector_id__retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exposure": {
         parameters: {
             query?: never;
@@ -5370,6 +5492,13 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /** EditRequest */
+        EditRequest: {
+            /** Vector */
+            vector?: string | null;
+            /** Note */
+            note?: string | null;
+        };
         /**
          * EfficacyPage
          * @description Whether auto-remediation removes risk, or only opens pull requests.
@@ -8070,7 +8199,7 @@ export interface components {
             /** Observations */
             observations: components["schemas"]["ObservationOut"][];
             /** Templates */
-            templates: components["schemas"]["TemplateOut"][];
+            templates: components["schemas"]["mykronos__api__product_owner__TemplateOut"][];
             /** Counts */
             counts: {
                 [key: string]: number;
@@ -8187,6 +8316,26 @@ export interface components {
              * @default accept
              */
             response: string;
+        };
+        /** ProposeRequest */
+        ProposeRequest: {
+            /** Repo Id */
+            repo_id?: string | null;
+            /** Capability */
+            capability: string;
+            /** Tool */
+            tool: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Template Id */
+            template_id?: string | null;
+            /** Vector */
+            vector?: string | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /**
          * ProvenanceSignals
@@ -8799,6 +8948,11 @@ export interface components {
             /** Decisions */
             decisions?: components["schemas"]["DecisionOut"][];
         };
+        /** RetireRequest */
+        RetireRequest: {
+            /** Note */
+            note?: string | null;
+        };
         /** RetroNote */
         RetroNote: {
             /** Subject */
@@ -8905,6 +9059,87 @@ export interface components {
             source: string;
             /** Effort */
             effort: string;
+        };
+        /** RuleOut */
+        RuleOut: {
+            /** Capability */
+            capability: string;
+            /** Tool */
+            tool: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Title */
+            title: string;
+            /** Findings */
+            findings: number;
+            /** Cwes */
+            cwes: string[];
+            suggested_template: components["schemas"]["mykronos__api__rule_vectors__TemplateOut"] | null;
+            /** Vectors */
+            vectors: components["schemas"]["RuleVectorOut"][];
+            applies: components["schemas"]["RuleVectorOut"] | null;
+        };
+        /** RuleVectorList */
+        RuleVectorList: {
+            /** Rule Vectors */
+            rule_vectors: components["schemas"]["RuleVectorOut"][];
+        };
+        /** RuleVectorOut */
+        RuleVectorOut: {
+            /** Id */
+            id: string;
+            /** Repo Full Name */
+            repo_full_name: string | null;
+            /** Scope */
+            scope: string;
+            /** Capability */
+            capability: string;
+            /** Tool */
+            tool: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Vector */
+            vector: string;
+            /** Base Score */
+            base_score: number | null;
+            /** Status */
+            status: string;
+            /** Vector Source */
+            vector_source: string;
+            /** Proposed From */
+            proposed_from: string;
+            /** Asserted By */
+            asserted_by: string;
+            /**
+             * Asserted At
+             * Format: date-time
+             */
+            asserted_at: string;
+            /** Confirmed By */
+            confirmed_by: string | null;
+            /** Confirmed At */
+            confirmed_at: string | null;
+            /** Retired By */
+            retired_by: string | null;
+            /** Retired At */
+            retired_at: string | null;
+            /** Note */
+            note: string;
+        };
+        /** RuleVectorsPage */
+        RuleVectorsPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Rules */
+            rules: components["schemas"]["RuleOut"][];
+            /** Unscored Rules */
+            unscored_rules: number;
+            /** Unscored Findings */
+            unscored_findings: number;
+            /** Templates */
+            templates: components["schemas"]["mykronos__api__rule_vectors__TemplateOut"][];
+            /** Templates Version */
+            templates_version: string;
         };
         /**
          * RunRequest
@@ -9201,7 +9436,7 @@ export interface components {
              * Vector Source
              * @enum {string}
              */
-            vector_source: "nvd" | "advisory";
+            vector_source: "nvd" | "advisory" | "analyst";
             /** Vector Version */
             vector_version: string;
             /** Rescored */
@@ -9703,15 +9938,6 @@ export interface components {
             removed: number;
             /** Unchanged */
             unchanged: number;
-        };
-        /** TemplateOut */
-        TemplateOut: {
-            /** Id */
-            id: string;
-            /** Label */
-            label: string;
-            /** Summary */
-            summary: string;
         };
         /** TemplatePrOut */
         TemplatePrOut: {
@@ -10379,6 +10605,30 @@ export interface components {
             workflows: components["schemas"]["WorkflowState"][];
             /** Unavailable */
             unavailable?: string | null;
+        };
+        /** TemplateOut */
+        mykronos__api__product_owner__TemplateOut: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Summary */
+            summary: string;
+        };
+        /** TemplateOut */
+        mykronos__api__rule_vectors__TemplateOut: {
+            /** Id */
+            id: string;
+            /** Cwe */
+            cwe: string;
+            /** Name */
+            name: string;
+            /** Vector */
+            vector: string;
+            /** Base Score */
+            base_score: number;
+            /** Rationale */
+            rationale: string;
         };
     };
     responses: never;
@@ -12709,6 +12959,206 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutiveSummaryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_rule_vectors_api_dashboard_repos__repo_id__rule_vectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleVectorsPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_rule_vectors_api_dashboard_rule_vectors_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleVectorList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    propose_rule_vector_api_dashboard_rule_vectors_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleVectorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_rule_vector_api_dashboard_rule_vectors__rule_vector_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_vector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleVectorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_rule_vector_api_dashboard_rule_vectors__rule_vector_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_vector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleVectorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_rule_vector_api_dashboard_rule_vectors__rule_vector_id__retire_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_vector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetireRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleVectorOut"];
                 };
             };
             /** @description Validation Error */

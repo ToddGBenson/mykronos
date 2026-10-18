@@ -61,12 +61,14 @@ EXPECTED_TOOLS = {
     "scorecard",
     "surfaces",
     "controls",
+    "rule_vectors",
     "claim",
     "disposition",
     "accept",
     "request_pr_review",
     "declare_surface",
     "declare_control",
+    "propose_rule_vector",
 }
 WRITE_TOOLS = {
     "claim",
@@ -75,6 +77,7 @@ WRITE_TOOLS = {
     "request_pr_review",
     "declare_surface",
     "declare_control",
+    "propose_rule_vector",
 }
 #: #319 and spec 36 §4: what no tool may do, and so what no tool may say.
 FORBIDDEN_VERBS = ("dispatch", "revoke", "purge", "grant", "decide", "approve", "mint", "delete")
@@ -206,6 +209,7 @@ def _api_routes() -> list[tuple[set[str], re.Pattern[str]]]:
     from mykronos.api.dashboard import router as dashboard_router
     from mykronos.api.repos import router as repos_router
     from mykronos.api.risk_acceptances import router as risk_router
+    from mykronos.api.rule_vectors import router as rule_vectors_router
 
     out = []
     for router in (
@@ -215,6 +219,7 @@ def _api_routes() -> list[tuple[set[str], re.Pattern[str]]]:
         dashboard_router,
         repos_router,
         risk_router,
+        rule_vectors_router,
     ):
         for route in router.routes:
             if isinstance(route, APIRoute):
@@ -256,6 +261,9 @@ EVERY_TOOL_CALL: list[tuple[str, dict[str, Any]]] = [
     ("controls", {"repo_id": "r1"}),
     ("declare_surface", {"repo_id": "r1", "kind": "asset", "name": "db"}),
     ("declare_control", {"repo_id": "r1", "stride": "spoofing", "kind": "perimeter_gate"}),
+    ("rule_vectors", {"repo_id": "r1"}),
+    ("propose_rule_vector", {"capability": "sast", "tool": "semgrep", "rule_id": "x.y",
+                             "template_id": "CWE-79"}),
 ]
 
 
@@ -304,6 +312,7 @@ async def test_every_path_a_tool_calls_is_a_route_the_api_serves() -> None:
         ("scorecard", {}, "/api/agent/scorecard", {}),
         ("surfaces", {"repo_id": "r1"}, "/api/dashboard/repos/r1/surfaces", {}),
         ("controls", {"repo_id": "r1"}, "/api/dashboard/repos/r1/controls", {}),
+        ("rule_vectors", {"repo_id": "r1"}, "/api/dashboard/repos/r1/rule-vectors", {}),
         ("scorecard", {"family": "claude-opus-5.5"}, "/api/agent/scorecard",
          {"family": "claude-opus-5.5"}),
         ("scorecard", {"family": "claude-opus-5.5", "instance": "abc12345"},
@@ -581,6 +590,47 @@ async def test_declare_surface_sends_selectors_and_overrides() -> None:
         "hostnames": [],
     }
     assert (body["cr"], body["ir"], out["governed_by"]) == ("H", None, None)
+
+
+async def test_propose_rule_vector_says_it_scores_nothing_and_has_no_confirm_twin() -> None:
+    """TheHub #60832: an agent may propose a rule vector, never confirm one, so
+    no tool reaches a confirm route and the proposal says it moves nothing."""
+    fake = FakeMykronos()
+    out = (
+        await _call(
+            fake,
+            "propose_rule_vector",
+            {"repo_id": "r1", "capability": "secrets", "tool": "gitleaks",
+             "rule_id": "generic-api-key", "template_id": "CWE-798"},
+        )
+    ).structured_content
+    assert fake.calls == [("POST", "/api/dashboard/rule-vectors")]
+    assert fake.body() == {
+        "capability": "secrets",
+        "tool": "gitleaks",
+        "rule_id": "generic-api-key",
+        "note": "",
+        "repo_id": "r1",
+        "template_id": "CWE-798",
+    }
+    assert out["governed_by"] is None
+    assert "changes no score" in out["governed_by_means"]
+    for name, args in EVERY_TOOL_CALL:
+        fake = FakeMykronos()
+        await _call(fake, name, args)
+        assert not any("confirm" in path or "retire" in path for _, path in fake.calls), name
+
+
+async def test_an_estate_wide_proposal_sends_no_repo() -> None:
+    fake = FakeMykronos()
+    await _call(
+        fake,
+        "propose_rule_vector",
+        {"capability": "dast", "tool": "zap", "rule_id": "10202",
+         "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"},
+    )
+    assert "repo_id" not in fake.body()
+    assert "template_id" not in fake.body()
 
 
 async def test_declare_control_names_its_surface_only_when_given() -> None:

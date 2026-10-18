@@ -102,6 +102,7 @@ class TestTheChangeClassIsComputed:
             ("maturity-model-v1.yaml", "governance"),
             ("stride-map-v1.yaml", "governance"),
             ("environment-map-v1.yaml", "governance"),
+            ("cwe-vector-templates-v1.yaml", "governance"),
             (".github/workflows/ci.yml", "governance"),
             ("deploy/concourse/pipelines/mykronos.yml", "governance"),
             ("backend/mykronos/approvals/engine.py", "governance"),

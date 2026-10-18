@@ -570,6 +570,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    cwe_vector_templates_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "cwe-vector-templates-v1.yaml",
+        description=(
+            "CWE-class CVSS 3.1 base vectors that pre-fill an analyst's "
+            "rule-vector proposal (TheHub #60832). They propose and never "
+            "score: only a vector a person confirmed is used. Reviewed as "
+            "governance policy; the same packaging trap as `stride_map_path`."
+        ),
+    )
+
     ingestion_api_url: str = Field(
         default="http://localhost:8100",
         description=(

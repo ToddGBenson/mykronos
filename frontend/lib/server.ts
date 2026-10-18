@@ -42,6 +42,7 @@ import {
   type RepoGuidance,
   type ProductOwnerView,
   type RepoSurfaces,
+  type RuleVectorsPage,
   type SupplyChainPackages,
   type VulnerabilityManagement,
   type WorkflowsPage,
@@ -490,6 +491,22 @@ export async function getSurfaces(repoId: string): Promise<Result<RepoSurfaces>>
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load the surface register") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Rules with no published CVSS vector, for one repository (TheHub #60832). */
+export async function getRuleVectors(repoId: string): Promise<Result<RuleVectorsPage>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/rule-vectors",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the rule vectors") };
     }
     return { ok: true, data };
   } catch (error) {

@@ -55,6 +55,7 @@ TOOL_NAMES = frozenset(
         "scorecard",
         "surfaces",
         "controls",
+        "rule_vectors",
         # write, governed
         "claim",
         "disposition",
@@ -63,6 +64,8 @@ TOOL_NAMES = frozenset(
         # write, direct: the threat-model register (TheHub #60825)
         "declare_surface",
         "declare_control",
+        # write, direct and inert: a proposal scores nothing (TheHub #60832)
+        "propose_rule_vector",
     }
 )
 
@@ -86,6 +89,14 @@ GOVERNED_MEANS: dict[str | None, str] = {
         "to review it (spec 34 §6.1). It posts the `independent-review` check."
     ),
 }
+
+#: What a rule-vector proposal is, said in place of "takes effect when the
+#: call returns": it is recorded then, and it moves nothing.
+PROPOSAL_MEANS = (
+    "A proposal, attributed to you, recorded when the call returns. It changes no "
+    "score: only a person's confirmation makes a rule vector count, and an agent "
+    "credential cannot confirm one (TheHub #60832)."
+)
 
 INSTRUCTIONS = """\
 MyKronos, operated as an agent under your own credential.
@@ -563,6 +574,20 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         return result
 
     @server.tool(annotations=_READ)
+    async def rule_vectors(repo_id: RepoId) -> dict[str, Any]:
+        """Rules whose open findings no published source gives a CVSS vector
+        (SAST, DAST, secrets: no CVE), with finding counts, the CWE template
+        that would pre-fill each, and any rule vector proposed or confirmed
+        (TheHub #60832).
+
+        GET /api/dashboard/repos/{id}/rule-vectors. `applies: null` means the
+        rule's findings are unscored. `templates` lists every template id.
+        """
+        path = f"/api/dashboard/repos/{_segment(repo_id)}/rule-vectors"
+        result: dict[str, Any] = await _call(api, "GET", path)
+        return result
+
+    @server.tool(annotations=_READ)
     async def controls(repo_id: RepoId) -> dict[str, Any]:
         """One repository's declared controls and the kinds a control can be.
 
@@ -790,5 +815,65 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
             body["applies_to_surface_id"] = applies_to_surface_id
         path = f"/api/dashboard/repos/{_segment(repo_id)}/controls"
         return await _write(api, "POST", path, body, None, dry_run)
+
+    @server.tool(annotations=_WRITE)
+    async def propose_rule_vector(
+        capability: Annotated[Capability, Field(description="As the rule's findings say.")],
+        tool: Annotated[
+            str, Field(min_length=1, max_length=64, description="As `rule_vectors()` lists it.")
+        ],
+        rule_id: Annotated[str, Field(min_length=1, max_length=512)],
+        repo_id: Annotated[
+            str | None,
+            Field(
+                max_length=64,
+                description=(
+                    "The repository's onboarding id. Omit for an estate-wide vector, "
+                    "which applies wherever a repository has none of its own."
+                ),
+            ),
+        ] = None,
+        template_id: Annotated[
+            str | None,
+            Field(max_length=128, description="e.g. CWE-79, from `rule_vectors()`."),
+        ] = None,
+        vector: Annotated[
+            str | None,
+            Field(
+                max_length=256,
+                description=(
+                    "A CVSS 3.1 base vector, the eight base metrics only. With a "
+                    "template, it is the template edited."
+                ),
+            ),
+        ] = None,
+        note: Annotated[
+            str, Field(max_length=2000, description="Why this vector fits this rule.")
+        ] = "",
+        dry_run: DryRun = False,
+    ) -> dict[str, Any]:
+        """Propose a CVSS 3.1 vector for one rule that has no CVE (D3).
+
+        POST /api/dashboard/rule-vectors, in your actor name, audited as
+        `rule_vector.propose`. **It changes no score.** Only a person can
+        confirm a proposal, and only then are the rule's findings scored;
+        your credential is refused at the confirm route. Edit the template
+        to fit what the findings show rather than proposing it unread.
+        """
+        body: dict[str, Any] = {
+            "capability": capability.value,
+            "tool": tool,
+            "rule_id": rule_id,
+            "note": note,
+        }
+        if repo_id:
+            body["repo_id"] = repo_id
+        if template_id:
+            body["template_id"] = template_id
+        if vector:
+            body["vector"] = vector
+        plan = await _write(api, "POST", "/api/dashboard/rule-vectors", body, None, dry_run)
+        plan["governed_by_means"] = PROPOSAL_MEANS
+        return plan
 
     return server

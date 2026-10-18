@@ -118,6 +118,14 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/guidance": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/surfaces": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/control-observations": PRINCIPAL,
+    # Rule vectors (TheHub #60832): a proposal is any writer's and scores
+    # nothing; confirming is a person's (HumanDep). Retire checks in the module.
+    "GET /api/dashboard/repos/{repo_id}/rule-vectors": PRINCIPAL,
+    "GET /api/dashboard/rule-vectors": PRINCIPAL,
+    "POST /api/dashboard/rule-vectors": PRINCIPAL,
+    "PATCH /api/dashboard/rule-vectors/{rule_vector_id}": PRINCIPAL,
+    "POST /api/dashboard/rule-vectors/{rule_vector_id}/confirm": HUMAN,
+    "POST /api/dashboard/rule-vectors/{rule_vector_id}/retire": PRINCIPAL,
     "POST /api/dashboard/repos/{repo_id}/surfaces": PRINCIPAL,
     "DELETE /api/dashboard/repos/{repo_id}/surfaces/{surface_id}": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/controls": PRINCIPAL,

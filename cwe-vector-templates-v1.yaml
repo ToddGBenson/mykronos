@@ -1,0 +1,165 @@
+# CWE-class CVSS 3.1 base vectors: starting points for an analyst, never scores
+# (TheHub #60832, S10 of epic #60822, decision D3).
+#
+# SAST, DAST and secrets findings name a rule, not a CVE, so NVD has no vector
+# for them and D-106 left them unscored on purpose: a vector invented from a
+# severity word would look like the standard and not be it. D3 keeps that
+# rule and adds a way out of it. A person records a CVSS 3.1 vector for one
+# rule (`RuleVector`), and only a *confirmed* one is ever scored.
+#
+# This file only pre-fills that person's form. A template here PROPOSES; it
+# changes no score, ever, until somebody with a human credential confirms the
+# proposal (an agent may propose and may not confirm). It is a file, not a
+# dict in a module, for the reason `stride-map-v1.yaml` and
+# `environment-map-v1.yaml` are: each line is a judgement that ends up in a
+# quoted number, so it is argued with in a pull request and approved as
+# policy (the `governance` change class, as D-164 did for the STRIDE map).
+#
+# ---------------------------------------------------------------------------
+# How each vector was chosen
+# ---------------------------------------------------------------------------
+#
+# The typical worst plausible instance of the class in a network service, in
+# the same spirit as D-106's "X means assume the worst": what NVD most often
+# publishes for a CVE of this CWE. It is a base vector only (the eight base
+# metrics, nothing else): the environment is the resolver's job
+# (`environment.py`), and a template that pre-lowered a metric would be the
+# environment arguing itself down on nobody's evidence.
+#
+# The analyst is expected to edit before confirming. A stored XSS behind a
+# login is PR:L; a path traversal that can write is I:H; a hard-coded key that
+# only reaches a test fixture is not 9.8. The template is the first draft of
+# that conversation, not its conclusion.
+#
+# `base_score` is stated so a reviewer sees the number the vector produces;
+# a test recomputes every one with `cvss.score` and fails on a mismatch.
+
+version: "1.0"
+
+templates:
+  CWE-79:
+    name: Cross-site scripting
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"
+    base_score: 6.1
+    rationale: >-
+      Reflected XSS as NVD usually scores it: a victim has to follow a link
+      (UI:R), and script running in the victim's browser reaches beyond the
+      vulnerable component (S:C) with limited read and write of what that
+      session can see. Stored XSS that runs for every visitor is the same
+      vector; one that needs an authenticated author is PR:L.
+
+  CWE-89:
+    name: SQL injection
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    base_score: 9.8
+    rationale: >-
+      An unauthenticated request that reaches the query can read, change and
+      drop the database. Set PR:L when the injectable route sits behind
+      authentication, and lower C/I/A when the database account is
+      demonstrably read-only.
+
+  CWE-78:
+    name: OS command injection
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    base_score: 9.8
+    rationale: >-
+      Arbitrary commands as the service's own user: full loss of
+      confidentiality, integrity and availability of the component. PR:L when
+      the call site is only reachable after authentication; S:C only with
+      evidence that the process can act outside its container.
+
+  CWE-22:
+    name: Path traversal
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+    base_score: 7.5
+    rationale: >-
+      The common case is reading files outside the intended directory
+      (configuration, keys), so confidentiality only. A traversal on a write
+      or upload path is I:H (and often A:H); score that one up, not this one
+      down.
+
+  CWE-798:
+    name: Hard-coded credentials
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    base_score: 9.8
+    rationale: >-
+      A credential in source is readable by anybody who can read the
+      repository or the built artefact, and NVD scores the class as full
+      compromise of what it unlocks. The analyst should set C/I/A to what the
+      secret actually grants: a revoked token or a test-only key is not a
+      9.8, and a cloud root key may be S:C. Also the default for the
+      `secrets` capability, whose findings rarely declare a CWE.
+
+  CWE-352:
+    name: Cross-site request forgery
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"
+    base_score: 8.8
+    rationale: >-
+      A victim with a session visits an attacker's page (UI:R) and the
+      application performs a state-changing action as them. NVD's usual
+      scoring assumes that action can change anything the victim can; lower
+      C/I/A to what the unprotected endpoint actually does.
+
+  CWE-611:
+    name: XML external entity
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+    base_score: 7.5
+    rationale: >-
+      Entity expansion that reads local files or internal URLs: a disclosure
+      by default. Add A:H if the parser is exposed to billion-laughs style
+      expansion with no limits, and consider CWE-918's vector when the
+      entities can reach internal services.
+
+  CWE-918:
+    name: Server-side request forgery
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:N"
+    base_score: 7.2
+    rationale: >-
+      The server can be made to send requests on the attacker's behalf, to
+      services the attacker cannot reach directly, which is a scope change
+      (S:C). Limited impact by default because what is reachable depends on
+      the network; a cloud metadata endpoint in reach is C:H.
+
+  CWE-502:
+    name: Deserialization of untrusted data
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    base_score: 9.8
+    rationale: >-
+      Deserializing attacker-controlled data in most runtimes is a path to
+      code execution with the component's privileges. Lower only with
+      evidence that the format cannot construct arbitrary types (a typed
+      schema, an allow-list).
+
+  CWE-287:
+    name: Improper authentication
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    base_score: 9.8
+    rationale: >-
+      Authentication that can be bypassed lets an unauthenticated caller act
+      as an authenticated one. NVD scores the class as full compromise; lower
+      C/I/A when the bypassed identity has narrow rights.
+
+  CWE-862:
+    name: Missing authorization
+    vector: "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N"
+    base_score: 8.1
+    rationale: >-
+      A signed-in user reaches data or actions meant for someone else
+      (PR:L: they need an account, not the right one). Read and write of the
+      other party's data; availability only if the unguarded action can
+      destroy. PR:N when the route needs no session at all.
+
+  CWE-200:
+    name: Exposure of sensitive information
+    vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"
+    base_score: 5.3
+    rationale: >-
+      A response discloses something it should not (a stack trace, a version,
+      an internal address): limited confidentiality. C:H when what leaks is a
+      credential or personal data; that is closer to CWE-798 or CWE-359.
+
+# The template for a capability whose findings declare no CWE, used only when
+# none of a rule's findings names a CWE above. A suggestion like any other:
+# it pre-fills, it does not score.
+by_capability:
+  secrets: CWE-798

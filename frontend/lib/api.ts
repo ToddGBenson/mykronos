@@ -57,6 +57,12 @@ export type VulnerablePackage = SupplyChainPackages["packages"][number];
 export type RepoSurfaces =
   paths["/api/dashboard/repos/{repo_id}/surfaces"]["get"]["responses"]["200"]["content"]["application/json"];
 export type Surface = RepoSurfaces["assets"][number];
+/** Rules with no published CVSS vector, and the analyst vectors proposed or
+ *  confirmed for them (TheHub #60832). */
+export type RuleVectorsPage =
+  paths["/api/dashboard/repos/{repo_id}/rule-vectors"]["get"]["responses"]["200"]["content"]["application/json"];
+export type RuleVectorRule = RuleVectorsPage["rules"][number];
+export type RuleVectorTemplate = RuleVectorsPage["templates"][number];
 /** A repository's declared process, backlog and sprint (spec 35). */
 export type ProductOwnerView =
   paths["/api/dashboard/repos/{repo_id}/product-owner"]["get"]["responses"]["200"]["content"]["application/json"];
