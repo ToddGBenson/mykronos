@@ -272,11 +272,11 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # left visible as one rather than papered over with a lane that would
     # report on nothing.
     ((THEHUB,), "ai-models", "ai"),
-    # keel's three uploading lanes (B-59330). keel's pipeline lives in keel's
-    # own repo, so these were read off the running server with
-    # `fly get-pipeline -p keel` rather than from a file here - which is why
-    # they were missing in the first place, and why nothing in this repository
-    # can check them.
+    # keel's uploading lanes (B-59330; `mykronos-sca` for #414). keel's
+    # pipeline lives in keel's own repo, so these were read off the running
+    # server with `fly get-pipeline -p keel` rather than from a file here -
+    # which is why they were missing in the first place, and why nothing in
+    # this repository can check them.
     #
     # The capability is the one each task DECLARES in its `CAPABILITY:` param,
     # not one inferred from the job name. `mykronos-atlas` is the case that
@@ -284,12 +284,17 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # `TOOL: osv-scanner` and uploads `atlas`, and a reader going by the name
     # would have guessed "sca" - which is the name of one of keel's stubs.
     #
-    # Only three of keel's 26 jobs upload anything. The other 23 are stubs and
-    # are deliberately neither mapped nor acknowledged, so they report
-    # `unknown` - see the note on `ACKNOWLEDGED_UNMAPPED_JOBS`.
+    # Only these of keel's jobs upload anything (three of 26 at B-59330, plus
+    # `mykronos-sca`). The other 23 are stubs and are deliberately neither
+    # mapped nor acknowledged, so they report `unknown` - see the note on
+    # `ACKNOWLEDGED_UNMAPPED_JOBS`.
     ((KEEL,), "mykronos-sast", "sast"),
     ((KEEL,), "mykronos-secrets", "secrets"),
     ((KEEL,), "mykronos-atlas", "atlas"),
+    # keel's `mykronos-sca` (keel#134, mykronos#414): grype, uploading `atlas`
+    # beside `mykronos-atlas`'s osv-scanner. Not the `sca` stub above -- that
+    # one still invokes nothing and still reports `unknown`.
+    ((KEEL,), "mykronos-sca", "atlas"),
 )
 
 

@@ -51,6 +51,7 @@ class AdapterSpec:
 
 def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
     from mykronos.adapters import (
+        atlas_grype,
         atlas_osv,
         cloud_generic,
         containers_trivy,
@@ -97,6 +98,12 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         AdapterSpec(
             "atlas", "osv-scanner", atlas_osv.normalize, "*.sarif", "OSV-Scanner"
         ),
+        # keel's `mykronos-sca` lane (mykronos#414, keel#134) scans with grype
+        # and uploads `atlas`. Its own tool rather than a second reading of
+        # osv-scanner's: reconciliation partitions on the tool, so a grype run
+        # saying nothing about an osv-scanner finding closes nothing -- the two
+        # databases disagree often enough that one's silence is not evidence.
+        AdapterSpec("atlas", "grype", atlas_grype.normalize, "*.sarif", "Grype"),
         # --- Bespoke: not SARIF ---
         AdapterSpec("secrets", "gitleaks", secrets_gitleaks.normalize, "*.json", "Gitleaks"),
         AdapterSpec("dast", "zap", dast_zap.normalize, "*.json", "OWASP ZAP"),
