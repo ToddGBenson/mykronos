@@ -51,6 +51,9 @@ REQUIRED_MODULES: tuple[str, ...] = (
     # reports, which is the lane going quietly back to scanning four of
     # fifteen.
     "mykronos.estate_images",
+    # #382. The same upload step stamps each published image's report with
+    # the build SHA it records, for the containers adapter to check.
+    "mykronos.image_provenance",
     # TheHub's `image-refresh` lane plans the patched-image rebuilds and
     # decides whether demo moves with it.
     "mykronos.image_refresh",
