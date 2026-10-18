@@ -18,17 +18,19 @@ thehub-branch: develop
 # boolean that would not compare equal to anything the job tests.
 thehub-oracle-blocking: 'true'
 
-registry: 192.168.0.14:5000
+registry: 192.168.65.254:5000
 prowler-version: '5.5.0'
 scan-timezone: America/Phoenix
 
 # 8002 for demo (docker-compose.demo.yml publishes "8002:8000"), 8081 for
 # staging (the nginx serving the SPA, which is where the missing security
 # headers are). Host IP throughout: a garden task container's localhost is its
-# own, not this machine's.
-thehub-demo-url: http://192.168.0.14:8002
-thehub-prod-url: http://192.168.0.14:8000
-thehub-staging-url: http://192.168.0.14:8081
+# own, not this machine's. 192.168.65.254 is Docker Desktop's host gateway,
+# which lands on this machine's loopback: these keep working once the ports
+# publish on 127.0.0.1 (TheHub #60841; see set-pipeline.ps1).
+thehub-demo-url: http://192.168.65.254:8002
+thehub-prod-url: http://192.168.65.254:8000
+thehub-staging-url: http://192.168.65.254:8081
 
 # The public hostnames, through Cloudflare, for `dast-edge` (TheHub #60708).
 # HTTPS names rather than addresses, on purpose: the point is to go out to the
@@ -39,7 +41,7 @@ thehub-public-url: https://hub.toddbenson.net
 mykronos-public-url: https://mykronos.toddbenson.net
 
 # TheHub's own API, where this pipeline reports its stages back to.
-thehub-url: http://192.168.0.14:8000
+thehub-url: http://192.168.65.254:8000
 thehub-release-bucket: thehub-releases
 
 # Headroom over a demo rebuild from empty volumes: poll interval, stack
@@ -47,6 +49,6 @@ thehub-release-bucket: thehub-releases
 # intermittently while the deploy underneath it succeeded.
 deploy-timeout-minutes: 25
 
-minio-endpoint: http://192.168.0.14:9000
-mykronos-url: http://192.168.0.14:8100
+minio-endpoint: http://192.168.65.254:9000
+mykronos-url: http://192.168.65.254:8100
 mykronos-ref: v14

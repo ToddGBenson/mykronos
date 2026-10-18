@@ -223,7 +223,7 @@ try {
         # Host IP, not a Docker name: garden task containers resolve through
         # the public servers set in compose and have never heard of `minio`.
         # Same reasoning, and the same address, as set-pipeline.ps1.
-        "minio-endpoint: http://192.168.0.14:9000",
+        "minio-endpoint: http://192.168.65.254:9000",
         "netassess-bucket: $NetassessBucket",
         "netassess-max-age-days: $MaxScanAgeDays",
         "monitor-bucket: $MonitorBucket",
@@ -238,7 +238,7 @@ try {
 
         # Reporting. Same host address as the MinIO endpoint above and for the
         # same reason: a garden task container has never heard of `mykronos`.
-        "mykronos-url: http://192.168.0.14:8100",
+        "mykronos-url: http://192.168.65.254:8100",
         # v4, cut for the pipeline standard (D-078), and the first bump made
         # *before* anything broke: pin-check named `mykronos.junit_stage` as
         # missing the moment the lanes started calling it. The two before it

@@ -186,12 +186,16 @@ services:
     volumes:
       - ${MINIO_DATA_DIR:-minio-data}:/data
     ports:
-      # 9000 is published on all interfaces because garden task containers
-      # reach it by host IP: they cannot resolve `minio`, and a loopback
-      # publish is invisible to them. Credentials are generated, never
-      # defaulted. The console stays on loopback - it has no reason to be
-      # reachable from anywhere but this machine.
-      - "9000:9000"
+      # Loopback only (TheHub #60841). Consumers of 9000: garden task
+      # containers (192.168.65.254:9000 - they cannot resolve `minio`, so they
+      # dial Docker Desktop's host gateway, which lands on this machine's
+      # loopback), and the host's own scripts on localhost:9000
+      # (Invoke-RegistryPullDeploy, publish-netassess-run,
+      # Install-PersonalSocSkills). Nothing on the LAN: the host firewall has
+      # denied 192.168.0.0/24 here since F-15. Credentials are generated,
+      # never defaulted. The console stays on loopback - it has no reason to
+      # be reachable from anywhere but this machine.
+      - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
     networks: [concourse]
     healthcheck:
@@ -209,21 +213,21 @@ services:
   # inside the LAN. A registry is a one-way handoff: Concourse can publish an
   # image, and nothing it does can restart a service.
   #
-  # Published on all interfaces because garden task containers reach it by
-  # host IP; they cannot resolve Docker service names. The host pulls via
-  # localhost:5000, which Docker treats as insecure-by-default, so no daemon
-  # configuration is required on this machine.
+  # Published on loopback only (TheHub #60841). Garden task containers cannot
+  # resolve Docker service names, so kaniko, crane and trivy reach it by IP:
+  # 192.168.65.254, Docker Desktop's host gateway, which lands on this
+  # machine's loopback. The host pulls via localhost:5000, which Docker treats
+  # as insecure-by-default, so no daemon configuration is required on this
+  # machine; measured 2026-10-18, a push and pull through localhost works
+  # against a registry published on 127.0.0.1.
   #
-  # "All interfaces" is required only from the Docker bridge subnets and
-  # loopback: every push this registry has served arrived from 172.19.0.1,
-  # the Concourse bridge gateway. It has never needed the LAN, and it has no
-  # `auth:` block, so on the LAN it took anonymous writes to tags the demo
-  # stack runs (B-054). Closed by scope rather than by bind address:
-  # `Set-RegistryScope.ps1` installs one host firewall rule denying port 5000
-  # from this machine's LAN prefix (D-109). Binding to 127.0.0.1 instead would
-  # take the build down, because the kaniko task pushes to the host's LAN
-  # address -- and denying "everything except the bridges" would too, because
-  # Windows evaluates block rules ahead of allow rules.
+  # It has never needed the LAN, and it has no `auth:` block, so on the LAN it
+  # took anonymous writes to tags the demo stack runs (B-054). That was first
+  # closed by scope - `Set-RegistryScope.ps1` installs a host firewall rule
+  # denying port 5000 from this machine's LAN prefix (D-109) - because the
+  # kaniko task then pushed to the host's LAN address and a loopback bind
+  # would have taken the build down. With the pipelines on the host gateway,
+  # the bind closes it too; the firewall rule stays as the second layer.
   #
   # registry:3, not registry:2: upstream stopped rebuilding the 2 line in 2023,
   # and Trivy finds 71 fixable CVEs in it (2 critical) against 4 in 3.1.2.
@@ -257,7 +261,9 @@ services:
       REGISTRY_STORAGE_DELETE_ENABLED: "false"
       REGISTRY_LOG_LEVEL: info
     ports:
-      - "5000:5000"
+      # Consumers: Concourse tasks (192.168.65.254:5000), the host's
+      # registry-pull deploy and every stack that runs localhost:5000/*.
+      - "127.0.0.1:5000:5000"
     volumes:
       - registry-data:/var/lib/registry
     networks: [concourse]

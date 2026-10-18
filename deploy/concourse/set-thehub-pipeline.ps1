@@ -109,14 +109,17 @@ param(
     # 8002, not 8200: docker-compose.demo.yml publishes "8002:8000" and that is
     # what thehub-demo-backend is bound to. The host IP rather than localhost
     # because a garden task container's localhost is its own, not this machine's.
-    [string]$DemoUrl = "http://192.168.0.14:8002",
-    [string]$ProdUrl = "http://192.168.0.14:8000",
+    # 192.168.65.254 (Docker Desktop's host gateway, which lands on this
+    # machine's loopback) rather than the LAN address, so these ports can
+    # publish on 127.0.0.1 (TheHub #60841; see set-pipeline.ps1).
+    [string]$DemoUrl = "http://192.168.65.254:8002",
+    [string]$ProdUrl = "http://192.168.65.254:8000",
     # The standing staging environment, which nothing scanned until 2026-09-03.
     # 8081, not 8009: thehub-staging-frontend is the nginx that serves the SPA
     # and is where the missing security headers are - the backend on 8009 sets
     # its own. Deployed out of band by TheHub's deploy.sh, so `dast-staging`
     # runs on the daily timer rather than after a deploy job.
-    [string]$StagingUrl = "http://192.168.0.14:8081",
+    [string]$StagingUrl = "http://192.168.65.254:8081",
     # The public hostnames `dast-edge` scans through Cloudflare (TheHub #60708).
     # Names, not addresses: the edge and the tunnel are what is under test.
     [string]$PublicUrl = "https://hub.toddbenson.net",
@@ -127,7 +130,7 @@ param(
     # story-lifecycle processes. The prod backend, by host IP for the same
     # reason as everything else here: a garden task container's localhost is
     # its own.
-    [string]$TheHubUrl = "http://192.168.0.14:8000",
+    [string]$TheHubUrl = "http://192.168.65.254:8000",
     # TheHub's .env, which holds OPS_DEPLOY_TOKEN - the shared secret its
     # scripts/deploy.sh already presents to the same endpoint. Read rather
     # than duplicated, so rotating it there rotates it here.
@@ -155,7 +158,7 @@ param(
     # remains.
     [int]$DeployTimeoutMinutes = 25,
 
-    [string]$Registry = "192.168.0.14:5000",
+    [string]$Registry = "192.168.65.254:5000",
     [string]$ProwlerVersion = "5.5.0",
     [string]$TimeZone = "America/Phoenix",
 
@@ -444,7 +447,7 @@ $varsFile = Join-Path ([System.IO.Path]::GetTempPath()) "thehub-vars-$(Get-Rando
 $tempConfig = $null
 try {
     $vars = @(
-        "mykronos-url: http://192.168.0.14:8100",
+        "mykronos-url: http://192.168.65.254:8100",
         # v4, cut for the pipeline standard (D-078), and the first bump made
         # *before* anything broke: pin-check named `mykronos.junit_stage` as
         # missing the moment the lanes started calling it. The two before it
@@ -520,7 +523,7 @@ try {
         # Host IP, not a Docker name: garden task containers resolve through the
         # public servers set in compose and have never heard of `minio`. Same
         # address, and the same reason, as the other two set-pipeline scripts.
-        "minio-endpoint: http://192.168.0.14:9000",
+        "minio-endpoint: http://192.168.65.254:9000",
         "azure-client-id: $azureClientId",
         "azure-client-secret: $azureClientSecret",
         "azure-tenant-id: $azureTenantId",
