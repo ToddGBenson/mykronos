@@ -15,7 +15,7 @@ mykronos-url: http://192.168.65.254:8100
 
 # The pinned uploader tag. `pin-check` is what notices when it goes stale;
 # moving it means moving it in set-pipeline.ps1 and here, in one commit.
-mykronos-ref: v14
+mykronos-ref: v15
 
 # The branch every upload reports (PS-6), rather than each lane naming the
 # default branch as a literal.
