@@ -427,6 +427,48 @@ class TestTheWorkflow:
             mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
         ).content
 
+    def test_the_scan_run_and_the_archived_sbom_share_one_id(self, rendered: str) -> None:
+        """#13: the SBOM was archived under the workflow run id while the
+        uploader minted its own UUID for the ScanRun, so the raw evidence and
+        the run it belongs to never joined."""
+        assert "scan_run_id=${{ github.run_id }}" in rendered
+        upload = rendered.split("uses: example-org/repo/actions/upload-results@v1", 1)[1]
+        upload = upload.split("\n      - name:", 1)[0]
+        assert "\n          scan-run-id: ${{ github.run_id }}\n" in upload
+
+    def test_only_atlas_pins_the_scan_run_id(self) -> None:
+        """Every other lane keeps a fresh UUID per run: nothing else archives
+        under the run id, and two lanes of one workflow run sharing an id
+        would be one ScanRun."""
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        library = TemplateLibrary(get_settings().workflow_templates_dir)
+        for capability in sorted(library.available - {"atlas"}):
+            content = library.render(
+                capability,
+                repo_full_name="example-org/repo",
+                default_branch="main",
+                ingestion_api_url="https://example.invalid",
+                token_secret_name="MYKRONOS_INGESTION_TOKEN",
+                upload_action_ref="example-org/repo/actions/upload-results@v1",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+                config={"command": "true"},
+            ).content
+            assert "scan-run-id:" not in content, capability
+
+    def test_the_upload_action_forwards_the_scan_run_id(self) -> None:
+        from mykronos.config import get_settings
+
+        action = (
+            get_settings().workflow_templates_dir.parent
+            / "actions"
+            / "upload-results"
+            / "action.yml"
+        ).read_text(encoding="utf-8")
+        assert "SCAN_RUN_ID: ${{ inputs.scan-run-id }}" in action
+        assert '--scan-run-id "$SCAN_RUN_ID"' in action
+
     def test_the_sbom_documents_the_repo_not_the_runner(self, rendered: str) -> None:
         """`cyclonedx-py environment` documents the interpreter the workflow
         is running in — which by that point holds mykronos and osv-scanner,

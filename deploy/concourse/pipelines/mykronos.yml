@@ -425,6 +425,11 @@ anchors:
   # GitHub composite action installs, then call the same uploader. The logic
   # lives in `mykronos.upload`, not in the action (DECISIONS D-012), which is
   # the entire reason a second CI system costs almost nothing here.
+  # [#449] Not here: MYKRONOS_JOB. The job name differs per job and an anchor
+  # cannot know it, so every upload line sets it inline instead --
+  # `MYKRONOS_JOB=<job> python -m mykronos.upload ...` -- and the uploader
+  # records it on the ScanRun. An env var rather than `--job`, so an uploader
+  # pinned at an older MYKRONOS_REF ignores it instead of failing to parse.
   mykronos_env: &mykronos_env
     MYKRONOS_URL: ((mykronos-url))
     MYKRONOS_TOKEN: ((mykronos-ingestion-token))
@@ -777,7 +782,7 @@ jobs:
                 # commit_sha with a 422, and `|| true` swallowed it. The
                 # stages cross-check reported unit as never_reported, which
                 # is how this was found.
-                python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+                MYKRONOS_JOB=unit python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
 
                 exit "$rc"
 
@@ -858,7 +863,7 @@ jobs:
                 # coverage this is. The adapter rglobs the results directory
                 # and merges both files into one run (spec 31 §4), so the
                 # figure lands on the lane a person reads it against.
-                python -m mykronos.upload \
+                MYKRONOS_JOB=coverage python -m mykronos.upload \
                   --capability unit --tool junit \
                   --results-path ../../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -956,7 +961,7 @@ jobs:
                   --case "mypy:${rc_mypy}:/tmp/mypy.txt"
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=lint-and-types python -m mykronos.upload \
                   --capability qa --tool junit \
                   --results-path ../../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1015,7 +1020,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+                MYKRONOS_JOB=qa-spec-links python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
 
                 # The QA result decides the job, and it is reported either
                 # way: "the links are broken" and "nothing told us anything"
@@ -1174,7 +1179,7 @@ jobs:
                     --case "build:$(rc_of build):verdict/build.txt"
 
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=frontend python -m mykronos.upload \
                     --capability qa --tool junit \
                     --results-path results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1275,7 +1280,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=secrets python -m mykronos.upload \
                   --capability secrets --tool gitleaks \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1389,7 +1394,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=dependencies python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1620,7 +1625,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false
+                MYKRONOS_JOB=ai python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false
 
                 # Reported first, then surfaced. The AI checks decide the job.
                 exit "$rc"
@@ -1701,7 +1706,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=sast python -m mykronos.upload \
                   --capability sast --tool semgrep \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1859,7 +1864,7 @@ jobs:
                     pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                     python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                     cd source
-                    python -m mykronos.upload \
+                    MYKRONOS_JOB=sast python -m mykronos.upload \
                       --capability sast --tool psscriptanalyzer \
                       --results-path ../results \
                       --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -2180,7 +2185,7 @@ jobs:
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
                     --results-path results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3097,12 +3102,7 @@ jobs:
                   # findings are listed but not scored.
                   PYTHONPATH="$PWD/source/backend" python -m mykronos.estate_images \
                     --root source --output /dev/null --annotate results
-                  # #382: stamp each published image's report with the build
-                  # SHA it records, so the adapter can report an image that
-                  # records none apart from one that records the wrong one.
-                  PYTHONPATH="$PWD/source/backend" python -m mykronos.image_provenance \
-                    --annotate results
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=containers python -m mykronos.upload \
                     --capability containers --tool trivy \
                     --results-path results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3624,7 +3624,7 @@ jobs:
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
-                python -m mykronos.upload \
+                MYKRONOS_JOB=demo-and-dast python -m mykronos.upload \
                   --capability functional --tool junit \
                   --results-path ../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3633,7 +3633,7 @@ jobs:
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false || true
 
-                python -m mykronos.upload \
+                MYKRONOS_JOB=demo-and-dast python -m mykronos.upload \
                   --capability dast --tool zap \
                   --results-path ../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \

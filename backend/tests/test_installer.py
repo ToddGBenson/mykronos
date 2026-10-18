@@ -35,6 +35,7 @@ from mykronos.installer import (
     WorkflowInstaller,
 )
 from mykronos.installer.installer import _gate_depends_on
+from tests.test_action_pins import INIT, NEW_SHA, OLD_SHA, _bump, _repin, _template_pin
 
 REPO = "example-org/payments-api"
 SAST_PATH = ".github/workflows/mykronos-sast.yml"
@@ -79,6 +80,9 @@ def onboarding(session: Session) -> RepoOnboarding:
         enabled_capabilities=[],
         default_branch="main",
         onboarded_by="tgb",
+        # Explicit: the column defaults to `concourse` (spec 03 §3a), and the
+        # installer refuses to write Actions workflows into such a repo (#13).
+        scanned_by="github_actions",
     )
     session.add(row)
     session.flush()
@@ -786,3 +790,84 @@ class TestGateOrdering:
         from mykronos.installer.installer import _gate_depends_on
 
         assert _gate_depends_on("sast", ["sast", "oracle"]) == []
+
+
+class TestActionPins:
+    """#376: an install never moves a pinned action backwards."""
+
+    @pytest.mark.anyio
+    async def test_target_newer_pin_survives_a_config_change_and_is_reported(
+        self, installer, github, onboarding, session, registry
+    ) -> None:
+        """The keel sequence: Dependabot bumps CodeQL, then a config change
+        re-renders the workflow."""
+        await already_enabled(installer, github, onboarding, "sast")
+        repo = github.repos[REPO]
+        _, template_version = _template_pin(repo.files[SAST_PATH])
+        newer = _bump(template_version, +1)
+        bumped = _repin(repo.files[SAST_PATH], INIT, NEW_SHA, newer)
+        repo.files[SAST_PATH] = repo.branches["main"][SAST_PATH] = bumped
+
+        plan = await installer.plan(
+            onboarding, {"sast"}, configs={"sast": {"languages": ["python"]}}
+        )
+
+        written = next(c.content for c in plan.changes if c.path == SAST_PATH)
+        assert written is not None
+        assert _template_pin(written) == (NEW_SHA, newer)
+        assert [(d.action, d.target_version) for d in plan.pins_kept] == [(INIT, newer)]
+
+        result = await installer.apply(session, onboarding, plan, actor="tgb", registry=registry)
+        body = github.pull_request_bodies[result.pull_request.number]
+        assert "Action pins kept at this repository's version" in body
+        assert newer in body and template_version in body
+
+    @pytest.mark.anyio
+    async def test_a_file_ahead_only_by_its_pins_is_not_a_change(
+        self, installer, github, onboarding
+    ) -> None:
+        """Otherwise every save would reopen a pull request whose only diff is
+        the downgrade."""
+        await already_enabled(installer, github, onboarding, "sast")
+        repo = github.repos[REPO]
+        _, template_version = _template_pin(repo.files[SAST_PATH])
+        bumped = _repin(repo.files[SAST_PATH], INIT, NEW_SHA, _bump(template_version, +1))
+        repo.files[SAST_PATH] = repo.branches["main"][SAST_PATH] = bumped
+
+        plan = await installer.plan(onboarding, {"sast"})
+
+        assert plan.is_noop
+        assert len(plan.pins_kept) == 1
+
+    @pytest.mark.anyio
+    async def test_template_newer_pin_is_applied(
+        self, installer, github, onboarding
+    ) -> None:
+        await already_enabled(installer, github, onboarding, "sast")
+        repo = github.repos[REPO]
+        template_sha, template_version = _template_pin(repo.files[SAST_PATH])
+        stale = _repin(repo.files[SAST_PATH], INIT, OLD_SHA, _bump(template_version, -1))
+        repo.files[SAST_PATH] = repo.branches["main"][SAST_PATH] = stale
+
+        plan = await installer.plan(onboarding, {"sast"})
+
+        written = next(c.content for c in plan.changes if c.path == SAST_PATH)
+        assert _template_pin(written) == (template_sha, template_version)
+        assert plan.pins_kept == []
+
+    @pytest.mark.anyio
+    async def test_an_unparseable_target_version_keeps_the_target_pin(
+        self, installer, github, onboarding
+    ) -> None:
+        await already_enabled(installer, github, onboarding, "sast")
+        repo = github.repos[REPO]
+        odd = _repin(repo.files[SAST_PATH], INIT, NEW_SHA, "nightly")
+        repo.files[SAST_PATH] = repo.branches["main"][SAST_PATH] = odd
+
+        plan = await installer.plan(
+            onboarding, {"sast"}, configs={"sast": {"languages": ["python"]}}
+        )
+
+        written = next(c.content for c in plan.changes if c.path == SAST_PATH)
+        assert f"{INIT}@{NEW_SHA}" in written
+        assert [d.target_version for d in plan.pins_kept] == ["nightly"]

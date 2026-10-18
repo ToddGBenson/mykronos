@@ -22,6 +22,13 @@ semver bump is a bad afternoon for everybody.
 repository at once would be indistinguishable from an incident. The limit is a
 parameter, defaults low, and what was skipped is reported rather than dropped
 — an unreported cap reads as "everything is up to date".
+
+**It only touches repositories scanned by Actions** (#13, spec 03 §3a). A
+repository whose `scanned_by` is `concourse` or `none` has no Actions
+workflows for Mykronos to keep current, and restoring them is worse than
+useless: keel ported its scans to Concourse, and a resync putting the Actions
+files back would have both builders scan and ingest every commit. Those
+repositories are skipped and named in the result, never silently dropped.
 """
 
 from __future__ import annotations
@@ -37,12 +44,26 @@ from mykronos.db.models import RepoOnboarding
 from mykronos.github.client import FileChange, GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.installer.installer import BRANCH_PREFIX, capability_configs
+from mykronos.installer.pins import PinDecision, kept, reconcile_pins
 from mykronos.installer.templates import TemplateLibrary
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
 
 RESYNC_BRANCH_PREFIX = "mykronos/resync-"
+
+#: The only `scanned_by` value whose repositories carry Mykronos-rendered
+#: Actions workflows (spec 03 §3a).
+ACTIONS = "github_actions"
+
+
+def not_actions_reason(repo_id: str, scanned_by: str) -> str:
+    """Why a repository was skipped, and the one call that changes it."""
+    return (
+        f"skipped: scanned by {scanned_by!r}, so Mykronos writes no GitHub "
+        "Actions workflows here (spec 03 §3a). If it should, set "
+        f'PATCH /api/repos/{repo_id} {{"scanned_by": "github_actions"}}.'
+    )
 
 
 @dataclass
@@ -53,6 +74,36 @@ class RepoResync:
     pull_request_url: str | None = None
     skipped_reason: str | None = None
     error: str | None = None
+    #: The template version each file was compared against, by path. Stated
+    #: so a report reads "compared with sast template 1.4.2", not just
+    #: "drifted" - the first question about a resync is which template it
+    #: thought was current (#376).
+    template_versions: dict[str, str] = field(default_factory=dict)
+    #: Pinned actions this repository holds at a newer release than the
+    #: template, left at the repository's pin rather than downgraded (#376).
+    pins_kept: list[PinDecision] = field(default_factory=list)
+
+    def note(self) -> str:
+        """One line for the operator: which templates, and any pin kept."""
+        parts = []
+        if self.template_versions:
+            parts.append(
+                "compared with template "
+                + ", ".join(
+                    f"{path.rsplit('/', 1)[-1]} v{version}"
+                    for path, version in sorted(self.template_versions.items())
+                )
+            )
+        if self.pins_kept:
+            parts.append(
+                f"kept {len(self.pins_kept)} newer action pin(s): "
+                + "; ".join(
+                    f"{d.action} {d.target_version or '(unversioned)'} "
+                    f"(template {d.template_version})"
+                    for d in self.pins_kept
+                )
+            )
+        return "; ".join(parts)
 
     @property
     def opened(self) -> bool:
@@ -67,6 +118,10 @@ class ResyncResult:
     #: Repos that drifted but were past the run's limit. Named rather than
     #: counted, so the next run's operator knows who is still waiting.
     deferred: list[str] = field(default_factory=list)
+    #: Repos not scanned by Actions, so never written to (#13). Named for the
+    #: same reason: a repository missing from a sweep with no explanation
+    #: reads as covered.
+    not_actions: list[str] = field(default_factory=list)
 
     @property
     def opened(self) -> list[RepoResync]:
@@ -76,6 +131,7 @@ class ResyncResult:
         return (
             f"checked {self.checked}, up to date {self.up_to_date}, "
             f"opened {len(self.opened)}, deferred {len(self.deferred)}, "
+            f"not Actions-scanned {len(self.not_actions)}, "
             f"errors {sum(1 for r in self.repos if r.error)}"
         )
 
@@ -106,9 +162,12 @@ async def resync_templates(
     default gets wrong. A workflow this repository *deliberately deleted*
     reads as drift — `get_file` returns None, and None is not equal to the
     rendered content — so an unfiltered sweep would open a pull request
-    restoring it. Spec 16 §4 removed this repository's Actions on purpose;
-    the resync has no way to tell that from a file somebody lost, so the
-    operator has to.
+    restoring it. Spec 16 §4 removed this repository's Actions on purpose.
+
+    For a repository that moved to another CI the resync now can tell: it
+    reads `scanned_by` and skips anything that is not `github_actions` (#13).
+    `repos` remains for the other case — an Actions repository that dropped
+    one workflow deliberately.
     """
     stamp = now or utcnow()
     result = ResyncResult()
@@ -116,7 +175,8 @@ async def resync_templates(
     with db.session() as session:
         targets = [
             (row.id, row.github_repo_full_name, row.github_installation_id,
-             row.default_branch, list(row.enabled_capabilities or []))
+             row.default_branch, list(row.enabled_capabilities or []),
+             row.scanned_by)
             for row in session.execute(
                 select(RepoOnboarding)
                 .where(RepoOnboarding.status == "active")
@@ -125,10 +185,20 @@ async def resync_templates(
             if row.enabled_capabilities
         ]
 
-    for repo_id, repo, installation_id, default_branch, enabled in targets:
+    for repo_id, repo, installation_id, default_branch, enabled, scanned_by in targets:
         if repos is not None and repo not in repos:
             continue
         result.checked += 1
+        if scanned_by != ACTIONS:
+            # Before any GitHub call: nothing here is ours to compare.
+            result.not_actions.append(repo)
+            result.repos.append(
+                RepoResync(
+                    repo_full_name=repo,
+                    skipped_reason=not_actions_reason(repo_id, scanned_by),
+                )
+            )
+            continue
         wanted = sorted(
             c for c in enabled
             if c in templates.available and (capabilities is None or c in capabilities)
@@ -148,6 +218,7 @@ async def resync_templates(
                 )
 
             changes = await _drifted_files(
+                entry,
                 github,
                 templates,
                 repo,
@@ -170,6 +241,11 @@ async def resync_templates(
 
         if not changes:
             result.up_to_date += 1
+            if entry.pins_kept:
+                # Up to date only because a stale template pin was not
+                # applied. Still reported: it is the template that needs
+                # fixing, and silence would hide that.
+                result.repos.append(entry)
             continue
 
         entry.drifted = sorted(change.path for change in changes)
@@ -204,6 +280,7 @@ async def resync_templates(
 
 
 async def _drifted_files(
+    entry: RepoResync,
     github: object,
     templates: TemplateLibrary,
     repo: str,
@@ -222,6 +299,11 @@ async def _drifted_files(
     version string (spec 03 §6). A hand-edited workflow advertises a version
     it no longer matches, so trusting the header would skip precisely the
     repository most in need of the sweep.
+
+    The comparison is against the rendered template *after* pin
+    reconciliation (#376): a pin the repository holds at a newer release is
+    kept, so a repository ahead of a stale template is not drift, and a file
+    differing only by such a pin opens nothing.
     """
     from mykronos.installer.installer import _gate_depends_on
 
@@ -239,14 +321,18 @@ async def _drifted_files(
             gate_depends_on=_gate_depends_on(capability, wanted),
         )
         current = await github.get_file(repo, rendered.path, default_branch)  # type: ignore[attr-defined]
+        entry.template_versions[rendered.path] = rendered.version
+
+        content, decisions = reconcile_pins(rendered.path, rendered.content, current)
+        entry.pins_kept.extend(kept(decisions))
 
         # Newline normalisation only. A repository checked out on Windows can
         # hold CRLF for a file we rendered with LF, and opening a pull request
         # whose entire diff is line endings would train people to ignore these.
-        if current is not None and current.replace("\r\n", "\n") == rendered.content:
+        if current is not None and current.replace("\r\n", "\n") == content:
             continue
 
-        changes.append(FileChange(path=rendered.path, content=rendered.content))
+        changes.append(FileChange(path=rendered.path, content=content))
     return changes
 
 
@@ -300,13 +386,17 @@ async def _open_resync_pr(
         head=branch,
         base=default_branch,
         title="Mykronos: resync workflow templates",
-        body=_body(changes, templates),
+        body=_body(changes, templates, entry.pins_kept),
     )
     entry.pull_request_number = pull_request.number
     entry.pull_request_url = pull_request.url
 
 
-def _body(changes: list[FileChange], templates: TemplateLibrary) -> str:
+def _body(
+    changes: list[FileChange],
+    templates: TemplateLibrary,
+    pins_kept: list[PinDecision] | None = None,
+) -> str:
     lines = [
         "## Workflow template resync",
         "",
@@ -327,6 +417,19 @@ def _body(changes: list[FileChange], templates: TemplateLibrary) -> str:
         )
         version = templates.spec(capability).version if capability != "?" else "?"
         lines.append(f"| `{change.path}` | {version} |")
+
+    if pins_kept:
+        lines += [
+            "",
+            "### Action pins kept at this repository's version",
+            "",
+            "This repository already runs these actions at a release the "
+            "template does not know to be older, so this resync leaves them "
+            "where they are rather than moving them backwards. Each one is a "
+            "stale template pin in Mykronos.",
+            "",
+        ]
+        lines += [f"- {decision.describe()}" for decision in pins_kept]
 
     lines += [
         "",

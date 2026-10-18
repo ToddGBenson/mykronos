@@ -22,7 +22,7 @@ with 403, which is the correct signal that the PR is still outstanding.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ from mykronos.db.models import CapabilityConfig, RepoOnboarding, WorkflowInstall
 from mykronos.github.client import FileChange, GitHubClient, PullRequest
 from mykronos.github.secrets import seal_secret
 from mykronos.installer.extra_lanes import lanes_for
+from mykronos.installer.pins import PinDecision, kept, reconcile_pins
 from mykronos.installer.templates import (
     RenderedWorkflow,
     TemplateLibrary,
@@ -126,6 +127,12 @@ class InstallPlan:
     #: The open PR this request matched, when `already_pending`.
     pending_pr_number: int | None = None
 
+    #: Pinned actions where the repository already runs a newer release than
+    #: the template, so the repository's pin was written instead (#376). Named
+    #: in the pull request body: each one is a stale template, and a person
+    #: should hear about it rather than have it silently papered over.
+    pins_kept: list[PinDecision] = field(default_factory=list)
+
     def describe(self) -> str:
         parts = []
         if self.added:
@@ -176,6 +183,18 @@ class WorkflowInstaller:
         configs: dict[str, dict[str, object]] | None = None,
     ) -> InstallPlan:
         """Compute the diff and stage file changes. Writes nothing."""
+        if onboarding.scanned_by != "github_actions":
+            # The API never calls the installer for these (spec 03 §3a); this
+            # is the backstop for any caller that forgets. Writing Actions
+            # workflows into a repository another CI scans makes both scan and
+            # ingest every commit (#13).
+            raise InstallerError(
+                f"{onboarding.github_repo_full_name} is scanned by "
+                f"{onboarding.scanned_by!r}, so Mykronos installs no GitHub "
+                "Actions workflows into it (spec 03 §3a). If that is wrong, "
+                f'PATCH /api/repos/{onboarding.id} {{"scanned_by": '
+                '"github_actions"} first.'
+            )
         unknown = requested - self.templates.available
         if unknown:
             raise InstallerError(
@@ -253,9 +272,10 @@ class WorkflowInstaller:
                 config=configs.get(capability, {}),
                 gate_depends_on=_gate_depends_on(capability, enabled_after),
             )
+            current = await self._existing_file(onboarding, rendered.path, baseline)
+            rendered = self._without_downgrades(plan, rendered, current)
             plan.rendered.append(rendered)
 
-            current = await self._existing_file(onboarding, rendered.path, baseline)
             if current != rendered.content:
                 if capability not in plan.added:
                     plan.updated.append(capability)
@@ -282,8 +302,10 @@ class WorkflowInstaller:
                     config=configs.get(capability, {}),
                     gate_depends_on=_gate_depends_on(capability, enabled_after),
                 )
+                lane_current = await self._existing_file(onboarding, lane.path, baseline)
+                lane = self._without_downgrades(plan, lane, lane_current)
                 plan.rendered.append(lane)
-                if await self._existing_file(onboarding, lane.path, baseline) == lane.content:
+                if lane_current == lane.content:
                     continue
                 if capability not in plan.added and capability not in plan.updated:
                     plan.updated.append(capability)
@@ -317,6 +339,16 @@ class WorkflowInstaller:
                 plan.pending_pr_number = existing_pr.number
 
         return plan
+
+    @staticmethod
+    def _without_downgrades(
+        plan: InstallPlan, rendered: RenderedWorkflow, current: str | None
+    ) -> RenderedWorkflow:
+        """`rendered`, with any pin the repository holds at a newer release
+        left at the repository's (#376, see `installer.pins`)."""
+        content, decisions = reconcile_pins(rendered.path, rendered.content, current)
+        plan.pins_kept.extend(kept(decisions))
+        return replace(rendered, content=content) if content != rendered.content else rendered
 
     async def _existing_file(
         self, onboarding: RepoOnboarding, path: str, ref: str
@@ -517,6 +549,19 @@ class WorkflowInstaller:
                 f"longer matches the configuration held in Mykronos "
                 f"(`{spec.target}`, template v{spec.version})"
             )
+        if plan.pins_kept:
+            lines += [
+                "",
+                "### Action pins kept at this repository's version",
+                "",
+                "This repository already runs these actions at a release the "
+                "Mykronos template does not know to be older, so the template "
+                "has not moved them backwards. Each line is a stale template "
+                "pin, worth bumping in Mykronos; until then this repository "
+                "keeps its own.",
+                "",
+            ]
+            lines += [f"- {decision.describe()}" for decision in plan.pins_kept]
         lines += [
             "",
             "### What happens when you merge",

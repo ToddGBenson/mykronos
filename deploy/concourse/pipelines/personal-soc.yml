@@ -922,7 +922,7 @@ jobs:
                 else
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=secrets python -m mykronos.upload \
                     --capability secrets --tool gitleaks \
                     --results-path /tmp/results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1049,7 +1049,7 @@ jobs:
                   echo "=================================================="
                 else
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
                     --results-path /tmp/results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1391,7 +1391,7 @@ jobs:
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   cd source
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=lint python -m mykronos.upload \
                     --capability sast --tool psscriptanalyzer \
                     --results-path ../results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -1818,7 +1818,7 @@ jobs:
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   cd source
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=functional python -m mykronos.upload \
                     --capability functional --tool junit \
                     --results-path ../results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \

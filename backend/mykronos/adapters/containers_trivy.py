@@ -21,21 +21,41 @@ base image and it is not".
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
+import sys
+from pathlib import Path
+from typing import Any
 
 from mykronos import image_provenance
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
-from mykronos.image_provenance import RULE_ABSENT, RULE_MISMATCH
-from mykronos.schemas import FindingSubmission, Severity
+from mykronos.fingerprint import image_repository
 
 logger = logging.getLogger(__name__)
 
 _PACKAGE = re.compile(r"^Package:\s*(?P<name>\S+)\s*$", re.MULTILINE)
 _INSTALLED = re.compile(r"^Installed Version:\s*(?P<version>\S+)\s*$", re.MULTILINE)
 _FIXED = re.compile(r"^Fixed Version:\s*(?P<version>\S+)\s*$", re.MULTILINE)
+
+#: The run property `annotate_base_os` writes: Trivy JSON's `Metadata.OS`,
+#: verbatim -- `{"Family": "debian", "Name": "10.13", "EOSL": true}`.
+#:
+#: Why a stamp rather than a parse. Trivy's SARIF has no OS block at all (its
+#: run properties are imageID, imageName, repoDigests, repoTags; checked
+#: against Trivy 0.73.0), and its JSON report does. `EOSL` is the field Trivy
+#: sets when the distribution release is past its end of service life, and it
+#: omits the key when it is not -- so an absent key reads as "not known to be
+#: EOL", never as "EOL". No release table is kept here: Trivy already ships
+#: one, and a second copy would disagree with it the day either went stale.
+OS_PROPERTY = "trivyOs"
+
+#: Tag on `raw_finding_json` for a finding no package update will ever close
+#: (mykronos#712). Distinct from an empty `fixed_version`, which means "no fix
+#: yet" and is what `no_vendor_fix` acceptances wait on.
+BASE_OS_EOL = "base_os_eol"
 
 
 def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
@@ -48,6 +68,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     outcome = sarif_to_findings(raw_output, context, warn_degraded=False)
     image = _image_name(raw_output)
     role = _image_role(raw_output)
+    eol_base = _eol_base_os(raw_output) if image is not None else None
     if outcome.findings and image is None:
         outcome.warn(
             "The Trivy report names no single image (runs[].properties.imageName), "
@@ -56,6 +77,7 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         )
 
     enriched = 0
+    eol_findings = 0
     for finding in outcome.findings:
         text = finding.description or ""
 
@@ -89,6 +111,32 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
         # anything else, or nothing, leaves the finding counting as before.
         if role == "tool" and isinstance(finding.raw_finding_json, dict):
             finding.raw_finding_json["image_role"] = "tool"
+
+        # #712: an OS package with no fixed version, on a distribution release
+        # past end of service life, will never get one. Filing it with the
+        # "no fix yet" findings sends it to a `no_vendor_fix` acceptance whose
+        # premise -- re-open when a vendor ships -- cannot come true. Only OS
+        # packages: a language package in the same image has its own upstream,
+        # which the base OS's end of life says nothing about.
+        raw = finding.raw_finding_json
+        if (
+            eol_base is not None
+            and image is not None
+            and isinstance(raw, dict)
+            and not str(raw.get("fixed_version") or "").strip()
+            and _is_os_package(finding.file_path, image)
+        ):
+            raw[BASE_OS_EOL] = True
+            raw["base_os"] = eol_base
+            eol_findings += 1
+
+    if eol_findings:
+        outcome.warn(
+            f"{image} is built on {eol_base}, which is end-of-life: {eol_findings} "
+            "finding(s) will never get a package fix. Rebuild it on a supported base "
+            "image (usually a newer major tag upstream); a `no_vendor_fix` acceptance "
+            "would wait for a vendor that will not ship (#712)."
+        )
 
     if outcome.findings and not enriched:
         outcome.warn(
@@ -217,3 +265,94 @@ def _image_name(raw_output: bytes) -> str | None:
     }
     names.discard("")
     return names.pop() if len(names) == 1 else None
+
+
+def _is_os_package(file_path: str | None, image: str) -> bool:
+    """Whether a result is about an OS package rather than a file in the image.
+
+    Trivy locates an OS-package result at the image's repository
+    (`library/debian` for `debian:buster-slim`) and a language package or
+    binary at a path inside the image (`usr/local/bin/gosu`). The repository
+    is compared in `image_repository`'s form, the same one the fingerprint
+    already relies on matching Trivy's.
+    """
+    if not file_path:
+        return False
+    return image_repository(file_path) == image_repository(image)
+
+
+def _eol_base_os(raw_output: bytes) -> str | None:
+    """`"debian 10.13"` when the report's OS is end-of-life, else None.
+
+    Read from `properties.trivyOs` (see `OS_PROPERTY`) -- Trivy JSON's
+    `Metadata.OS`. Absent, or `EOSL` anything but `true`, is None: the only
+    evidence of an end of life accepted here is Trivy saying so.
+    """
+    try:
+        document = json.loads(raw_output)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    runs = document.get("runs") if isinstance(document, dict) else None
+    if not isinstance(runs, list):
+        return None
+    for run in runs:
+        properties = run.get("properties") if isinstance(run, dict) else None
+        os_block = properties.get(OS_PROPERTY) if isinstance(properties, dict) else None
+        if isinstance(os_block, dict) and os_block.get("EOSL") is True:
+            name = f"{os_block.get('Family') or ''} {os_block.get('Name') or ''}".strip()
+            return name or "an end-of-life OS"
+    return None
+
+
+def annotate_base_os(sarif: dict[str, Any], trivy_report: dict[str, Any]) -> bool:
+    """Copy a Trivy JSON report's `Metadata.OS` onto the matching SARIF run.
+
+    Matched on the image name (SARIF `properties.imageName`, JSON
+    `ArtifactName`), so a directory of reports cannot cross-stamp. Returns
+    whether anything was written. A JSON report with no OS block -- a
+    distroless or scratch image -- writes nothing, which reads downstream as
+    "not known to be end-of-life".
+    """
+    os_block = (trivy_report.get("Metadata") or {}).get("OS")
+    artifact = str(trivy_report.get("ArtifactName") or "").strip()
+    if not isinstance(os_block, dict) or not artifact:
+        return False
+    written = False
+    for run in sarif.get("runs") or []:
+        properties = run.get("properties") if isinstance(run, dict) else None
+        if not isinstance(properties, dict):
+            continue
+        if str(properties.get("imageName") or "").strip() == artifact:
+            properties[OS_PROPERTY] = dict(os_block)
+            written = True
+    return written
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m mykronos.adapters.containers_trivy --sarif X --trivy-json Y`.
+
+    For a containers lane that wants base-OS end-of-life on its findings:
+    scan once with `--format json`, `trivy convert --format sarif` from it,
+    then stamp the SARIF with this before uploading.
+    """
+    parser = argparse.ArgumentParser(
+        prog="python -m mykronos.adapters.containers_trivy",
+        description="Stamp Trivy JSON's Metadata.OS onto the matching SARIF run (#712).",
+    )
+    parser.add_argument("--sarif", required=True, type=Path)
+    parser.add_argument("--trivy-json", required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        sarif = json.loads(args.sarif.read_text(encoding="utf-8"))
+        report = json.loads(args.trivy_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        # Never fails the lane: the findings are worth more than the stamp.
+        print(f"base-OS stamp skipped: {exc}", file=sys.stderr)
+        return 0
+    if annotate_base_os(sarif, report):
+        args.sarif.write_text(json.dumps(sarif), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

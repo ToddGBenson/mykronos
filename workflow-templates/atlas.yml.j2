@@ -62,6 +62,11 @@
 {% block job_name %}Supply chain{% endblock %}
 {% block tool_name %}osv-scanner{% endblock %}
 {% block results_path %}${{ runner.temp }}/mykronos-results{% endblock %}
+{#- The SBOM is archived under `scan_run_id=github.run_id` below; without this
+    the ScanRun got a fresh UUID and the two never matched (#13). #}
+{% block upload_extra_inputs %}
+          scan-run-id: ${{ github.run_id }}
+{%- endblock %}
 
 {% block scan_steps %}
       - name: Set up Python

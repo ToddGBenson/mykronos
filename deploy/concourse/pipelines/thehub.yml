@@ -471,6 +471,11 @@ anchors:
   # that. Jobs that need more write their params out in full rather than
   # merging onto this - a YAML merge key is one typo away from handing the
   # test job the production key.
+  # [#449] Not here: MYKRONOS_JOB. The job name differs per job and an anchor
+  # cannot know it, so every upload line sets it inline instead --
+  # `MYKRONOS_JOB=<job> python -m mykronos.upload ...` -- and the uploader
+  # records it on the ScanRun. An env var rather than `--job`, so an uploader
+  # pinned at an older MYKRONOS_REF ignores it instead of failing to parse.
   mykronos_env: &mykronos_env
     MYKRONOS_URL: ((mykronos-url))
     MYKRONOS_TOKEN: ((thehub-ingestion-token))
@@ -677,6 +682,14 @@ anchors:
     HUB_URL: ((thehub-url))
     HUB_DEPLOY_TOKEN: ((hub-deploy-token))
     SCANNED_BRANCH: ((thehub-branch))
+    # [#336] Where a failure report points a reader. Same values and the same
+    # reason as in `slack_params`: Concourse gives BUILD_* to resources, not to
+    # tasks, so the build number is not knowable here and the link is the JOB
+    # page, whose newest build is the one that failed. Failure call sites pass
+    # JOB, exactly as the Slack hooks beside them do.
+    PIPELINE: thehub
+    TEAM: main
+    CONCOURSE_URL: http://localhost:8080
 
   hub_report: &hub_report
     task: report-to-hub
@@ -712,6 +725,12 @@ anchors:
       inputs:
         - { name: source, optional: true }
         - { name: pipelines, optional: true }
+        # [#336] Written by a task that can say why it failed: `output.log` is
+        # its own output (tee'd), `exit_code` its real exit status. Concourse
+        # registers a task's outputs even when the task fails, which is what
+        # `notify/message.txt` already relies on. Optional: most jobs write
+        # none, and their failure reports carry the link and exit_code 1.
+        - { name: hub_log, optional: true }
       run:
         path: bash
         args:
@@ -821,6 +840,49 @@ anchors:
                 target_env: $env,
                 meta: {source: "concourse", pipeline: "thehub"}}')
 
+            # [#336] A FAILURE REPORT SAYS WHY, OR AT LEAST WHERE TO LOOK.
+            # This reporter never sent `log_tail` or `exit_code` for any stage:
+            # TheHub measured 1 of 886 Concourse events carrying output, and
+            # thirty consecutive deploy-demo failures -- `curl: (22) ... 410`
+            # -- left that reason only in a build log nothing else reads.
+            #
+            # Failed and errored reports now always carry both. exit_code is
+            # the failing task's own status when it wrote one to hub_log/,
+            # else 1. log_tail always carries the build link and, when the
+            # task tee'd its output to hub_log/, its last 60 lines. Success
+            # and abort reports are byte-for-byte what they were.
+            #
+            # A zero or non-numeric hub_log/exit_code is not believed: the
+            # instrumented task can succeed and a LATER step fail the job,
+            # and a failure report claiming exit 0 would be a lie.
+            if [ "$STATUS" = "failed" ] || [ "$STATUS" = "errored" ]; then
+              EXIT_CODE=1
+              RC_FILE=""
+              if [ -f hub_log/exit_code ]; then
+                RC_FILE=$(tr -dc '0-9' < hub_log/exit_code || true)
+              fi
+              if [ -n "$RC_FILE" ] && [ "$RC_FILE" != "0" ]; then
+                EXIT_CODE=$((10#$RC_FILE))
+              fi
+              JOB_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-thehub}/jobs/${JOB:-}"
+              LOG_TAIL="Concourse ${JOB:-<job not passed>} $STATUS (newest build): $JOB_URL"
+              if [ -s hub_log/output.log ]; then
+                LOG_TAIL="$LOG_TAIL
+            --- last 60 lines of the failing task's output ---
+            $(tail -n 60 hub_log/output.log)"
+              else
+                LOG_TAIL="$LOG_TAIL
+            (no task output was captured for this job; the build log has the reason)"
+              fi
+              with_failure_detail() {
+                printf '%s' "$1" | jq -c --arg lt "$LOG_TAIL" --argjson ec "$EXIT_CODE" \
+                  '. + {exit_code: $ec, log_tail: $lt}'
+              }
+              # Never at the cost of the report itself: if this enrichment
+              # cannot be built, the plain report still goes.
+              DETAILED=$(with_failure_detail "$BODY") && [ -n "$DETAILED" ] && BODY="$DETAILED"
+            fi
+
             post_stage() {
               curl -sS --fail --max-time 20 -X POST \
                 -H "Content-Type: application/json" \
@@ -854,6 +916,10 @@ anchors:
                   target_env: $env,
                   meta: {source: "concourse", pipeline: "thehub",
                          self_contained: true}}')
+              # A failed apply's `finish` is a failure report too.
+              if [ "$STATUS" = "failed" ] || [ "$STATUS" = "errored" ]; then
+                DETAILED=$(with_failure_detail "$FINISH") && [ -n "$DETAILED" ] && FINISH="$DETAILED"
+              fi
               post_stage "$FINISH" "finish"
             fi
             exit 0
@@ -1091,13 +1157,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: set-pipeline }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: set-pipeline, STAGE: pipeline_apply, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: set-pipeline }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: set-pipeline, STAGE: pipeline_apply, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -1157,13 +1223,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: cicd-drift }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: cicd_drift, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: cicd-drift, STAGE: cicd_drift, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: cicd-drift }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: cicd_drift, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: cicd-drift, STAGE: cicd_drift, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -1394,13 +1460,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: post-merge }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: post-merge }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -1797,6 +1863,15 @@ jobs:
                       notes: $note,
                       meta: {source: "concourse", pipeline: "thehub",
                              verdict: $v, check: "post_merge"}}')
+                  # [#336] A red or indeterminate verdict is a failure report,
+                  # and every failure report carries a log_tail: the verdict's
+                  # own detail and the job link. Green is unchanged.
+                  if [ "$STATUS" != "success" ]; then
+                    LT_LINK="${CONCOURSE_URL:-http://localhost:8080}/teams/main/pipelines/thehub/jobs/post-merge"
+                    BODY=$(printf '%s' "$BODY" | jq -c \
+                      --arg lt "post-merge ${VERDICT}: ${DETAIL} -- ${LT_LINK}" \
+                      '. + {log_tail: $lt}')
+                  fi
                   curl -sS --fail --max-time 20 -X POST \
                     -H "Content-Type: application/json" \
                     -H "X-Ops-Deploy-Token: $HUB_DEPLOY_TOKEN" \
@@ -1853,7 +1928,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: unit }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: integration_tests, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: unit, STAGE: integration_tests, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: unit, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -1861,7 +1936,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: unit }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: integration_tests, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: unit, STAGE: integration_tests, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: unit, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -2488,6 +2563,14 @@ jobs:
                 #                          missing variable, so a future edit
                 #                          that drops the token goes red rather
                 #                          than green-over-nothing.
+                #   REDIS_URL=memory://    slowapi's in-process store. The limiter
+                #                          stores in Redis and fails OPEN when it
+                #                          cannot reach it (swallow_errors, #59983),
+                #                          and this task has no Redis: in build 324
+                #                          four 429 tests got 200/201/401 and logged
+                #                          "Failed to rate limit. Swallowing error".
+                #                          One serial pytest process, so the memory
+                #                          store counts exactly what Redis would.
                 #
                 # Skipped only if the unit tier already hit its soft timeout:
                 # the job exits 124 below either way, and the line says so.
@@ -2508,6 +2591,7 @@ jobs:
                     HUB_API_TOKEN="ci-$(python -c 'import secrets; print(secrets.token_hex(16))')"
                     export HUB_API_TOKEN
                     export HUB_REQUIRE_ARMED_GATE=1
+                    export REDIS_URL=memory://
                     if command -v timeout >/dev/null 2>&1; then
                       timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
                         python -m pytest tests/security -q -p no:cacheprovider -ra \
@@ -2525,7 +2609,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=unit python -m mykronos.upload \
                   --capability unit --tool junit \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -2592,13 +2676,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: qa }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: junit, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: qa, STAGE: junit, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: qa }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: junit, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: qa, STAGE: junit, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -2642,7 +2726,7 @@ jobs:
                 python /tmp/check_links.py . --junit-xml=../results/qa.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=qa python -m mykronos.upload \
                   --capability qa --tool junit \
                   --results-path ../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -2664,7 +2748,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: build }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: package_artifact, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: build, STAGE: package_artifact, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: build, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -2672,7 +2756,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: build }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: package_artifact, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: build, STAGE: package_artifact, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: build, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -2803,7 +2887,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: secrets }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: gitleaks, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: secrets, STAGE: gitleaks, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -2811,7 +2895,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: gitleaks, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: secrets, STAGE: gitleaks, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -2909,7 +2993,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=secrets python -m mykronos.upload \
                   --capability secrets --tool gitleaks \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -2939,7 +3023,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: sast }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: semgrep, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: sast, STAGE: semgrep, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: sast, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -2947,7 +3031,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: sast }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: semgrep, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: sast, STAGE: semgrep, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: sast, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -3032,7 +3116,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=sast python -m mykronos.upload \
                   --capability sast --tool semgrep \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3115,7 +3199,7 @@ jobs:
                     apt-get update -qq && apt-get install -y -qq git >/dev/null
                     pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                     cd source
-                    python -m mykronos.upload \
+                    MYKRONOS_JOB=sast python -m mykronos.upload \
                       --capability sast --tool psscriptanalyzer \
                       --results-path ../results \
                       --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3135,7 +3219,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: dependencies }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: osv_scanner, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: dependencies, STAGE: osv_scanner, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: dependencies, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -3143,7 +3227,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: dependencies }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: osv_scanner, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: dependencies, STAGE: osv_scanner, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: dependencies, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -3171,7 +3255,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: evidence }]
+          outputs: [{ name: evidence }, { name: sbom-out }]
           run:
             path: bash
             args:
@@ -3253,6 +3337,77 @@ jobs:
                   rc=0
                 fi
 
+                # mykronos#322: the same advisories again, against the
+                # versions an SBOM records rather than the ones a manifest
+                # declares. `--no-resolve` assesses `redis>=8.1.0` as 8.1.0;
+                # the SBOM is what says 6.4.0 is installed, and an advisory
+                # against 6.4.0 fixed before 8.1.0 was invisible to this lane
+                # by construction.
+                #
+                # Syft runs here rather than in `sbom-and-evidence` so both
+                # SARIF files go up in ONE upload under one tool tag. A
+                # second `osv-scanner` ScanRun for the same commit would be
+                # its own run in the reconcile partition, and a declared
+                # finding would count as absent from "two consecutive scans"
+                # after a single push - the B-051 halving, one tool over.
+                #
+                # Best effort throughout: a syft or SBOM-scan failure costs
+                # this evidence, never the declared scan's findings above.
+                # `sbom-and-evidence` still refuses a missing or empty SBOM.
+                SHORT=$(git rev-parse --short HEAD)
+                if curl -sSfL -o /tmp/syft.tar.gz \
+                     https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz \
+                   && echo "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f  /tmp/syft.tar.gz" \
+                     | sha256sum -c - \
+                   && tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft \
+                   && syft scan dir:. \
+                     --exclude './**/node_modules' --exclude './**/.venv' \
+                     --exclude './**/venv' --exclude './**/vendor' \
+                     --output cyclonedx-json > "../sbom-out/sbom-${SHORT}.cdx.json"; then
+                  echo "SBOM generated: sbom-${SHORT}.cdx.json"
+                else
+                  echo "::warning::SBOM generation failed; installed versions are not assessed this run."
+                fi
+
+                # The generated SBOM first, preferred; a committed one second.
+                # Syft over a checkout records only what a lockfile or an
+                # `==` pin states, so a requirements.txt of `>=` floors leaves
+                # it nothing to say about Python - TheHub's installed Python
+                # set is the committed environment SBOM. Copied to a fixed
+                # path because the scan records the path and a finding's
+                # identity derives from it: `sbom-<sha>` would make every
+                # SBOM finding new on every commit.
+                SBOMS=""
+                mkdir -p /tmp/sbom
+                if [ -s "../sbom-out/sbom-${SHORT}.cdx.json" ]; then
+                  cp "../sbom-out/sbom-${SHORT}.cdx.json" /tmp/sbom/generated.cdx.json
+                  SBOMS="/tmp/sbom/generated.cdx.json"
+                fi
+                if [ -s docs/sbom/latest-python.cdx.json ]; then
+                  SBOMS="$SBOMS $PWD/docs/sbom/latest-python.cdx.json"
+                fi
+                OSV_SBOM_ARGS=""
+                UPLOAD_SBOM_ARGS=""
+                for f in $SBOMS; do
+                  OSV_SBOM_ARGS="$OSV_SBOM_ARGS -L $f"
+                  UPLOAD_SBOM_ARGS="$UPLOAD_SBOM_ARGS --sbom $f"
+                done
+                if [ -n "$OSV_SBOM_ARGS" ]; then
+                  set +e
+                  # shellcheck disable=SC2086  # deliberate word splitting
+                  osv-scanner scan source $OSV_SBOM_ARGS \
+                    --format sarif --output-file /tmp/results/osv-sbom.sarif
+                  sbom_rc=$?
+                  set -e
+                  # 0 clean, 1 found something, 128 nothing to scan. Anything
+                  # else is a scan that did not happen; its partial output is
+                  # dropped rather than uploaded as if it were the answer.
+                  if [ "$sbom_rc" -gt 1 ] && [ "$sbom_rc" -ne 128 ]; then
+                    echo "::warning::osv-scanner exited $sbom_rc on the SBOM; installed versions were not assessed this run."
+                    rm -f /tmp/results/osv-sbom.sarif
+                  fi
+                fi
+
                 # PS-3: the verdict is deferred to after the upload. It used
                 # to `exit "$rc"` here, so a scanner that broke skipped its own
                 # upload and `atlas` read as `never_reported` -
@@ -3263,7 +3418,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=dependencies python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
                   --results-path /tmp/results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3271,6 +3426,7 @@ jobs:
                   --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
+                  $UPLOAD_SBOM_ARGS \
                   --severity-threshold low --blocking false
 
                 # 1 means vulnerabilities were found, which is a result.
@@ -3306,8 +3462,7 @@ jobs:
         params: *mykronos_env
         config:
           platform: linux
-          inputs: [{ name: source }, { name: evidence }]
-          outputs: [{ name: sbom-out }]
+          inputs: [{ name: source }, { name: evidence }, { name: sbom-out }]
           run:
             path: bash
             args:
@@ -3325,25 +3480,16 @@ jobs:
                 SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
                 SHORT=$(git -C source rev-parse --short HEAD)
 
-                # Syft, pinned, scanning the checkout. `cyclonedx-py
+                # Syft, pinned and checksummed, scanning the checkout -
+                # generated by the osv-scanner task above so its SBOM scan
+                # shares that task's upload (mykronos#322). `cyclonedx-py
                 # environment` would document the interpreter this task runs
                 # in rather than the repository -- a plausible SBOM of
                 # entirely the wrong software (D-034).
-                # The release tarball, checksummed - not
-                # `curl raw.githubusercontent.com/.../main/install.sh | sh`
-                # (PS-8). That form pinned the syft *version* while piping an
-                # unpinned installer script from a third party's `main` branch
-                # straight into a shell, inside the lane that produces this
-                # repository's supply-chain evidence.
-                curl -sSfL -o /tmp/syft.tar.gz \
-                  https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz
-                echo "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f  /tmp/syft.tar.gz" \
-                  | sha256sum -c -
-                tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
-                syft scan dir:source \
-                  --exclude './**/node_modules' --exclude './**/.venv' \
-                  --exclude './**/venv' --exclude './**/vendor' \
-                  --output cyclonedx-json > "sbom-out/sbom-${SHORT}.cdx.json"
+                if [ ! -s "sbom-out/sbom-${SHORT}.cdx.json" ]; then
+                  echo "::error::No SBOM from the osv-scanner task; refusing to publish evidence without one."
+                  exit 1
+                fi
 
                 COMPONENTS=$(jq '((.components // []) | length)' "sbom-out/sbom-${SHORT}.cdx.json")
                 echo "SBOM lists $COMPONENTS component(s)"
@@ -3439,7 +3585,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: containers }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: trivy, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: containers, STAGE: trivy, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: containers, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -3447,7 +3593,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: containers }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: trivy, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: containers, STAGE: trivy, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: containers, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -3681,7 +3827,7 @@ jobs:
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=containers python -m mykronos.upload \
                     --capability containers --tool trivy \
                     --results-path results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -3708,7 +3854,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: oracle-gate }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: oracle_gate, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: oracle-gate, STAGE: oracle_gate, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -3716,7 +3862,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: oracle-gate }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: oracle_gate, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: oracle-gate, STAGE: oracle_gate, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -3923,13 +4069,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: deploy-demo }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: deploy-demo, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: deploy-demo }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: deploy-demo, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
     on_abort:
       do:
         - <<: *hub_report
@@ -3961,12 +4107,24 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
+          # [#336] Read by the `hub_report` failure hook: this task's own
+          # output and exit status, so a failed deploy reports its reason.
+          outputs: [{ name: hub_log }]
           run:
             path: bash
             args:
               - -ec
               - |
                 set -euo pipefail
+                # [#336] Keep a copy of this task's own output, and its exit
+                # status, where the failure hook can read them. deploy-demo
+                # failed thirty times on `curl: (22) ... 410` and the reason
+                # reached nothing outside this build log. The trap closes the
+                # tee and waits for it, so the last lines -- the ones that say
+                # why -- are on disk before the container is torn down.
+                exec > >(tee hub_log/output.log) 2>&1
+                TEE_PID=$!
+                trap 'rc=$?; echo "$rc" > hub_log/exit_code; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
                 # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
@@ -4146,13 +4304,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: api-inventory }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: api_inventory, STATUS: failed, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: api-inventory, STAGE: api_inventory, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: api-inventory }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: api_inventory, STATUS: errored, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: api-inventory, STAGE: api_inventory, STATUS: errored, TARGET_ENV: demo }
     on_abort:
       do:
         - <<: *hub_report
@@ -4221,7 +4379,7 @@ jobs:
                 python -m mykronos.junit_stage \
                   --out ../results/api-inventory.xml --suite api-inventory \
                   --case "inventory:${rc}:/tmp/inventory.txt"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=api-inventory python -m mykronos.upload \
                   --capability qa --tool junit \
                   --results-path ../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -4310,7 +4468,7 @@ jobs:
                 # Exit 5 is "no tests collected", which is a broken suite, not
                 # a pass; any report that exists goes up either way.
                 if [ -s ../results/functional.xml ]; then
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=functional-demo python -m mykronos.upload \
                     --capability functional --tool junit \
                     --results-path ../results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -4345,13 +4503,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: dast-demo }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: dast-demo, STAGE: dast_headers, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: dast-demo }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: dast-demo, STAGE: dast_headers, STATUS: errored, TARGET_ENV: demo }
     on_abort:
       do:
         - <<: *hub_report
@@ -4473,7 +4631,7 @@ jobs:
 
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
-                python3 -m mykronos.upload \
+                MYKRONOS_JOB=dast-demo python3 -m mykronos.upload \
                   --capability dast --tool zap-demo \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -4510,7 +4668,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: iac }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: checkov, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: iac, STAGE: checkov, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -4518,7 +4676,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: checkov, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: iac, STAGE: checkov, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -4618,7 +4776,7 @@ jobs:
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
                     --results-path results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -4638,7 +4796,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: prompt-evals }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: prompt_evals, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: prompt-evals, STAGE: prompt_evals, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: prompt-evals, PHASE: end, CONCLUSION: failure }
     on_error:
@@ -4646,7 +4804,7 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: prompt-evals }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: prompt_evals, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: prompt-evals, STAGE: prompt_evals, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: prompt-evals, PHASE: end, CONCLUSION: failure }
     on_abort:
@@ -4754,7 +4912,7 @@ jobs:
                   python -m mykronos.junit_stage \
                     --out ../results/prompt-evals.xml --suite prompt-evals \
                     --case "prompt-evals:${rc}:/tmp/evals.log"
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=prompt-evals python -m mykronos.upload \
                     --capability ai --tool mykronos-ai-checks \
                     --results-path ../results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -4843,13 +5001,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: dast-prod }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: dast-prod, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: dast-prod }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: dast-prod, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -4976,7 +5134,7 @@ jobs:
 
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
-                python3 -m mykronos.upload \
+                MYKRONOS_JOB=dast-prod python3 -m mykronos.upload \
                   --capability dast --tool zap-prod \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -5091,13 +5249,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: dast-edge }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod-edge }
+          params: { <<: *hub_params, JOB: dast-edge, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod-edge }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: dast-edge }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod-edge }
+          params: { <<: *hub_params, JOB: dast-edge, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod-edge }
     on_abort:
       do:
         - <<: *hub_report
@@ -5402,7 +5560,7 @@ jobs:
                   echo "::error::Could not determine the commit under scan."
                   exit 1
                 }
-                python3 -m mykronos.upload \
+                MYKRONOS_JOB=dast-edge python3 -m mykronos.upload \
                   --capability dast --tool zap-edge \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -5472,13 +5630,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: dast-staging }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: failed, TARGET_ENV: staging }
+          params: { <<: *hub_params, JOB: dast-staging, STAGE: dast_headers, STATUS: failed, TARGET_ENV: staging }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: dast-staging }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: dast_headers, STATUS: errored, TARGET_ENV: staging }
+          params: { <<: *hub_params, JOB: dast-staging, STAGE: dast_headers, STATUS: errored, TARGET_ENV: staging }
     on_abort:
       do:
         - <<: *hub_report
@@ -5686,7 +5844,7 @@ jobs:
                 echo "Target verified: ${PROBE_REL} served by ${TARGET_URL} matches ${COMMIT_SHA}."
 
 
-                python3 -m mykronos.upload \
+                MYKRONOS_JOB=dast-staging python3 -m mykronos.upload \
                   --capability dast --tool zap-staging \
                   --results-path /zap/wrk \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -5718,13 +5876,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: cloud-posture }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: prowler, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: cloud-posture, STAGE: prowler, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: cloud-posture }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: prowler, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: cloud-posture, STAGE: prowler, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -5851,7 +6009,7 @@ jobs:
                   # a file in this checkout. The commit is recorded because every
                   # scan run needs one; it is not a claim that this commit caused
                   # the finding.
-                  python -m mykronos.upload \
+                  MYKRONOS_JOB=cloud-posture python -m mykronos.upload \
                     --capability cloud --tool prowler \
                     --results-path results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
@@ -5901,13 +6059,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: image-refresh }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: image_refresh, STATUS: failed, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: image-refresh, STAGE: image_refresh, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: image-refresh }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: image_refresh, STATUS: errored, TARGET_ENV: demo }
+          params: { <<: *hub_params, JOB: image-refresh, STAGE: image_refresh, STATUS: errored, TARGET_ENV: demo }
     on_abort:
       do:
         - <<: *hub_report
@@ -6162,13 +6320,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: remediate }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: auto_remediation, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: remediate, STAGE: auto_remediation, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: remediate }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: auto_remediation, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: remediate, STAGE: auto_remediation, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -6293,13 +6451,13 @@ jobs:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: ai-models }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: model_inventory, STATUS: failed, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: ai-models, STAGE: model_inventory, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: ai-models }
         - <<: *hub_report
-          params: { <<: *hub_params, STAGE: model_inventory, STATUS: errored, TARGET_ENV: prod }
+          params: { <<: *hub_params, JOB: ai-models, STAGE: model_inventory, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
         - <<: *hub_report
@@ -6502,7 +6660,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                python -m mykronos.upload \
+                MYKRONOS_JOB=ai-models python -m mykronos.upload \
                   --capability ai --tool mykronos-ai-checks \
                   --results-path results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \

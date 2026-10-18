@@ -110,6 +110,28 @@ wrong the same way.
 true here now. A default that installs Actions workflows into a repository
 whose Actions were deliberately removed is a default that undoes a decision.
 
+**Install *and* resync honour it (#13).** The API never called the
+installer for a non-Actions repository, but the bulk resync (§6) read only
+`enabled_capabilities`, so a repository that had moved to Concourse got its
+Actions workflows restored on the next sweep and both CIs scanned and
+ingested every commit. The resync now skips any repository whose
+`scanned_by` is not `github_actions`, names it in the result
+(`not Actions-scanned N`, with a per-repo note), and makes no GitHub call
+for it. `WorkflowInstaller.plan` refuses the same repositories as a
+backstop.
+
+To mark a repository as not using the Actions target — the one call, by an
+admin; it records a fact and installs, removes or revokes nothing:
+
+    curl -X PATCH "http://127.0.0.1:8100/api/repos/<repo_id>" \
+      -H "X-Hub-Token: $GATE" -H "Authorization: Bearer $ADMIN" \
+      -H "Content-Type: application/json" \
+      -d '{"scanned_by": "concourse"}'
+
+`<repo_id>` is the onboarding id from `GET /api/repos`. Any Actions
+workflows already in the repository stay until someone deletes them; after
+this call no install or resync will put them back.
+
 **What this does *not* do is decide whether a capability is covered.**
 `scanned_by` records intent — which system is supposed to scan. Whether it
 actually does is a different question with a different answer, and spec 15
@@ -192,6 +214,21 @@ spec 08 §3 first. It is not a configuration gap.
 - This bulk-resync pattern is directly modeled on the "downstream repo
   sync" mechanism already proven internally (a manifest of repos + a
   scheduled job that opens sync PRs on each).
+- **No pinned action moves backwards (#376).** Target repositories keep
+  their rendered workflows current with Dependabot; nothing keeps the
+  templates current. Before writing a file, install and resync compare each
+  `uses: owner/repo@<sha>  # vX.Y.Z` line in the template with the same
+  action in the file being replaced. The template's pin is written only
+  when its release is newer. Otherwise — the repository is ahead, same
+  release on a different SHA, or the repository's version cannot be read —
+  the repository's pin is kept and named in the pull request body ("Action
+  pins kept at this repository's version"), in the install API's `detail`,
+  and in the resync report, which also states the template version each
+  file was compared with. Keeping-and-reporting was chosen over failing the
+  install: the downgrade is never what the pull request is for, and the
+  report is the signal to bump the template. A file that differs only by
+  kept pins is not drift. Keeping the templates themselves current (a
+  scheduled pin-update job) is separate work.
 
 ## 7. Acceptance criteria
 

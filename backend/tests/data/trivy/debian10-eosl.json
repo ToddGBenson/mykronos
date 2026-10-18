@@ -1,0 +1,45 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.73.0"
+  },
+  "ArtifactName": "debian:buster-slim",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "OS": {
+      "Family": "debian",
+      "Name": "10.13",
+      "EOSL": true
+    },
+    "ImageID": "sha256:e1a7bb630c8baa947c5430a7f0965ef6afe71e88e90547aced2e601a89b68399",
+    "RepoTags": [
+      "debian:buster-slim"
+    ],
+    "RepoDigests": [
+      "debian@sha256:bb3dc79fddbca7e8903248ab916bb775c96ec61014b3d02b4f06043b604726dc"
+    ]
+  },
+  "Results": [
+    {
+      "Target": "debian:buster-slim (debian 10.13)",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2019-8457",
+          "PkgName": "libdb5.3",
+          "InstalledVersion": "5.3.28+dfsg1-0.5",
+          "Status": "will_not_fix",
+          "Severity": "CRITICAL"
+        },
+        {
+          "VulnerabilityID": "CVE-2023-45853",
+          "PkgName": "zlib1g",
+          "InstalledVersion": "1:1.2.11.dfsg-1+deb10u2",
+          "Status": "will_not_fix",
+          "Severity": "CRITICAL"
+        }
+      ]
+    }
+  ]
+}

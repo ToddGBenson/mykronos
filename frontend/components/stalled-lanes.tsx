@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import type { StalledLane } from "@/lib/api";
+import { idleNotes } from "@/lib/stalled-lanes";
 
 /**
  * Lanes that cannot close findings, and the one button that acts on each
@@ -52,13 +53,14 @@ export function StalledLanes({ lanes }: { lanes: StalledLane[] }) {
       {holding.map((lane) => (
         <Lane key={`${lane.repo_full_name}:${lane.capability}`} lane={lane} />
       ))}
-      {idle.length ? (
-        <p className="text-[12px] leading-snug text-ink-3">
-          Also stalled, holding nothing open:{" "}
-          {idle.map((lane) => `${lane.repo_full_name} ${lane.capability}`).join(", ")}.
-          Nothing is stuck behind these, but they are not watching either.
+      {/* "Nothing is stuck behind these" only for the lanes it is true of: a
+          lane holding no findings can still be the gate seven scanners wait
+          on, and the backend now says which (#330). */}
+      {idleNotes(idle, holding.length > 0).map((note) => (
+        <p key={note} className="text-[12px] leading-snug text-ink-3">
+          {note}
         </p>
-      ) : null}
+      ))}
     </div>
   );
 }

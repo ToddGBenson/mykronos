@@ -167,6 +167,12 @@ class ScanRunSubmission(BaseModel):
     pr_number: int | None = Field(default=None, le=LAKE_INT_MAX)
     triggered_by: TriggeredBy
     github_workflow_run_id: str = Field(default="", max_length=64)
+    #: The CI job that produced this run (#449) -- `dast-demo` versus
+    #: `dast-staging`, two lanes of one capability that were otherwise
+    #: identical in the lake. Null when the uploader did not say: every
+    #: payload from before this field existed, and any caller with no job to
+    #: name. Recorded only; nothing keys staleness on it yet (#380).
+    job: str | None = Field(default=None, max_length=200)
     started_at: datetime
     completed_at: datetime | None = None
     scan_status: ScanStatus = ScanStatus.SUCCESS
