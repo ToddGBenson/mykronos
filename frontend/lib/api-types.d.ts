@@ -8379,6 +8379,8 @@ export interface components {
              * @default
              */
             github_workflow_run_id: string;
+            /** Job */
+            job?: string | null;
             /**
              * Started At
              * Format: date-time

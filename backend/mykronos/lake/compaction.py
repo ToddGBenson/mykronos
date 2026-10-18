@@ -230,6 +230,10 @@ _UPDATE_SETS: dict[str, str] = {
         -- any scan longer than the compaction interval. Omitting it here
         -- dropped the message silently for exactly those scans.
         detail                 = i.detail,
+        -- #449. Coalesced, not overwritten: an older uploader finalising a
+        -- run (or any post without the field) must not blank a job a newer
+        -- post already recorded for the same scan_run_id.
+        job                    = coalesce(i.job, part.job),
         ingested_at            = i.ingested_at
     """,
 }

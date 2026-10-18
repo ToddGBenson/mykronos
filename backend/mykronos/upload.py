@@ -435,6 +435,11 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
             payload.pop("cwe_ids", None)
         return payload
 
+    job = resolve_job(getattr(args, "job", None))
+    # Flipped once if the backend turns out to predate the field; see
+    # `post_scan_run`.
+    send_job = job is not None
+
     def scan_run_payload(**overrides: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "scan_run_id": scan_run_id,
@@ -449,8 +454,37 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
             "github_workflow_run_id": args.workflow_run_id,
             "started_at": started_at.isoformat(),
         }
+        # #449. Omitted when there is no job to name, so a run with nothing
+        # to say stays compatible with every backend, old or new -- the same
+        # omit-when-absent rule `detail` follows below.
+        if send_job:
+            payload["job"] = job
         payload.update(overrides)
         return payload
+
+    def post_scan_run(body: dict[str, Any]) -> None:
+        """POST a ScanRun, dropping `job` once if the backend predates it.
+
+        The uploader and the platform are versioned independently, and
+        `ScanRunSubmission` forbids extra keys -- so a new uploader posting
+        `job` to an older backend gets a 422 that would lose the whole run.
+        Losing the job is the right trade for keeping the run: retry once
+        without it, and stop sending it for the rest of this upload.
+        """
+        nonlocal send_job
+        try:
+            client.post("/api/ingest/scan-run", json_body=body)
+        except UploadError as exc:
+            message = str(exc)
+            if "job" not in body or "HTTP 422" not in message or '"job"' not in message:
+                raise
+            logger.warning(
+                "The ingestion API does not accept `job` yet (an older "
+                "backend); recording this run without it."
+            )
+            send_job = False
+            body = {k: v for k, v in body.items() if k != "job"}
+            client.post("/api/ingest/scan-run", json_body=body)
 
     # Register the run before scanning is interpreted, so a crash between here
     # and the finalise still leaves evidence the run happened (spec 04 §7).
@@ -465,7 +499,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
     # this: `/ingest/lane-failure` needs no capability grant and no ScanRun,
     # because a lane that died before it could report has neither.
     try:
-        client.post("/api/ingest/scan-run", json_body=scan_run_payload())
+        post_scan_run(scan_run_payload())
     except UploadError as exc:
         _report_unreported(client, args, scan_run_id, exc)
         raise
@@ -545,7 +579,7 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
         if outcome.branch_coverage is not None:
             final["branch_coverage"] = round(outcome.branch_coverage, 4)
 
-        client.post("/api/ingest/scan-run", json_body=final)
+        post_scan_run(final)
 
     write_step_summary(outcome, result, args.capability, args.tool)
     return outcome
@@ -617,6 +651,31 @@ def resolve_triggered_by(
     return TriggeredBy.PUSH
 
 
+#: Where the producing job's name is read from when `--job` is not given, in
+#: order (#449). `MYKRONOS_JOB` is the explicit one: the Concourse pipelines
+#: set it per task, because Concourse gives BUILD_JOB_NAME to resources and
+#: not to tasks. `GITHUB_JOB` is set by Actions on every step, so an Actions
+#: lane is covered with no flag at all. `BUILD_JOB_NAME` is last, for any
+#: context that does expose Concourse build metadata.
+JOB_ENV_VARS: tuple[str, ...] = ("MYKRONOS_JOB", "GITHUB_JOB", "BUILD_JOB_NAME")
+
+
+def resolve_job(supplied: str | None, env: Mapping[str, str] | None = None) -> str | None:
+    """The CI job producing this run, or None when nothing says (#449).
+
+    None, not "" and not a guess: the lake column is nullable precisely so a
+    run with no recorded job reads as that rather than as a job named "".
+    """
+    if supplied and supplied.strip():
+        return supplied.strip()[:200]
+    source = os.environ if env is None else env
+    for name in JOB_ENV_VARS:
+        value = (source.get(name) or "").strip()
+        if value:
+            return value[:200]
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mykronos-upload",
@@ -632,6 +691,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--commit-sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--workflow-run-id", default="")
+    parser.add_argument(
+        "--job",
+        default=None,
+        help="The CI job producing this run. Defaults to $MYKRONOS_JOB, then "
+        "$GITHUB_JOB, then $BUILD_JOB_NAME; omitted when none is set.",
+    )
     # No default. `None` means the caller did not say, which
     # `resolve_triggered_by` answers from the environment — distinct from a
     # caller that explicitly said "push".
