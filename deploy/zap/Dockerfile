@@ -44,6 +44,17 @@ USER root
 # jetty 9.4 and lz4 1.3.0 jars were the last five HIGH findings left after the
 # purge (2026-10-15) -- ones only a ZAP release could fix -- so it is deleted.
 #
+# libcups2t64 is not purged but removed with --force-depends, the one package
+# this file removes against a declared dependency. openjdk-21-jre-headless
+# Depends on it for Java's print services (javax.print, sun.print), which a
+# headless daemon never touches, and Debian has no fix for its two HIGH
+# (CVE-2026-55453, code execution via printer status; CVE-2026-34980) and 25
+# lower findings. Removed on 2026-10-18 and verified: `zap.sh -daemon` serves
+# the API, the passive scanners load, the healthcheck passes, and a
+# zap-baseline.py scan writes its JSON report -- no UnsatisfiedLinkError, no
+# mention of cups. dpkg records the dependency as broken; nothing runs apt here
+# afterwards, and the check below fails the build if libcups.so comes back.
+#
 # `apt-get upgrade` first, so whatever Debian has fixed is fixed here. That
 # makes the build depend on the day it runs -- the derivative is reproducible
 # in its pin and its package set, not byte for byte -- which is the trade
@@ -67,6 +78,8 @@ RUN set -eux; \
         systemd-timesyncd systemd-cryptsetup libnss-systemd libpam-systemd dbus-user-session; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
+    dpkg --remove --force-depends libcups2t64; \
+    if ldconfig -p | grep -q 'libcups\.so'; then echo "libcups.so is still on the library path" >&2; exit 1; fi; \
     rm -rf /zap/webswing; \
     if [ -e /zap/webswing ]; then echo "/zap/webswing is still present" >&2; exit 1; fi; \
     for gone in firefox-esr xvfb xserver-common openssh-client libgs10 librsvg2-2 \
