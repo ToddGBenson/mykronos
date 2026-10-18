@@ -358,3 +358,94 @@ class TestTheAgentWorkQueue:
     def test_could_not_ask_is_an_unknown(self) -> None:
         queue = _queue(_report(blocked_unknown=True))
         assert [u.source for u in queue.unknown] == ["concourse"]
+
+
+def _idle(repo: str, capability: str) -> briefing.StalledLane:
+    """A stalled lane holding nothing open -- the `idle` note's subject."""
+    return briefing.StalledLane(
+        repo_full_name=repo,
+        capability=capability,
+        reason="failing",
+        consecutive_failures=3,
+        streak_capped=False,
+        last_success=None,
+        detail="",
+        open_findings=0,
+    )
+
+
+#: The seven jobs `mykronos/unit` gated on 2026-09-12 (#330).
+GATED_ON_UNIT = ["sast", "secrets", "dependencies", "ai", "insider", "iac", "build"]
+
+
+class TestTheIdleNoteSaysWhatIsHeldBehindIt:
+    """#330: "Nothing is stuck behind these" printed for `mykronos unit` while
+    the blocked section below it listed seven jobs held behind that very
+    lane. The sentence is about findings; the jobs are the scanning."""
+
+    def _held(self) -> list[briefing.BlockedLane]:
+        return [
+            _lane(pipeline="mykronos", job=job, blocked_by="unit", root="unit")
+            for job in GATED_ON_UNIT
+        ]
+
+    def test_an_idle_lane_with_jobs_behind_it_says_so(self) -> None:
+        rendered = briefing.render(
+            _report(stalled=[_idle("ToddGBenson/mykronos", "unit")], blocked=self._held())
+        )
+        flat = " ".join(rendered.split())
+
+        assert "Nothing is stuck behind" not in rendered
+        assert "ToddGBenson/mykronos unit. 7 jobs are held behind it" in flat
+        for job in GATED_ON_UNIT:
+            assert job in flat
+
+    def test_it_sorts_ahead_of_idle_lanes_that_block_nothing(self) -> None:
+        rendered = briefing.render(
+            _report(
+                stalled=[
+                    _idle("ToddGBenson/personal-soc", "iac"),
+                    _idle("ToddGBenson/mykronos", "unit"),
+                ],
+                blocked=self._held(),
+            )
+        )
+        flat = " ".join(rendered.split())
+
+        assert flat.index("ToddGBenson/mykronos unit") < flat.index("ToddGBenson/personal-soc iac")
+        # The lane that genuinely blocks nothing keeps the true sentence,
+        # and "also" now has something to be also to.
+        assert "Also stalled, holding nothing open: ToddGBenson/personal-soc iac" in flat
+        assert "Nothing is stuck behind these" in flat
+
+    def test_a_transitive_hold_counts_for_the_intermediate_lane_too(self) -> None:
+        rendered = briefing.render(
+            _report(
+                stalled=[_idle("ToddGBenson/mykronos", "build")],
+                blocked=[
+                    _lane(pipeline="mykronos", job="containers", blocked_by="build", root="unit")
+                ],
+            )
+        )
+        flat = " ".join(rendered.split())
+
+        assert "1 job is held behind it" in flat
+        assert "Nothing is stuck behind" not in rendered
+
+    def test_another_pipeline_s_job_of_the_same_name_does_not_count(self) -> None:
+        rendered = briefing.render(
+            _report(stalled=[_idle("ToddGBenson/personal-soc", "unit")], blocked=self._held())
+        )
+
+        assert "held behind it" not in rendered
+        assert "Nothing is stuck behind these" in " ".join(rendered.split())
+
+    def test_genuinely_nothing_blocked_keeps_the_sentence(self) -> None:
+        rendered = briefing.render(
+            _report(stalled=[_idle("ToddGBenson/mykronos", "unit")], blocked=[])
+        )
+        flat = " ".join(rendered.split())
+
+        assert "Stalled, holding nothing open: ToddGBenson/mykronos unit." in flat
+        assert "Nothing is stuck behind these" in flat
+        assert "held behind it" not in flat
