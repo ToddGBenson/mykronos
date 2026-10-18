@@ -1255,8 +1255,22 @@ jobs:
                 # SS7) - but only if it is called. Without this, a failed
                 # scanner reads in the lake as `never_reported`, which is what
                 # a capability nobody enabled looks like.
+                #
+                # #399: every branch, not only `main`. The git resource clones
+                # its branch single-branch, so gitleaks' `--all` saw `main`
+                # alone and a token pushed to a branch that was never merged
+                # went unscanned for good. The repository is public, so the
+                # fetch needs no credential. A failed fetch still scans and
+                # uploads (PS-3), then fails the task: a one-branch scan
+                # reported green is the bug being fixed.
+                fetch_rc=0
+                # No prompt can hang this (#496): BatchMode if `source` ever
+                # moves to SSH, GIT_TERMINAL_PROMPT=0 for HTTPS today.
+                GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" git fetch --quiet --no-tags origin '+refs/heads/*:refs/remotes/origin/*' || fetch_rc=$?
+                echo "gitleaks: scanning $(git for-each-ref refs/remotes/origin | wc -l) remote branch(es)"
+
                 rc=0
-                /tmp/gitleaks detect --source . --report-format json \
+                /tmp/gitleaks detect --source . --log-opts="--full-history --all" --report-format json \
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
@@ -1276,6 +1290,10 @@ jobs:
                 if [ "$rc" -ne 0 ]; then
                   echo "::error::gitleaks exited $rc - a scan failure, not a result."
                   exit "$rc"
+                fi
+                if [ "$fetch_rc" -ne 0 ]; then
+                  echo "::error::fetching every branch exited $fetch_rc - only main was scanned."
+                  exit "$fetch_rc"
                 fi
 
   - name: dependencies

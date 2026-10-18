@@ -827,6 +827,25 @@ jobs:
                 mkdir -p /tmp/results
                 fail=0
 
+                # -- 0. every branch, not only `main` (#399) -----------------
+                #
+                # The git resource clones its branch single-branch, so both
+                # "across history" checks below - gitleaks' `--all` and the
+                # identity-file `git log --all` - saw `main` alone. A token or
+                # profile.md pushed to a branch that was never merged is
+                # exactly as public, and went unchecked. The repository is
+                # public, so the fetch needs no credential. A failed fetch
+                # still runs both checks on what is here, then fails the job:
+                # a one-branch scan reported green is the bug being fixed.
+                # No prompt can hang this (#496): BatchMode if `source` ever
+                # moves to SSH, GIT_TERMINAL_PROMPT=0 for HTTPS today.
+                if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" git fetch --quiet --no-tags origin '+refs/heads/*:refs/remotes/origin/*'; then
+                  echo "scanning $(git for-each-ref refs/remotes/origin | wc -l) remote branch(es)"
+                else
+                  echo "::error:: could not fetch every branch; only main is scanned below."
+                  fail=1
+                fi
+
                 # -- 1. credential patterns, across history ------------------
                 #
                 # `detect` reads git history rather than the working tree: the
@@ -834,7 +853,7 @@ jobs:
                 # present at HEAD. --exit-code 0 because the gate below is
                 # this file's decision, not the scanner's.
                 echo "== gitleaks =="
-                /tmp/gitleaks detect --source . --report-format json \
+                /tmp/gitleaks detect --source . --log-opts="--full-history --all" --report-format json \
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner
                 grc=$?
 
