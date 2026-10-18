@@ -2931,12 +2931,23 @@ jobs:
                   echo "Scanning ${REGISTRY}/${image}:${SHA}"
                   # `--insecure` is the registry's TLS, not the scan's rigour:
                   # the registry is plain HTTP on the LAN (spec 15 §5).
+                  #
+                  # JSON first, then converted to the SARIF the uploader reads
+                  # (#382). One scan, two renderings: the JSON carries the
+                  # image config, `Metadata.ImageConfig.config.Env`, which is
+                  # where the image records the commit it was built from, and
+                  # the upload step's `mykronos.image_provenance --annotate`
+                  # copies that onto the SARIF for the adapter to check
+                  # against the tag. Only the images this lane publishes get a
+                  # JSON twin, so only they are asked.
                   trivy image "${REGISTRY}/${image}:${SHA}" \
                     --insecure \
                     --scanners vuln \
-                    --format sarif --output "results/trivy-${image}.sarif" \
+                    --format json --output "results/trivy-${image}.json" \
                     --exit-code 0 --quiet \
                     --timeout 30m
+                  trivy convert --format sarif \
+                    --output "results/trivy-${image}.sarif" "results/trivy-${image}.json"
 
                   # An absent or empty report is a failed scan, and the
                   # uploader already treats it as one. Failing here names the

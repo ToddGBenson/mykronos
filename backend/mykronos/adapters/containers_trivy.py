@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from mykronos import image_provenance
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 from mykronos.fingerprint import image_repository
@@ -143,9 +144,87 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
             "findings will have no package attached and cannot be remediated."
         )
 
+    # After the package check above, which is about Trivy's results and must
+    # not count these, and before the identity check, which must.
+    outcome.findings.extend(_provenance_findings(raw_output, context))
+
     warn_if_identity_degrades(outcome, outcome.findings, context)
 
     return outcome
+
+
+def _provenance_findings(raw_output: bytes, context: ScanContext) -> list[FindingSubmission]:
+    """A finding for each published image that cannot name its commit (#382).
+
+    Only runs `image_provenance --annotate` stamped are asked: those are the
+    images this lane publishes. "Absent" and "mismatch" are separate rules at
+    separate severities, because they are separate fixes, and a match says
+    nothing. A finding rather than a warning because it must stay open, and
+    show on the repository, until a build fixes it; a warning is read once in
+    a build log, which is how two of three images went unnoticed.
+
+    Repo-level identity (rule and title), with the image's repository in the
+    title and its tag only in the description: the same image failing on the
+    next commit is the same finding, not a new one per SHA.
+    """
+    try:
+        document = json.loads(raw_output)
+    except (ValueError, UnicodeDecodeError):
+        return []
+    runs = document.get("runs") if isinstance(document, dict) else None
+    findings: list[FindingSubmission] = []
+    for run in runs if isinstance(runs, list) else []:
+        properties = run.get("properties") if isinstance(run, dict) else None
+        if not isinstance(properties, dict):
+            continue
+        stamp = image_provenance.stamped(properties)
+        image = str(properties.get("imageName") or "").strip()
+        if stamp is None or not image:
+            continue
+        variable, recorded = stamp
+        result = image_provenance.assess(image, variable, recorded, context.commit_sha)
+        name = image.split("@", 1)[0].rsplit("/", 1)[-1].rsplit(":", 1)[0]
+        record = {
+            "image": image,
+            "variable": result.variable,
+            "recorded": result.recorded,
+            "expected": result.expected,
+            "verdict": result.verdict,
+        }
+        if result.verdict == "absent":
+            findings.append(
+                FindingSubmission(
+                    rule_id=RULE_ABSENT,
+                    title=f"Image {name} does not record the commit it was built from",
+                    description=(
+                        f"{image} carries no usable {result.variable} in its environment, "
+                        f"so a running container cannot say which commit it is "
+                        f"(expected {result.expected}). The tag is outside the box. Pass "
+                        f"the SHA as a build arg and keep it with `ARG {result.variable}` "
+                        f"then `ENV {result.variable}=${{{result.variable}}}` in the final "
+                        f"stage (#382)."
+                    ),
+                    severity=Severity.MEDIUM,
+                    raw_finding_json=record,
+                )
+            )
+        elif result.verdict == "mismatch":
+            findings.append(
+                FindingSubmission(
+                    rule_id=RULE_MISMATCH,
+                    title=f"Image {name} records a different commit than it is published as",
+                    description=(
+                        f"{image} records {result.variable}={result.recorded}, but it "
+                        f"is published as {result.expected}. Everything that asks the "
+                        f"running process what it is will be told the wrong commit. The "
+                        f"build passed a stale SHA or reused a layer that baked one in "
+                        f"(#382)."
+                    ),
+                    severity=Severity.HIGH,
+                    raw_finding_json=record,
+                )
+            )
+    return findings
 
 
 def _image_role(raw_output: bytes) -> str | None:
