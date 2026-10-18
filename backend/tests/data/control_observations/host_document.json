@@ -1,0 +1,56 @@
+{
+  "schema": "mykronos.host-observations/1",
+  "collector_version": "1",
+  "collected_at": "2026-10-16T09:00:00Z",
+  "host": "LAB-HOST",
+  "docker": {
+    "containers": [
+      {
+        "name": "thehub-demo-backend",
+        "ports": {
+          "8000/tcp": [
+            {"HostIp": "0.0.0.0", "HostPort": "8002"},
+            {"HostIp": "::", "HostPort": "8002"}
+          ]
+        }
+      },
+      {
+        "name": "mykronos-postgres",
+        "ports": {
+          "5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "5433"}],
+          "5433/tcp": null
+        }
+      }
+    ]
+  },
+  "cloudflared": {
+    "path": "C:\\Users\\op\\.cloudflared\\config.yml",
+    "config_text": "tunnel: 0000-tunnel\ncredentials-file: C:\\Users\\op\\.cloudflared\\0000.json\ningress:\n  - hostname: demo.example.net\n    service: http://localhost:8002\n  - hostname: mykronos-app.example.net\n    service: http://127.0.0.1:3100\n  - service: http_status:404\n"
+  },
+  "host_controls": {
+    "schema": "mykronos.host-controls/1",
+    "collected_at": "2026-10-16T09:00:00Z",
+    "host": "LAB-HOST",
+    "port": 5000,
+    "lan_addresses": [
+      {"prefix": "192.168.0.0/24", "address": "192.168.0.14", "interface": "Ethernet", "profile": "Private"}
+    ],
+    "firewall_rules": [
+      {
+        "display_name": "Registry LAN block",
+        "enabled": true,
+        "direction": "Inbound",
+        "action": "Block",
+        "protocol": "TCP",
+        "local_ports": ["5000"],
+        "remote_addresses": ["192.168.0.0/24"],
+        "profiles": ["Any"]
+      }
+    ],
+    "published_ports": [],
+    "registry_auth": {"configured": false, "detail": "none"},
+    "local_probe": null,
+    "errors": {}
+  },
+  "errors": {}
+}

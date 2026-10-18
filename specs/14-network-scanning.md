@@ -18,7 +18,8 @@ nothing.
 | Piece | Where |
 |---|---|
 | The authorization model — `cidr_ranges`, `authorization_reference`, `external_scan_acknowledged`, `max_rate_pps` | `capabilities.py::NetworkConfig` (§3) |
-| `NetworkAsset`, `resolve`, `audit_record` | `network.py` — **dormant**, imported only by its own test |
+| `NetworkAsset`, `resolve`, `audit_record` | `network.py` — called by the operator-run LAN wrapper below, nothing scheduled |
+| An operator-run LAN scan of explicitly listed hosts (TheHub #60826): `nmap -sV --top-ports 1000`, refused without `--cidr` and `--authorization-reference`; the XML is uploaded as `network` findings and each open port becomes a `port_published` ControlObservation (vantage `lan`) | `mykronos/lan_scan.py` |
 | Ingest of results produced elsewhere: nmap and nuclei output normalises and lands in the lake | `adapters/network_nmap.py`, registered in the adapter registry |
 | The `network` capability key and its dashboard label | `schemas.py::Capability.NETWORK`, frontend `CAPABILITY_META` |
 
@@ -38,6 +39,16 @@ like any other finding. What the platform will not do is *run the scan*.
 
 `netassess.py` and `personal-soc.yml` are not this. They judge a Windows
 Scheduled Task artifact and belong to spec 32's design, not to this spec.
+
+**Running the LAN wrapper (operator, Windows host).** With the repository's
+ingestion token granted `network` (`mykronos grant <owner/repo> network`):
+
+    $env:MYKRONOS_INGESTION_TOKEN = '<token>'
+    python -m mykronos.lan_scan --repo <owner/repo> --ingestion-url http://localhost:8180 `
+        --cidr 192.168.0.20/32 --authorization-reference "<who authorised this, when>"
+
+A port found on loopback or on the scanning host's own address is recorded as
+`host` vantage, not `lan` — Windows does not filter host-to-self traffic.
 
 **Not scheduled.** Building the scanner is expansion and needs its own
 decision — see `docs/BACKLOG.md` B-007, which explicitly excludes it.

@@ -1,0 +1,70 @@
+{
+  "_comment": "What the exposure probe's four anonymous GETs got back, per endpoint. Shapes are the ones probe_endpoint stores in Answer; headers are lower-cased as the probe records them.",
+  "gated": {
+    "url": "https://mykronos-app.example.net",
+    "answers": {
+      "/openapi.json": {
+        "status": 401,
+        "headers": {
+          "content-type": "application/json",
+          "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+          "strict-transport-security": "max-age=31536000; includeSubDomains"
+        },
+        "body": "{\"detail\":\"gate token required\"}"
+      },
+      "/docs": {
+        "status": 401,
+        "headers": {
+          "content-security-policy": "default-src 'none'",
+          "strict-transport-security": "max-age=31536000"
+        },
+        "body": ""
+      },
+      "/api/v1/info": {
+        "status": 401,
+        "headers": {
+          "content-security-policy": "default-src 'none'",
+          "strict-transport-security": "max-age=31536000"
+        },
+        "body": ""
+      },
+      "/api/v1/teams/main/pipelines": {
+        "status": 401,
+        "headers": {
+          "content-security-policy": "default-src 'none'",
+          "strict-transport-security": "max-age=31536000"
+        },
+        "body": ""
+      }
+    }
+  },
+  "open_demo": {
+    "url": "https://demo.example.net",
+    "answers": {
+      "/openapi.json": {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": "{\"openapi\":\"3.1.0\",\"paths\":{\"/api/items\":{\"get\":{},\"post\":{}}}}"
+      },
+      "/docs": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/html",
+          "content-security-policy-report-only": "default-src 'self'"
+        },
+        "body": "<html>swagger-ui</html>"
+      },
+      "/api/v1/info": {"status": 404, "headers": {}, "body": ""},
+      "/api/v1/teams/main/pipelines": {"status": 404, "headers": {}, "body": ""}
+    }
+  },
+  "mixed_redirects": {
+    "url": "http://blog.example.net",
+    "answers": {
+      "/openapi.json": {"status": 302, "headers": {"location": "/login"}, "body": ""},
+      "/docs": {"status": 401, "headers": {}, "body": ""},
+      "/api/v1/info": {"status": null, "headers": {}, "body": "", "error": "timeout"},
+      "/api/v1/teams/main/pipelines": {"status": 404, "headers": {}, "body": ""}
+    }
+  }
+}

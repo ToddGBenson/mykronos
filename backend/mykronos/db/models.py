@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -1031,6 +1032,71 @@ class NetassessRun(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<NetassessRun {self.repo_full_name} {self.run_key}>"
+
+
+class ControlObservation(Base):
+    """One machine-collected fact about whether a control holds (TheHub #60826).
+
+    **Observed, not declared.** `RepoSurface` and `RepoControl` are a person's
+    claims; a row here is what a collector saw from a named vantage point at a
+    named time: "anonymous GETs to mykronos-app.toddbenson.net answered 401",
+    "docker publishes 0.0.0.0:8002", "cloudflared routes demo.toddbenson.net to
+    localhost:8002". It is the evidence the environmental CVSS resolver (S5) is
+    allowed to lower a score on, and the evidence that can contradict a
+    declaration (`surfaces.CONTRADICTED_BY`).
+
+    **Append-only.** Unlike the declarations, the history is the evidence: a
+    port published last week and gone today is two rows, and "latest per
+    (subject, assertion)" is a read, not an overwrite.
+
+    `state` uses `host_controls`' five states, and only `pass` / `fail` are
+    evidence. `pass` means *the assertion is true* - `port_published` passing
+    means the port IS published - not that the result is good.
+    """
+
+    __tablename__ = "control_observations"
+    __table_args__ = (
+        Index(
+            "ix_control_observations_latest",
+            "repo_full_name",
+            "subject",
+            "assertion",
+            "collected_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: From the ingestion token (spec 05 §4) or the exposure endpoint's
+    #: registration - never from the payload.
+    repo_full_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    #: `surface:<id>` | `control:<id>` | `host:port` | `hostname`.
+    subject: Mapped[str] = mapped_column(String(512), default="")
+    #: Set when the subject names a declared surface or control directly, or
+    #: when a surface's `selectors` cover the subject (`control_observations.
+    #: record`). Null when nothing does.
+    surface_id: Mapped[str | None] = mapped_column(String(36), default=None, index=True)
+    control_id: Mapped[str | None] = mapped_column(String(36), default=None, index=True)
+    #: control_observations.ASSERTIONS - a closed vocabulary.
+    assertion: Mapped[str] = mapped_column(String(32), default="")
+    #: pass | fail | unknown | not_evidence | not_measured (host_controls).
+    state: Mapped[str] = mapped_column(String(16), default="unknown")
+    #: internet | lan | host - where the collector stood.
+    vantage: Mapped[str] = mapped_column(String(16), default="")
+    tool: Mapped[str] = mapped_column(String(64), default="")
+    tool_version: Mapped[str] = mapped_column(String(64), default="")
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: An `/api/ingest/raw` reference, or another pointer to what the tool said.
+    raw_ref: Mapped[str] = mapped_column(String(512), default="")
+    #: Who collected it: `job:exposure`, `Publish-ControlObservations.ps1@HOST`.
+    collector: Mapped[str] = mapped_column(String(255), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    #: Structured extras a matcher needs: the service a tunnel routes to, the
+    #: container behind a binding.
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ControlObservation {self.subject} {self.assertion}={self.state}>"
 
 
 class RepoGovernance(Base):

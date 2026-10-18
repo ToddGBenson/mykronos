@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sV --top-ports 1000 -oX - 192.168.0.14/32 192.168.0.20/32" start="1792141200" version="7.95" xmloutputversion="1.05">
+  <host>
+    <status state="up" reason="arp-response"/>
+    <address addr="192.168.0.14" addrtype="ipv4"/>
+    <hostnames><hostname name="lab-host" type="PTR"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="8002">
+        <state state="open" reason="syn-ack"/>
+        <service name="http" product="uvicorn"/>
+      </port>
+      <port protocol="tcp" portid="5000">
+        <state state="filtered" reason="no-response"/>
+        <service name="upnp"/>
+      </port>
+      <port protocol="tcp" portid="3389">
+        <state state="open" reason="syn-ack"/>
+        <service name="ms-wbt-server" product="Microsoft Terminal Services"/>
+      </port>
+    </ports>
+  </host>
+  <host>
+    <status state="up" reason="arp-response"/>
+    <address addr="192.168.0.20" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="closed" reason="reset"/>
+      </port>
+    </ports>
+  </host>
+  <runstats><finished time="1792141260" exit="success"/><hosts up="2" down="0" total="2"/></runstats>
+</nmaprun>

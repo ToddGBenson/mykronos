@@ -26,6 +26,7 @@ from mykronos import (
     briefing_sources,
     composition,
     consult,
+    control_observations,
     controls,
     cvss,
     finding_disposition,
@@ -3048,6 +3049,21 @@ class SelectorsModel(BaseModel):
     )
 
 
+class SurfaceContradictionOut(BaseModel):
+    """A fresh observation saying this surface's exposure claim is wrong
+    (`surfaces.CONTRADICTED_BY`, TheHub #60826)."""
+
+    #: `network` | `published_ingress` - the CONTRADICTED_BY source.
+    source: str
+    assertion: str
+    subject: str
+    vantage: str
+    tool: str
+    collector: str
+    collected_at: datetime
+    detail: str
+
+
 class SurfaceOut(BaseModel):
     id: str
     kind: str
@@ -3077,6 +3093,9 @@ class SurfaceOut(BaseModel):
     )
     read_only: bool = False
     manifest_key: str | None = None
+    #: Observed facts contradicting `exposure`. Shown beside the claim, never
+    #: resolved into it: the declaration stays what the person said.
+    contradicted_by: list[SurfaceContradictionOut] = Field(default_factory=list)
 
 
 class SurfacesOut(BaseModel):
@@ -3140,9 +3159,24 @@ class SurfaceRequest(BaseModel):
     )
 
 
-def _surface_out(surface: Any) -> SurfaceOut:
+def _surface_out(
+    surface: Any, contradicted: list[control_observations.Contradiction] | None = None
+) -> SurfaceOut:
     via = surfaces.declared_via(surface)
     return SurfaceOut(
+        contradicted_by=[
+            SurfaceContradictionOut(
+                source=c.source,
+                assertion=c.assertion,
+                subject=c.subject,
+                vantage=c.vantage,
+                tool=c.tool,
+                collector=c.collector,
+                collected_at=c.collected_at,
+                detail=c.detail,
+            )
+            for c in contradicted or []
+        ],
         id=surface.id,
         kind=surface.kind,
         name=surface.name,
@@ -3247,10 +3281,18 @@ async def repo_surfaces(
     repo_full_name = _resolve_repo(request, repo_id)
     with request.app.state.db.session() as session:
         summary = surfaces.for_repo(session, repo_full_name)
+        # Observed facts that contradict a declared exposure (TheHub #60826).
+        found = control_observations.contradictions_for_repo(
+            session,
+            repo_full_name,
+            summary.assets + summary.entry_points + summary.trust_boundaries,
+        )
         return SurfacesOut(
-            assets=[_surface_out(s) for s in summary.assets],
-            entry_points=[_surface_out(s) for s in summary.entry_points],
-            trust_boundaries=[_surface_out(s) for s in summary.trust_boundaries],
+            assets=[_surface_out(s, found.get(s.id)) for s in summary.assets],
+            entry_points=[_surface_out(s, found.get(s.id)) for s in summary.entry_points],
+            trust_boundaries=[
+                _surface_out(s, found.get(s.id)) for s in summary.trust_boundaries
+            ],
             total=summary.total,
             internet_facing=summary.internet_facing,
             unknowns=summary.unknowns,

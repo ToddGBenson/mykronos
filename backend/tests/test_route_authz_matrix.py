@@ -78,6 +78,7 @@ ROUTES: dict[str, str] = {
     # -- ingestion (per-repo token) ----------------------------------------
     "GET /api/ingest/health": INGEST,
     "POST /api/ingest/netassess": INGEST,
+    "POST /api/ingest/control-observations": INGEST,
     "POST /api/ingest/lane-failure": INGEST,
     "POST /api/ingest/scan-run": INGEST,
     "POST /api/ingest/findings": INGEST,
@@ -116,6 +117,7 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/threat-model": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/guidance": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/surfaces": PRINCIPAL,
+    "GET /api/dashboard/repos/{repo_id}/control-observations": PRINCIPAL,
     "POST /api/dashboard/repos/{repo_id}/surfaces": PRINCIPAL,
     "DELETE /api/dashboard/repos/{repo_id}/surfaces/{surface_id}": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/controls": PRINCIPAL,
@@ -276,6 +278,7 @@ VIEWER_MAY_CALL: dict[str, str] = {
 INGESTION_TOKEN_MAY_CALL: dict[str, str] = {
     "GET /api/ingest/health": "a workflow's first call; reports lake writability for its own repo",
     "POST /api/ingest/netassess": "netassess capability upload, grant-checked",
+    "POST /api/ingest/control-observations": "control evidence under the network grant",
     "POST /api/ingest/lane-failure": "a lane reporting its own failure for its own repo",
     "POST /api/ingest/scan-run": "scan-run envelope upload, grant-checked against the capability",
     "POST /api/ingest/findings": "findings upload, grant-checked against the capability",

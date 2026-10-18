@@ -28,6 +28,7 @@ from mykronos.api import refusals, validation_errors
 from mykronos.api.agent import router as agent_router
 from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
+from mykronos.api.control_observations import router as control_observations_router
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.exposure import router as exposure_router
 from mykronos.api.ingest import router as ingest_router
@@ -798,6 +799,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.hub = HubClient.from_settings(resolved)
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
+    app.include_router(control_observations_router)
     app.include_router(exposure_router)
     app.include_router(knowledge_router)
     app.include_router(oracle_router)

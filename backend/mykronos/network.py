@@ -23,11 +23,10 @@ Four rules, each of which is a specific mistake it refuses to let happen:
    finding, because "who said this was allowed" is the first question asked
    afterwards and the hardest to reconstruct later.
 
-**Dormant: nothing in the platform calls this yet (B-007).** The only importer
-is `tests/test_network_authorization.py`. There is no scanner to enforce the
-boundary *for* — no scheduled scan, no container, no workflow template, no
-pipeline job — so `resolve` and `audit_record` have never run against a real
-target. Spec 14 §0 has the full inventory of what exists and what does not.
+**One caller: the operator-run LAN wrapper (`mykronos.lan_scan`, TheHub
+#60826).** It calls `resolve` immediately before starting nmap and sends
+`audit_record` with its results. There is still no scheduled scan, container,
+workflow template or pipeline job (B-007); spec 14 §0 has the inventory.
 
 Kept rather than deleted because the boundary is the part worth having written
 before the scanner exists, not after: it is the piece that has to be right
