@@ -64,6 +64,7 @@ results siloed in its own tool's UI only.
 | `pr_number` | int, nullable | |
 | `triggered_by` | enum | `pull_request, push, schedule, workflow_dispatch, manual` |
 | `github_workflow_run_id` | string | for traceability back to Actions logs |
+| `job` | string, nullable | the CI job that produced the run (#449): `--job`, else `$MYKRONOS_JOB` (set inline by each Concourse upload), `$GITHUB_JOB`, `$BUILD_JOB_NAME`. Null for runs from before the field and callers with no job to name. Recorded only; staleness does not key on it yet (#380). |
 | `started_at` / `completed_at` | datetime | |
 | `scan_status` | enum | `success, no_applicable_targets, partial_failure, failure` |
 | `finding_count` | int | denormalized for fast dashboard queries |

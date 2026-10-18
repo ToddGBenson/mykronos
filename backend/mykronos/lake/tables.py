@@ -144,6 +144,13 @@ SCAN_RUNS_COLUMNS: Final[list[Column]] = [
     # that stops a green pass rate being read as more than it is.
     ("line_coverage", "DOUBLE"),
     ("branch_coverage", "DOUBLE"),
+    # The CI job that produced the run (#449). Nullable with no default, like
+    # `detail`: a run recorded before the column existed genuinely has no
+    # recorded job, and NULL says exactly that. Old partitions gain it lazily
+    # via `add_missing_columns` as they are rewritten, and the catalog views
+    # union an empty typed select, so a lake with no file carrying it yet
+    # still answers a query that names it.
+    ("job", "VARCHAR"),
 ]
 
 RISK_DECISIONS_COLUMNS: Final[list[Column]] = [

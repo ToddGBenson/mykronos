@@ -214,6 +214,21 @@ spec 08 §3 first. It is not a configuration gap.
 - This bulk-resync pattern is directly modeled on the "downstream repo
   sync" mechanism already proven internally (a manifest of repos + a
   scheduled job that opens sync PRs on each).
+- **No pinned action moves backwards (#376).** Target repositories keep
+  their rendered workflows current with Dependabot; nothing keeps the
+  templates current. Before writing a file, install and resync compare each
+  `uses: owner/repo@<sha>  # vX.Y.Z` line in the template with the same
+  action in the file being replaced. The template's pin is written only
+  when its release is newer. Otherwise — the repository is ahead, same
+  release on a different SHA, or the repository's version cannot be read —
+  the repository's pin is kept and named in the pull request body ("Action
+  pins kept at this repository's version"), in the install API's `detail`,
+  and in the resync report, which also states the template version each
+  file was compared with. Keeping-and-reporting was chosen over failing the
+  install: the downgrade is never what the pull request is for, and the
+  report is the signal to bump the template. A file that differs only by
+  kept pins is not drift. Keeping the templates themselves current (a
+  scheduled pin-update job) is separate work.
 
 ## 7. Acceptance criteria
 

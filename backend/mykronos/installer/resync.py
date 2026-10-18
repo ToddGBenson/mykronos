@@ -44,6 +44,7 @@ from mykronos.db.models import RepoOnboarding
 from mykronos.github.client import FileChange, GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.installer.installer import BRANCH_PREFIX, capability_configs
+from mykronos.installer.pins import PinDecision, kept, reconcile_pins
 from mykronos.installer.templates import TemplateLibrary
 from mykronos.schemas import utcnow
 
@@ -73,6 +74,36 @@ class RepoResync:
     pull_request_url: str | None = None
     skipped_reason: str | None = None
     error: str | None = None
+    #: The template version each file was compared against, by path. Stated
+    #: so a report reads "compared with sast template 1.4.2", not just
+    #: "drifted" - the first question about a resync is which template it
+    #: thought was current (#376).
+    template_versions: dict[str, str] = field(default_factory=dict)
+    #: Pinned actions this repository holds at a newer release than the
+    #: template, left at the repository's pin rather than downgraded (#376).
+    pins_kept: list[PinDecision] = field(default_factory=list)
+
+    def note(self) -> str:
+        """One line for the operator: which templates, and any pin kept."""
+        parts = []
+        if self.template_versions:
+            parts.append(
+                "compared with template "
+                + ", ".join(
+                    f"{path.rsplit('/', 1)[-1]} v{version}"
+                    for path, version in sorted(self.template_versions.items())
+                )
+            )
+        if self.pins_kept:
+            parts.append(
+                f"kept {len(self.pins_kept)} newer action pin(s): "
+                + "; ".join(
+                    f"{d.action} {d.target_version or '(unversioned)'} "
+                    f"(template {d.template_version})"
+                    for d in self.pins_kept
+                )
+            )
+        return "; ".join(parts)
 
     @property
     def opened(self) -> bool:
@@ -187,6 +218,7 @@ async def resync_templates(
                 )
 
             changes = await _drifted_files(
+                entry,
                 github,
                 templates,
                 repo,
@@ -209,6 +241,11 @@ async def resync_templates(
 
         if not changes:
             result.up_to_date += 1
+            if entry.pins_kept:
+                # Up to date only because a stale template pin was not
+                # applied. Still reported: it is the template that needs
+                # fixing, and silence would hide that.
+                result.repos.append(entry)
             continue
 
         entry.drifted = sorted(change.path for change in changes)
@@ -243,6 +280,7 @@ async def resync_templates(
 
 
 async def _drifted_files(
+    entry: RepoResync,
     github: object,
     templates: TemplateLibrary,
     repo: str,
@@ -261,6 +299,11 @@ async def _drifted_files(
     version string (spec 03 §6). A hand-edited workflow advertises a version
     it no longer matches, so trusting the header would skip precisely the
     repository most in need of the sweep.
+
+    The comparison is against the rendered template *after* pin
+    reconciliation (#376): a pin the repository holds at a newer release is
+    kept, so a repository ahead of a stale template is not drift, and a file
+    differing only by such a pin opens nothing.
     """
     from mykronos.installer.installer import _gate_depends_on
 
@@ -278,14 +321,18 @@ async def _drifted_files(
             gate_depends_on=_gate_depends_on(capability, wanted),
         )
         current = await github.get_file(repo, rendered.path, default_branch)  # type: ignore[attr-defined]
+        entry.template_versions[rendered.path] = rendered.version
+
+        content, decisions = reconcile_pins(rendered.path, rendered.content, current)
+        entry.pins_kept.extend(kept(decisions))
 
         # Newline normalisation only. A repository checked out on Windows can
         # hold CRLF for a file we rendered with LF, and opening a pull request
         # whose entire diff is line endings would train people to ignore these.
-        if current is not None and current.replace("\r\n", "\n") == rendered.content:
+        if current is not None and current.replace("\r\n", "\n") == content:
             continue
 
-        changes.append(FileChange(path=rendered.path, content=rendered.content))
+        changes.append(FileChange(path=rendered.path, content=content))
     return changes
 
 
@@ -339,13 +386,17 @@ async def _open_resync_pr(
         head=branch,
         base=default_branch,
         title="Mykronos: resync workflow templates",
-        body=_body(changes, templates),
+        body=_body(changes, templates, entry.pins_kept),
     )
     entry.pull_request_number = pull_request.number
     entry.pull_request_url = pull_request.url
 
 
-def _body(changes: list[FileChange], templates: TemplateLibrary) -> str:
+def _body(
+    changes: list[FileChange],
+    templates: TemplateLibrary,
+    pins_kept: list[PinDecision] | None = None,
+) -> str:
     lines = [
         "## Workflow template resync",
         "",
@@ -366,6 +417,19 @@ def _body(changes: list[FileChange], templates: TemplateLibrary) -> str:
         )
         version = templates.spec(capability).version if capability != "?" else "?"
         lines.append(f"| `{change.path}` | {version} |")
+
+    if pins_kept:
+        lines += [
+            "",
+            "### Action pins kept at this repository's version",
+            "",
+            "This repository already runs these actions at a release the "
+            "template does not know to be older, so this resync leaves them "
+            "where they are rather than moving them backwards. Each one is a "
+            "stale template pin in Mykronos.",
+            "",
+        ]
+        lines += [f"- {decision.describe()}" for decision in pins_kept]
 
     lines += [
         "",

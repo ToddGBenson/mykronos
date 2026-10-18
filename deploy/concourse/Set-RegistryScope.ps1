@@ -42,6 +42,9 @@
 
 .PARAMETER Remove
     Delete the rule and restore the previous state. For undoing this in a hurry.
+    Deletes only this script's rule. If any other enabled inbound Block rule
+    still covers TCP 5000 (B-054 left an older pair on this host), they are
+    listed by name and the registry is NOT reported open (#268).
 
 .PARAMETER WhatIf
     Print what would change and touch nothing. Works unelevated, which is the
@@ -108,17 +111,75 @@ function Get-LanPrefix {
         Sort-Object -Unique
 }
 
+function Test-PortInFilter {
+    <#
+        Does a firewall port filter's LocalPort cover $Port? Windows stores it
+        as 'Any', a single port, a range ('4000-6000') or a list of those.
+    #>
+    param([object[]]$LocalPort)
+    foreach ($entry in @($LocalPort)) {
+        $text = "$entry".Trim()
+        if ($text -eq 'Any') { return $true }
+        if ($text -match '^(\d+)-(\d+)$') {
+            if ($Port -ge [int]$Matches[1] -and $Port -le [int]$Matches[2]) { return $true }
+        }
+        elseif ($text -eq "$Port") { return $true }
+    }
+    $false
+}
+
+function Get-OtherPortBlockRule {
+    <#
+        Every other enabled inbound Block rule that covers TCP $Port (#268).
+
+        This script owns one rule, but it is not the only one this host has
+        had: B-054 left an older pair, "Block registry 5000 from the LAN", with
+        this host's own address carved out. Removing $RuleName alone and then
+        announcing the registry open would be false while any of those remain,
+        and creating $RuleName beside them leaves a -Remove that cannot undo
+        what the operator thinks it undoes. So both paths name them.
+    #>
+    @(Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True -ErrorAction SilentlyContinue) |
+        Where-Object { $_.DisplayName -ne $RuleName } |
+        Where-Object {
+            $filter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $_
+            ($filter.Protocol -eq 'TCP' -or $filter.Protocol -eq 'Any') -and
+                (Test-PortInFilter -LocalPort $filter.LocalPort)
+        }
+}
+
 if ($Remove) {
+    $removed = $false
     if (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue) {
         if ($PSCmdlet.ShouldProcess($RuleName, 'Remove firewall rule')) {
             Remove-NetFirewallRule -DisplayName $RuleName
             Write-Host "removed: $RuleName"
-            Write-Host ''
-            Write-Host 'The registry is open to the LAN again (B-054), which is what D-109 closed.'
+            $removed = $true
         }
     }
     else {
         Write-Host "not present: $RuleName"
+    }
+
+    # Nothing was changed under -WhatIf, so there is no new state to describe.
+    if ($WhatIfPreference) { return }
+
+    $others = @(Get-OtherPortBlockRule)
+    Write-Host ''
+    if ($others.Count -gt 0) {
+        # Named, not counted: the operator has to decide about each one, and
+        # "2 other rules" sends them to wf.msc to find out which.
+        Write-Warning ("The registry is NOT open to the LAN: {0} other enabled inbound Block rule(s) on TCP {1} remain:" -f $others.Count, $Port)
+        foreach ($rule in $others) {
+            Write-Warning ("  {0}" -f $rule.DisplayName)
+        }
+        Write-Warning 'This script did not create them and did not remove them. Remove-NetFirewallRule -DisplayName <name> if they are meant to go.'
+    }
+    elseif ($removed) {
+        Write-Host 'The registry is open to the LAN again (B-054), which is what D-109 closed.'
+    }
+    else {
+        Write-Host "No inbound Block rule covers TCP $Port. The registry is open to the LAN (B-054)."
     }
     return
 }
@@ -134,6 +195,18 @@ Write-Host "Port        : $Port (mykronos-registry, plain HTTP, no auth: block)"
 Write-Host "Denying     : $($LanPrefix -join ', ')"
 Write-Host 'Still open  : Docker bridges (172.16/12) and loopback -- the build path'
 Write-Host ''
+
+# Before the elevation check, so -WhatIf shows it too: reading rules needs no
+# elevation, and the plan is where the operator should learn about them.
+$others = @(Get-OtherPortBlockRule)
+if ($others.Count -gt 0) {
+    Write-Warning ("{0} other enabled inbound Block rule(s) on TCP {1} also exist, and this script does not manage them:" -f $others.Count, $Port)
+    foreach ($rule in $others) {
+        Write-Warning ("  {0}" -f $rule.DisplayName)
+    }
+    Write-Warning '-Remove deletes only the rule this script creates; these would stay in force.'
+    Write-Host ''
+}
 
 if (-not (Test-Elevated) -and -not $WhatIfPreference) {
     Write-Warning 'Firewall rules need an elevated prompt. Re-run this as administrator.'

@@ -8379,6 +8379,8 @@ export interface components {
              * @default
              */
             github_workflow_run_id: string;
+            /** Job */
+            job?: string | null;
             /**
              * Started At
              * Format: date-time
@@ -8743,6 +8745,8 @@ export interface components {
              * @default
              */
             repo_id: string;
+            /** Held Behind */
+            held_behind?: string[];
             action?: components["schemas"]["BriefingActionOut"] | null;
         };
         /** StatusChange */

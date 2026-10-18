@@ -48,6 +48,13 @@ class ScanContext:
     #: identity (spec 05 §5).
     workspace: Path | None = None
 
+    #: CycloneDX SBOMs describing what this commit installs, most preferred
+    #: first (mykronos#322). Only the Atlas adapter reads them: to say which
+    #: of its findings describe an installed version, and to report installed
+    #: versions that break a declared constraint. Empty means no SBOM was
+    #: supplied, and both of those are skipped rather than guessed at.
+    sbom_paths: tuple[Path, ...] = ()
+
 
 @dataclass
 class AdapterResult:

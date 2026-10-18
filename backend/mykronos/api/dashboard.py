@@ -2612,6 +2612,10 @@ class StalledLaneOut(BaseModel):
     #: The repository's onboarding id, which the action's path is built from;
     #: empty when it has no onboarding row (#60739).
     repo_id: str = ""
+    #: The CI jobs held back behind this lane until it is green, by name
+    #: (#330). Empty means nothing is gated on it -- the only case in which
+    #: "nothing is stuck behind it" is true of a lane holding no findings.
+    held_behind: list[str] = Field(default_factory=list)
     #: None when there is no route to name: the repository has no onboarding
     #: row, and `dispatch_refusal` says so.
     action: BriefingActionOut | None = None

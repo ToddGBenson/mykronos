@@ -148,6 +148,9 @@ class MatchedFinding:
     image: str
     fixed_version: str
     status: str
+    #: `"debian 10.13"` where the containers adapter tagged the finding
+    #: `base_os_eol` (#712), else empty.
+    base_os_eol: str = ""
 
 
 def validate_scope(scope: dict[str, Any]) -> None:
@@ -208,7 +211,10 @@ def match_scope(
         "       coalesce(file_path, ''), "
         "       coalesce(json_extract_string(raw_finding_json, '$.image'), ''), "
         "       coalesce(json_extract_string(raw_finding_json, '$.fixed_version'), ''), "
-        "       status "
+        "       status, "
+        "       CASE WHEN json_extract_string(raw_finding_json, '$.base_os_eol') = 'true' "
+        "            THEN coalesce(json_extract_string(raw_finding_json, '$.base_os'), "
+        "                          'an end-of-life OS') ELSE '' END "
         "FROM findings WHERE repo_full_name = ? AND capability = ? "
         f"AND status IN ({placeholders})",
         [repo, scope["capability"], *statuses],
@@ -220,7 +226,7 @@ def match_scope(
     paths = tuple(scope.get("file_paths") or [])
     fixed = scope.get("fixed_version", "any")
     out: list[MatchedFinding] = []
-    for fid, rule, pkg, sev, path, image, fixed_version, status in rows:
+    for fid, rule, pkg, sev, path, image, fixed_version, status, eol in rows:
         if want_images is not None and (not image or image_repository(image) not in want_images):
             continue
         if "*" not in rules and rule not in rules:
@@ -244,6 +250,7 @@ def match_scope(
                 image=str(image),
                 fixed_version=str(fixed_version),
                 status=str(status),
+                base_os_eol=str(eol or ""),
             )
         )
     return out
@@ -259,6 +266,47 @@ def _summary(matched: list[MatchedFinding]) -> dict[str, Any]:
         "with_fixed_version": sum(1 for m in matched if m.fixed_version.strip()),
         "images": sorted({image_repository(m.image) for m in matched if m.image}),
     }
+
+
+def premise_flags(deviation_type: str, matched: list[MatchedFinding]) -> list[dict[str, Any]]:
+    """Reasons an approver should doubt this acceptance's premise (#712).
+
+    A `vendor_dependency` claims no fix exists *yet* and becomes `no_vendor_fix`
+    on the findings, which re-opens the day a vendor ships one (spec 33
+    `no_fixed_version`). On an end-of-life base OS no vendor ever will, so the
+    premise is false from day one and the acceptance would never re-open.
+
+    **Flagged, not refused**, deliberately. The base-image move that fixes
+    these is a migration, often of a third-party image nobody here builds, and
+    a time-boxed acceptance whose milestone *is* that migration is a legitimate
+    record of the interim. Refusing would push the same request to
+    `operational_requirement` with the reason stripped out; flagging keeps the
+    reason in the evidence the approver signs and in the audit log. The
+    platform also only knows a base is end-of-life where the lane stamped
+    Trivy's OS metadata, so a refusal would bite unevenly across lanes.
+    """
+    if deviation_type != "vendor_dependency":
+        return []
+    eol = [m for m in matched if m.base_os_eol]
+    if not eol:
+        return []
+    bases = sorted({m.base_os_eol for m in eol})
+    images = sorted({image_repository(m.image) for m in eol if m.image})
+    return [
+        {
+            "code": "base_os_eol",
+            "findings": len(eol),
+            "bases": bases,
+            "images": images,
+            "reason": (
+                f"{len(eol)} finding(s) in scope are on an end-of-life base OS "
+                f"({', '.join(bases)}): no vendor fix will ever ship, so this "
+                "vendor_dependency acceptance will never re-open on its own. "
+                f"The fix is a supported base image for {', '.join(images) or 'the image'}; "
+                "a milestone that moves it is the way out."
+            ),
+        }
+    ]
 
 
 # -- Validation ----------------------------------------------------------------
@@ -345,9 +393,13 @@ def _validate(
 # -- Proposing -----------------------------------------------------------------
 
 
-def _snapshot(record: RiskAcceptance, matched: list[MatchedFinding]) -> dict[str, Any]:
+def _snapshot(
+    record: RiskAcceptance,
+    matched: list[MatchedFinding],
+    flags: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """The evidence an approver sees, frozen into the request's digest."""
-    return {
+    snapshot = {
         "risk_acceptance_id": record.id,
         "repo": record.repo_full_name,
         "scope": record.scope,
@@ -370,6 +422,11 @@ def _snapshot(record: RiskAcceptance, matched: list[MatchedFinding]) -> dict[str
         "matched": _summary(matched),
         "covered_finding_ids": sorted(m.finding_id for m in matched),
     }
+    # Only when present, so the evidence (and its digest) of every proposal
+    # without a flag is exactly what it was.
+    if flags:
+        snapshot["flags"] = flags
+    return snapshot
 
 
 def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
@@ -460,6 +517,9 @@ def propose(
         raise RiskAcceptanceError(
             f"KEV-listed CVEs cannot be accepted, only mitigated: {', '.join(kev[:10])}."
         )
+    flags = premise_flags(deviation_type, matched)
+    for flag in flags:
+        logger.warning("risk acceptance on %s flagged: %s", repo, flag["reason"])
 
     record = RiskAcceptance(
         id=new_id(),
@@ -491,7 +551,7 @@ def propose(
         subject_ref=record.id,
         requested_by=requested_by,
         statement=justification.strip(),
-        context={"snapshot": _snapshot(record, matched)},
+        context={"snapshot": _snapshot(record, matched, flags)},
     )
     record.approval_request_id = approval.id
     with db.session() as session:
@@ -508,6 +568,7 @@ def propose(
             findings=len(matched),
             legacy=legacy,
             approval_request_id=approval.id,
+            **({"premise_flags": [f["code"] for f in flags]} if flags else {}),
         )
         session.flush()
         session.expunge(record)

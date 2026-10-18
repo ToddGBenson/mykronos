@@ -278,6 +278,12 @@ class StalledLane:
     #: (`_resolve_repo`). Empty when the repository has no onboarding row, and
     #: then the lane gets no path at all (#60739).
     repo_id: str = ""
+    #: The CI jobs held back behind this lane, by name, sorted (#330) --
+    #: `_held_behind`'s answer, set by `build` once the blocked list is known.
+    #: A field rather than something only `render` works out, so `--json`,
+    #: the dashboard API and the page all carry it and cannot disagree with
+    #: the terminal about whether anything is stuck behind an idle lane.
+    held_behind: list[str] = field(default_factory=list)
     #: Why the dispatch below is not offered, empty when it is. Serialised, so
     #: a UI can say the same sentence the terminal does instead of deciding for
     #: itself whether the button works.
@@ -613,6 +619,10 @@ class ClassSummary:
     #: upgrade to, which is the difference between a day of work and a
     #: dispositioning pass (B-026).
     no_fix_available: int = 0
+    #: (image, base OS, open findings) for each image on an end-of-life base
+    #: OS (#712). Those findings will never get a package fix, which is a
+    #: different instruction from "no fix yet": the image needs a newer base.
+    eol_images: list[tuple[str, str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -1485,6 +1495,28 @@ def _concentration(
     return [(_short(str(name)), int(count)) for name, count in rows]
 
 
+def _eol_images(
+    catalog: Catalog, *, asset_id: str | None = None
+) -> list[tuple[str, str, int]]:
+    """Open container findings the adapter tagged `base_os_eol`, per image (#712)."""
+    if not catalog.all_files("findings"):
+        return []
+    scope = "" if asset_id is None else " AND asset_id = ?"
+    rows = catalog.query(
+        f"""
+        SELECT coalesce(json_extract_string(raw_finding_json, '$.image'), '(unknown image)'),
+               coalesce(json_extract_string(raw_finding_json, '$.base_os'), 'an end-of-life OS'),
+               count(*)
+        FROM findings
+        WHERE status = 'open' AND capability = 'containers'
+          AND json_extract_string(raw_finding_json, '$.base_os_eol') = 'true'{scope}
+        GROUP BY 1, 2 ORDER BY 3 DESC, 1
+        """,
+        [asset_id] if asset_id is not None else None,
+    )
+    return [(str(image), str(base), int(n)) for image, base, n in rows]
+
+
 def _short(identifier: str) -> str:
     """The part of a rule id a person would say out loud.
 
@@ -1584,23 +1616,31 @@ def build(
             concentrated_in=_concentration(catalog, capability, asset_id=asset_id),
             action=CLASS_ACTIONS.get(capability),
             no_fix_available=no_fix.get(capability, 0),
+            eol_images=(
+                _eol_images(catalog, asset_id=asset_id) if capability == "containers" else []
+            ),
         )
         for capability, count in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
 
+    stalled = _only(
+        stalled_lanes(
+            catalog,
+            now=stamp,
+            scanned_by=scanned_by,
+            concourse_token=concourse_token,
+            repo_ids=repo_ids,
+        ),
+        asset_id,
+    )
+    gates = list(blocked_jobs or [])
+    for lane in stalled:
+        lane.held_behind = _held_behind(lane, gates)
+
     return Briefing(
         generated_at=stamp,
         total_open=sum(totals.values()),
-        stalled=_only(
-            stalled_lanes(
-                catalog,
-                now=stamp,
-                scanned_by=scanned_by,
-                concourse_token=concourse_token,
-                repo_ids=repo_ids,
-            ),
-            asset_id,
-        ),
+        stalled=stalled,
         stale=_only(
             stale_lanes(
                 catalog, now=stamp, default_branches=default_branches, repo_ids=repo_ids
@@ -1868,18 +1908,18 @@ def render(briefing: Briefing) -> str:
         pairs = [(lane, _held_behind(lane, briefing.blocked)) for lane in idle]
         # Stable, so lanes holding equally many keep the order `stalled_lanes` gave.
         gating = sorted((pair for pair in pairs if pair[1]), key=lambda pair: -len(pair[1]))
-        quiet = [lane for lane, held in pairs if not held]
+        quiet = [lane for lane, held_jobs in pairs if not held_jobs]
         # "Also" needs something to be also to. With nothing printed above it
         # the word is a dangling reference to a section that never rendered.
         preceded = bool(holding)
-        for lane, held in gating:
+        for lane, held_jobs in gating:
             lead = "Also stalled" if preceded else "Stalled"
             preceded = True
-            jobs = "1 job is" if len(held) == 1 else f"{len(held)} jobs are"
+            jobs = "1 job is" if len(held_jobs) == 1 else f"{len(held_jobs)} jobs are"
             lines += textwrap.wrap(
                 f"  {lead}, holding nothing open: {lane.repo_full_name} "
                 f"{lane.capability}. {jobs} held behind it and cannot run until "
-                f"it is green: {', '.join(held)}.",
+                f"it is green: {', '.join(held_jobs)}.",
                 72,
                 subsequent_indent="  ",
             )
@@ -1932,24 +1972,24 @@ def render(briefing: Briefing) -> str:
             "  Repair the lane named after 'behind'; these follow on their own.",
             "",
         ]
-        for held in sorted(briefing.blocked, key=lambda b: (b.pipeline, b.root, b.job)):
-            days = held.days_blocked
+        for gated in sorted(briefing.blocked, key=lambda b: (b.pipeline, b.root, b.job)):
+            days = gated.days_blocked
             when = (
-                f" since {held.since:%Y-%m-%d} ({days:.0f} days)"
-                if held.since and days is not None
+                f" since {gated.since:%Y-%m-%d} ({days:.0f} days)"
+                if gated.since and days is not None
                 else ""
             )
-            via = "" if held.blocked_by == held.root else f", via {held.blocked_by}"
+            via = "" if gated.blocked_by == gated.root else f", via {gated.blocked_by}"
             own = (
-                f"its own last build {held.last_status}"
-                if held.last_status
+                f"its own last build {gated.last_status}"
+                if gated.last_status
                 else "it has never finished a build"
             )
-            lines.append(f"  {held.pipeline}/{held.job}")
-            lines.append(f"      behind {held.root} ({held.root_state}){when}{via}")
+            lines.append(f"  {gated.pipeline}/{gated.job}")
+            lines.append(f"      behind {gated.root} ({gated.root_state}){when}{via}")
             lines.append(f"      did not run — {own}")
-            if held.build_url:
-                lines.append(f"      {held.build_url}")
+            if gated.build_url:
+                lines.append(f"      {gated.build_url}")
         lines.append("")
     elif briefing.blocked_unknown:
         lines += [
@@ -2163,6 +2203,16 @@ def render(briefing: Briefing) -> str:
             lines.append(
                 f"        {entry.no_fix_available} of these have no published fix — "
                 "nothing to upgrade to."
+            )
+        for image, base, count in entry.eol_images:
+            lines += textwrap.wrap(
+                f"{image}: {count} finding(s) will never get a package fix — "
+                f"{base} is end-of-life; the image needs a newer base.",
+                72,
+                initial_indent="        ",
+                subsequent_indent="          ",
+                break_long_words=False,
+                break_on_hyphens=False,
             )
         if entry.action:
             lines.append(f"        → {entry.action.method} {entry.action.path}")
