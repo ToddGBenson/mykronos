@@ -238,8 +238,15 @@ services:
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better. Declared, not adopted: `image:` stays the vendor's
     # until a reviewed change pins a published date.
+    #
+    # registry-src, not apk-upgrade (2026-10-18): the findings that matter are
+    # in /bin/registry, a static Go binary with x/net v0.59.0 (4 HIGH HTTP/2
+    # DoS) and Go 1.26.8's standard library, which no package upgrade reaches.
+    # The recipe rebuilds the same v3.1.2 commit with x/net 0.60.0, the OTLP
+    # exporters 1.45.0 and Go 1.27.2 on this base + `apk upgrade`: Trivy
+    # 23 (4 HIGH, 14 MEDIUM) -> 1 (an unmaintained-package notice, no fix).
     x-mykronos-build:
-      context: ../images/apk-upgrade
+      context: ../images/registry-src
       # The digest this host runs (2026-10-15); `image:` itself is unpinned.
       base: registry:3@sha256:852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696
       publish: library/registry:3
