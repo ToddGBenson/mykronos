@@ -60,6 +60,7 @@ _RUN_COLUMNS = (
     "detail",
     "line_coverage",
     "branch_coverage",
+    "job",
 )
 
 #: The lane's ordering, with the same tie-breaks `_recent_scan_runs` uses so
