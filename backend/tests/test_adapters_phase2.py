@@ -316,9 +316,11 @@ class TestZap:
             is Severity.HIGH
         )
         assert (
-            zap_normalize(zap_report(riskcode="0"), context("dast")).findings[0].severity
-            is Severity.INFO
+            zap_normalize(zap_report(riskcode="1"), context("dast")).findings[0].severity
+            is Severity.LOW
         )
+        # Informational (riskcode 0) is not a finding at all: TestZapInformational.
+        assert zap_normalize(zap_report(riskcode="0"), context("dast")).findings == []
 
     def test_the_url_path_is_the_location(self) -> None:
         finding = zap_normalize(zap_report(), context("dast")).findings[0]
@@ -642,7 +644,8 @@ class TestZapScannerSelfReport:
             "pluginid": "10999",
             "alertRef": "10999",
             "alert": "Timestamp Disclosure - Unix",
-            "riskcode": "0",
+            # Low, so the Informational lane (#273) does not take it first.
+            "riskcode": "1",
             "desc": "A timestamp was disclosed.",
             "solution": "Confirm with ZAP that the timestamp is not sensitive.",
             "cweid": "200",
@@ -678,6 +681,89 @@ class TestZapScannerSelfReport:
         assert "2.16.1" in detail
         assert "2.17.0" in detail
         assert REPO in detail
+
+
+class TestZapInformational:
+    """#273: ZAP's Informational band (`riskcode` 0) is counted on the lane,
+    not stored as open security findings -- the same path as the #303
+    self-report."""
+
+    @staticmethod
+    def _alert(ref: str, riskcode: str, uris: list[str]) -> dict[str, Any]:
+        return {
+            "pluginid": ref,
+            "alertRef": ref,
+            "alert": f"Alert {ref}",
+            "riskcode": riskcode,
+            "desc": "d",
+            "solution": "s",
+            "cweid": "20",
+            "instances": [{"uri": f"http://x.test{u}", "method": "GET"} for u in uris],
+        }
+
+    @staticmethod
+    def _report(alerts: list[dict[str, Any]]) -> bytes:
+        return json.dumps(
+            {"@version": "2.16.1", "site": [{"@name": "http://x.test", "alerts": alerts}]}
+        ).encode()
+
+    def _mixed(self) -> bytes:
+        return self._report(
+            [
+                self._alert("10031", "0", ["/a", "/b", "/c"]),
+                self._alert("10096", "0", ["/a"]),
+                self._alert("10020", "1", ["/a"]),
+                self._alert("10038", "2", ["/a", "/b"]),
+            ]
+        )
+
+    def test_findings_only_for_low_and_above(self) -> None:
+        result = zap_normalize(self._mixed(), context("dast"))
+
+        assert sorted({f.rule_id for f in result.findings}) == [
+            "ZAP-10020-CWE-20",
+            "ZAP-10038-CWE-20",
+        ]
+        assert len(result.findings) == 3
+        assert all(f.severity is not Severity.INFO for f in result.findings)
+
+    def test_informational_alerts_are_counted_in_one_warning(self) -> None:
+        result = zap_normalize(self._mixed(), context("dast"))
+
+        assert len(result.warnings) == 1
+        note = result.warnings[0]
+        assert "2 informational alert(s)" in note
+        assert "4 instance(s)" in note
+        assert "ZAP-10031-CWE-20" in note and "ZAP-10096-CWE-20" in note
+        # It reaches the ScanRun's `detail` (warnings[0][:200]) with its count.
+        assert "2 informational alert(s)" in note[:200]
+
+    def test_it_does_not_mark_the_run_degraded_or_skipped(self) -> None:
+        result = zap_normalize(self._mixed(), context("dast"))
+
+        assert result.scan_status is ScanStatus.SUCCESS
+        assert result.skipped == 0
+
+    def test_the_count_never_takes_the_detail_slot_from_a_self_report(self) -> None:
+        """Nearly every ZAP report has informational alerts; the routine count
+        must come after a warning that says something is wrong."""
+        report = self._report(
+            [
+                self._alert("10031", "0", ["/a"]),
+                TestZapScannerSelfReport.SELF_REPORT,
+            ]
+        )
+        result = zap_normalize(report, context("dast"))
+
+        assert result.findings == []
+        assert len(result.warnings) == 2
+        assert "is about the scanner" in result.warnings[0]
+        assert "informational" in result.warnings[1]
+
+    def test_a_report_with_no_informational_alerts_has_no_note(self) -> None:
+        result = zap_normalize(self._report([self._alert("10038", "2", ["/a"])]), context("dast"))
+
+        assert result.warnings == []
 
 
 class TestZapRouteIdentity:

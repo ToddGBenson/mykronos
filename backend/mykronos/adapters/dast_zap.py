@@ -71,10 +71,11 @@ single most frequent alert the lane has ever produced (160 instances, ahead of
 
 Two things this deliberately is *not*:
 
-- **Not a `riskcode` filter.** #273 proposes dropping ZAP's Informational band
-  (`riskcode` 0), which handles the 22 `ZAP-10031` rows cleanly and does not
-  touch this one: `10116` is `riskcode: "1"` (Low) at `confidence: "3"`, a
-  higher severity than the noise the informational filter is aimed at.
+- **Not the `riskcode` filter.** #273 drops ZAP's Informational band
+  (`riskcode` 0) -- see below -- which handles the 22 `ZAP-10031` rows
+  cleanly but does not touch this one: `10116` is `riskcode: "1"` (Low) at
+  `confidence: "3"`, a higher severity than the noise the informational
+  filter is aimed at. The two predicates are independent and both run.
 - **Not a deny-list of rule ids.** A list of "rules we ignore" keyed on plugin
   numbers is the maintenance shape #324 objects to, and it is where real
   findings go to be forgotten. `_is_about_the_scanner` states the actual
@@ -90,6 +91,19 @@ nowhere is worse than a misattributed finding: at least the misattribution is
 visible, and silence is how a scanner quietly stops being a control. It does
 not touch `scan_status`, because a DAST lane a minor version behind is a
 lane-quality signal and not a release blocker.
+
+**ZAP's Informational band is not a finding either (#273).** `riskcode` 0
+is ZAP saying "worth knowing, not a risk" -- `ZAP-10031` "User Controllable
+HTML Element Attribute (Potential XSS)", timestamp and comment disclosures --
+and filing those as open security findings put 22 `ZAP-10031` rows in the
+table that nobody would ever fix, beside the Low/Medium/High ones somebody
+should. They take the same lane path as the self-report above: counted in one
+warning (how many alerts, how many instances, which rules), which reaches the
+step summary and, when nothing more urgent precedes it, the ScanRun's
+`detail`; never a finding, never `skipped`, never a gate. That note comes
+*after* every other warning, because a ZAP report almost always carries some
+Informational alerts, and a routine count must not push a self-report, a
+truncation notice or a parse failure out of the one `detail` slot.
 
 For the same reason the rule identity comes from `alertRef`, not `pluginid`:
 several alerts can share a plugin *and* a CWE, and only `alertRef` tells them
@@ -130,15 +144,22 @@ TOOL_NAME = "zap"
 
 #: ZAP `riskcode`. There is no critical band — the highest ZAP expresses is
 #: High, and inventing a critical tier the tool did not report would
-#: misrepresent it.
+#: misrepresent it. `"0"` (Informational) is deliberately absent: it never
+#: becomes a finding (#273), see `_is_informational`.
 _RISK_TO_SEVERITY = {
     "3": Severity.HIGH,
     "2": Severity.MEDIUM,
     "1": Severity.LOW,
-    "0": Severity.INFO,
 }
 
+#: ZAP's Informational band (#273).
+_INFORMATIONAL_RISKCODE = "0"
+
 MAX_INSTANCES_PER_ALERT = 25
+
+
+def _is_informational(alert: dict[str, Any]) -> bool:
+    return str(alert.get("riskcode", "")).strip() == _INFORMATIONAL_RISKCODE
 
 
 def _severity(alert: dict[str, Any]) -> Severity:
@@ -249,6 +270,26 @@ def _lane_health_note(
     )
 
 
+#: How many rule ids the informational note names before "and N more".
+_INFORMATIONAL_RULES_NAMED = 5
+
+
+def _informational_note(alerts: int, instances: int, rules: list[str]) -> str:
+    """One line counting the Informational alerts that were not filed (#273).
+
+    Front-loaded like `_lane_health_note`: the count first, so it survives the
+    uploader's 200-character cut of `warnings[0]` into the ScanRun's `detail`.
+    """
+    named = ", ".join(rules[:_INFORMATIONAL_RULES_NAMED])
+    more = len(rules) - _INFORMATIONAL_RULES_NAMED
+    if more > 0:
+        named += f" and {more} more"
+    return (
+        f"zap: {alerts} informational alert(s) (riskcode 0, {instances} "
+        f"instance(s)) recorded as lane notes, not findings (#273): {named}"
+    )
+
+
 def _rule_id(alert_ref: str, cwe: str) -> str:
     return (f"ZAP-{alert_ref}" + (f"-CWE-{cwe}" if cwe else ""))[:255]
 
@@ -302,6 +343,10 @@ def _normalize(raw_output: bytes, context: ScanContext, *, keep_origin: bool) ->
     #: same statement about itself against every URI it crawled, and 24 copies
     #: of "your scanner is out of date" is the noise this is removing.
     lane_health: list[str] = []
+    #: ZAP's Informational band (#273): counted here, never filed.
+    informational_alerts = 0
+    informational_instances = 0
+    informational_rules: list[str] = []
     #: The running scanner, straight from the report ZAP wrote — `"@version":
     #: "2.16.1"`. Not `context.tool_version`, which the DAST lane leaves empty:
     #: `deploy/concourse/pipelines/thehub.yml` passes no `--tool-version`, and
@@ -355,6 +400,21 @@ def _normalize(raw_output: bytes, context: ScanContext, *, keep_origin: bool) ->
                 )
                 if note not in lane_health:
                     lane_health.append(note)
+                continue
+
+            # #273. Informational is ZAP's "worth knowing, not a risk" band.
+            # The same lane path as the self-report above, and for the same
+            # reason not `skipped`: it was understood, it is just not a
+            # finding. After the self-report check, so a self-report filed at
+            # riskcode 0 keeps its more specific note.
+            if _is_informational(alert):
+                informational_alerts += 1
+                informational_instances += max(
+                    1, sum(1 for i in (alert.get("instances") or []) if isinstance(i, dict))
+                )
+                rule = _rule_id(rule_id, cwe)
+                if rule not in informational_rules:
+                    informational_rules.append(rule)
                 continue
 
             severity = _severity(alert)
@@ -424,5 +484,14 @@ def _normalize(raw_output: bytes, context: ScanContext, *, keep_origin: bool) ->
     if result.skipped:
         result.warn(f"{result.skipped} ZAP record(s) were unusable and skipped")
         result.scan_status = ScanStatus.PARTIAL_FAILURE
+
+    # Last, after every warning that says something went wrong: nearly every
+    # ZAP report carries some Informational alerts, so this routine count must
+    # never take the one `detail` slot from a self-report, a truncation or a
+    # parse failure.
+    if informational_alerts:
+        result.warn(
+            _informational_note(informational_alerts, informational_instances, informational_rules)
+        )
 
     return result
