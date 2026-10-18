@@ -717,6 +717,11 @@ class OpenFindingsPage(BaseModel):
         "difference between the record and this view."
     )
     by_severity: dict[str, int]
+    by_capability: dict[str, int] = Field(
+        default_factory=dict,
+        description="Findings of this status per scan type, before filters — "
+        "the same scope as `total` and `by_severity`, so each sums to `total`.",
+    )
     groups: list[FindingGroupOut]
     toxic_combinations: list[ToxicCombinationOut]
     truncated: bool

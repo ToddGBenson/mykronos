@@ -687,6 +687,67 @@ class TestOpenFindings:
         assert len(page["groups"]) == 4
         assert page["deduplicated"] == 3
 
+    def test_the_summary_counts_match_what_each_filter_lists(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """#60821: total, by severity and by scan type at the top of Findings.
+
+        Each count is a promise about the list behind it: clicking "high (2)"
+        must list two. So every count is checked against the page that filter
+        returns, and both breakdowns must add up to the total.
+        """
+        page = self._page(client, admin_auth, outstanding)
+
+        assert page["total"] == 7
+        assert page["by_severity"] == {
+            "critical": 2,
+            "high": 4,
+            "medium": 1,
+            "low": 0,
+            "info": 0,
+        }
+        assert page["by_capability"] == {"sast": 5, "atlas": 1, "containers": 1}
+        assert sum(page["by_severity"].values()) == page["total"]
+        assert sum(page["by_capability"].values()) == page["total"]
+
+        for severity, count in page["by_severity"].items():
+            filtered = self._page(client, admin_auth, outstanding, severity=severity)
+            assert filtered["matching"] == count, severity
+            assert filtered["shown"] == count, severity
+        for capability, count in page["by_capability"].items():
+            filtered = self._page(client, admin_auth, outstanding, capability=capability)
+            assert filtered["matching"] == count, capability
+            assert filtered["shown"] == count, capability
+            # Before filters, like `total`: a count that changed when its own
+            # filter was pressed would describe the answer, not the choice.
+            assert filtered["by_capability"] == page["by_capability"]
+
+    def test_the_summary_follows_the_status_asked_for(
+        self, client: TestClient, admin_auth: dict[str, str], outstanding
+    ) -> None:
+        """The counts describe the status the list shows, not always `open`."""
+        page = self._page(client, admin_auth, outstanding)
+        accepted = self._group(page, "CVE-2024-4812")["locations"][0]["finding_id"]
+        client.patch(
+            f"/api/dashboard/findings/{accepted}/status",
+            json={
+                "status": "accepted_risk",
+                "reason": "behind the VPN",
+                "accepted_reason_code": "compensating_control",
+                "accepted_until": (date.today() + timedelta(days=20)).isoformat(),
+            },
+            headers=admin_auth,
+        )
+
+        opened = self._page(client, admin_auth, outstanding)
+        assert opened["total"] == 6
+        assert sum(opened["by_capability"].values()) == 6
+
+        risk = self._page(client, admin_auth, outstanding, finding_status="accepted_risk")
+        assert risk["total"] == 1
+        assert sum(risk["by_capability"].values()) == 1
+        assert len(risk["by_capability"]) == 1
+
     def test_only_open_findings_are_shown(
         self, client: TestClient, admin_auth: dict[str, str], outstanding
     ) -> None:

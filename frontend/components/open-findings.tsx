@@ -44,6 +44,7 @@ import type {
   Severity,
   ToxicCombination,
 } from "@/lib/api";
+import { findingsSummary, type SummaryCount } from "@/lib/findings-summary";
 
 /**
  * The statuses a person can ask for. `open` is the default and the point.
@@ -189,6 +190,7 @@ export function OpenFindings({
 
   return (
     <div className="flex flex-col gap-3">
+      <Summary page={page} query={query} href={href} />
       <Filters repoId={repoId} page={page} query={query} href={href} />
 
       {page.toxic_combinations.length > 0 ? (
@@ -264,6 +266,85 @@ export function OpenFindings({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Total, by severity, by scan type (TheHub #60821) — the three questions the
+ * operator asks of this tab before reading a single row.
+ *
+ * The counts are the backend's, for the status the list is showing and before
+ * any other filter, so each one is exactly what clicking it lists. They do not
+ * move as filters are applied: a count that changed when you pressed it would
+ * describe the answer rather than the choice. Clicking an applied count
+ * removes that filter again.
+ */
+function Summary({
+  page,
+  query,
+  href,
+}: {
+  page: OpenFindingsPage;
+  query: FindingsQuery;
+  href: (patch: Record<string, string | undefined>) => string;
+}) {
+  const summary = findingsSummary(
+    page,
+    query,
+    (capability) =>
+      CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.label ?? capability,
+  );
+  const chip = (entry: SummaryCount, key: "severity" | "capability") => (
+    <Link
+      key={entry.value}
+      href={href({ [key]: entry.active ? undefined : entry.value, ...CLEAR_SELECTION })}
+      aria-current={entry.active ? "true" : undefined}
+      title={
+        entry.active
+          ? `Showing ${entry.label} only — click to clear`
+          : `Show ${entry.label} only`
+      }
+      className={`inline-flex items-baseline gap-1.5 border px-1.5 py-0.5 font-mono text-[12px] ${
+        entry.active
+          ? "border-accent bg-accent-wash"
+          : "border-rule hover:border-accent"
+      } ${entry.count === 0 ? "opacity-60" : ""}`}
+    >
+      {key === "severity" ? (
+        <SeverityText severity={entry.value as Severity} />
+      ) : (
+        <span className="text-ink-2">{entry.label}</span>
+      )}
+      <span className="font-bold text-ink">{entry.count}</span>
+    </Link>
+  );
+  return (
+    <section
+      aria-label="Findings summary"
+      className="flex flex-col gap-2 border border-rule bg-paper-2 px-3 py-2"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        <span className="font-mono text-[20px] font-bold text-ink">{summary.total}</span>
+        <span className="font-mono text-[12px] text-ink-2">
+          {summary.status} finding{summary.total === 1 ? "" : "s"} in total
+        </span>
+        <span className="font-mono text-[11px] text-ink-3">
+          · counts are for this status, before the other filters
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>By severity</Label>
+        {summary.bySeverity.map((entry) => chip(entry, "severity"))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>By scan type</Label>
+        {summary.byCapability.length === 0 ? (
+          <span className="font-mono text-[12px] text-ink-3">none</span>
+        ) : (
+          summary.byCapability.map((entry) => chip(entry, "capability"))
+        )}
+      </div>
+    </section>
   );
 }
 

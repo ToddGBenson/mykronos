@@ -6316,6 +6316,13 @@ export interface components {
             by_severity: {
                 [key: string]: number;
             };
+            /**
+             * By Capability
+             * @description Findings of this status per scan type, before filters — the same scope as `total` and `by_severity`, so each sums to `total`.
+             */
+            by_capability?: {
+                [key: string]: number;
+            };
             /** Groups */
             groups: components["schemas"]["FindingGroupOut"][];
             /** Toxic Combinations */

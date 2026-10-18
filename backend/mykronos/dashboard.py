@@ -978,6 +978,7 @@ class DashboardQueries:
 
         counts = self._severity_counts(repo_full_name, finding_status)
         total = sum(counts.values())
+        by_capability = self._capability_counts(repo_full_name, finding_status)
 
         # The correlation pool is fetched separately from the rows on screen,
         # for the reason Patchwork's pipeline does the same (spec 08 §5a): a
@@ -1126,6 +1127,7 @@ class DashboardQueries:
             "shown": sum(g["occurrences"] for g in groups),
             "deduplicated": max(0, len(rows) - len(groups)),
             "by_severity": counts,
+            "by_capability": by_capability,
             "groups": groups,
             "toxic_combinations": [
                 self._describe_combination(combo, by_id, kev_cves) for combo in combinations
@@ -1377,6 +1379,25 @@ class DashboardQueries:
             if str(level) in counts:
                 counts[str(level)] = int(count)
         return counts
+
+    def _capability_counts(self, repo_full_name: str, finding_status: str) -> dict[str, int]:
+        """How many findings of this status each scan type reported (#60821).
+
+        The same clause and the same before-any-filter rule as
+        `_severity_counts`, so the two breakdowns each sum to `total` and a
+        capability's count is exactly what filtering to it lists. Only scan
+        types with findings appear: most capabilities never report a finding, and a row of
+        zeros for them would say nothing.
+        """
+        clause, params = self._status_clause(repo_full_name, finding_status)
+        return {
+            str(capability): int(count)
+            for capability, count in self.catalog.query(
+                f"SELECT capability, count(*) FROM findings WHERE {clause} "
+                "GROUP BY 1 ORDER BY 2 DESC, 1",
+                params,
+            )
+        }
 
     def _finding_rows(
         self,
