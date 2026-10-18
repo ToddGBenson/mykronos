@@ -2493,11 +2493,36 @@ jobs:
                 # the job exits 124 below either way, and the line says so.
                 # 10m soft cap (measured ~2.5m serial); 70m + 10m leaves the
                 # last 10m of the 90m hard cap for the upload.
+                # Redis for tests/security [#357 follow-up]. TheHub's limiter
+                # keeps its counters in Redis (utils/rate_limiter.py,
+                # storage_uri=settings.redis_url, default localhost:6379) and
+                # is built to FAIL OPEN when that store is unreachable. With no
+                # Redis in this task every limit is a no-op, so
+                # test_rate_limit.py's five 429 checks failed on builds 324
+                # and 325 for a reason about this task, not the code. A local
+                # redis-server, started only for this step, is what prod has.
+                # If it will not answer, the step is refused rather than run
+                # against a limiter that cannot limit.
+                apt-get install -y -qq redis-server >/dev/null
+                redis-server --daemonize yes --port 6379 --bind 127.0.0.1 --save '' --appendonly no >/dev/null
+                REDIS_UP=false
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                  if redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; then
+                    REDIS_UP=true
+                    break
+                  fi
+                  sleep 1
+                done
+                echo "redis for tests/security: $REDIS_UP"
+
                 SEC_SOFT_TIMEOUT_S=600
                 sec_rc=0
                 SEC_TIMED_OUT=false
                 if [ "$TIMED_OUT" = true ]; then
                   echo "::warning::tests/security NOT RUN - the unit tier used the whole soft timeout"
+                elif [ "$REDIS_UP" != true ]; then
+                  echo "::error::tests/security NOT RUN - redis-server did not answer, and the rate-limit tests cannot pass against a limiter that fails open"
+                  sec_rc=1
                 else
                   echo "=================================================="
                   echo "Running tests/security - serial, API Gate armed, skips refused."
