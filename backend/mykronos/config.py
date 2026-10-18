@@ -217,6 +217,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    premise_monitor_interval_seconds: int = Field(
+        default=86_400,
+        ge=60,
+        description=(
+            "Re-evaluates every live risk acceptance's premises against fresh "
+            "control observations and EPSS (spec 33 §4.2: daily, and after "
+            "every observation ingest and threat-intel refresh)."
+        ),
+    )
+
+    premise_fresh_days: int = Field(
+        default=14,
+        ge=1,
+        le=90,
+        description=(
+            "How old an observation or EPSS score may be and still decide a "
+            "premise. Older evidence leaves the premise `unverified`, never "
+            "`holds` (the S5 rule, observation fresh <= 14 days)."
+        ),
+    )
+
     governance_sweep_interval_seconds: int = Field(
         default=21_600,
         ge=1,

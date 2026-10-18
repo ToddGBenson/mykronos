@@ -95,6 +95,10 @@ export interface paths {
          *     `unknown` rows, never a pass. The batch is validated whole and stored
          *     whole, with one audit entry.
          *
+         *     New evidence can contradict a risk acceptance's premise, so the premise
+         *     monitor runs for this repository once the batch is stored (spec 33 §4.2,
+         *     TheHub #60831) - after the response, and never failing the ingest.
+         *
          *     Registered before the `/{capability}` catch-all, which would otherwise
          *     answer this path with a 422.
          */

@@ -40,7 +40,7 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import control_observations, inventory, netassess
+from mykronos import control_observations, inventory, netassess, premise_monitor
 from mykronos.adminauth import ActorKind, Principal, Role, current_principal
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
@@ -412,7 +412,10 @@ async def ingest_netassess(
 
 @router.post("/control-observations", response_model=ControlObservationAccepted)
 async def ingest_control_observations(
-    request: Request, body: ControlObservationBatch, token: TokenDep
+    request: Request,
+    body: ControlObservationBatch,
+    token: TokenDep,
+    background: BackgroundTasks,
 ) -> ControlObservationAccepted:
     """Machine-collected evidence about controls (TheHub #60826).
 
@@ -429,6 +432,10 @@ async def ingest_control_observations(
     in Python under test. A document that resolves nothing still produces
     `unknown` rows, never a pass. The batch is validated whole and stored
     whole, with one audit entry.
+
+    New evidence can contradict a risk acceptance's premise, so the premise
+    monitor runs for this repository once the batch is stored (spec 33 §4.2,
+    TheHub #60831) - after the response, and never failing the ingest.
 
     Registered before the `/{capability}` catch-all, which would otherwise
     answer this path with a 422.
@@ -476,6 +483,14 @@ async def ingest_control_observations(
         )
         session.commit()
 
+    background.add_task(
+        premise_monitor.on_ingest,
+        db,
+        request.app.state.catalog,
+        request.app.state.notifier,
+        token.repo_full_name,
+        int(request.app.state.settings.premise_fresh_days),
+    )
     return ControlObservationAccepted(
         accepted=len(rows),
         by_state=counts,

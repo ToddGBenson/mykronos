@@ -15,10 +15,12 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import premise_monitor
 from mykronos import risk_acceptance as ra
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.approvals.engine import ApprovalError
 from mykronos.approvals.policy import cached_policy
+from mykronos.db import models
 from mykronos.db.models import RiskAcceptance
 
 router = APIRouter(prefix="/api/risk-acceptances", tags=["risk-acceptance"])
@@ -76,6 +78,65 @@ class MigrateIn(BaseModel):
     dry_run: bool = True
 
 
+def _fresh_days(request: Request) -> int:
+    return int(
+        getattr(request.app.state.settings, "premise_fresh_days", premise_monitor.FRESH_DAYS)
+    )
+
+
+#: How many covered findings' scores the detail lists. The total is always
+#: given; 3,647 ZAP findings are one decision, not a page of 3,647 rows.
+SCORES_SHOWN = 50
+
+
+def _select_scores(model: Any, finding_ids: list[str]) -> Any:
+    return select(model).where(model.finding_id.in_(finding_ids))
+
+
+def environmental_scores(session: Any, finding_ids: list[str]) -> dict[str, Any]:
+    """Base and environmental CVSS for the covered findings, with their facts.
+
+    Feature-detected: `EnvironmentalScore` arrives with the environmental
+    resolver (TheHub #60827). Until it exists the answer says so rather than
+    showing nothing, which would read as "no scores".
+    """
+    model = getattr(models, "EnvironmentalScore", None)
+    if model is None:
+        return {
+            "available": False,
+            "reason": "Environmental scoring is not deployed on this platform yet.",
+            "total": len(finding_ids),
+            "items": [],
+        }
+    shown = sorted(finding_ids)[:SCORES_SHOWN]
+    rows = session.scalars(_select_scores(model, shown)).all() if shown else []
+
+    def iso(value: Any) -> Any:
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    items = [
+        {
+            "finding_id": getattr(row, "finding_id", None),
+            "vector": getattr(row, "vector", None),
+            "base": getattr(row, "base", None),
+            "environmental": getattr(row, "environmental", None),
+            "base_band": getattr(row, "base_band", None),
+            "env_band": getattr(row, "env_band", None),
+            "effective_severity": getattr(row, "effective_severity", None),
+            "facts": getattr(row, "facts_json", None) or [],
+            "computed_at": iso(getattr(row, "computed_at", None)),
+        }
+        for row in rows
+    ]
+    return {
+        "available": True,
+        "reason": "",
+        "total": len(finding_ids),
+        "scored": len(items),
+        "items": items,
+    }
+
+
 def _writer(principal: Any) -> None:
     if not principal.may_write:
         raise HTTPException(status_code=403, detail="Requires the 'admin' or 'agent' role.")
@@ -102,6 +163,7 @@ async def propose(request: Request, body: ProposeIn, principal: PrincipalDep) ->
             compensating_controls=body.compensating_controls,
             milestones=body.milestones,
             response=body.response,
+            fresh_days=_fresh_days(request),
         )
     except (ra.RiskAcceptanceError, ApprovalError) as exc:
         raise _refused(exc) from exc
@@ -112,6 +174,9 @@ async def propose(request: Request, body: ProposeIn, principal: PrincipalDep) ->
         "evidence_digest": approval.evidence_digest,
         # #712: reasons the premise is doubtful, as the approver will see them.
         "flags": list((approval.evidence or {}).get("flags") or []),
+        # Spec 33 §4: each premise as the monitor reads it today -
+        # holds / failed / unverified, with the observations behind it.
+        "premise_checks": list((approval.evidence or {}).get("premise_checks") or []),
     }
 
 
@@ -165,7 +230,18 @@ async def get_acceptance(
         record = session.get(RiskAcceptance, record_id)
         if record is None:
             raise HTTPException(status_code=404, detail=f"No risk acceptance {record_id}.")
-        return ra.serialize(record)
+        fresh_days = _fresh_days(request)
+        checks = premise_monitor.check_record(
+            session, record, request.app.state.catalog, fresh_days=fresh_days
+        )
+        return {
+            **ra.serialize(record),
+            # Evaluated on read, so the page never shows yesterday's verdict:
+            # holds / failed / unverified per premise, with the evidence.
+            "premise_checks": [c.as_dict() for c in checks],
+            "premise_fresh_days": fresh_days,
+            "scores": environmental_scores(session, list(record.covered_finding_ids or [])),
+        }
 
 
 @router.post("/{record_id}/renew", status_code=status.HTTP_201_CREATED)

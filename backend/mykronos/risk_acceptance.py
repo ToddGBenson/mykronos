@@ -60,9 +60,11 @@ SEVERITIES = ("low", "medium", "high", "critical")
 LEVELS = ("low", "moderate", "high", "very_high")
 DEVIATION_TYPES = ("vendor_dependency", "risk_adjustment", "operational_requirement")
 RESPONSES = ("accept", "transfer")
-#: spec 33 §4.1. Monitors for these arrive in phase 3; phase 1 requires that a
-#: `risk_adjustment` names at least one, so the premise is checkable the day
-#: its monitor ships rather than prose that can never be re-evaluated.
+#: spec 33 §4.1. Phase 1 requires that a `risk_adjustment` names at least one,
+#: so the premise is checkable the day its monitor ships rather than prose that
+#: can never be re-evaluated. `premise_monitor` evaluates port_not_published,
+#: firewall_scope, not_internet_facing and epss_below (TheHub #60831); the rest
+#: read as `unverified` until theirs ship.
 PREMISE_TYPES = (
     "no_fixed_version",
     "port_not_published",
@@ -397,6 +399,7 @@ def _snapshot(
     record: RiskAcceptance,
     matched: list[MatchedFinding],
     flags: list[dict[str, Any]] | None = None,
+    premise_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The evidence an approver sees, frozen into the request's digest."""
     snapshot = {
@@ -426,7 +429,39 @@ def _snapshot(
     # without a flag is exactly what it was.
     if flags:
         snapshot["flags"] = flags
+    # What the premise monitor reads today (spec 33 §4), so the approver
+    # signs knowing whether a premise is affirmed or only asserted. Only when
+    # there are premises, for the same reason as the flags.
+    if premise_checks:
+        snapshot["premise_checks"] = premise_checks
     return snapshot
+
+
+def _premise_checks(
+    session: Session,
+    catalog: Catalog,
+    repo: str,
+    scope: dict[str, Any],
+    premises: list[dict[str, Any]],
+    matched: list[MatchedFinding],
+    fresh_days: int | None,
+) -> list[dict[str, Any]]:
+    if not premises:
+        return []
+    from mykronos import premise_monitor
+
+    return [
+        c.as_dict()
+        for c in premise_monitor.check_premises(
+            session,
+            repo=repo,
+            premises=premises,
+            scope=scope,
+            covered_finding_ids=[m.finding_id for m in matched],
+            catalog=catalog,
+            fresh_days=fresh_days or premise_monitor.FRESH_DAYS,
+        )
+    ]
 
 
 def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
@@ -461,6 +496,7 @@ def propose(
     renews: RiskAcceptance | None = None,
     statuses: tuple[str, ...] = ("open",),
     matched: list[MatchedFinding] | None = None,
+    fresh_days: int | None = None,
 ) -> tuple[RiskAcceptance, ApprovalRequest]:
     if not justification.strip():
         raise RiskAcceptanceError("A justification says why this is true here.")
@@ -497,6 +533,7 @@ def propose(
         )
     with db.session() as session:
         kev = _kev_listed(session, {m.rule_id for m in matched})
+        checks = _premise_checks(session, catalog, repo, scope, premises, matched, fresh_days)
         claimed = _covered_by(
             session,
             {m.finding_id for m in matched},
@@ -551,7 +588,7 @@ def propose(
         subject_ref=record.id,
         requested_by=requested_by,
         statement=justification.strip(),
-        context={"snapshot": _snapshot(record, matched, flags)},
+        context={"snapshot": _snapshot(record, matched, flags, checks)},
     )
     record.approval_request_id = approval.id
     with db.session() as session:
@@ -711,11 +748,27 @@ def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> in
             entity_id=record_id,
             reason=reason.strip(),
         )
-        # A finding another live record still covers stays accepted. Two
-        # records can cover the same findings - a corrected re-filing approved
-        # beside the one it supersedes - and revoking the stale one must not
-        # undo the decision that still stands; its date and reason do.
         ids = list(record.covered_finding_ids or [])
+    if not was_live or not ids:
+        return 0
+    return len(release_findings(db, _catalog(), record_id=record_id, finding_ids=ids))
+
+
+def release_findings(
+    db: Any, catalog: Catalog, *, record_id: str, finding_ids: list[str]
+) -> list[str]:
+    """Reopen the findings a record no longer covers; returns the reopened ids.
+
+    A finding another live record still covers stays accepted. Two records
+    can cover the same findings - a corrected re-filing approved beside the
+    one it supersedes - and ending the stale one must not undo the decision
+    that still stands; its date and reason do. Used by `revoke` and by the
+    premise monitor (spec 33 §4.2).
+    """
+    ids = list(finding_ids)
+    if not ids:
+        return []
+    with db.session() as session:
         holders = _covered_by(session, set(ids), exclude=record_id)
         restamp: dict[tuple[date | None, str], list[str]] = {}
         for fid, other in holders.items():
@@ -724,9 +777,6 @@ def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> in
                 reason_code_for(other.deviation_type, other.compensating_controls or []),
             )
             restamp.setdefault(key, []).append(fid)
-    if not was_live or not ids:
-        return 0
-    catalog = _catalog()
     for (until, code), kept in restamp.items():
         # The remaining record's date, not the revoked one's, now holds.
         update_findings(
@@ -737,13 +787,18 @@ def revoke(db: Any, *, record_id: str, revoked_by: Principal, reason: str) -> in
             only_if_status="accepted_risk",
         )
     reopen = [fid for fid in ids if fid not in holders]
-    return update_findings(
-        catalog,
-        locate_findings(catalog, reopen),
-        "status = 'open', resolved_at = NULL, accepted_until = NULL, accepted_reason_code = NULL",
-        [],
-        only_if_status="accepted_risk",
-    ).count
+    if not reopen:
+        return []
+    return list(
+        update_findings(
+            catalog,
+            locate_findings(catalog, reopen),
+            "status = 'open', resolved_at = NULL, accepted_until = NULL, "
+            "accepted_reason_code = NULL",
+            [],
+            only_if_status="accepted_risk",
+        ).updated
+    )
 
 
 @dataclass

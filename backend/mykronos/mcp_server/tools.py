@@ -240,7 +240,14 @@ class SurfaceSelectors(BaseModel):
 
 
 class Premise(BaseModel):
-    """A fact the acceptance rests on, of a type the platform can monitor (§4)."""
+    """A fact the acceptance rests on, of a type the platform can monitor (§4).
+
+    The monitor reads these keys beside `type`: port_not_published `port`,
+    `host`, `surface_id`, `container`; firewall_scope `port`, `host`,
+    `surface_id`; not_internet_facing `hostnames`, `surface_id`; epss_below
+    `threshold` (0-1) and optionally `cves`. A premise naming nothing to check
+    is reported unverified, never holding.
+    """
 
     model_config = ConfigDict(extra="allow")
 
