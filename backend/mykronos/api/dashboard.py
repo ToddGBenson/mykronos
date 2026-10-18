@@ -859,6 +859,24 @@ class ControlOut(BaseModel):
     )
     declared_by: str = ""
     declared_at: datetime
+    applies_to_surface_id: str | None = Field(
+        default=None,
+        description=(
+            "The surface this control guards, when it guards one rather than "
+            "the whole repository (TheHub #60825). Null is repository scope."
+        ),
+    )
+    declared_via: Literal["api", "manifest"] = Field(
+        default="api",
+        description=(
+            "`manifest` when `.sdlc/threat-model.yaml` declared it. Such a "
+            "control is read-only here: it changes by pull request."
+        ),
+    )
+    read_only: bool = False
+    manifest_key: str | None = Field(
+        default=None, description="The control's `id` in the manifest, if it has one."
+    )
 
 
 class ThreatModelCategoryOut(BaseModel):
@@ -3003,6 +3021,33 @@ async def repo_threat_model(
     return ThreatModelOut.model_validate(page)
 
 
+class SelectorsModel(BaseModel):
+    """Where a surface is, so a finding can be placed in it (TheHub #60825).
+
+    Each list is one way a capability locates its findings; see
+    `surface_match` for which capability reads which.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(
+        default_factory=list,
+        description="Repository path globs (`backend/**`), for SAST, secrets, IaC and SCA.",
+    )
+    images: list[str] = Field(
+        default_factory=list,
+        description="Image repositories (`toddgbenson/mykronos-backend`), for containers.",
+    )
+    addresses: list[str] = Field(
+        default_factory=list,
+        description="`host:port` (`10.0.0.5:5433`, `*:22`), for network and DAST.",
+    )
+    hostnames: list[str] = Field(
+        default_factory=list,
+        description="DNS names (`app.example.net`, `*.example.net`), for DAST and network.",
+    )
+
+
 class SurfaceOut(BaseModel):
     id: str
     kind: str
@@ -3013,6 +3058,25 @@ class SurfaceOut(BaseModel):
     evidence_ref: str
     declared_by: str
     declared_at: datetime
+    selectors: SelectorsModel = Field(default_factory=SelectorsModel)
+    cr: Literal["H", "M", "L"] | None = Field(
+        default=None, description="Confidentiality Requirement override (assets only)."
+    )
+    ir: Literal["H", "M", "L"] | None = Field(
+        default=None, description="Integrity Requirement override (assets only)."
+    )
+    ar: Literal["H", "M", "L"] | None = Field(
+        default=None, description="Availability Requirement override (assets only)."
+    )
+    declared_via: Literal["api", "manifest"] = Field(
+        default="api",
+        description=(
+            "`manifest` when `.sdlc/threat-model.yaml` declared it. Such a "
+            "surface is read-only here: it changes by pull request."
+        ),
+    )
+    read_only: bool = False
+    manifest_key: str | None = None
 
 
 class SurfacesOut(BaseModel):
@@ -3054,9 +3118,30 @@ class SurfaceRequest(BaseModel):
         ),
     )
     evidence_ref: str = Field(default="", max_length=512)
+    selectors: SelectorsModel | None = Field(
+        default=None,
+        description=(
+            "Where this surface is (TheHub #60825). Omitted or empty matches no "
+            "finding, which is the honest default for a surface nobody located."
+        ),
+    )
+    cr: Literal["H", "M", "L"] | None = Field(
+        default=None,
+        description=(
+            "Confidentiality Requirement override, assets only. Omitted, the "
+            "environmental resolver derives one from sensitivity."
+        ),
+    )
+    ir: Literal["H", "M", "L"] | None = Field(
+        default=None, description="Integrity Requirement override, assets only."
+    )
+    ar: Literal["H", "M", "L"] | None = Field(
+        default=None, description="Availability Requirement override, assets only."
+    )
 
 
 def _surface_out(surface: Any) -> SurfaceOut:
+    via = surfaces.declared_via(surface)
     return SurfaceOut(
         id=surface.id,
         kind=surface.kind,
@@ -3067,7 +3152,22 @@ def _surface_out(surface: Any) -> SurfaceOut:
         evidence_ref=surface.evidence_ref,
         declared_by=surface.declared_by,
         declared_at=surface.declared_at,
+        selectors=SelectorsModel.model_validate(
+            {k: list(v) for k, v in (surface.selectors or {}).items()}
+        ),
+        cr=surface.cr,
+        ir=surface.ir,
+        ar=surface.ar,
+        declared_via=via,
+        read_only=via == "manifest",
+        manifest_key=surface.manifest_key,
     )
+
+
+def _declared_in_manifest(exc: Exception) -> HTTPException:
+    """409, not 403: the caller may write, and this row is simply owned by
+    the file. The message says where to change it."""
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
 class RepoGuidanceOut(BaseModel):
@@ -3184,6 +3284,10 @@ async def declare_surface(
                 sensitivity=body.sensitivity,
                 evidence_ref=body.evidence_ref,
                 declared_by=principal.actor,
+                selectors=body.selectors.model_dump() if body.selectors else None,
+                cr=body.cr,
+                ir=body.ir,
+                ar=body.ar,
             )
         except surfaces.SurfaceError as exc:
             raise HTTPException(
@@ -3198,6 +3302,10 @@ async def declare_surface(
             repo_full_name=repo_full_name,
             kind=surface.kind,
             exposure=surface.exposure,
+            selectors=surface.selectors,
+            cr=surface.cr,
+            ir=surface.ir,
+            ar=surface.ar,
         )
         return _surface_out(surface)
 
@@ -3216,7 +3324,11 @@ async def remove_surface(
     repo_full_name = _resolve_repo(request, repo_id)
     database = request.app.state.db
     with database.session() as session:
-        if not surfaces.remove(session, repo_full_name, surface_id):
+        try:
+            removed = surfaces.remove(session, repo_full_name, surface_id)
+        except surfaces.DeclaredInManifestError as exc:
+            raise _declared_in_manifest(exc) from exc
+        if not removed:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="No such surface on this repository.",
@@ -3247,6 +3359,40 @@ class ControlRequest(BaseModel):
             "holds the controls somebody had time to document."
         ),
     )
+    applies_to_surface_id: str | None = Field(
+        default=None,
+        max_length=36,
+        description=(
+            "A surface on this repository the control guards (TheHub #60825), "
+            "e.g. the entry point a perimeter gate sits in front of. Omitted "
+            "is repository scope."
+        ),
+    )
+
+
+class ControlsOut(BaseModel):
+    """Every declared control on one repository, API and manifest alike."""
+
+    controls: list[ControlOut]
+    kinds: list[str] = Field(description="`controls.CONTROL_KINDS`, in order.")
+
+
+@router.get("/repos/{repo_id}/controls", response_model=ControlsOut)
+async def repo_controls(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ControlsOut:
+    """The controls register as a list (TheHub #60825).
+
+    The Threat Model tab reads controls inside their STRIDE categories; an
+    agent declaring one needs the flat list and the vocabulary.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    with request.app.state.db.session() as session:
+        rows = controls.for_repo(session, repo_full_name)
+        return ControlsOut(
+            controls=[ControlOut.model_validate(controls.as_dict(c)) for c in rows],
+            kinds=list(controls.CONTROL_KINDS),
+        )
 
 
 @router.post("/repos/{repo_id}/controls", response_model=ControlOut)
@@ -3281,6 +3427,7 @@ async def declare_control(
                 evidence_ref=body.evidence_ref,
                 declared_by=principal.actor,
                 known_categories=STRIDE_CATEGORIES,
+                applies_to_surface_id=body.applies_to_surface_id,
             )
         except controls.ControlError as exc:
             raise HTTPException(
@@ -3295,6 +3442,7 @@ async def declare_control(
             repo_full_name=repo_full_name,
             stride=control.stride,
             kind=control.kind,
+            applies_to_surface_id=control.applies_to_surface_id,
         )
         return ControlOut.model_validate(controls.as_dict(control))
 
@@ -3314,17 +3462,20 @@ async def confirm_control(
     repo_full_name = _resolve_repo(request, repo_id)
     database = request.app.state.db
     with database.session() as session:
+        existing = session.get(RepoControl, control_id)
+        if existing is None or existing.repo_full_name != repo_full_name:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No such control on this repository.",
+            )
         try:
             control = controls.confirm(session, control_id)
+        except surfaces.DeclaredInManifestError as exc:
+            raise _declared_in_manifest(exc) from exc
         except controls.ControlError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
             ) from exc
-        if control.repo_full_name != repo_full_name:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="That control belongs to another repository.",
-            )
         database.audit(
             session,
             actor=principal.actor,
@@ -3357,7 +3508,10 @@ async def withdraw_control(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No such control."
             )
-        controls.withdraw(session, control_id)
+        try:
+            controls.withdraw(session, control_id)
+        except surfaces.DeclaredInManifestError as exc:
+            raise _declared_in_manifest(exc) from exc
         database.audit(
             session,
             actor=principal.actor,
@@ -3366,6 +3520,74 @@ async def withdraw_control(
             entity_id=control_id,
             repo_full_name=repo_full_name,
         )
+
+
+class SyncCountsOut(BaseModel):
+    added: int
+    updated: int
+    removed: int
+    unchanged: int
+
+
+class ThreatModelSyncOut(BaseModel):
+    """What re-reading `.sdlc/threat-model.yaml` did (TheHub #60825)."""
+
+    repo_full_name: str
+    path: str = Field(description="Always `.sdlc/threat-model.yaml`, on the default branch.")
+    state: Literal["valid", "invalid", "absent", "unreadable"] = Field(
+        description=(
+            "`invalid` and `unreadable` change nothing: a typo must not delete "
+            "a threat model, and a failed read is not evidence of absence. "
+            "`absent` removes the manifest's rows; API-declared rows stay."
+        )
+    )
+    error: str | None = None
+    applied: bool
+    surfaces: SyncCountsOut
+    controls: SyncCountsOut
+
+
+@router.post("/repos/{repo_id}/threat-model/sync", response_model=ThreatModelSyncOut)
+async def sync_threat_model(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ThreatModelSyncOut:
+    """Re-read the repository's `.sdlc/threat-model.yaml` now, instead of
+    waiting for the `threat-model-sync` job (spec 28 §8).
+
+    Upserts the rows the manifest declares (`declared_by: manifest`) and
+    removes the ones it no longer does. Never touches a row declared through
+    this API. Audited as `threat_model.sync`.
+    """
+    _require_writer(principal, "Syncing the threat-model manifest")
+    repo_full_name = _resolve_repo(request, repo_id)
+    from mykronos import threat_model_manifest as tmm
+
+    with request.app.state.db.session() as session:
+        onboarding = session.get(RepoOnboarding, repo_id)
+        branch = (onboarding.default_branch if onboarding else None) or "main"
+        installation = onboarding.github_installation_id if onboarding else None
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:
+        report = tmm.SyncReport(
+            repo_full_name, "unreadable", "No GitHub installation to read the manifest with."
+        )
+    else:
+        report = await tmm.sync_repo(
+            request.app.state.db,
+            factory.for_installation(installation),
+            repo_full_name,
+            branch,
+            actor=principal.actor,
+        )
+    return ThreatModelSyncOut(
+        repo_full_name=repo_full_name,
+        path=tmm.MANIFEST_PATH,
+        state=report.state,
+        error=report.error,
+        applied=report.applied,
+        surfaces=SyncCountsOut.model_validate(dataclasses.asdict(report.surfaces)),
+        controls=SyncCountsOut.model_validate(dataclasses.asdict(report.controls)),
+    )
 
 
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)

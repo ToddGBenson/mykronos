@@ -36,6 +36,12 @@ const KINDS = [
   "logging",
   "rate_limiting",
   "encryption",
+  // TheHub #60825: what sits in front of or around the code.
+  "perimeter_gate",
+  "network_segmentation",
+  "security_headers",
+  "container_hardening",
+  "waf",
 ] as const;
 
 function kindLabel(kind: string) {
@@ -46,10 +52,12 @@ export function ControlList({
   repoId,
   stride,
   controls,
+  surfaceNames = {},
 }: {
   repoId: string;
   stride: string;
   controls: ThreatModelControl[];
+  surfaceNames?: Record<string, string>;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -91,6 +99,16 @@ export function ControlList({
           className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-rule-soft px-3 py-2 last:border-b-0"
         >
           <Pill tone="accent">{kindLabel(control.kind)}</Pill>
+          {control.read_only ? (
+            <span title="Declared in .sdlc/threat-model.yaml. Change it there, by pull request.">
+              <Pill tone="muted">manifest</Pill>
+            </span>
+          ) : null}
+          {control.applies_to_surface_id ? (
+            <span className="font-mono text-[11px] text-ink-3">
+              guards {surfaceNames[control.applies_to_surface_id] ?? "a withdrawn surface"}
+            </span>
+          ) : null}
 
           <span className="text-[13px] text-ink-2">
             {control.description || <em className="text-ink-3">no description</em>}
@@ -131,7 +149,12 @@ export function ControlList({
             </span>
           ) : null}
 
-          <span className="ml-auto flex items-center gap-1.5">
+          {/* A manifest control is confirmed by editing its `reviewed_at` and
+              withdrawn by deleting it from the file: an action here would be
+              undone by the next sync. */}
+          <span
+            className={`ml-auto items-center gap-1.5 ${control.read_only ? "hidden" : "flex"}`}
+          >
             <button
               type="button"
               disabled={busy === control.control_id}

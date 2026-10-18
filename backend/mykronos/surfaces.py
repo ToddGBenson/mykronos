@@ -26,11 +26,19 @@ direction to be wrong in is the one that reads as reassurance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from mykronos.db.models import RepoSurface
+from mykronos.db.models import PublicEndpoint, RepoControl, RepoSurface
+from mykronos.surface_match import SelectorError, normalize_selectors, validate_requirement
+
+#: `declared_by` on every row `.sdlc/threat-model.yaml` declared (TheHub
+#: #60825, D4). Such a row is read-only through the API and the UI: the file
+#: is the source of truth, it changes by pull request, and an edit made here
+#: would be silently undone by the next sync.
+MANIFEST_ACTOR = "manifest"
 
 #: The three parts of a threat model this platform did not hold. Mitigations
 #: are `controls.py`; together the four are the whole model.
@@ -84,6 +92,82 @@ CONTRADICTED_BY = {
 
 class SurfaceError(ValueError):
     """A declaration the register will not accept."""
+
+
+class DeclaredInManifestError(ValueError):
+    """The row belongs to `.sdlc/threat-model.yaml` and changes only there."""
+
+    def __init__(self, what: str) -> None:
+        super().__init__(
+            f"This {what} is declared in .sdlc/threat-model.yaml. Change it there, "
+            "by pull request; an edit here would be undone by the next sync."
+        )
+
+
+def declared_via(row: Any) -> Literal["api", "manifest"]:
+    """`manifest` or `api`: who owns the row."""
+    return "manifest" if getattr(row, "declared_by", "") == MANIFEST_ACTOR else "api"
+
+
+def validate(
+    *,
+    kind: str,
+    name: str,
+    exposure: str,
+    sensitivity: str,
+    selectors: dict[str, Any] | None,
+    cr: str | None,
+    ir: str | None,
+    ar: str | None,
+) -> dict[str, Any]:
+    """Every rule a declaration meets, API or manifest. Returns the cleaned
+    values; raises `SurfaceError` with a sentence a person can act on."""
+    if kind not in SURFACE_KINDS:
+        raise SurfaceError(
+            f"{kind!r} is not part of a threat model. Expected one of: "
+            f"{', '.join(SURFACE_KINDS)}."
+        )
+    if exposure not in EXPOSURES:
+        raise SurfaceError(
+            f"{exposure!r} is not an exposure. Expected one of: {', '.join(EXPOSURES)}."
+        )
+    if sensitivity not in SENSITIVITIES:
+        raise SurfaceError(
+            f"{sensitivity!r} is not a sensitivity. Expected one of: "
+            f"{', '.join(SENSITIVITIES)}."
+        )
+    if not name.strip():
+        raise SurfaceError("A surface needs a name. An unnamed asset cannot be reviewed.")
+    try:
+        cleaned_selectors = normalize_selectors(selectors)
+        levels = {
+            metric: validate_requirement(value, metric)
+            for metric, value in (("cr", cr), ("ir", ir), ("ar", ar))
+        }
+    except SelectorError as exc:
+        raise SurfaceError(str(exc)) from exc
+    # Security Requirements are a property of what is held. On an entry point
+    # or a boundary they would be a number nobody can act on, so they are
+    # refused rather than silently dropped: the person sending one believes
+    # it means something.
+    if kind != "asset" and any(levels.values()):
+        raise SurfaceError(
+            "CR/IR/AR overrides belong to an asset — what is held — not to "
+            f"{'an entry point' if kind == 'entry_point' else 'a trust boundary'}."
+        )
+    # Sensitivity is a property of a thing that holds something. An entry point
+    # is a way in; asking how sensitive a way in is produces an answer nobody
+    # can act on, so it is not stored rather than stored as a guess.
+    if kind != "asset":
+        sensitivity = "unknown"
+    return {
+        "kind": kind,
+        "name": name.strip(),
+        "exposure": exposure,
+        "sensitivity": sensitivity,
+        "selectors": cleaned_selectors,
+        **levels,
+    }
 
 
 @dataclass
@@ -146,6 +230,11 @@ def declare(
     sensitivity: str = "unknown",
     evidence_ref: str = "",
     declared_by: str = "",
+    selectors: dict[str, Any] | None = None,
+    cr: str | None = None,
+    ir: str | None = None,
+    ar: str | None = None,
+    manifest_key: str | None = None,
 ) -> RepoSurface:
     """Record an asset, entry point or trust boundary.
 
@@ -154,52 +243,63 @@ def declare(
     `public-facing` cannot be queried, and an inventory nobody can query is a
     wiki page with a database bill.
     """
-    if kind not in SURFACE_KINDS:
-        raise SurfaceError(
-            f"{kind!r} is not part of a threat model. Expected one of: "
-            f"{', '.join(SURFACE_KINDS)}."
-        )
-    if exposure not in EXPOSURES:
-        raise SurfaceError(
-            f"{exposure!r} is not an exposure. Expected one of: {', '.join(EXPOSURES)}."
-        )
-    if sensitivity not in SENSITIVITIES:
-        raise SurfaceError(
-            f"{sensitivity!r} is not a sensitivity. Expected one of: "
-            f"{', '.join(SENSITIVITIES)}."
-        )
-    if not name.strip():
-        raise SurfaceError("A surface needs a name. An unnamed asset cannot be reviewed.")
-
-    # Sensitivity is a property of a thing that holds something. An entry point
-    # is a way in; asking how sensitive a way in is produces an answer nobody
-    # can act on, so it is not stored rather than stored as a guess.
-    if kind != "asset":
-        sensitivity = "unknown"
-
-    surface = RepoSurface(
-        repo_full_name=repo_full_name,
+    values = validate(
         kind=kind,
-        name=name.strip(),
-        description=description.strip(),
+        name=name,
         exposure=exposure,
         sensitivity=sensitivity,
+        selectors=selectors,
+        cr=cr,
+        ir=ir,
+        ar=ar,
+    )
+    surface = RepoSurface(
+        repo_full_name=repo_full_name,
+        description=description.strip(),
         evidence_ref=evidence_ref.strip(),
         declared_by=declared_by,
+        manifest_key=manifest_key,
+        **values,
     )
     session.add(surface)
     session.flush()
     return surface
 
 
-def remove(session: Session, repo_full_name: str, surface_id: str) -> bool:
+def remove(
+    session: Session, repo_full_name: str, surface_id: str, *, by_manifest: bool = False
+) -> bool:
     """Delete one declaration. Scoped by repository so an id from elsewhere
-    cannot reach across."""
+    cannot reach across.
+
+    A manifest row is refused (`DeclaredInManifestError`) unless the manifest sync
+    itself is removing it. Anything that pointed at the surface — a control's
+    `applies_to_surface_id`, a public endpoint's `surface_id` — is nulled, so
+    the control falls back to repository scope instead of naming a surface
+    that no longer exists.
+    """
     surface = session.get(RepoSurface, surface_id)
     if surface is None or surface.repo_full_name != repo_full_name:
         return False
+    if surface.declared_by == MANIFEST_ACTOR and not by_manifest:
+        raise DeclaredInManifestError("surface")
+    detach(session, surface_id)
     session.delete(surface)
     return True
+
+
+def detach(session: Session, surface_id: str) -> None:
+    """Null every nullable reference to a surface about to go."""
+    session.execute(
+        update(RepoControl)
+        .where(RepoControl.applies_to_surface_id == surface_id)
+        .values(applies_to_surface_id=None)
+    )
+    session.execute(
+        update(PublicEndpoint)
+        .where(PublicEndpoint.surface_id == surface_id)
+        .values(surface_id=None)
+    )
 
 
 def for_repo(session: Session, repo_full_name: str) -> SurfaceSummary:

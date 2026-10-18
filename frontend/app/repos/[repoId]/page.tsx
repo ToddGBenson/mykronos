@@ -858,7 +858,21 @@ async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
           {surfaces.error}
         </p>
       )}
-      <ThreatModelTab repoId={repoId} page={result.data} />
+      <ThreatModelTab
+        repoId={repoId}
+        page={result.data}
+        surfaceNames={
+          surfaces.ok
+            ? Object.fromEntries(
+                [
+                  ...surfaces.data.assets,
+                  ...surfaces.data.entry_points,
+                  ...surfaces.data.trust_boundaries,
+                ].map((s) => [s.id, s.name]),
+              )
+            : {}
+        }
+      />
     </div>
   );
 }

@@ -35,9 +35,12 @@ const STRIDE_LABEL: Record<string, string> = {
 export function ThreatModelTab({
   repoId,
   page,
+  surfaceNames = {},
 }: {
   repoId: string;
   page: ThreatModelPage;
+  /** Surface id -> name, so a control can say which surface it guards. */
+  surfaceNames?: Record<string, string>;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -88,7 +91,12 @@ export function ThreatModelTab({
           distinguish "clean" from "nobody looked", which is the distinction
           this whole section exists to make. */}
       {page.categories.map((category) => (
-        <StrideCategory key={category.stride} repoId={repoId} category={category} />
+        <StrideCategory
+          key={category.stride}
+          repoId={repoId}
+          category={category}
+          surfaceNames={surfaceNames}
+        />
       ))}
     </div>
   );
@@ -115,9 +123,11 @@ const STATE_TONE: Record<string, "critical" | "warn" | "pass" | "muted"> = {
 function StrideCategory({
   repoId,
   category,
+  surfaceNames,
 }: {
   repoId: string;
   category: ThreatModelCategory;
+  surfaceNames: Record<string, string>;
 }) {
   const label = STRIDE_LABEL[category.stride] ?? category.stride;
   const state = category.state ?? "findings_open";
@@ -182,6 +192,7 @@ function StrideCategory({
         repoId={repoId}
         stride={category.stride}
         controls={category.controls ?? []}
+        surfaceNames={surfaceNames}
       />
     </Section>
   );

@@ -385,6 +385,16 @@ class Settings(BaseSettings):
             "Recorded as the reviewer's family, so a delegation must name it."
         ),
     )
+    threat_model_sync_interval_seconds: int = Field(
+        default=21_600,
+        ge=300,
+        description=(
+            "How often every onboarded repository's `.sdlc/threat-model.yaml` "
+            "is re-read and its rows synced (TheHub #60825, spec 28 §8). Six "
+            "hours, like governance: the file changes by pull request, and "
+            "`POST /repos/{id}/threat-model/sync` re-reads one on demand."
+        ),
+    )
     exposure_probe_interval_seconds: int = Field(
         default=21_600,
         ge=300,

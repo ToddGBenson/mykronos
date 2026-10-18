@@ -36,6 +36,7 @@ data that separates them is already fetched on the same page, one tab away.
 | STRIDE from CWE where present, capability where absent (§2) | **Built** — `stride-map-v1.yaml`, 56 entries |
 | Controls register, admin-authored (§3) | **Built** — in the operational store rather than the lake; see §3.4 |
 | Three-state categories: clean / unscanned / unmitigated (§4) | **Built** — four states, not three; §4 already listed four |
+| Surface selectors, CR/IR/AR overrides, five more control kinds, `.sdlc/threat-model.yaml` (§8) | **Built** — TheHub #60825 (epic #60822, decision D4) |
 
 ## 1. CWE at the door
 
@@ -217,3 +218,142 @@ scan), spec 05 (the new column and table follow the existing lake conventions), 
 `mapping_resolution`, and the honest posture this keeps while making the resolution finer), spec 23 §2
 (the entry-point inventory that eventually populates the register), spec 31 (regression tests as
 evidence for `verified_by_capability`).
+
+## 8. The threat-model manifest: `.sdlc/threat-model.yaml`
+
+TheHub #60825, decision D4 of epic #60822 (environmental CVSS rescoring). Added after §1–§7 shipped.
+
+### 8.1 Why
+
+The register in §3 is admin-authored through the API, which makes it a second copy of something the
+repository's own team knows best and changes by pull request. D4 makes a file in the repository the
+source of truth, on the precedent D-132 set for `.sdlc/process.yaml`: read from the default branch
+through the GitHub App, parsed strictly (an unknown key is an error), and never replaced by a default
+presented as what the repository declared.
+
+Rescoring (S5) also needs two things the register did not hold: *where* a surface is, so a finding
+can be placed in it, and per-asset CVSS Security Requirements.
+
+### 8.2 What the register gained
+
+- **`RepoSurface.selectors`** — `{paths, images, addresses, hostnames}`, validated and normalised by
+  `surface_match.normalize_selectors`: a path loses a leading `./` or `/` and may not contain `..`;
+  an image is stored as its repository (`postgres:15` → `library/postgres`, registry host and tag
+  dropped, as the container fingerprint does); an address is `host:port` (`*` allowed for either);
+  a hostname is a DNS name, optionally `*.example.net` (subdomains, never the apex). Empty matches
+  nothing.
+- **`RepoSurface.cr` / `ir` / `ar`** — `H`, `M`, `L` or null (not overridden). Assets only; on an
+  entry point or a boundary they are refused, not dropped.
+- **`RepoControl.applies_to_surface_id`** and **`PublicEndpoint.surface_id`** — nullable references,
+  not database foreign keys. Withdrawing a surface nulls them, so the control falls back to
+  repository scope. S4's `ControlObservation` refers to surfaces and controls the same way.
+- **Control kinds** `perimeter_gate` (contradicted by `dast`), `network_segmentation` (`network`),
+  `security_headers` (`dast`), `container_hardening` (`containers`), `waf` (nothing). Each kind's
+  typical STRIDE categories are `controls.TYPICAL_STRIDE`, used as the manifest's default `stride`.
+  `stride-map-v1.yaml` is unchanged: it maps CWEs, and a control kind is not a weakness.
+
+**Placement** (`surface_match.surface_for(finding, surfaces)`) reads one field per capability:
+`file_path` against `paths` for sast, secrets, iac, atlas and ai; the Trivy adapter's
+`raw_finding_json.image` against `images` for containers; `address`/`port` against `addresses` and
+the raw `hostname` against `hostnames` for network; the probed URL `raw_finding_json.instance.uri`
+by host and port for dast (never `file_path`, which for DAST is the route). The most specific match
+wins (a literal path over a glob, an exact host over a wildcard); ties go to the asset. No match
+returns `None`: the finding gets repository-level facts, never the closest surface.
+
+### 8.3 The schema (version 1)
+
+| Key | Type | Notes |
+|---|---|---|
+| `version` | `1` | Required. |
+| `assets[]`, `entry_points[]`, `trust_boundaries[]` | list, at most 200 each | |
+| ↳ `id` | `[a-z0-9][a-z0-9_.-]*`, at most 128 | Required, unique across the whole file. The sync's upsert key. |
+| ↳ `name` | string, at most 255 | Required. |
+| ↳ `description` | string, at most 2000 | |
+| ↳ `exposure` | `internet`, `internal`, `local`, `unknown` | Default `unknown`. |
+| ↳ `evidence_ref` | repository path or `https://` URL | |
+| ↳ `selectors` | `{paths, images, addresses, hostnames}` | Each a list of at most 50; validated as §8.2. |
+| ↳ `sensitivity` | `pii`, `financial`, `credentials`, `source`, `public`, `unknown` | Assets only. |
+| ↳ `cr`, `ir`, `ar` | `H`, `M`, `L` | Assets only. Omitted: derived by the resolver. |
+| `controls[]` | list, at most 200 | |
+| ↳ `id` | as above | Required, unique across the file. |
+| ↳ `kind` | one of `controls.CONTROL_KINDS` | Required. |
+| ↳ `stride` | a STRIDE category | Default: the kind's first `TYPICAL_STRIDE`. |
+| ↳ `description` | string, at most 2000 | |
+| ↳ `evidence_ref` | repository path or `https://` URL | **Required** here, unlike the API: a file in the repository can always name what it is talking about. |
+| ↳ `applies_to` | the `id` of a surface in this file | Optional; omitted is repository scope. |
+| ↳ `reviewed_at` | date | When a person last found it true; becomes `last_verified_at`. Re-confirming a manifest control is editing this line. |
+
+```yaml
+version: 1
+assets:
+  - id: findings-db
+    name: Findings database
+    description: Postgres holding every finding, triage decision and audit entry.
+    exposure: internal
+    sensitivity: source
+    cr: H
+    ir: H
+    evidence_ref: backend/mykronos/db/models.py
+    selectors:
+      paths: ["backend/mykronos/db/**"]
+      images: ["postgres"]
+      addresses: ["10.0.0.5:5433"]
+entry_points:
+  - id: public-app
+    name: Public dashboard
+    exposure: internet
+    evidence_ref: frontend/proxy.ts
+    selectors:
+      paths: ["frontend/**"]
+      images: ["toddgbenson/mykronos-frontend"]
+      hostnames: ["mykronos-app.example.net"]
+trust_boundaries:
+  - id: tunnel
+    name: Cloudflare tunnel to the LAN host
+    exposure: internet
+controls:
+  - id: gate
+    kind: perimeter_gate
+    description: Every request needs the gate token before it reaches the app.
+    evidence_ref: frontend/proxy.ts
+    applies_to: public-app
+    reviewed_at: 2026-10-17
+  - id: headers
+    kind: security_headers
+    stride: tampering
+    description: CSP and HSTS on every response.
+    evidence_ref: frontend/next.config.ts
+    applies_to: public-app
+```
+
+### 8.4 Sync
+
+`threat_model_manifest.sync_repo` reads the file from the default branch with the installation's
+client, exactly as the Product Owner tab reads `process.yaml`, and applies it:
+
+- **`valid`**: upsert every surface and control by `id` (`manifest_key`), with
+  `declared_by: manifest`; remove manifest rows the file no longer declares. A control whose
+  declaration is unchanged keeps its `last_verified_at`: the job re-reads every six hours, and a
+  re-read is not a re-confirmation, or nothing would ever go stale (§6).
+- **`absent`**: the manifest's rows go. The repository has said its threat model is not declared
+  there.
+- **`invalid`** or **`unreadable`**: nothing changes. A typo must not delete a threat model, and a
+  failed read is not evidence of absence (B-058). The reason is returned.
+
+Rows declared through the API are never touched by a sync; the two coexist. A manifest row is
+read-only through the API and the UI: withdraw, confirm and delete answer **409** naming the file.
+
+Runs as the `threat-model-sync` job (`MYKRONOS_THREAT_MODEL_SYNC_INTERVAL_SECONDS`, default six hours,
+only against a real GitHub App) and on demand with `POST /api/dashboard/repos/{id}/threat-model/sync`
+(writer; audited `threat_model.sync` with the caller). The job audits only syncs that changed
+something.
+
+### 8.5 API and MCP
+
+`GET/POST /repos/{id}/surfaces` carry `selectors`, `cr`, `ir`, `ar`, `declared_via`
+(`api` or `manifest`), `read_only` and `manifest_key`. `POST /repos/{id}/controls` takes
+`applies_to_surface_id`; `ControlOut` adds it with `declared_via`, `read_only`, `manifest_key`.
+`GET /repos/{id}/controls` lists the register flat with the kind vocabulary.
+`POST /api/exposure/endpoints` takes `surface_id`. The agent's MCP server gains `surfaces`,
+`controls`, `declare_surface` and `declare_control` (docs/agent-mcp.md); the writes go through the
+same routes and are audited by them.
