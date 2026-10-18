@@ -180,7 +180,16 @@ else { Write-Host 'drift: src/a.ps1' }
 """
 
 
-def _run(tmp_path: Path, *, stubs: bool) -> tuple[int, str, ET.Element]:
+#: Stand in for personal-soc's own skills/network-assessment/tests/Test-*.ps1
+#: (#359): the harness runs each with `pwsh -File` and reads its exit code.
+REPO_TEST_PASS = "Write-Host '  3 passed, 0 failed'; exit 0\n"
+REPO_TEST_FAIL = "Write-Host '  [FAIL] the stub'; Write-Host '  0 passed, 1 failed'; exit 1\n"
+REPO_TESTS = "source/skills/network-assessment/tests"
+
+
+def _run(
+    tmp_path: Path, *, stubs: bool, repo_tests: dict[str, str] | None = None
+) -> tuple[int, str, ET.Element]:
     (tmp_path / "results").mkdir()
     (tmp_path / REPORT).write_text(_marker(), encoding="utf-8")
     if stubs:
@@ -189,6 +198,14 @@ def _run(tmp_path: Path, *, stubs: bool) -> tuple[int, str, ET.Element]:
         for path, body in ((compare, COMPARE_STUB), (drift, DRIFT_STUB)):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body, encoding="utf-8")
+    if repo_tests is None:
+        repo_tests = (
+            {"Test-Alpha.ps1": REPO_TEST_PASS, "Test-Beta.ps1": REPO_TEST_PASS} if stubs else {}
+        )
+    for name, body in repo_tests.items():
+        path = tmp_path / REPO_TESTS / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
     (tmp_path / "tests.ps1").write_text(_harness(), encoding="utf-8")
     proc = subprocess.run(
         [str(PWSH), "-NonInteractive", "-NoProfile", "-File", "tests.ps1"],
@@ -207,9 +224,18 @@ def test_a_passing_suite_reports_every_assertion(tmp_path: Path) -> None:
 
     cases = list(root.iter("testcase"))
     ran = [c for c in cases if c.find("skipped") is None]
-    # 7 Compare-Assessment + 2 severity-changed + 3 Find-DocDrift assertions.
-    assert len(ran) == 12, [c.get("name") for c in cases]
+    # 1 "the tests directory has tests" + 2 repo test files (#359), then what
+    # has no repo equivalent: 2 Compare-Assessment + 2 severity-changed +
+    # 3 Find-DocDrift assertions.
+    assert len(ran) == 10, [c.get("name") for c in cases]
     assert all(c.find("failure") is None for c in cases)
+    names = {c.get("name") for c in ran}
+    assert {
+        "skills/network-assessment/tests/Test-Alpha.ps1",
+        "skills/network-assessment/tests/Test-Beta.ps1",
+    } <= names
+    # Restated inline before #359; Test-CompareAssessment.ps1 owns them now.
+    assert not names & {"baseline score", "current score", "score delta"}
     # What is not covered is named in the report, not only in the log.
     skipped = [c for c in cases if c.find("skipped") is not None]
     assert any("Invoke-BreachCheck" in (c.get("name") or "") for c in skipped)
@@ -225,3 +251,32 @@ def test_a_suite_that_dies_reports_failure_not_silence(tmp_path: Path) -> None:
     assert result.scan_status is ScanStatus.FAILURE, result.warnings
     failed = [c.get("name") or "" for c in root.iter("testcase") if c.find("failure") is not None]
     assert any("aborted" in name for name in failed), failed
+
+
+@needs_pwsh
+def test_a_failing_repo_test_fails_the_suite_and_is_named(tmp_path: Path) -> None:
+    """[#359] personal-soc's own tests decide the verdict, by exit code, and the
+    rest of the suite still runs and reports after one fails."""
+    rc, raw, root = _run(
+        tmp_path,
+        stubs=True,
+        repo_tests={"Test-Good.ps1": REPO_TEST_PASS, "Test-Broken.ps1": REPO_TEST_FAIL},
+    )
+    assert rc != 0
+    assert normalize(raw.encode(), _context()).scan_status is ScanStatus.FAILURE
+    failed = {c.get("name"): c for c in root.iter("testcase") if c.find("failure") is not None}
+    broken = "skills/network-assessment/tests/Test-Broken.ps1"
+    assert set(failed) == {broken}, set(failed)
+    message = failed[broken].find("failure").get("message")
+    assert "exited 1" in message and "[FAIL] the stub" in message
+    names = {c.get("name") for c in root.iter("testcase")}
+    assert "changed source file is listed as drift" in names
+
+
+@needs_pwsh
+def test_no_repo_tests_is_a_failure_not_an_empty_pass(tmp_path: Path) -> None:
+    """A moved or deleted tests directory must not read as "all passed"."""
+    rc, _raw, root = _run(tmp_path, stubs=True, repo_tests={})
+    assert rc != 0
+    failed = [c.get("name") for c in root.iter("testcase") if c.find("failure") is not None]
+    assert failed == ["skills/network-assessment/tests has Test-*.ps1 files"], failed

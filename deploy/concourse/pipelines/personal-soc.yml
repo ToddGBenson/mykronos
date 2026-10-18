@@ -1416,9 +1416,14 @@ jobs:
   #
   # WHAT IS TESTED AND WHAT IS NOT
   #
-  # Two scripts are pure enough to test hermetically: Compare-Assessment
-  # (JSON in, JSON out) and Find-DocDrift (git history only). They get real
-  # assertions against fixtures built here.
+  # First, personal-soc's own tests: every
+  # skills/network-assessment/tests/Test-*.ps1, run with `pwsh -File` (#359).
+  # They cover Compare-Assessment and the NFS and open-AP verdicts against
+  # recorded tool output.
+  #
+  # Then the assertions that have no equivalent in that repository, against
+  # fixtures built here: Compare-Assessment's band and severity_changed
+  # bucket, and Find-DocDrift (git history only).
   #
   # The rest are not skipped quietly, because that is how coverage gets
   # overstated: Invoke-BreachCheck needs a paid HIBP key and a live endpoint,
@@ -1574,8 +1579,48 @@ jobs:
                 try {
 
                 # ============================================================
+                # personal-soc's own tests (#359)
+                # ============================================================
+                # The repository keeps hermetic tests beside the scripts they
+                # test (skills/network-assessment/tests/Test-*.ps1: recorded
+                # nmap and netsh text, fixture engagements, no network). This
+                # job used to restate some of them inline instead, so a test
+                # added there never ran here and an inline copy could drift
+                # from the original. Each file is run as its author runs it,
+                # `pwsh -NoProfile -File`, and is one case named after the
+                # file; its exit code is the verdict. Globbed, so a new
+                # Test-*.ps1 is picked up without editing this pipeline - and
+                # finding none is a failure, not an empty pass.
+                Write-Host ""
+                Write-Host "== skills/network-assessment/tests =="
+                $group = 'repo-tests'
+                $repoTests = @(Get-ChildItem -Path 'source/skills/network-assessment/tests' -Filter 'Test-*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+                Assert-True ($repoTests.Count -gt 0) 'skills/network-assessment/tests has Test-*.ps1 files'
+                foreach ($t in $repoTests) {
+                  $name = "skills/network-assessment/tests/$($t.Name)"
+                  Write-Host "-- $name"
+                  $out = @(& pwsh -NoProfile -NonInteractive -File $t.FullName *>&1 | ForEach-Object { "$_" })
+                  $code = $LASTEXITCODE
+                  $out | ForEach-Object { Write-Host "   $_" }
+                  if ($code -eq 0) {
+                    $passed++
+                    Write-Host "  PASS  $name"
+                    Add-Case $name $true ''
+                  } else {
+                    $failed++
+                    $tail = ($out | Select-Object -Last 25) -join "`n"
+                    Write-Host "::error:: FAIL  $name exited $code"
+                    Add-Case $name $false ("exited {0}`n{1}" -f $code, $tail)
+                  }
+                }
+
+                # ============================================================
                 # Compare-Assessment.ps1
                 # ============================================================
+                # Only what Test-CompareAssessment.ps1 does not already assert:
+                # the summary file exists, the band, and the severity_changed
+                # bucket. The score / delta / resolved / new checks on this
+                # same fixture moved to that file's first block (#359).
                 Write-Host ""
                 Write-Host "== Compare-Assessment =="
                 $group = 'Compare-Assessment'
@@ -1605,11 +1650,6 @@ jobs:
                 $s = Get-Content $sumPath -Raw | ConvertFrom-Json
 
                 # The documented weights: critical 15, high 6, medium 2, low 1.
-                Assert-Equal $s.score_baseline 93 'baseline score'
-                Assert-Equal $s.score_current  84 'current score'
-                Assert-Equal $s.score_delta    -9 'score delta'
-                Assert-Equal $s.resolved        1 'resolved count'
-                Assert-Equal $s.new             1 'new count'
                 Assert-Equal $s.band_current 'Good' 'band at 84'
 
                 # A severity that changes but stays open is its own bucket.
