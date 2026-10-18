@@ -524,6 +524,11 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
         else:
             if found:
                 logger.info("Fetched %s new CVSS vector(s) from NVD", found)
+                # A new vector is a finding that can now be scored, in any
+                # repository that has it (TheHub #60827).
+                from mykronos import environment
+
+                environment.mark_all_dirty("vector refresh")
     return result
 
 

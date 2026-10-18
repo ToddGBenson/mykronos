@@ -101,6 +101,7 @@ class TestTheChangeClassIsComputed:
             ("agent-playbooks-v1.yaml", "governance"),
             ("maturity-model-v1.yaml", "governance"),
             ("stride-map-v1.yaml", "governance"),
+            ("environment-map-v1.yaml", "governance"),
             (".github/workflows/ci.yml", "governance"),
             ("deploy/concourse/pipelines/mykronos.yml", "governance"),
             ("backend/mykronos/approvals/engine.py", "governance"),

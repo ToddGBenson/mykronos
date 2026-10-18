@@ -1182,6 +1182,11 @@ class TestRegistry:
                 "MYKRONOS_GOVERNANCE_POLICY_PATH",
             ),
             ("stride_map_path", "stride-map-v1.yaml", "MYKRONOS_STRIDE_MAP_PATH"),
+            (
+                "environment_map_path",
+                "environment-map-v1.yaml",
+                "MYKRONOS_ENVIRONMENT_MAP_PATH",
+            ),
         ):
             assert setting in Settings.model_fields, (
                 f"{filename} has no Settings field, so its path cannot be "
