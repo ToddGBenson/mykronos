@@ -146,9 +146,9 @@ services:
   # whole arrangement exists to replace.
   #
   # A published build, adopted by digest. deploy/zap/Dockerfile (the recipe
-  # below) is upstream's `weekly` held at one digest (D-128) with Debian's fixes
-  # applied and the browser, X server, compiler and SSH client our usage never
-  # runs removed. Its FROM is the pin (D-114), and TheHub's `zap` resource pins
+  # below) is upstream's `weekly` ZAP, held at one digest (D-128), copied onto a
+  # slim Alpine JRE since 2026-10-18 (#933): Debian's base carried 76 HIGH with
+  # no fix, and the browser, X server and Webswing our usage never runs are gone. Its FROM is the pin (D-114), and TheHub's `zap` resource pins
   # the same digest - move both together. The 2.17.0 release image is Debian 12
   # with 822 fixable CVEs its maintainers never rebuilt, which is why the base
   # is the weekly at all.
@@ -176,7 +176,7 @@ services:
     x-mykronos-build:
       context: ../zap
       publish: mykronos-zap:weekly
-      baseline: ghcr.io/toddgbenson/mykronos-zap:weekly-p20261017@sha256:76aec1674bb84980ab4c240cbb417b983781853cec473afc1574226889e21a5f
+      baseline: ghcr.io/toddgbenson/mykronos-zap:weekly-p20261018@sha256:92d01f31a4a2095d66b73b3d1ee3c22771cc67d83eb9cd7a0896f4f2eaa9602f
     # Loopback only. The API below runs with no key and accepts any caller,
     # and ZAP's API can load and run scripts, so a LAN-reachable port is code
     # execution on this container. The DAST lane (.github/workflows/
