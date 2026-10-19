@@ -79,7 +79,7 @@ dev = [
 # whole protocol surface an agent reaches the platform through, and the SDK
 # has renamed its public API before (FastMCP became MCPServer in 2.0).
 mcp = [
-    "mcp==2.2.0",
+    "mcp==2.3.0",
 ]
 
 [project.scripts]
