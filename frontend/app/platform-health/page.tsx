@@ -31,6 +31,8 @@ const CONSEQUENCE: Record<string, string> = {
     "Findings stop closing. Every count on every page drifts wrong in the reassuring direction.",
   acceptances:
     "An acceptance past its review date stays accepted, and one whose vendor shipped a fix is never re-opened.",
+  "premise-monitor":
+    "A risk acceptance stays in force after the evidence it rests on has changed: a published port or a rising EPSS reopens nothing.",
   governance: "A control coming off goes unnoticed until somebody opens the panel.",
   "threat-model-sync":
     "A change to a repository's .sdlc/threat-model.yaml never reaches the register, so scoring reads last month's threat model.",

@@ -693,6 +693,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     result.kev_error,
                     result.epss_error,
                 )
+            # An `epss_below` premise is decided by what this just refreshed
+            # (spec 33 §4.2: after every relevant refresh). Its own job reports
+            # its health; a failure here must not mark the refresh failing.
+            try:
+                await premise_monitor.run_and_notify(
+                    app.state.db,
+                    app.state.catalog,
+                    app.state.notifier,
+                    fresh_days=settings.premise_fresh_days,
+                )
+            except Exception:  # noqa: BLE001 - logged; premise-monitor reports health
+                logger.exception("Premise monitor after the threat-intel refresh failed")
+
+        async def _premise_monitor() -> None:
+            # Spec 33 §4.2: every live acceptance's premises against fresh
+            # observations and EPSS. A failed premise moves the acceptance to
+            # premise_failed and reopens its findings; one that could not be
+            # applied raises, so this job reads failing rather than clean.
+            await premise_monitor.run_and_notify(
+                app.state.db,
+                app.state.catalog,
+                app.state.notifier,
+                fresh_days=settings.premise_fresh_days,
+            )
 
         if settings.digest_enabled and not app.state.notifier.enabled:
             logger.warning(
@@ -732,6 +756,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
+            (
+                "premise-monitor",
+                settings.premise_monitor_interval_seconds,
+                _premise_monitor,
+            ),
             ("governance", settings.governance_sweep_interval_seconds, _governance),
             # Only against a real GitHub, for the reason `installations` is:
             # the fake answers nothing for the demo's placeholder installs.

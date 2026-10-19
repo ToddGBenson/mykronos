@@ -419,6 +419,16 @@ Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
 - Built: the record and its authority. `POST /api/risk-acceptances` with renew, revoke and
   `migrate-legacy` (`api/risk_acceptances.py`), approval through spec 34's engine, and the rule that
   at least one milestone ends the weakness.
+- Built (TheHub #60831, 2026-10-18): premise monitors for `port_not_published`, `firewall_scope`,
+  `not_internet_facing` (against `ControlObservation`, fresh within `premise_fresh_days`, default
+  14) and `epss_below` (against `ThreatIntelMatch`), in `premise_monitor.py`. They run daily (the
+  `premise-monitor` job), after every observation ingest and after the threat-intel refresh. A
+  failure takes §4.2's path: `premise_failed`, the covered findings reopened with a
+  `finding.reopened_by_premise` note, a notification naming risk owner and approver, audited with
+  the observation ids. Every other premise type reads `unverified`. The acceptance detail shows
+  each premise as holds / failed / unverified with its evidence. Not built: per-person routing
+  (the notifier posts to one channel and names both people) and §5's private tracking issue (the
+  tracking item is the agent work queue's `acceptance_attention`).
 - Not built: the POA&M export. No route or command produces OSCAL or CSV, so the §13 criterion on
   the OSCAL 1.1 schema is unmet.
 - Not built: §8's scoring changes. `residual_cap` is still **15** in `oracle-policy-v1.yaml`, not 30,
