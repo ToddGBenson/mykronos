@@ -249,6 +249,7 @@ RANK_INPUTS: dict[str, str] = {
     "blast_radius": "blast radius",
     "repo_is_no_go": "the repository's own risk decision",
     "fixable": "whether a fix already exists",
+    "environmental": "environmental severity (exposure, data and criticality, from stored scores)",
 }
 """Every term `rank_terms` can produce, and the input each one discloses.
 
@@ -260,6 +261,13 @@ produce, and it named business context in neither list while the rank has never
 had a term for it. `add()` below looks a key up here before it does anything
 else, so a term added to the rank without saying what input it speaks for
 raises rather than quietly widening the gap between the two.
+
+`environmental` (TheHub #60829) is how business context reaches the rank: a
+stored environmental score folds internet exposure, data classification,
+business criticality and observed controls into CVSS bands, and the term is
+the band shift times a weight in policy. Its label deliberately does not say
+"business context": that phrase stays in `ranking_inputs`'s `not_consulted`
+for every open finding without a score in force.
 
 Several keys share a label on purpose — `in_kev` and `epss` are one input to a
 reader and two terms to the rank, and the disclosure is written for the reader.
@@ -274,17 +282,25 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
     a derived number carries its working (spec 10 §6).
 
     Every term key must appear in `RANK_INPUTS`; see there for why.
+
+    **The environmental term is listed even at zero** (TheHub #60829), when
+    the row was looked up (`item["environmental"]` present, an
+    `environment_view.RankReading` or None). Zero there is an answer - no
+    score, a lapsed one, or a move inside one band - and leaving it off would
+    make "the environment was not consulted" look the same as "the
+    environment changed nothing". A dict without the key was never looked up
+    and gets no term.
     """
     rank = policy.triage_rank
     terms: list[dict[str, Any]] = []
 
-    def add(key: str, points: float, detail: str) -> None:
+    def add(key: str, points: float, detail: str, *, keep_zero: bool = False) -> None:
         if key not in RANK_INPUTS:
             raise KeyError(
                 f"rank term {key!r} is not in RANK_INPUTS, so the queue would "
                 "rank by it while telling nobody it had (D-116)"
             )
-        if points:
+        if points or keep_zero:
             terms.append({"key": key, "points": round(points, 2), "detail": detail})
 
     severity = str(item.get("severity") or "")
@@ -322,11 +338,32 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
         )
     if item.get("effort") == "one_click":
         add("fixable", rank.fixable_bonus, "auto-remediation has produced a fix for this")
+    if "environmental" in item:
+        reading = item["environmental"]
+        if reading is None:
+            add(
+                "environmental",
+                0.0,
+                "no environmental score: no CVSS 3.x vector for this finding, "
+                "or no rescore has reached it yet",
+                keep_zero=True,
+            )
+        elif reading.state != "scored":
+            add("environmental", 0.0, reading.summary, keep_zero=True)
+        else:
+            add(
+                "environmental",
+                rank.environmental_per_band * reading.shift,
+                reading.summary,
+                keep_zero=True,
+            )
 
     return (sum(term["points"] for term in terms), terms)
 
 
-def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
+def ranking_inputs(
+    catalog: Any, session: Any, policy: Any = None, *, now: datetime | None = None
+) -> dict[str, Any]:
     """Which ranking inputs this deployment can actually consult (B-033).
 
     The rank carries its working — every term it *used* is listed with its
@@ -350,11 +387,18 @@ def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
     is derived from `RANK_INPUTS` rather than restated.
 
     Oracle does read all three fields (`oracle/engine.py`), which is why this
-    stayed invisible: business context reaches the portfolio decision and never
-    reaches the queue, and two rankings on one estate disagreed about which
-    inputs exist. Making the queue say so is this function's job; giving the
-    rank terms for them is a separate decision, because it reorders every queue
-    on the estate and needs stated weights.
+    stayed invisible: business context reached the portfolio decision and never
+    reached the queue.
+
+    **Since TheHub #60829 it reaches the queue through the `environmental`
+    term**, for findings with a stored environmental score in force - the
+    resolver's reading of exposure, classification, criticality and observed
+    controls, in CVSS bands. So business context is consulted for exactly
+    those findings, and `not_consulted` names it, with the count, for the
+    rest: a finding with no CVSS 3.x vector, not yet rescored, or resting on a
+    fact that has since expired. With every open finding scored the entry is
+    gone, because it would no longer be true. `environmental` describes the
+    term and its weight beside the counts.
     """
     from mykronos.db.models import RepoOnboarding, RiskProfile
 
@@ -373,25 +417,52 @@ def ranking_inputs(catalog: Any, session: Any) -> dict[str, Any]:
     }
     missing_profile = sorted(set(repos) - with_profile)
 
-    if missing_profile:
-        why = (
-            "internet exposure, data classification and business criticality are "
-            "not terms in this rank, and are unset anyway on "
-            + ", ".join(missing_profile)
-        )
-    else:
-        why = (
-            "internet exposure, data classification and business criticality are "
-            "recorded on every risk profile and read by the portfolio decision, "
-            "but they are not terms in this rank"
-        )
+    open_ids = [
+        str(row[0])
+        for row in catalog.query("SELECT finding_id FROM findings WHERE status = 'open'")
+    ]
+    coverage = environment_view.rank_coverage(session, open_ids, now or utcnow())
+    weight = float(policy.triage_rank.environmental_per_band) if policy is not None else 0.0
+
+    not_consulted: list[dict[str, str]] = []
+    missing = coverage.lapsed + coverage.unscored
+    if missing or coverage.total == 0:
+        if coverage.scored == 0:
+            why = (
+                "internet exposure, data classification and business criticality "
+                "reach this rank only through a stored environmental score, and none "
+                f"of the {coverage.total} open findings has one in force"
+            )
+        else:
+            why = (
+                "internet exposure, data classification and business criticality "
+                "reach this rank only through a stored environmental score, and "
+                f"{missing} of {coverage.total} open findings have none in force "
+                "(no CVSS 3.x vector, not yet rescored, or resting on an expired fact)"
+            )
+        if missing_profile:
+            why += "; risk profiles are unset anyway on " + ", ".join(missing_profile)
+        not_consulted.append({"input": "business context", "reason": why})
+
+    description = (
+        f"environmental severity: {weight:g} points per CVSS band the environment "
+        "moved a finding's stored score (down subtracts, up adds), from scores in "
+        f"force only; {coverage.scored} of {coverage.total} open findings have one"
+    )
 
     return {
         # Deduped in declaration order: `dict.fromkeys` keeps `RANK_INPUTS`'s
         # order, and several keys deliberately share one label.
         "consulted": list(dict.fromkeys(RANK_INPUTS.values())),
-        "not_consulted": [{"input": "business context", "reason": why}],
+        "not_consulted": not_consulted,
         "repos_without_a_risk_profile": missing_profile,
+        "environmental": {
+            "weight_per_band": weight,
+            "scored": coverage.scored,
+            "lapsed": coverage.lapsed,
+            "unscored": coverage.unscored,
+            "description": description,
+        },
     }
 
 
@@ -1937,7 +2008,13 @@ class DashboardQueries:
 
         if order == "rank" and policy is not None:
             self._attach_rank_inputs(queue)
+            # Every row is looked up, so every row carries the environmental
+            # term - at zero, with its reason, when there is nothing in force.
+            readings = environment_view.rank_readings(
+                session, [str(item["finding_id"]) for item in queue], utcnow()
+            )
             for item in queue:
+                item["environmental"] = readings.get(str(item["finding_id"]))
                 item["rank"], item["rank_terms"] = rank_terms(item, policy)
             queue.sort(key=lambda item: (-float(item["rank"]), item["first_seen_at"]))
 
