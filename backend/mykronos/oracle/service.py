@@ -607,6 +607,63 @@ class OracleService:
         }
 
 
+    def environmental_shadow_report(
+        self,
+        *,
+        since: datetime | None = None,
+        repo_full_name: str | None = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Environmental shadow verdicts against live ones (TheHub #60830).
+
+        Reads the `environmental` block each decision recorded when it was
+        made, rather than re-scoring anything: the question is what the shadow
+        said *then*, beside the verdict that was actually given, and - where a
+        pull request's merge or close was recorded - what happened next.
+        Most recent first, at most `limit` decisions.
+        """
+        from mykronos.oracle.environmental import build_report
+
+        where = ["1 = 1"]
+        params: list[Any] = []
+        if since is not None:
+            where.append("evaluated_at >= ?")
+            params.append(since)
+        if repo_full_name is not None:
+            where.append("repo_full_name = ?")
+            params.append(repo_full_name)
+        rows = self.catalog.query(
+            f"""
+            SELECT decision_id, repo_full_name, decision_type, pr_number, commit_sha,
+                   evaluated_at, overall_risk_score, recommendation, gate_outcome,
+                   CAST(json_extract(inputs_snapshot, '$.environmental') AS VARCHAR)
+            FROM risk_decisions
+            WHERE {' AND '.join(where)}
+            ORDER BY evaluated_at DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        )
+        columns = (
+            "decision_id", "repo_full_name", "decision_type", "pr_number", "commit_sha",
+            "evaluated_at", "overall_risk_score", "recommendation", "gate_outcome",
+        )
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(zip(columns, row[:-1], strict=True))
+            environmental: Any = None
+            if row[-1]:
+                with suppress(TypeError, json.JSONDecodeError):
+                    environmental = json.loads(row[-1])
+            record["environmental"] = environmental
+            records.append(record)
+        return {
+            "mode": self.policy.environmental.mode,
+            "policy_version": self.policy.version,
+            "limit": limit,
+            **build_report(records),
+        }
+
     def _repos_for_commits(
         self, commits: list[str], repo_full_name: str | None
     ) -> list[tuple[str, str]]:

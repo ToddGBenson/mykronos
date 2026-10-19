@@ -2373,6 +2373,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/oracle/environmental-shadow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Environmental Shadow
+         * @description Environmental severity in shadow: where it would have changed a verdict
+         *     (TheHub #60830).
+         *
+         *     Every decision since policy 1.13 records the score and verdict Oracle
+         *     would have reached counting findings by environmental effective severity.
+         *     This compares them with the verdicts actually given, and with the merge
+         *     outcome where one was recorded, naming the findings and scoring contexts
+         *     behind each difference. It is the evidence oracle-policy-v1.yaml's go-live
+         *     conditions ask for. Readable by viewers, like `/shadow-mode`.
+         *
+         *     Ordered before `/decisions/{repo_id}` for the same reason `/shadow-mode`
+         *     is.
+         */
+        get: operations["environmental_shadow_api_oracle_environmental_shadow_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oracle/term-analytics": {
         parameters: {
             query?: never;
@@ -13077,6 +13108,41 @@ export interface operations {
             query?: {
                 days?: number;
                 repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    environmental_shadow_api_oracle_environmental_shadow_get: {
+        parameters: {
+            query?: {
+                days?: number;
+                repo_id?: string | null;
+                limit?: number;
             };
             header?: never;
             path?: never;

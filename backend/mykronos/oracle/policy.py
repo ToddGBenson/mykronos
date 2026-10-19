@@ -181,6 +181,36 @@ class ToxicCombinationsPolicy:
     critical_forces_no_go: bool
 
 
+#: The modes `environmental.mode` accepts. `live` is deliberately absent: the
+#: switch that lets environmental severity move a verdict is a separate,
+#: reviewed change (TheHub #60830, decision D2), and a policy file that asks
+#: for it before the code exists must fail at load rather than quietly run in
+#: shadow while its author believes it is live.
+ENVIRONMENTAL_MODES = ("off", "shadow")
+
+
+@dataclass(frozen=True)
+class EnvironmentalPolicy:
+    """Environmental CVSS severity as an Oracle input (TheHub #60830).
+
+    `shadow` computes, beside every decision, the score and verdict Oracle
+    *would* have reached had it counted findings by their environmental
+    `effective_severity` (TheHub #60827) rather than by the scanner's word,
+    and records both in `inputs_snapshot.environmental`. The live score and
+    verdict are untouched: the shadow is evidence for the go-live decision,
+    not an input to this one.
+
+    `off` records the category as not computed. Both modes leave every live
+    score exactly as it was.
+    """
+
+    mode: str = "off"
+
+    @property
+    def shadow(self) -> bool:
+        return self.mode == "shadow"
+
+
 @dataclass(frozen=True)
 class BlastRadiusPolicy:
     """Weights for portfolio-wide package concentration (spec 19 §2.4).
@@ -381,6 +411,10 @@ class Policy:
     #: precisely what is running rather than a re-serialisation of it.
     raw: dict[str, Any]
 
+    #: TheHub #60830. Defaulted so a Policy built without it (a test, a policy
+    #: file from before 1.13) scores exactly as before with the shadow off.
+    environmental: EnvironmentalPolicy = field(default_factory=EnvironmentalPolicy)
+
     def recommendation_for(self, score: float) -> str:
         if score >= self.no_go:
             return "no_go"
@@ -512,6 +546,20 @@ def parse_policy(document: dict[str, Any]) -> Policy:
                 "every finding of this severity overdue the moment it is found."
             )
         target_days[name] = int(number)
+
+    # Top-level, not a modifier: in shadow mode it contributes nothing to any
+    # score. Optional, so a policy file from before 1.13 loads with it off.
+    environmental_raw = document.get("environmental") or {}
+    if not isinstance(environmental_raw, dict):
+        raise PolicyError("environmental must be a mapping, e.g. {mode: shadow}.")
+    environmental_mode = str(environmental_raw.get("mode", "off"))
+    if environmental_mode not in ENVIRONMENTAL_MODES:
+        raise PolicyError(
+            f"environmental.mode {environmental_mode!r} is not supported. Supported: "
+            f"{', '.join(ENVIRONMENTAL_MODES)}. `live` needs its own reviewed change "
+            "(see the go-live conditions in oracle-policy-v1.yaml); a mode this code "
+            "does not implement would be silently ignored, which is worse than refusing."
+        )
 
     thresholds = _require(document, "thresholds", "the policy root")
     no_go = _number(_require(thresholds, "no_go", "thresholds"), "thresholds.no_go")
@@ -714,6 +762,7 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             scope.get("exclude_tool_images", False), "scope.exclude_tool_images"
         ),
         raw=document,
+        environmental=EnvironmentalPolicy(mode=environmental_mode),
     )
 
 

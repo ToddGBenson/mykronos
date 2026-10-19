@@ -326,6 +326,42 @@ async def shadow_mode(
     }
 
 
+@router.get("/environmental-shadow")
+async def environmental_shadow(
+    request: Request,
+    principal: PrincipalDep,
+    days: Annotated[int, Query(ge=1, le=730)] = 30,
+    repo_id: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+) -> dict[str, Any]:
+    """Environmental severity in shadow: where it would have changed a verdict
+    (TheHub #60830).
+
+    Every decision since policy 1.13 records the score and verdict Oracle
+    would have reached counting findings by environmental effective severity.
+    This compares them with the verdicts actually given, and with the merge
+    outcome where one was recorded, naming the findings and scoring contexts
+    behind each difference. It is the evidence oracle-policy-v1.yaml's go-live
+    conditions ask for. Readable by viewers, like `/shadow-mode`.
+
+    Ordered before `/decisions/{repo_id}` for the same reason `/shadow-mode`
+    is.
+    """
+    since = utcnow() - timedelta(days=days)
+    from mykronos.api.dashboard import _resolve_repo
+
+    repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
+    report = _service(request).environmental_shadow_report(
+        since=since, repo_full_name=repo_full_name, limit=limit
+    )
+    return {
+        "window_days": days,
+        "since": since.isoformat(),
+        "repo_full_name": repo_full_name,
+        **report,
+    }
+
+
 @router.get("/term-analytics")
 async def term_analytics(
     request: Request,
