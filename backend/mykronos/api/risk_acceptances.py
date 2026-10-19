@@ -20,8 +20,7 @@ from mykronos import risk_acceptance as ra
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.approvals.engine import ApprovalError
 from mykronos.approvals.policy import cached_policy
-from mykronos.db import models
-from mykronos.db.models import RiskAcceptance
+from mykronos.db.models import EnvironmentalScore, RiskAcceptance
 
 router = APIRouter(prefix="/api/risk-acceptances", tags=["risk-acceptance"])
 
@@ -89,49 +88,48 @@ def _fresh_days(request: Request) -> int:
 SCORES_SHOWN = 50
 
 
-def _select_scores(model: Any, finding_ids: list[str]) -> Any:
-    return select(model).where(model.finding_id.in_(finding_ids))
-
-
 def environmental_scores(session: Any, finding_ids: list[str]) -> dict[str, Any]:
     """Base and environmental CVSS for the covered findings, with their facts.
 
-    Feature-detected: `EnvironmentalScore` arrives with the environmental
-    resolver (TheHub #60827). Until it exists the answer says so rather than
-    showing nothing, which would read as "no scores".
+    Read from `EnvironmentalScore` (TheHub #60827): the current value per
+    finding, with every fact the resolver weighed, applied or not. A covered
+    finding with no row is unscored (no vector, or not yet computed) and is
+    counted, not hidden: `total` is every covered finding, `scored` those with
+    a row among the ones shown.
     """
-    model = getattr(models, "EnvironmentalScore", None)
-    if model is None:
-        return {
-            "available": False,
-            "reason": "Environmental scoring is not deployed on this platform yet.",
-            "total": len(finding_ids),
-            "items": [],
-        }
     shown = sorted(finding_ids)[:SCORES_SHOWN]
-    rows = session.scalars(_select_scores(model, shown)).all() if shown else []
-
-    def iso(value: Any) -> Any:
-        return value.isoformat() if hasattr(value, "isoformat") else value
-
+    rows = (
+        session.scalars(
+            select(EnvironmentalScore)
+            .where(EnvironmentalScore.finding_id.in_(shown))
+            .order_by(EnvironmentalScore.finding_id)
+        ).all()
+        if shown
+        else []
+    )
     items = [
         {
-            "finding_id": getattr(row, "finding_id", None),
-            "vector": getattr(row, "vector", None),
-            "base": getattr(row, "base", None),
-            "environmental": getattr(row, "environmental", None),
-            "base_band": getattr(row, "base_band", None),
-            "env_band": getattr(row, "env_band", None),
-            "effective_severity": getattr(row, "effective_severity", None),
-            "facts": getattr(row, "facts_json", None) or [],
-            "computed_at": iso(getattr(row, "computed_at", None)),
+            "finding_id": row.finding_id,
+            "vector": row.vector,
+            "vector_version": row.vector_version,
+            "vector_source": row.vector_source,
+            "base": row.base,
+            "environmental": row.environmental,
+            "base_band": row.base_band,
+            "env_band": row.env_band,
+            "scanner_severity": row.scanner_severity,
+            "effective_severity": row.effective_severity,
+            "facts": list(row.facts_json or []),
+            "context_id": row.context_id,
+            "computed_at": row.computed_at.isoformat() if row.computed_at else None,
         }
         for row in rows
     ]
     return {
         "available": True,
-        "reason": "",
+        "reason": "" if items else "No covered finding has an environmental score yet.",
         "total": len(finding_ids),
+        "shown": len(shown),
         "scored": len(items),
         "items": items,
     }
