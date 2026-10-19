@@ -24,7 +24,7 @@ from mykronos.github.client import FileChange, GitHubClient, GitHubError, PullRe
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
-from mykronos.patchwork import correlate, fixers
+from mykronos.patchwork import correlate, fixers, image_date
 from mykronos.patchwork.regression_prompt import regression_prompt
 from mykronos.patchwork.rejection import is_dampened, rejection_prompt
 from mykronos.patchwork.stewardship import BRANCH_PREFIX, branches_off_limits
@@ -96,6 +96,11 @@ class StageOutcome:
     fixer_name: str | None = None
     fix_confidence: float | None = None
     fix_files: dict[str, str] | None = None
+    #: True when this outcome points at a pull request another finding's
+    #: outcome already counted: bump-image-date opens one per image and date,
+    #: and the draft budget is spent once for it, not once per CVE. Never
+    #: persisted.
+    shared_pr: bool = False
 
     def to_row(self, repo_full_name: str) -> dict[str, Any]:
         stamp = utcnow()
@@ -135,6 +140,77 @@ class PipelineResult:
         return counts
 
 
+@dataclass
+class _ImageGroup:
+    """One patched image's decision in one run, handed to each of its findings."""
+
+    refusal: str | None = None
+    stage: str = "no_fix_available"
+    plan: image_date.ImageDatePlan | None = None
+    pr: PullRequest | None = None
+    preview: bool = False
+    #: Whether a finding's outcome has already counted this pull request
+    #: against the draft budget. True from the start for one that was open
+    #: before this run.
+    counted: bool = False
+
+    def outcome_for(self, finding_id: str, triage_rationale: str) -> StageOutcome:
+        name = image_date.FIXER_NAME
+        plan = self.plan
+        if self.refusal is not None or plan is None:
+            return StageOutcome(
+                finding_id=finding_id,
+                stage=self.stage,
+                classification="true_positive",
+                rationale=f"{triage_rationale} {self.refusal}",
+                fixer_name=name if plan is not None else None,
+                fix_confidence=plan.fix.confidence if plan is not None else None,
+            )
+        new_tag = plan.new_image.path_tag
+        if finding_id not in {str(f["finding_id"]) for f in plan.clears}:
+            persists = finding_id in {str(f["finding_id"]) for f in plan.persists}
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="no_fix_available",
+                classification="true_positive",
+                rationale=(
+                    f"{triage_rationale} "
+                    + (
+                        f"{new_tag} has been scanned and still carries this finding, "
+                        "so moving to it would not clear it."
+                        if persists
+                        else f"Not in the open findings of {plan.image.path_tag}."
+                    )
+                ),
+            )
+        summary = f"{plan.fix.summary} ({name})."
+        if self.preview:
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="would_fix",
+                classification="true_positive",
+                rationale=f"{triage_rationale} {summary}",
+                fixer_name=name,
+                fix_confidence=plan.fix.confidence,
+                fix_files=dict(plan.fix.files),
+            )
+        assert self.pr is not None
+        shared = self.counted
+        self.counted = True
+        return StageOutcome(
+            finding_id=finding_id,
+            stage="pr_opened",
+            classification="true_positive",
+            rationale=f"{triage_rationale} {summary}",
+            fix_pr_number=self.pr.number,
+            fix_pr_url=self.pr.url,
+            pr_status="draft_open",
+            fixer_name=name,
+            fix_confidence=plan.fix.confidence,
+            shared_pr=shared,
+        )
+
+
 class PatchworkPipeline:
     def __init__(
         self,
@@ -147,6 +223,7 @@ class PatchworkPipeline:
         source_capabilities: tuple[str, ...] = DEFAULT_SOURCE_CAPABILITIES,
         correlation_capabilities: tuple[str, ...] = DEFAULT_CORRELATION_CAPABILITIES,
         auto_fix_min_severity: str = "high",
+        image_registry: image_date.TagSource | None = None,
     ) -> None:
         self.catalog = catalog
         self.buffer = buffer
@@ -159,6 +236,11 @@ class PatchworkPipeline:
         # `classify()` hardcoded "critical or high" before this was
         # configurable, so the default keeps every existing repo's behaviour.
         self.auto_fix_min_severity = auto_fix_min_severity
+        # bump-image-date's one network read. None leaves every patched-image
+        # finding with a stated reason, not a silent skip.
+        self.image_registry = image_registry
+        #: Per run: one decision per patched image, shared by its findings.
+        self._image_groups: dict[image_date.PatchedImage, _ImageGroup] = {}
 
     # -- stage 1: ingest -------------------------------------------------
 
@@ -240,6 +322,7 @@ class PatchworkPipeline:
         no trace is indistinguishable from one that decided to do nothing.
         """
         result = PipelineResult()
+        self._image_groups = {}
         findings = self._candidates(repo_full_name)
         # Correlation looks wider than fix generation (spec 08 §5a). Fetched
         # separately rather than filtered down from one query, because the
@@ -329,7 +412,7 @@ class PatchworkPipeline:
                 result=result,
             )
             result.outcomes.append(outcome)
-            if outcome.stage == "pr_opened":
+            if outcome.stage == "pr_opened" and not outcome.shared_pr:
                 budget -= 1
                 result.prs_opened += 1
             elif outcome.stage == "queued":
@@ -452,6 +535,7 @@ class PatchworkPipeline:
             )
 
         budget = max(0, self.max_open_draft_prs - open_prs)
+        self._image_groups = {}
         outcome = await self._attempt_fix(
             repo_full_name,
             finding,
@@ -478,6 +562,23 @@ class PatchworkPipeline:
     ) -> StageOutcome:
         finding_id = str(finding["finding_id"])
         path = str(finding.get("file_path") or "")
+
+        # Before the budget and the file read: a container finding's
+        # `file_path` is a path inside the image, not a file in this
+        # repository, and one image's findings share one pull request.
+        image = image_date.image_of_finding(finding)
+        if image is not None:
+            return await self._attempt_image_date_fix(
+                repo_full_name,
+                finding,
+                image,
+                triage_rationale,
+                github=github,
+                default_branch=default_branch,
+                budget=budget,
+                result=result,
+                preview_only=preview_only,
+            )
 
         if budget <= 0:
             return StageOutcome(
@@ -629,6 +730,231 @@ class PatchworkPipeline:
             pr_status="draft_open",
         )
 
+    # -- bump-image-date ---------------------------------------------------
+
+    async def _attempt_image_date_fix(
+        self,
+        repo_full_name: str,
+        finding: dict[str, Any],
+        image: image_date.PatchedImage,
+        triage_rationale: str,
+        *,
+        github: GitHubClient | None,
+        default_branch: str,
+        budget: int,
+        result: PipelineResult,
+        preview_only: bool,
+    ) -> StageOutcome:
+        """One finding in a patched image, decided once for the whole image.
+
+        The first finding of an image in a run makes the decision (and opens
+        the pull request); the rest of that image's findings share it, so an
+        image with forty CVEs yields one pull request, not forty.
+        """
+        finding_id = str(finding["finding_id"])
+        name = image_date.FIXER_NAME
+        skip, rejections = is_dampened(
+            self.catalog,
+            repo_full_name=repo_full_name,
+            rule_id=str(finding.get("rule_id") or ""),
+            fixer_name=name,
+        )
+        if skip:
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="skipped_low_confidence",
+                classification="true_positive",
+                rationale=(
+                    f"{triage_rationale} {name}'s fixes for this rule have been "
+                    f"closed as wrong {rejections} time(s) in this repository. Not "
+                    "offered again here until somebody merges one by hand."
+                ),
+                fixer_name=name,
+            )
+
+        group = self._image_groups.get(image)
+        if group is None:
+            group = await self._image_group(
+                repo_full_name,
+                image,
+                github=github,
+                default_branch=default_branch,
+                budget=budget,
+                result=result,
+                preview_only=preview_only,
+            )
+            self._image_groups[image] = group
+        return group.outcome_for(finding_id, triage_rationale)
+
+    async def _image_group(
+        self,
+        repo_full_name: str,
+        image: image_date.PatchedImage,
+        *,
+        github: GitHubClient | None,
+        default_branch: str,
+        budget: int,
+        result: PipelineResult,
+        preview_only: bool,
+    ) -> _ImageGroup:
+        if budget <= 0 and not preview_only:
+            return _ImageGroup(
+                refusal=(
+                    f"Not attempted: this repository is at its limit of "
+                    f"{self.max_open_draft_prs} open draft pull requests."
+                ),
+                stage="queued",
+            )
+        if github is None:
+            return _ImageGroup(refusal="No fix attempted: GitHub is not reachable.")
+        if self.image_registry is None:
+            return _ImageGroup(
+                refusal=(
+                    "No image registry is configured for Patchwork "
+                    "(MYKRONOS_PATCHWORK_IMAGE_REGISTRY), so it cannot see whether "
+                    "image-refresh has published a newer snapshot of "
+                    f"{image.path}:{image.prefix}."
+                )
+            )
+        tags = await self.image_registry.tags(image.path)
+        if tags is None:
+            return _ImageGroup(
+                refusal=f"Could not list the registry's tags for {image.path}."
+            )
+        new = image_date.newer_date(image, tags)
+        files: dict[str, str] = {}
+        if new is not None:
+            for path in image_date.CANDIDATE_COMPOSE_FILES:
+                try:
+                    content = await github.get_file(repo_full_name, path, default_branch)
+                except GitHubError as exc:
+                    return _ImageGroup(refusal=f"Could not read {path}: {exc}")
+                if content is not None:
+                    files[path] = content
+        plan = image_date.propose(
+            image,
+            tags=tags,
+            files=files,
+            findings=self._open_image_findings(repo_full_name, image),
+            observed_in_newer=(
+                self._observed_in(repo_full_name, image.with_date(new)) if new else None
+            ),
+        )
+        if isinstance(plan, str):
+            return _ImageGroup(refusal=plan)
+
+        off_limits = branches_off_limits(self.catalog, repo_full_name)
+        if any(str(f["finding_id"]) in off_limits for f in plan.clears):
+            return _ImageGroup(
+                refusal=(
+                    "A person has already edited this image's fix branch; "
+                    "Patchwork does not touch it again (spec 08 §3)."
+                )
+            )
+        if plan.fix.confidence < self.min_confidence:
+            return _ImageGroup(
+                refusal=(
+                    f"{image_date.FIXER_NAME} produced a fix at confidence "
+                    f"{plan.fix.confidence:.2f}, below this repository's floor of "
+                    f"{self.min_confidence:.2f}: no scan of the new tag backs it."
+                ),
+                stage="skipped_low_confidence",
+                plan=plan,
+            )
+        if preview_only:
+            return _ImageGroup(plan=plan, preview=True)
+
+        lead = next(f for f in plan.clears if str(f["finding_id"]) == plan.lead_finding_id)
+        branch = f"{BRANCH_PREFIX}{plan.lead_finding_id[:12]}"
+        try:
+            # Re-running is the normal case: the image stays open until its
+            # pull request merges, and a second draft for it is noise.
+            existing = await github.find_open_pull_request(repo_full_name, branch)
+            if existing is not None:
+                return _ImageGroup(plan=plan, pr=existing, counted=True)
+            pr = await self._open_draft_pr(
+                github,
+                repo_full_name,
+                lead,
+                plan.fix,
+                image_date.FIXER_NAME,
+                default_branch=default_branch,
+                body=image_date.render_pr_body(plan),
+            )
+        except GitHubError as exc:
+            result.errors.append(f"{image.reference}: {exc}")
+            return _ImageGroup(
+                refusal=(
+                    f"{image_date.FIXER_NAME} produced a fix, but the draft pull "
+                    f"request could not be opened: {exc}. The next run regenerates "
+                    "it deterministically."
+                ),
+                stage="fix_generated",
+                plan=plan,
+            )
+        return _ImageGroup(plan=plan, pr=pr)
+
+    def _container_rows(
+        self, repo_full_name: str, *, open_only: bool
+    ) -> list[dict[str, Any]]:
+        columns = [
+            "finding_id",
+            "rule_id",
+            "title",
+            "severity",
+            "package_name",
+            "package_version",
+            "raw_finding_json",
+        ]
+        rows = self.catalog.query(
+            f"SELECT {', '.join(columns)} FROM findings "
+            "WHERE asset_id = ? AND capability = 'containers'"
+            + (" AND status = 'open'" if open_only else ""),
+            [repo_full_name],
+        )
+        records = []
+        for row in rows:
+            record = dict(zip(columns, row, strict=True))
+            record["capability"] = "containers"
+            raw = record.get("raw_finding_json")
+            if isinstance(raw, str):
+                try:
+                    record["raw_finding_json"] = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    record["raw_finding_json"] = {}
+            records.append(record)
+        return records
+
+    def _open_image_findings(
+        self, repo_full_name: str, image: image_date.PatchedImage
+    ) -> list[dict[str, Any]]:
+        """Every open finding in exactly this image: the pull request's list."""
+        return [
+            record
+            for record in self._container_rows(repo_full_name, open_only=True)
+            if image_date.image_of_finding(record) == image
+        ]
+
+    def _observed_in(
+        self, repo_full_name: str, newer: image_date.PatchedImage
+    ) -> set[tuple[str, str]] | None:
+        """(rule_id, package) the lake holds for `newer`, or None if none at all.
+
+        Any status: a pair once seen in the newer tag is not claimed as cleared
+        by it. Matched on repository and tag, not host: the same registry is
+        named by more than one address across this estate's lanes.
+        """
+        seen: set[tuple[str, str]] | None = None
+        for record in self._container_rows(repo_full_name, open_only=False):
+            found = image_date.image_of_finding(record)
+            if found is None or found.path_tag != newer.path_tag:
+                continue
+            seen = seen or set()
+            seen.add(
+                (str(record.get("rule_id") or ""), str(record.get("package_name") or ""))
+            )
+        return seen
+
     async def _open_draft_pr(
         self,
         github: GitHubClient,
@@ -638,6 +964,7 @@ class PatchworkPipeline:
         fixer_name: str,
         *,
         default_branch: str,
+        body: str | None = None,
     ) -> PullRequest:
         finding_id = str(finding["finding_id"])
         branch = f"{BRANCH_PREFIX}{finding_id[:12]}"
@@ -662,7 +989,7 @@ class PatchworkPipeline:
             head=branch,
             base=default_branch,
             title=f"[Mykronos] {fix.summary}",
-            body=render_pr_body(finding, fix, fixer_name),
+            body=body if body is not None else render_pr_body(finding, fix, fixer_name),
             # Not a parameter a caller can vary. spec 08 §3 is a hard
             # constraint, so it is written here once rather than passed in
             # from somewhere that could get it wrong.

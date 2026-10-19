@@ -65,7 +65,9 @@ ROUTES: dict[str, str] = {
         "packages with no patched version published, so a rebuild closes "
         "nothing — accept those with `no_vendor_fix` and a review date, which "
         "re-opens automatically when a vendor ships. /remediate names the few "
-        "that do have a fixed version."
+        "that do have a fixed version. A patched `-p<date>` image is the "
+        "exception auto-remediation covers: once image-refresh publishes a "
+        "newer snapshot of it, Patchwork drafts the date bump."
     ),
     "dast": (
         "Usually one response header or config value, fixed once and closing "
