@@ -2850,8 +2850,8 @@ jobs:
       #
       # The demo's ZAP is built from deploy/zap-pinned/Dockerfile: one FROM
       # naming, by digest, the derivative the nightly zap-image workflow
-      # published (upstream's pinned weekly with Debian's fixes applied and
-      # what our usage never runs removed). Its local tag exists only where
+      # published (upstream's pinned weekly ZAP on a slim Alpine JRE since
+      # #933, without what our usage never runs). Its local tag exists only where
       # compose built it, so the same Dockerfile is built here, from this
       # commit, pushed beside the application images under the commit SHA, and
       # scanned like them - which also keeps its findings under the name
