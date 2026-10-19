@@ -28,6 +28,7 @@ from mykronos import premise_monitor as pm
 from mykronos.db.models import (
     AuditLogEntry,
     ControlObservation,
+    EnvironmentalScore,
     RepoSurface,
     RiskAcceptance,
     ThreatIntelMatch,
@@ -595,63 +596,58 @@ class TestTheApiShowsThePremises:
         [check] = proposed["premise_checks"]
         assert check["status"] == "unverified"
 
-    def test_scores_say_when_they_are_not_available(self, client, admin_auth, lake) -> None:
+    def test_scores_with_no_rows_say_so(self, client, admin_auth, lake) -> None:
         record_id = _accepted(client, admin_auth, [PORT_PREMISE])
         detail = client.get(f"/api/risk-acceptances/{record_id}", headers=admin_auth).json()
         scores = detail["scores"]
-        assert set(scores) >= {"available", "items", "total"}
-        if not scores["available"]:
-            assert scores["items"] == [] and scores["reason"]
+        assert scores["available"] is True
+        assert scores["total"] == 2 and scores["scored"] == 0
+        assert scores["items"] == [] and scores["reason"]
 
-
-class TestScoresAreFeatureDetected:
-    def test_without_the_model_there_are_no_scores(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from mykronos.api import risk_acceptances as api
-        from mykronos.db import models
-
-        monkeypatch.delattr(models, "EnvironmentalScore", raising=False)
-        out = api.environmental_scores(None, ["f-1"])
-        assert out["available"] is False
-        assert out["items"] == []
-
-    def test_with_the_model_each_score_carries_its_facts(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_the_detail_shows_base_and_environmental_scores_with_facts(
+        self, client, admin_auth, lake
     ) -> None:
-        from types import SimpleNamespace
-
-        from mykronos.api import risk_acceptances as api
-        from mykronos.db import models
-
-        class FakeColumn:
-            def in_(self, values: Any) -> Any:
-                return ("in", tuple(values))
-
-        class FakeModel:
-            finding_id = FakeColumn()
-
-        row = SimpleNamespace(
-            finding_id="f-1",
-            vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-            base=9.8,
-            environmental=6.5,
-            base_band="critical",
-            env_band="medium",
-            effective_severity="medium",
-            facts_json=[{"metric": "MAV", "value": "A", "applied": True}],
-            computed_at=NOW,
-        )
-
-        class FakeSession:
-            def scalars(self, _stmt: Any) -> Any:
-                return SimpleNamespace(all=lambda: [row])
-
-        monkeypatch.setattr(models, "EnvironmentalScore", FakeModel, raising=False)
-        monkeypatch.setattr(api, "_select_scores", lambda model, ids: ("stmt", ids))
-        out = api.environmental_scores(FakeSession(), ["f-1"])
-        assert out["available"] is True
-        [item] = out["items"]
-        assert item["base"] == 9.8 and item["environmental"] == 6.5
-        assert item["facts"] == [{"metric": "MAV", "value": "A", "applied": True}]
+        record_id = _accepted(client, admin_auth, [PORT_PREMISE])
+        record = _record(client, record_id)
+        scored, unscored = sorted(record.covered_finding_ids)
+        facts = [
+            {
+                "metric": "MAV",
+                "value": "A",
+                "direction": "lower",
+                "applied": True,
+                "source_kind": "observation",
+                "source_id": "obs-1",
+            },
+        ]
+        with client.app.state.db.session() as session:
+            session.add(
+                EnvironmentalScore(
+                    finding_id=scored,
+                    repo_full_name=REPO,
+                    vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                    vector_version="3.1",
+                    vector_source="nvd",
+                    base=9.8,
+                    environmental=8.8,
+                    base_band="critical",
+                    env_band="high",
+                    scanner_severity="high",
+                    effective_severity="medium",
+                    facts_json=facts,
+                    context_id="ctx-1",
+                )
+            )
+        detail = client.get(f"/api/risk-acceptances/{record_id}", headers=admin_auth).json()
+        scores = detail["scores"]
+        assert scores["total"] == 2 and scores["scored"] == 1
+        [item] = scores["items"]
+        assert item["finding_id"] == scored != unscored
+        assert (item["base"], item["environmental"]) == (9.8, 8.8)
+        assert (item["base_band"], item["env_band"]) == ("critical", "high")
+        assert item["effective_severity"] == "medium"
+        assert item["facts"] == facts
+        assert item["vector_source"] == "nvd" and item["context_id"] == "ctx-1"
 
 
 class TestItIsScheduled:
