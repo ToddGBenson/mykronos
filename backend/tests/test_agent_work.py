@@ -353,6 +353,99 @@ class TestAcceptances:
         [item] = _build(acceptances=[self._record(drift=2)]).items
         assert "2 open finding(s)" in item.summary
 
+    def _failed(self, **overrides: Any) -> dict[str, Any]:
+        record = self._record(
+            status="premise_failed",
+            closed_reason="premise failed: port_not_published",
+            outstanding=2,
+            premise_failure={
+                "failed": [
+                    {
+                        "index": 0,
+                        "type": "port_not_published",
+                        "status": "failed",
+                        "reason": "5432 is published to the internet",
+                        "observation_ids": ["obs-1"],
+                    }
+                ],
+                "observation_ids": ["obs-1"],
+            },
+        )
+        record.update(overrides)
+        return record
+
+    def test_a_failed_premise_is_never_offered_a_renewal(self) -> None:
+        """#60846: the renew route refuses a parent that is not live, and so
+        does revoke. The item offers what premise_failed accepts: a read, and
+        a new acceptance with corrected premises."""
+        [item] = _build(acceptances=[self._failed()]).items
+        calls = {(a.method, a.path) for a in item.actions}
+        assert calls == {
+            ("GET", "/api/risk-acceptances/acc-1"),
+            ("POST", "/api/risk-acceptances"),
+        }
+        propose = next(a for a in item.actions if a.method == "POST")
+        assert propose.governed_by == "risk_acceptance"
+        assert "renew" not in item.done_when.lower()
+
+    def test_a_failed_premise_is_named_with_its_evidence(self) -> None:
+        [item] = _build(acceptances=[self._failed()]).items
+        assert "port_not_published" in item.title
+        assert "5432 is published to the internet" in item.summary
+        assert "obs-1" in item.summary
+        assert "2 covered finding(s) are open again" in item.summary
+        assert ("control_observations", "obs-1") in {(e.source, e.ref) for e in item.evidence}
+        assert item.weight == 2
+
+    def test_an_epss_failure_cites_the_score(self) -> None:
+        failure = {
+            "failed": [
+                {
+                    "type": "epss_below",
+                    "reason": "EPSS above 0.2",
+                    "observation_ids": [],
+                    "epss": [{"cve": "CVE-2026-1", "epss": 0.4, "threshold": 0.2}],
+                }
+            ]
+        }
+        [item] = _build(acceptances=[self._failed(premise_failure=failure)]).items
+        assert ("threat_intel", "CVE-2026-1") in {(e.source, e.ref) for e in item.evidence}
+
+    def test_without_the_audit_entry_the_reason_still_names_the_premise(self) -> None:
+        [item] = _build(acceptances=[self._failed(premise_failure=None)]).items
+        assert "port_not_published" in item.title
+        assert "could not be read" in item.summary
+
+    def test_nothing_outstanding_is_not_work(self) -> None:
+        """Every covered finding fixed, or held by a corrected acceptance."""
+        assert _build(acceptances=[self._failed(outstanding=0)]).items == []
+
+    def test_unknown_outstanding_keeps_the_item(self) -> None:
+        [item] = _build(acceptances=[self._failed(outstanding=None)]).items
+        assert "reopened" in item.summary
+
+    def test_every_status_the_queue_reads_offers_only_what_its_routes_accept(self) -> None:
+        """The static half of the #60846 pin (the live half calls each route:
+        test_agent_work_actions.py). Renew and revoke refuse any record outside
+        the statuses their routes check; the queue must never offer them there."""
+        from mykronos import risk_acceptance as ra
+        from mykronos.api.agent import _ACCEPTANCE_STATES
+
+        accepts = {
+            "/renew": set(ra.LIVE),
+            "/revoke": {*ra.LIVE, "pending_approval"},
+        }
+        soon = (NOW.date() + timedelta(days=3)).isoformat()
+        for status in _ACCEPTANCE_STATES:
+            record = self._failed() if status == "premise_failed" else self._record()
+            record.update(status=status, expires_at=soon, drift=1, review_by="2026-10-01")
+            [item] = _build(acceptances=[record]).items
+            assert item.actions, f"{status}: an item with nothing to call"
+            for action in item.actions:
+                for suffix, statuses in accepts.items():
+                    if action.path.endswith(suffix):
+                        assert status in statuses, f"{status} offered {action.path}"
+
 
 class TestWaiting:
     def test_needs_info_is_work_and_pending_is_not(self) -> None:

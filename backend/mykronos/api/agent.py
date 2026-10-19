@@ -24,9 +24,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from mykronos import agent_work, briefing, briefing_sources, playbooks
+from mykronos import risk_acceptance as ra
 from mykronos.adminauth import Principal, PrincipalDep
 from mykronos.dashboard import DashboardQueries
-from mykronos.db.models import ApprovalDecision, ApprovalRequest, RiskAcceptance
+from mykronos.db.models import ApprovalDecision, ApprovalRequest, AuditLogEntry, RiskAcceptance
 from mykronos.risk_acceptance import serialize as serialize_acceptance
 from mykronos.schemas import utcnow
 
@@ -108,16 +109,66 @@ class WorkQueueOut(BaseModel):
     unknown: list[WorkUnknownOut]
 
 
-def _acceptances(db: Any, repo: str | None) -> list[dict[str, Any]] | None:
+def _acceptances(db: Any, catalog: Any, repo: str | None) -> list[dict[str, Any]] | None:
     try:
         with db.session() as session:
             query = select(RiskAcceptance).where(RiskAcceptance.status.in_(_ACCEPTANCE_STATES))
             if repo:
                 query = query.where(RiskAcceptance.repo_full_name == repo)
-            return [serialize_acceptance(r) for r in session.execute(query).scalars()]
+            out = []
+            for record in session.execute(query).scalars():
+                row = serialize_acceptance(record)
+                if record.status == "premise_failed":
+                    row.update(_premise_failure(catalog, session, record))
+                out.append(row)
+            return out
     except Exception:  # noqa: BLE001 - reported as unknown, not as none
         logger.debug("Could not read acceptances for the work queue")
         return None
+
+
+def _premise_failure(catalog: Any, session: Any, record: Any) -> dict[str, Any]:
+    """What the work queue needs to word a `premise_failed` item (#60846).
+
+    `premise_failure` is the monitor's own audit entry: each failed premise
+    with its reason and the observation ids behind it (spec 33 §4.2).
+    `outstanding` is how many covered findings are still open and held by no
+    other pending or live record - zero once they are fixed or a corrected
+    acceptance has been proposed for them - or None when the lake could not
+    say, which keeps the item rather than dropping it.
+    """
+    entry = session.execute(
+        select(AuditLogEntry)
+        .where(
+            AuditLogEntry.entity_id == record.id,
+            AuditLogEntry.action == "risk_acceptance.premise_failed",
+        )
+        .order_by(AuditLogEntry.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    detail = (entry.detail or {}) if entry is not None else {}
+    failure = {
+        "failed": list(detail.get("failed") or []),
+        "observation_ids": list(detail.get("observation_ids") or []),
+    }
+    covered = set(record.covered_finding_ids or [])
+    held = ra.covered_by(session, covered, statuses=("pending_approval", *ra.LIVE))
+    remaining = sorted(covered - set(held))
+    outstanding: int | None = 0
+    if remaining:
+        try:
+            placeholders = ", ".join("?" for _ in remaining)
+            outstanding = int(
+                catalog.query(
+                    f"SELECT count(*) FROM findings WHERE finding_id IN ({placeholders}) "
+                    "AND status = 'open'",
+                    remaining,
+                )[0][0]
+            )
+        except Exception:  # noqa: BLE001 - unknown keeps the item
+            logger.debug("Could not count the open findings of %s", record.id)
+            outstanding = None
+    return {"premise_failure": failure, "outstanding": outstanding}
 
 
 def _own_requests(db: Any, principal: Principal) -> list[dict[str, Any]] | None:
@@ -230,7 +281,7 @@ async def work(
         )
     )
     triage_rows = await asyncio.to_thread(_triage_rows, request, repo, findings)
-    acceptances = await asyncio.to_thread(_acceptances, state.db, repo)
+    acceptances = await asyncio.to_thread(_acceptances, state.db, state.catalog, repo)
     own = await asyncio.to_thread(_own_requests, state.db, principal)
 
     queue = agent_work.build(

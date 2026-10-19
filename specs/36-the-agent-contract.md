@@ -102,7 +102,7 @@ cannot disagree. The agent learns before it asks whether a person will be involv
 | 2 | `toxic_combination` | `toxic.detect` | Any one member closes and the combination stops firing |
 | 2 | `public_exposure` | `exposure.summary`, endpoints with a high or critical observation | The next probe observes nothing at that severity |
 | 3 | `approval_needs_info` | The principal's own requests answered `needs_info` | The request is decided |
-| 4 | `acceptance_attention` | Acceptances `review_due`, `premise_failed`, with scope drift, or expiring within 14 days | Renewed, revoked or closed |
+| 4 | `acceptance_attention` | Acceptances `review_due`, `premise_failed`, with scope drift, or expiring within 14 days | Renewed, revoked or closed; for `premise_failed`, which neither renew nor revoke accepts, every covered finding fixed or held by a new acceptance with corrected premises |
 | 5 | `token_delivery` | Tokens the rotation sweep deferred to a person | Rotated (`due`) or a scan confirmed arriving (`unverified`) |
 | 6 | `triage` | The ranked triage queue, unclaimed or claimed by this principal | The finding is dispositioned or two scans observe it gone |
 

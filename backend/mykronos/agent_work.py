@@ -38,6 +38,7 @@ from typing import Any
 from mykronos import finding_disposition
 from mykronos.adminauth import Principal
 from mykronos.briefing import Briefing
+from mykronos.risk_acceptance import LIVE
 
 #: Bands, in the order an agent works them (spec 36 §2.2).
 BAND_PLATFORM = 1
@@ -511,22 +512,38 @@ def _approval_items(requests: list[dict[str, Any]]) -> tuple[list[WorkItem], lis
 def _acceptance_items(acceptances: list[dict[str, Any]], *, today: date) -> list[WorkItem]:
     items = []
     for record in acceptances:
-        reasons = []
         status = str(record.get("status") or "")
+        if status == "premise_failed":
+            item = _premise_failed_item(record)
+            if item is not None:
+                items.append(item)
+            continue
+        reasons = []
         if status == "review_due":
             reasons.append(f"review was due {record.get('review_by')}")
-        if status == "premise_failed":
-            reasons.append("a premise it rests on no longer holds")
         if record.get("drift"):
             reasons.append(f"{record['drift']} open finding(s) match its scope and are not covered")
         expires = record.get("expires_at")
-        if expires and status in ("active", "review_due"):
+        if expires and status in LIVE:
             left = (date.fromisoformat(str(expires)) - today).days
             if left <= ACCEPTANCE_LEAD_DAYS:
                 reasons.append(f"it expires in {left} day(s)")
         if not reasons:
             continue
         record_id = str(record["id"])
+        actions = []
+        if status in LIVE:
+            # The renew route refuses any parent not in `LIVE`; offering it
+            # from the same constant keeps the two from drifting (#60846).
+            actions.append(
+                ActionRef(
+                    label="Renew it",
+                    method="POST",
+                    path=f"/api/risk-acceptances/{record_id}/renew",
+                    effect="A new approval request. The record stays as it is until decided.",
+                    governed_by="risk_acceptance",
+                )
+            )
         items.append(
             WorkItem(
                 item_id=f"acceptance_attention:{record_id}",
@@ -539,18 +556,103 @@ def _acceptance_items(acceptances: list[dict[str, Any]], *, today: date) -> list
                 summary="; ".join(reasons).capitalize() + ".",
                 done_when="Renewed, revoked or closed.",
                 evidence=[Evidence(source="risk_acceptances", ref=record_id, detail=status)],
-                actions=[
-                    ActionRef(
-                        label="Renew it",
-                        method="POST",
-                        path=f"/api/risk-acceptances/{record_id}/renew",
-                        effect="A new approval request. The record stays as it is until decided.",
-                        governed_by="risk_acceptance",
-                    )
-                ],
+                actions=actions,
             )
         )
     return items
+
+
+def _premise_failed_item(record: dict[str, Any]) -> WorkItem | None:
+    """An acceptance the premise monitor ended (spec 33 §1.4, §4.2).
+
+    It is not live, so it cannot be renewed or revoked: both routes refuse it.
+    The decision was wrong from the moment the premise failed, and its findings
+    are already open again. What is left is to fix them, or to ask an approver
+    for a *new* acceptance whose premises are true, which `POST
+    /api/risk-acceptances` does. `outstanding` is how many covered findings are
+    still open and held by no other pending or live record; at zero there is
+    nothing left to do, and None (it could not be read) keeps the item.
+    """
+    outstanding = record.get("outstanding")
+    if outstanding == 0:
+        return None
+    record_id = str(record["id"])
+    failure = record.get("premise_failure") or {}
+    failed = [f for f in failure.get("failed") or [] if isinstance(f, dict)]
+    names = sorted({str(f.get("type") or "unnamed") for f in failed})
+    if not names:
+        # The audit entry could not be read; closed_reason names the types.
+        reason = str(record.get("closed_reason") or "")
+        names = [n.strip() for n in reason.removeprefix("premise failed:").split(",") if n.strip()]
+    named = ", ".join(names) or "a premise"
+    evidence = [Evidence(source="risk_acceptances", ref=record_id, detail="premise_failed")]
+    lines = []
+    for f in failed:
+        observations = [str(o) for o in f.get("observation_ids") or []]
+        lines.append(
+            f"{f.get('type')}: {f.get('reason') or 'failed'}"
+            + (f" (observation {', '.join(observations)})" if observations else "")
+        )
+        evidence += [
+            Evidence(source="control_observations", ref=o, detail=str(f.get("type") or ""))
+            for o in observations
+        ]
+        evidence += [
+            Evidence(
+                source="threat_intel",
+                ref=str(e.get("cve") or ""),
+                detail=f"epss {e.get('epss')} above {e.get('threshold')}",
+            )
+            for e in f.get("epss") or []
+            if isinstance(e, dict)
+        ]
+    if not lines:
+        lines.append(f"{named} no longer holds; the monitor's evidence could not be read")
+    open_now = (
+        f"{outstanding} covered finding(s) are open again"
+        if isinstance(outstanding, int)
+        else "its covered findings were reopened"
+    )
+    summary = (
+        "; ".join(lines)
+        + f". {open_now}. It cannot be renewed: fix the findings, or propose a new "
+        "acceptance whose premises hold today."
+    )
+    if record.get("drift"):
+        summary += f" {record['drift']} other open finding(s) match its scope."
+    return WorkItem(
+        item_id=f"acceptance_attention:{record_id}",
+        kind="acceptance_attention",
+        band=BAND_ACCEPTANCE,
+        repo_full_name=str(record.get("repo") or ""),
+        severity=str(record.get("residual_severity") or "") or None,
+        weight=outstanding if isinstance(outstanding, int) else int(record.get("findings") or 0),
+        title=f"Acceptance {record_id[:8]} rests on a failed premise: {named}",
+        summary=summary,
+        done_when=(
+            "Every finding it covered is fixed, or held by a new acceptance with "
+            "corrected premises."
+        ),
+        evidence=evidence,
+        actions=[
+            ActionRef(
+                label="Read the record and each premise as the monitor reads it today",
+                method="GET",
+                path=f"/api/risk-acceptances/{record_id}",
+                effect="A read.",
+            ),
+            ActionRef(
+                label="Propose a new acceptance with corrected premises",
+                method="POST",
+                path="/api/risk-acceptances",
+                effect=(
+                    "A new record and its approval request, for the same scope with premises "
+                    "that hold. Nothing changes until someone independent approves it."
+                ),
+                governed_by="risk_acceptance",
+            ),
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

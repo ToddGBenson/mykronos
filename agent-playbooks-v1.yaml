@@ -636,8 +636,10 @@ playbooks:
     purpose: >-
       An accepted risk needs a decision: its review is due, a premise it rests
       on failed, open findings match its scope without being covered, or it
-      expires within 14 days. Renew it, let a person revoke it, or fix what it
-      covers.
+      expires within 14 days. A live one (active, review_due) is renewed, revoked
+      by a person, or fixed. A premise_failed one is already over: its findings
+      are open again and neither renew nor revoke accepts it, so it is fixed, or
+      a new acceptance with premises that hold is proposed in its place.
     steps:
       - id: read-the-record
         do: >-
@@ -650,37 +652,48 @@ playbooks:
           - "GET /api/risk-acceptances/{record_id}"
       - id: premise-failed
         do: >-
-          If a premise failed, the acceptance no longer rests on what was
-          approved.
+          If the item says a premise failed, read the premise and the
+          observations its evidence names. The record is premise_failed: the
+          monitor reopened every finding it covered, and it cannot be renewed
+          or revoked.
         check: >-
-          Every premise still holds.
+          You know whether the premise is false (the exposure is real) or was
+          written wrong (it named the wrong port, host or threshold).
         routes:
           - "GET /api/risk-acceptances/{record_id}"
+          - "POST /api/risk-acceptances"
+        outside:
+          - "The item's evidence: the control_observations and threat_intel refs."
         if_found: >-
-          Escalate. Revoking is a person's action, and renewing on a failed
-          premise asks an approver to accept something different.
-        then: escalate
+          Prefer fixing the findings. If the risk is still acceptable on a
+          premise that holds today, propose a new acceptance for the same scope
+          with that premise; it is a new approval request, and the approver
+          sees each premise as the monitor reads it. Never re-file the premise
+          that failed.
+        then: repair
       - id: fix-or-renew
         do: >-
-          Prefer fixing what the acceptance covers. Otherwise request a renewal
-          with an updated justification; it is a new approval request and the
-          record stays as it is until decided.
+          For a live acceptance: prefer fixing what it covers. Otherwise request
+          a renewal with an updated justification; it is a new approval request
+          and the record stays as it is until decided.
         check: >-
           A renewal request exists, or the covered findings have a fix merged.
         routes:
           - "POST /api/risk-acceptances/{record_id}/renew"
           - "POST /api/risk-acceptances"
     stop_when:
-      - "The acceptance is renewed, revoked or closed."
+      - "A live acceptance is renewed, revoked or closed."
+      - "Every finding a premise_failed acceptance covered is fixed, or held by a new acceptance."
     escalate:
       when:
-        - "A premise failed."
+        - "A premise failed and the fix is not yours to make."
         - "The renewal limit is reached or the finding is now KEV-listed."
         - "Scope drift means findings the acceptance never covered are open."
       evidence:
         - "The record, which reason applies, and the findings it covers."
     never:
       - "Revoke an acceptance (only a person may)."
+      - "Renew a premise_failed acceptance, or propose one resting on the premise that failed."
       - "Widen an acceptance's scope to swallow new findings."
 
   # -------------------------------------------------------------------------

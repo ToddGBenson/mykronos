@@ -828,7 +828,8 @@ def notifications(result: MonitorResult) -> list[Notification]:
             (
                 f"Tracking item: {f.tracking_ref}."
                 if f.tracking_ref
-                else "On the agent work queue as acceptance_attention until renewed or replaced."
+                else "On the agent work queue as acceptance_attention until its findings are fixed "
+                    "or a new acceptance with corrected premises holds them."
             ),
         ]
         notes.append(
