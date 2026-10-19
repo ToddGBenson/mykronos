@@ -27,6 +27,7 @@ import { ScanHealthBoxes } from "@/components/scan-health";
 import { ReleaseEvidence, SscsTab } from "@/components/sscs";
 import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { Surfaces } from "@/components/surfaces";
+import { RuleVectors } from "@/components/rule-vectors";
 import { SsdfTab } from "@/components/ssdf";
 import { TestEstate } from "@/components/test-estate";
 import { ComponentCoverage, ThreatModelTab } from "@/components/threat-model";
@@ -62,6 +63,7 @@ import {
   getScanRunTrend,
   getSscs,
   getSurfaces,
+  getRuleVectors,
   getVulnerablePackages,
   getThreatModel,
   getWorkflows,
@@ -860,9 +862,10 @@ async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
   // Concurrently, and the register is allowed to fail on its own: the STRIDE
   // view was the whole tab before this and must not go down with an addition
   // to it.
-  const [result, surfaces] = await Promise.all([
+  const [result, surfaces, ruleVectors] = await Promise.all([
     getThreatModel(repoId),
     getSurfaces(repoId),
+    getRuleVectors(repoId),
   ]);
   if (!result.ok) {
     return <ErrorPanel title="Threat model unavailable" detail={result.error} />;
@@ -900,6 +903,17 @@ async function ThreatModelTabPanel({ repoId }: { repoId: string }) {
             : {}
         }
       />
+      {/* Below the categories: which of those findings can be scored at all.
+          SAST, DAST and secrets rules have no CVE, so no published vector,
+          until a person confirms one (TheHub #60832). Allowed to fail on its
+          own, like the register above. */}
+      {ruleVectors.ok ? (
+        <RuleVectors repoId={repoId} data={ruleVectors.data} />
+      ) : (
+        <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
+          {ruleVectors.error}
+        </p>
+      )}
     </div>
   );
 }

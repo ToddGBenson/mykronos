@@ -1051,8 +1051,12 @@ class EnvironmentalScore(Base):
     vector: Mapped[str] = mapped_column(String(256), default="")
     #: `3.1` or `3.0`: the CVSS version the vector states.
     vector_version: Mapped[str] = mapped_column(String(8), default="")
-    #: nvd | advisory | analyst. Only `nvd` until #917's chooser lands.
+    #: nvd | advisory | analyst.
     vector_source: Mapped[str] = mapped_column(String(16), default="")
+    #: For `analyst`: the confirmed `RuleVector` the vector came from, so the
+    #: score traces to who confirmed it, when, and from which template
+    #: (TheHub #60832). Empty for a published vector.
+    vector_ref: Mapped[str] = mapped_column(String(36), default="")
     base: Mapped[float] = mapped_column(Float, default=0.0)
     environmental: Mapped[float] = mapped_column(Float, default=0.0)
     #: none | low | medium | high | critical (CVSS 3.1 qualitative bands).
@@ -1068,6 +1072,63 @@ class EnvironmentalScore(Base):
     facts_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     context_id: Mapped[str] = mapped_column(String(64), default="")
     computed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RuleVector(Base):
+    """A CVSS 3.1 base vector a person recorded for one scanner rule
+    (TheHub #60832, decision D3 of epic #60822).
+
+    SAST, DAST and secrets findings name a rule, not a CVE, so nothing
+    publishes a vector for them and D-106 left them unscored rather than
+    invent one from a severity word. This row is the way out D3 chose: an
+    analyst-asserted vector for (repository or estate, capability, tool,
+    rule), pre-filled from a reviewed CWE-class template
+    (`cwe-vector-templates-v1.yaml`).
+
+    **Nothing applies until a person confirms it.** `proposed` and `retired`
+    rows are read by nobody that scores; `environment.choose_vectors` reads
+    only `confirmed`, and only after every published vector (NVD, advisory,
+    v4.0) has been passed over. Confirming needs an authenticated human
+    principal, never an agent or automation one, and is audited.
+
+    Operational rather than lake, for the reason `RepoControl` is: an editable
+    statement about the present, corrected in place, with the audit log as its
+    history. At most one `proposed` and one `confirmed` row per key: a
+    proposal can sit beside the vector in force as a suggested change, and
+    confirming it retires the one it replaces.
+    """
+
+    __tablename__ = "rule_vectors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: Null for an estate-wide vector, which applies to every repository that
+    #: has no confirmed vector of its own for the rule.
+    repo_full_name: Mapped[str | None] = mapped_column(String(255), index=True, default=None)
+    capability: Mapped[str] = mapped_column(String(32), default="")
+    #: The scan run's `tool_name`: the same rule id means different things in
+    #: different tools.
+    tool: Mapped[str] = mapped_column(String(64), default="")
+    rule_id: Mapped[str] = mapped_column(String(512), index=True, default="")
+    #: CVSS 3.1, the eight base metrics only, in canonical order.
+    vector: Mapped[str] = mapped_column(String(256), default="")
+    #: proposed | confirmed | retired.
+    status: Mapped[str] = mapped_column(String(16), index=True, default="proposed")
+    #: Always `analyst`: kept so a stored score's provenance reads the same
+    #: word as `EnvironmentalScore.vector_source`.
+    vector_source: Mapped[str] = mapped_column(String(16), default="analyst")
+    #: The template the proposal was pre-filled from, e.g.
+    #: `cwe-vector-templates-v1:CWE-79`; empty when typed by hand.
+    proposed_from: Mapped[str] = mapped_column(String(128), default="")
+    asserted_by: Mapped[str] = mapped_column(String(255), default="")
+    asserted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    confirmed_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    retired_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    note: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow
+    )
 
 
 class NetassessRun(Base):

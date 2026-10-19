@@ -29,6 +29,7 @@ import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 from mykronos import cvss
@@ -46,7 +47,9 @@ _V2 = re.compile(r"^\(?AV:[LAN]/AC:[HML]/Au:[MSN]/C:[NPC]/I:[NPC]/A:[NPC]")
 #: Order an entry list is written in: newest version first.
 _ORDER = {"4.0": 0, "3.1": 1, "3.0": 2, "2.0": 3}
 
-VectorSource = Literal["nvd", "advisory"]
+#: `analyst` is a confirmed `RuleVector` (TheHub #60832): chosen only after
+#: every published vector has been passed over, by `environment.choose_vectors`.
+VectorSource = Literal["nvd", "advisory", "analyst"]
 
 
 def version_of(vector: str) -> str | None:
@@ -166,6 +169,12 @@ class VectorChoice:
     source: VectorSource
     rescored: bool
     base_score: float | None = None
+    #: For `analyst` only: the confirmed `RuleVector` this came from, who
+    #: confirmed it and when, and the template it was pre-filled from.
+    ref: str = ""
+    confirmed_by: str = ""
+    confirmed_at: datetime | None = None
+    proposed_from: str = ""
 
 
 def _scoreable_v3(vector: str | None) -> str | None:

@@ -1187,6 +1187,11 @@ class TestRegistry:
                 "environment-map-v1.yaml",
                 "MYKRONOS_ENVIRONMENT_MAP_PATH",
             ),
+            (
+                "cwe_vector_templates_path",
+                "cwe-vector-templates-v1.yaml",
+                "MYKRONOS_CWE_VECTOR_TEMPLATES_PATH",
+            ),
         ):
             assert setting in Settings.model_fields, (
                 f"{filename} has no Settings field, so its path cannot be "

@@ -5193,8 +5193,9 @@ class SeverityHereOut(BaseModel):
     stated_by: str | None = None
     stated_at: datetime | None = None
     #: Where the vector came from: NVD, or the advisory the scanner matched
-    #: (TheHub #60824). NVD 3.x > advisory 3.x > v4.0.
-    vector_source: Literal["nvd", "advisory"]
+    #: (TheHub #60824). NVD 3.x > advisory 3.x > v4.0 > a rule vector a person
+    #: confirmed (`analyst`, TheHub #60832).
+    vector_source: Literal["nvd", "advisory", "analyst"]
     vector_version: str
     #: False for v4.0: shown, never fed to the v3 environmental formula.
     rescored: bool

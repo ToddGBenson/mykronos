@@ -72,7 +72,7 @@ import yaml
 from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
-from mykronos import control_observations, cvss, cvss_vectors, surface_match
+from mykronos import control_observations, cvss, cvss_vectors, rule_vectors, surface_match
 from mykronos.cvss_vectors import VectorChoice, VectorSource
 from mykronos.db import models
 from mykronos.db.models import (
@@ -81,6 +81,7 @@ from mykronos.db.models import (
     RepoOnboarding,
     RepoSurface,
     RiskProfile,
+    RuleVector,
     ScoringContext,
     ThreatIntelMatch,
 )
@@ -1113,7 +1114,11 @@ def score_finding(
 
 
 def choose_vectors(
-    session: Session, findings: Iterable[Mapping[str, Any]]
+    session: Session,
+    findings: Iterable[Mapping[str, Any]],
+    *,
+    repo_full_name: str | None = None,
+    analyst: bool = True,
 ) -> dict[str, VectorChoice]:
     """finding_id -> the vector its severity is read from.
 
@@ -1122,6 +1127,15 @@ def choose_vectors(
     advisory 3.x (kept on the finding's raw record) > v4.0, shown and never
     rescored (D1). A choice with `rescored=False` is returned so the caller
     can show it; nothing environmental is computed or stored for it.
+
+    **Then, and only then, an analyst's vector** (TheHub #60832, D3): a
+    finding nothing published a vector for falls back to a *confirmed*
+    `RuleVector` for its (repository, else estate-wide; capability; tool;
+    rule). Proposed and retired rows never apply, so a template proposal
+    cannot move a score. `repo_full_name` names the repository for findings
+    whose dict does not carry `asset_id`; `analyst=False` asks what the
+    published sources alone would choose, which is how the rule-vector list
+    knows which rules still lack one.
     """
     from mykronos.threat_intel import extract_cve
 
@@ -1155,7 +1169,28 @@ def choose_vectors(
         )
         if choice is not None:
             out[finding_id] = choice
+    if analyst:
+        unvectored = [f for f in rows if str(f.get("finding_id")) not in out]
+        confirmed = rule_vectors.confirmed_for(
+            session, unvectored, repo_full_name=repo_full_name
+        )
+        for finding_id, row in confirmed.items():
+            out[finding_id] = analyst_choice(row)
     return out
+
+
+def analyst_choice(row: RuleVector) -> VectorChoice:
+    """A confirmed rule vector as a choice, carrying its provenance."""
+    return VectorChoice(
+        vector=row.vector,
+        version="3.1",
+        source="analyst",
+        rescored=True,
+        ref=row.id,
+        confirmed_by=row.confirmed_by or "",
+        confirmed_at=row.confirmed_at,
+        proposed_from=row.proposed_from or "",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1177,26 +1212,40 @@ _FINDING_COLUMNS = (
 )
 
 
+def _select(catalog: Any, columns: Sequence[str]) -> str:
+    """The finding columns, plus `tool`: the tool of the scan run that last saw
+    the finding, which a `RuleVector` is keyed by (TheHub #60832). Null when
+    no scan run is in the lake to join."""
+    selected = ", ".join(f"f.{c}" for c in columns)
+    if catalog.all_files("scan_runs"):
+        return (
+            f"SELECT {selected}, s.tool_name FROM findings f "
+            "LEFT JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id "
+        )
+    return f"SELECT {selected}, NULL FROM findings f "
+
+
 def open_findings(catalog: Any, repo_full_name: str) -> list[dict[str, Any]]:
     """The repository's open findings, with what placement and scoring read."""
     if catalog is None or not catalog.all_files("findings"):
         return []
     rows = catalog.query(
-        f"SELECT {', '.join(_FINDING_COLUMNS)} FROM findings "
-        "WHERE asset_id = ? AND status = 'open'",
+        _select(catalog, _FINDING_COLUMNS) + "WHERE f.asset_id = ? AND f.status = 'open'",
         [repo_full_name],
     )
-    return [dict(zip(_FINDING_COLUMNS, row, strict=True)) for row in rows]
+    columns = (*_FINDING_COLUMNS, "tool")
+    return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
 def finding_by_id(catalog: Any, finding_id: str) -> dict[str, Any] | None:
     if catalog is None or not catalog.all_files("findings"):
         return None
-    columns = (*_FINDING_COLUMNS, "asset_id")
+    selected = (*_FINDING_COLUMNS, "asset_id")
     rows = catalog.query(
-        f"SELECT {', '.join(columns)} FROM findings WHERE finding_id = ? LIMIT 1",
+        _select(catalog, selected) + "WHERE f.finding_id = ? LIMIT 1",
         [finding_id],
     )
+    columns = (*selected, "tool")
     return dict(zip(columns, rows[0], strict=True)) if rows else None
 
 
@@ -1344,7 +1393,7 @@ def rescore(
                 )
             )
         }
-        vectors = choose_vectors(session, findings)
+        vectors = choose_vectors(session, findings, repo_full_name=repo_full_name)
         kept: set[str] = set()
         for finding in findings:
             finding_id = str(finding.get("finding_id"))
@@ -1358,6 +1407,8 @@ def rescore(
                 row is not None
                 and row.context_id == context.context_id
                 and row.vector == chosen.vector
+                and row.vector_source == chosen.source
+                and row.vector_ref == chosen.ref
                 and row.scanner_severity == severity
                 and not _lapsed(row, now)
             ):
@@ -1378,6 +1429,7 @@ def rescore(
             row.vector = chosen.vector
             row.vector_version = chosen.version
             row.vector_source = chosen.source
+            row.vector_ref = chosen.ref
             row.base = scored.scored.base
             row.environmental = scored.scored.environmental
             row.base_band = scored.base_band
@@ -1550,6 +1602,14 @@ def _after_flush(session: Session, _flush_context: Any) -> None:
             mark_dirty(str(getattr(obj, "repo_full_name", "") or ""), f"{name} written")
         elif isinstance(obj, RiskProfile) and obj.repo_onboarding_id:
             mark_dirty(f"onboarding:{obj.repo_onboarding_id}", "risk profile written")
+        elif isinstance(obj, RuleVector):
+            # A rule vector is a vector source, not a fact: confirming,
+            # replacing or retiring one changes which findings have a score at
+            # all (TheHub #60832). An estate-wide one is every repository's.
+            if obj.repo_full_name:
+                mark_dirty(obj.repo_full_name, "rule vector written")
+            else:
+                mark_all_dirty("estate-wide rule vector written")
 
 
 if not event.contains(Session, "after_flush", _after_flush):
