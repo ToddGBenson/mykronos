@@ -1139,15 +1139,35 @@ class TestRemediationCoverageIsStated:
             )
 
     def test_a_capability_is_not_both_covered_and_not_covered(self) -> None:
+        """Unless the not-covered line says it is partly covered, and by what.
+
+        `containers` is the one such class: bump-image-date covers the
+        same-image date refresh and nothing else. Its NOT_COVERED line must
+        say "Partly covered" and name every fixer covering that capability,
+        or the page would contradict itself.
+        """
         from mykronos.patchwork.fixers import COVERAGE, NOT_COVERED
 
         covered = {entry["capability"] for entry in COVERAGE}
-        uncovered = {entry["capability"] for entry in NOT_COVERED}
+        for entry in NOT_COVERED:
+            if entry["capability"] not in covered:
+                continue
+            why = entry["why"]
+            assert why.startswith("Partly covered."), (
+                f"{entry['capability']} is listed as both, so the page would "
+                "contradict itself"
+            )
+            for row in COVERAGE:
+                if row["capability"] == entry["capability"]:
+                    assert row["fixer"] in why, f"{row['fixer']} is not named in {why!r}"
 
-        assert not (covered & uncovered), (
-            f"{sorted(covered & uncovered)} is listed as both, so the page "
-            "would contradict itself"
-        )
+    def test_containers_coverage_says_moving_image_is_still_not_covered(self) -> None:
+        from mykronos.patchwork.fixers import COVERAGE, NOT_COVERED
+
+        (row,) = [r for r in COVERAGE if r["fixer"] == "bump-image-date"]
+        assert row["capability"] == "containers"
+        (why,) = [e["why"] for e in NOT_COVERED if e["capability"] == "containers"]
+        assert "different base image" in why
 
     def test_with_nothing_to_measure_the_page_says_so(
         self, client, admin_auth
@@ -1158,7 +1178,7 @@ class TestRemediationCoverageIsStated:
         assert body["measured"] is False
         assert "nothing to measure" in body["note"]
         assert "not the same as fixes that did not work" in body["note"]
-        assert body["coverage"]["fixer_count"] == 4
+        assert body["coverage"]["fixer_count"] == 5
         assert body["coverage"]["covered"]
         assert body["coverage"]["not_covered"]
 

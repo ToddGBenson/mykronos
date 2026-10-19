@@ -618,6 +618,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Patchwork's image registry -----------------------------------
+
+    patchwork_image_registry: str = Field(
+        default="",
+        description=(
+            "Base URL of the image registry the image-refresh lanes publish "
+            "patched `-p<YYYYMMDD>` images to, which Patchwork's "
+            "bump-image-date fixer lists tags on (`GET /v2/<name>/tags/list`, "
+            "anonymous and read-only). Plain HTTP is expected: the lanes reach "
+            "the same registry with `--insecure`. Empty disables the fixer, "
+            "and every patched-image finding then records that no registry is "
+            "configured rather than that no newer snapshot exists."
+        ),
+    )
+
     # --- Concourse (spec 15 §4a) ---------------------------------------
 
     concourse_url: str = Field(

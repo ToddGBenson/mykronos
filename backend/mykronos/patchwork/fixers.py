@@ -318,13 +318,30 @@ def pin_go_module(finding: dict[str, Any], content: str) -> ProposedFix | None:
 # Registry
 # --------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class RepositoryFixer:
+    """A fixer whose evidence is more than one file's content.
+
+    Listed in `FIXERS` like any other, so the coverage, efficacy and
+    rejection-dampening machinery see one table of names. `generate` skips
+    it: the pipeline runs it from `module`, because it needs a registry
+    listing and every compose file at once, and moving one file's pin without
+    the others is exactly the half-edit it exists to refuse.
+    """
+
+    module: str
+
+
 #: Ordered. The first fixer that returns a fix wins, so more specific fixers
 #: come first.
-FIXERS: list[tuple[str, Fixer]] = [
+FIXERS: list[tuple[str, Fixer | RepositoryFixer]] = [
     ("pin-python-requirement", pin_python_requirement),
     ("pin-npm-dependency", pin_npm_dependency),
     ("pin-go-module", pin_go_module),
     ("remove-committed-secret", remove_committed_secret),
+    # A container finding in a patched `-p<YYYYMMDD>` image, when image-refresh
+    # has already published a newer snapshot of the same image.
+    ("bump-image-date", RepositoryFixer("mykronos.patchwork.image_date")),
 ]
 
 
@@ -365,6 +382,14 @@ COVERAGE: tuple[dict[str, str], ...] = (
         "handles": "A credential committed to the repository, replaced with an "
         "environment lookup.",
     },
+    {
+        "fixer": "bump-image-date",
+        "capability": "containers",
+        "handles": "A container finding in a patched image pinned as "
+        "<name>:<version>-p<YYYYMMDD>, when image-refresh has already published "
+        "a newer -p<date> of that same image: the compose pins move to the newer "
+        "package snapshot, and the demo default with them where it matched.",
+    },
 )
 
 #: Capabilities with no deterministic fixer at all, and why not.
@@ -386,8 +411,13 @@ NOT_COVERED: tuple[dict[str, str], ...] = (
     },
     {
         "capability": "containers",
-        "why": "A CVE in a base image is fixed by moving image, which is a "
-        "decision about the platform rather than an edit to a file.",
+        "why": "Partly covered. bump-image-date moves a patched image to a newer "
+        "package snapshot of the same recipe, and only once image-refresh has "
+        "published it. Everything else is not: a vendor image with no patched "
+        "recipe, a CVE no snapshot fixes (a vendor's static binary, an "
+        "end-of-life base), and moving to a different base image or vendor "
+        "version, which is a decision about the platform rather than an edit "
+        "to a file.",
     },
     {
         "capability": "iac",
@@ -414,6 +444,8 @@ def coverage_summary() -> dict[str, Any]:
 def generate(finding: dict[str, Any], content: str) -> tuple[str, ProposedFix] | None:
     """Try every fixer. Returns (fixer_name, fix) or None."""
     for name, fixer in FIXERS:
+        if isinstance(fixer, RepositoryFixer):
+            continue
         try:
             fix = fixer(finding, content)
         except Exception as exc:  # noqa: BLE001

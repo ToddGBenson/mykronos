@@ -101,6 +101,7 @@ from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ownership import OwnershipResolver
+from mykronos.patchwork.image_date import RegistryTags
 from mykronos.product_owner import HubClient
 from mykronos.ratelimit import SlidingWindowLimiter
 from mykronos.schemas import utcnow
@@ -363,6 +364,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
     app.state.github_factory = _build_github_factory(settings)
+    # Patchwork's bump-image-date reads tags here; None when unconfigured.
+    app.state.image_registry = RegistryTags.from_settings(settings)
     # Held on the app rather than built per request, which is the whole point
     # of it (spec 32 §7.1): reading GitHub Actions state spends an
     # installation rate limit shared with token rotation, the installer and
