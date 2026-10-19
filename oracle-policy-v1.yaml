@@ -96,7 +96,13 @@
 # records, in inputs_snapshot.environmental, the score and verdict it would
 # have reached counting findings by their environmental effective_severity.
 # See the block at the end of this file for what flipping it to live requires.
-version: "1.13"
+#
+# 1.14 - adds triage_rank.environmental_per_band (TheHub #60829, S7 of the
+# environmental CVSS epic #60822). No risk score changes - triage_rank orders
+# the work queue only. Queue rows whose stored environmental score moved a
+# CVSS band now move by this many points per band; every other row ranks
+# exactly as it did under 1.13.
+version: "1.14"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -463,6 +469,21 @@ triage_rank:
   # Not a claim that a fixable finding is more dangerous — a claim that it is
   # cheaper. A worklist's job is risk removed per unit of work.
   fixable_bonus: 6
+  # Points per CVSS band the environment moved a finding's stored score
+  # (env_band - base_band): -10 for one band down, +10 for one up. This is the
+  # only term through which business context (exposure, data classification,
+  # criticality, observed controls) reaches the queue. Read from stored
+  # EnvironmentalScore rows only, and never from one resting on an expired
+  # fact; a finding without one scores 0 here and its row says why.
+  #
+  # Why 10: below the gap between adjacent upper severity weights (high->
+  # critical 15, medium->high 13), so one band of environment reorders a
+  # finding against its neighbours without fully trading places with the next
+  # severity word on its own; and below in_kev (25) even at two bands, so an
+  # exploited finding rescored down still outranks the same finding unlisted.
+  # The scanner's word stays the larger signal until the rescoring has a
+  # track record; raise it in review once it does.
+  environmental_per_band: 10
 
 thresholds:
   no_go: 70                  # >= 70

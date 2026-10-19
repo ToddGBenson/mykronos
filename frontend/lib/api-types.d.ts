@@ -5565,6 +5565,27 @@ export interface components {
             evidence_id?: string | null;
         };
         /**
+         * EnvironmentalRankOut
+         * @description The environmental rank term, its weight, and how far it reaches
+         *     (TheHub #60829).
+         *
+         *     `scored + lapsed + unscored` is every open finding. Only `scored` rows
+         *     move the rank: a lapsed score rests on an expired lowering fact and counts
+         *     zero until the next rescore, exactly like no score at all.
+         */
+        EnvironmentalRankOut: {
+            /** Weight Per Band */
+            weight_per_band: number;
+            /** Scored */
+            scored: number;
+            /** Lapsed */
+            lapsed: number;
+            /** Unscored */
+            unscored: number;
+            /** Description */
+            description: string;
+        };
+        /**
          * EstateOut
          * @description What exists against what is watched (B-051).
          *
@@ -8326,6 +8347,7 @@ export interface components {
             not_consulted: components["schemas"]["NotConsulted"][];
             /** Repos Without A Risk Profile */
             repos_without_a_risk_profile: string[];
+            environmental: components["schemas"]["EnvironmentalRankOut"];
         };
         /**
          * RawAccepted

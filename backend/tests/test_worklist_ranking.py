@@ -120,7 +120,12 @@ class TestEveryTermSaysWhatInputItIs:
 
     def _loud(self) -> dict[str, Any]:
         """One item that lights every branch in `rank_terms` at once."""
+        from mykronos.environment_view import RankReading
+
         return {
+            "environmental": RankReading(
+                state="scored", shift=-1, summary="rescored down 1 band: MAV:L"
+            ),
             "severity": "critical",
             "in_kev": True,
             "epss_score": 0.9,

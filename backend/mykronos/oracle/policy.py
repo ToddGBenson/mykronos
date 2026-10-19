@@ -309,6 +309,12 @@ class TriageRankPolicy:
     was declared here and never applied, because the queue could not see the
     per-repository reachability reports; a weight in reviewed policy that is
     always zero reads as a control that is not there.
+
+    `environmental_per_band` (TheHub #60829, policy 1.14) is the one term that
+    reads business context: points per CVSS band the environment moved a
+    finding's stored score, negative when it moved down. Only stored scores
+    that rest on nothing expired count; a finding without one contributes zero
+    and says so.
     """
 
     severity: dict[str, float]
@@ -319,6 +325,7 @@ class TriageRankPolicy:
     blast_radius_at_max: float
     repo_is_no_go: float
     fixable_bonus: float
+    environmental_per_band: float = 0.0
 
     @property
     def configured(self) -> bool:
@@ -738,6 +745,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             ),
             fixable_bonus=_number(
                 rank_raw.get("fixable_bonus", 0), "triage_rank.fixable_bonus"
+            ),
+            environmental_per_band=_number(
+                rank_raw.get("environmental_per_band", 0),
+                "triage_rank.environmental_per_band",
             ),
         ),
         overdue=OverduePolicy(

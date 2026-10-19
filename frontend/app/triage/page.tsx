@@ -14,6 +14,7 @@ import { ClassificationReview } from "@/components/classification-review";
 import { WorklistKeys } from "@/components/worklist";
 import { FilterSelect } from "@/components/filter-select";
 import { SEVERITY_ORDER, type Severity, type TriageItem } from "@/lib/api";
+import { environmentalLine, rankTermLine, rankingCaveat } from "@/lib/rank-terms";
 import { getBriefing, getTriage } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -271,9 +272,15 @@ export default async function TriagePage({
           <span className="font-semibold text-high">Not consulted:</span>{" "}
           {ranking.not_consulted.map((gap) => gap.input).join(", ")} —{" "}
           {ranking.not_consulted[0]?.reason}.{" "}
-          <span className="text-ink-3">
-            This order is severity and threat intelligence, not business risk.
-          </span>
+          <span className="text-ink-3">{rankingCaveat(ranking.environmental)}</span>
+        </p>
+      ) : null}
+
+      {/* The one term through which business context reaches the rank
+          (TheHub #60829): its weight, and how many open findings it reads. */}
+      {query.order === "rank" && environmentalLine(ranking?.environmental) ? (
+        <p className="max-w-prose text-[12px] leading-relaxed text-ink-3">
+          {environmentalLine(ranking?.environmental)}
         </p>
       ) : null}
 
@@ -514,12 +521,22 @@ function WorklistDetail({
       {item.rank_terms?.length ? (
         <div className="flex flex-col gap-0.5">
           <Label>Why it ranks here {item.rank ? `· ${item.rank.toFixed(0)}` : ""}</Label>
-          {item.rank_terms.map((term) => (
-            <span key={term.detail} className="font-mono text-[11px] text-ink-2">
-              {term.points > 0 ? "+" : ""}
-              {term.points} {term.detail}
-            </span>
-          ))}
+          {item.rank_terms.map((term) => {
+            // The environmental term is listed at zero too: "no score" and
+            // "lapsed" are answers, and its detail names the facts behind a
+            // move (TheHub #60829).
+            const line = rankTermLine(term);
+            return (
+              <span
+                key={`${term.key}:${term.detail}`}
+                className={`font-mono text-[11px] ${
+                  line.environmental === "none" ? "text-ink-3" : "text-ink-2"
+                }`}
+              >
+                {line.points} {line.detail}
+              </span>
+            );
+          })}
         </div>
       ) : null}
     </article>

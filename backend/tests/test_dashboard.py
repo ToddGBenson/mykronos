@@ -1547,18 +1547,18 @@ class TestTriageQueue:
         """B-033 — the queue must not present itself as ordered by risk.
 
         The rank uses severity, threat intel, remediation targets and blast
-        radius. It has never used internet exposure, data classification or
-        business criticality: those live on a risk profile and are not terms in
-        `rank_terms` at all. On an estate with no profiles this is not a
-        degraded risk ranking, it is a threat-intel ranking, and saying so at
-        the point of ranking is the difference between a number somebody can
-        trust and one they will quietly stop believing.
+        radius. Internet exposure, data classification and business
+        criticality reach it only through a stored environmental score
+        (TheHub #60829); with none in force this is not a degraded risk
+        ranking, it is a threat-intel ranking, and saying so at the point of
+        ranking is the difference between a number somebody can trust and one
+        they will quietly stop believing.
         """
         body = client.get("/api/dashboard/triage", headers=admin_auth).json()
 
         gaps = body["ranking"]["not_consulted"]
         assert [g["input"] for g in gaps] == ["business context"]
-        assert "not terms in this rank" in gaps[0]["reason"]
+        assert "only through a stored environmental score" in gaps[0]["reason"]
         assert REPO in gaps[0]["reason"], "it names where the profiles are missing"
         assert body["ranking"]["repos_without_a_risk_profile"] == [REPO]
         # And it is explicit about what it *did* use, so the two lists are
@@ -1574,15 +1574,17 @@ class TestTriageQueue:
         to whether a risk profile *existed*, so doing the operator half of B-033
         turned the warning off without adding a single term: the queue then
         reported that nothing was unconsulted while consulting exactly what it
-        had before. Business context is not in `RANK_INPUTS`, so it is named
-        whether or not a profile exists, and only the reason moves.
+        had before. Business context reaches the rank only through stored
+        environmental scores (TheHub #60829), so it is named whether or not a
+        profile exists while no score is in force, and only the reason moves.
+        A profile alone stores no score: the rescore does.
         """
         from mykronos.dashboard import RANK_INPUTS
         from tests.test_oracle_risk_profile import put_profile
 
         assert "business context" not in RANK_INPUTS.values(), (
-            "if the rank ever gains a term for it, this test is the one that "
-            "should fail and be deleted"
+            "business context is named by `not_consulted` for findings without "
+            "a score in force; the environmental term carries its own label"
         )
 
         before = client.get("/api/dashboard/triage", headers=admin_auth).json()["ranking"]
@@ -1602,7 +1604,9 @@ class TestTriageQueue:
         assert [g["input"] for g in after["not_consulted"]] == ["business context"], (
             "the profile exists and the rank still cannot read it"
         )
-        assert "not terms in this rank" in after["not_consulted"][0]["reason"]
+        assert "only through a stored environmental score" in after["not_consulted"][0][
+            "reason"
+        ]
         assert REPO not in after["not_consulted"][0]["reason"], (
             "the reason should stop blaming a missing profile once one exists"
         )

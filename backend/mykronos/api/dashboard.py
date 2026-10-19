@@ -401,6 +401,22 @@ class NotConsulted(BaseModel):
     reason: str
 
 
+class EnvironmentalRankOut(BaseModel):
+    """The environmental rank term, its weight, and how far it reaches
+    (TheHub #60829).
+
+    `scored + lapsed + unscored` is every open finding. Only `scored` rows
+    move the rank: a lapsed score rests on an expired lowering fact and counts
+    zero until the next rescore, exactly like no score at all.
+    """
+
+    weight_per_band: float
+    scored: int
+    lapsed: int
+    unscored: int
+    description: str
+
+
 class RankingInputs(BaseModel):
     """What the order is actually made of (B-033).
 
@@ -413,6 +429,7 @@ class RankingInputs(BaseModel):
     consulted: list[str]
     not_consulted: list[NotConsulted]
     repos_without_a_risk_profile: list[str]
+    environmental: EnvironmentalRankOut
 
 
 class TriageQueue(BaseModel):
@@ -1416,7 +1433,9 @@ async def triage(
         )
 
     with request.app.state.db.session() as session:
-        ranking = ranking_inputs(request.app.state.catalog, session)
+        ranking = ranking_inputs(
+            request.app.state.catalog, session, request.app.state.oracle_policy
+        )
 
     return TriageQueue(
         items=[TriageItem(**item) for item in items],
