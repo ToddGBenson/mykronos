@@ -136,19 +136,22 @@ function Read-EnvValue {
 
 function Set-EnvValue {
   # Replace the key's line, or append one. Every other line is kept as it is.
+  [CmdletBinding(SupportsShouldProcess)]
   param([string] $Path, [string] $Key, [string] $Value)
-  $lines = @()
-  if (Test-Path $Path) { $lines = @(Get-Content -Path $Path) }
+  $existing = @()
+  if (Test-Path $Path) { $existing = @(Get-Content -Path $Path) }
   $found = $false
-  $lines = @($lines | ForEach-Object {
-    if ($_ -match "^$Key=") { $found = $true; "$Key=$Value" } else { $_ }
+  $lines = @(foreach ($line in $existing) {
+    if ($line -match "^$Key=") { $found = $true; "$Key=$Value" } else { $line }
   })
   if (-not $found) {
     $lines += ''
     $lines += '# Written by vault-init.ps1: read and list on concourse/* only (VAULT.md).'
     $lines += "$Key=$Value"
   }
-  Set-Content -Path $Path -Value $lines -Encoding UTF8
+  if ($PSCmdlet.ShouldProcess($Path, "write $Key")) {
+    Set-Content -Path $Path -Value $lines -Encoding UTF8
+  }
 }
 
 function Get-Status {
