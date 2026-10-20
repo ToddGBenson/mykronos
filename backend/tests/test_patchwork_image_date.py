@@ -352,6 +352,45 @@ def put_compose(github) -> None:
         repo.branches.setdefault("main", {})[path] = text
 
 
+class TestAVendorImageIsNotSuperseded:
+    """A container finding on an image with no -p<date> tag used to fall through
+    to the repository file read, find nothing at `usr/local/bin/gosu`, and be
+    recorded as superseded: "no longer exists ... resolved already" (56 of 200
+    on 2026-10-18, every one still open)."""
+
+    def test_it_is_no_fix_available_and_reads_no_file(
+        self, client, admin_auth, containers_auth, run_compaction, github
+    ) -> None:
+        onboard(client, admin_auth)
+        put_compose(github)
+        client.app.state.image_registry = FakeTags({})
+        seed_containers(
+            client,
+            containers_auth,
+            run_compaction,
+            [
+                container_finding(
+                    "CVE-2026-0009",
+                    "stdlib",
+                    image_ref="postgres:15.19@sha256:" + "c" * 64,
+                    file_path="usr/local/bin/gosu",
+                )
+            ],
+        )
+
+        body = client.post("/api/patchwork/run", json={}, headers=containers_auth).json()
+
+        assert body["by_stage"].get("superseded") is None, body
+        assert body["by_stage"].get("no_fix_available") == 1, body
+        assert body["draft_prs_opened"] == 0
+        run_compaction()
+        rows = client.app.state.catalog.query(
+            "SELECT pipeline_stage_reached, rationale FROM remediation_events"
+        )
+        assert [r[0] for r in rows] == ["no_fix_available"], rows
+        assert "vendor image" in rows[0][1] and "resolved already" not in rows[0][1]
+
+
 class TestThroughThePipeline:
     def test_several_findings_in_one_image_open_one_pull_request(
         self, client, admin_auth, containers_auth, run_compaction, github
