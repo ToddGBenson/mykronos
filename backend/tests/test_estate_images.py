@@ -245,7 +245,9 @@ class TestThisEstate:
             "hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919",
             "concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48",
             "pgsty/silo:RELEASE.2026-10-15T00-00-00Z-distroless@sha256:70cac541c5a928be5cd16d6b8732d85ac06e891a0e3d9956a745381330692fc6",
-            "registry:3",
+            # Adopted 2026-10-19: the registry-src derivative, served by the
+            # registry itself. The lane resolves REGISTRY to its LAN address.
+            "localhost:5000/library/registry:3-p20261019",
             "postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c",
             # Not ZAP: the demo builds it from deploy/zap/Dockerfile now, and
             # the lane builds and scans that (test_zap_image.py).
@@ -283,6 +285,20 @@ class TestTheLanesThatRunHere:
         body = "\n".join(derive["config"]["run"]["args"])
         assert "mykronos.estate_images" in body
         assert "estate/images.txt" in body
+
+    @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
+    def test_the_lan_registry_is_resolved_and_only_it_is_insecure(self, pipeline: str) -> None:
+        """`${REGISTRY:-localhost:5000}` names the host's registry; inside a task
+        localhost is the task. TheHub's containers 189 asked for localhost
+        before --set; mykronos adopted its first registry-served estate image
+        (the registry derivative) on 2026-10-19. The process environment is
+        not read by default, so the params alone reach nothing."""
+        job = _containers_job(pipeline)
+        derive = next(step for step in job["plan"] if step.get("task") == "derive-estate-images")
+        body = "\n".join(derive["config"]["run"]["args"])
+        assert '--set "REGISTRY=${REGISTRY}"' in body
+        scan = _scan_task_body(pipeline)
+        assert 'case "${estate_image}" in "${REGISTRY}"/*) insecure="--insecure"' in scan
 
     @pytest.mark.parametrize("pipeline", ["mykronos.yml", "thehub.yml"])
     def test_the_scan_reads_the_derived_list_rather_than_a_list_of_names(
