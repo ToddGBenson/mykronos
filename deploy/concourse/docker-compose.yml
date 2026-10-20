@@ -237,11 +237,21 @@ services:
   # deletes off, so the environment below keeps them off. Its default log
   # level is `debug`; `info` matches what v2 actually logged.
   registry:
-    image: registry:3
+    image: ${REGISTRY:-localhost:5000}/library/registry:3-p20261019
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
-    # when strictly better. Declared, not adopted: `image:` stays the vendor's
-    # until a reviewed change pins a published date.
+    # when strictly better.
+    #
+    # ADOPTED 2026-10-19: 3-p20261019 is the registry-src build below (Trivy:
+    # one unrated x/crypto advisory, against the vendor image's 4 x/net
+    # mediums, a zlib medium and Go 1.26.8). It is the one service that
+    # pulls its own image from itself, so it starts only while that image
+    # is in the local Docker store. If it ever is not (a prune), start it
+    # once on the vendor image, which is pulled from Docker Hub:
+    #   docker run -d --rm --name registry-boot -p 127.0.0.1:5000:5000 \
+    #     -v mykronos-concourse_registry-data:/var/lib/registry registry:3
+    #   docker pull localhost:5000/library/registry:3-p20261019
+    #   docker stop registry-boot   # then `up -d registry` as usual
     #
     # registry-src, not apk-upgrade (2026-10-18): the findings that matter are
     # in /bin/registry, a static Go binary with x/net v0.59.0 (4 HIGH HTTP/2

@@ -2835,6 +2835,14 @@ jobs:
           platform: linux
           inputs: [{ name: source }]
           outputs: [{ name: estate }]
+          # `${REGISTRY:-localhost:5000}` is the host's own registry, and
+          # localhost inside this task is the task. The adopted registry
+          # derivative (deploy/concourse/docker-compose.yml) is the first
+          # estate image served from there, so the LAN address is set
+          # explicitly -- --set, not --use-process-env, so nothing else in
+          # this container's environment can move what the list says.
+          params:
+            REGISTRY: ((registry))
           run:
             path: bash
             args:
@@ -2844,7 +2852,8 @@ jobs:
                 pip install --quiet pyyaml
                 PYTHONPATH="$PWD/source/backend" python -m mykronos.estate_images \
                   --root source --output estate/images.txt \
-                  --builds-output estate/builds.txt
+                  --builds-output estate/builds.txt \
+                  --set "REGISTRY=${REGISTRY}"
 
       # -- Images compose builds rather than pulls ---------------------------
       #
@@ -3003,8 +3012,13 @@ jobs:
                     | tr '[:upper:]' '[:lower:]' \
                     | sed 's|[^a-z0-9]\+|-|g; s|^-*||; s|-*$||')
 
+                  # The LAN registry is plain HTTP; only its images get
+                  # --insecure, so Docker Hub and ghcr stay verified TLS.
+                  insecure=""
+                  case "${estate_image}" in "${REGISTRY}"/*) insecure="--insecure" ;; esac
+
                   echo "Scanning ${estate_image}"
-                  if trivy image "${estate_image}" \
+                  if trivy image "${estate_image}" ${insecure} \
                     --scanners vuln \
                     --format sarif --output "results/trivy-estate-${safe}.sarif" \
                     --exit-code 0 --quiet \
