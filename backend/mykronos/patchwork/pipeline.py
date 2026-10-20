@@ -579,6 +579,23 @@ class PatchworkPipeline:
                 result=result,
                 preview_only=preview_only,
             )
+        if finding.get("capability") == "containers":
+            # A vendor image, not one of our -p<date> derivatives. Its
+            # `file_path` is a path inside the image (`usr/local/bin/gosu`) or
+            # the image name, so reading it from the repository finds nothing,
+            # and the branch below used to record that as "no longer exists
+            # ... resolved already" for findings that were still open.
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="no_fix_available",
+                classification="true_positive",
+                rationale=(
+                    f"{triage_rationale} No fix attempted: `{path or 'this image'}` is "
+                    "inside a vendor image, not a file in this repository. It moves "
+                    "when the image is rebuilt or repinned, which no deterministic "
+                    "fixer does for an image without a -p<date> derivative."
+                ),
+            )
 
         if budget <= 0:
             return StageOutcome(
