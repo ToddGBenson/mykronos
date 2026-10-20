@@ -4336,6 +4336,11 @@ export interface components {
             root_state: string;
             /** Since */
             since?: string | null;
+            /**
+             * Repo Full Name
+             * @default
+             */
+            repo_full_name: string;
         };
         /** BriefingActionOut */
         BriefingActionOut: {
@@ -9645,6 +9650,21 @@ export interface components {
              * @default
              */
             blocked_by: string;
+            /**
+             * Blocked By Kind
+             * @default
+             */
+            blocked_by_kind: string;
+            /**
+             * Blocked State
+             * @default
+             */
+            blocked_state: string;
+            /**
+             * Blocked Upstream Url
+             * @default
+             */
+            blocked_upstream_url: string;
             /** Consecutive Failures */
             consecutive_failures: number;
             /** Streak Capped */

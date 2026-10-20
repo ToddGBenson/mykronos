@@ -1552,7 +1552,19 @@ def main(argv: list[str] | None = None) -> int:
             # Everything else outside the lake: CI, job health, tokens, toxic
             # combinations and exposure. Each is `None` when it could not be
             # read, which renders as "could not ask" rather than "nothing".
-            operational = briefing_sources.gather(settings, db, catalog)
+            # The App's client, for the GitHub `workflow_run` read (#504).
+            # Without one that input is `None`, never an empty list.
+            try:
+                briefing_github = _github_factory(settings)
+            except Exception:  # noqa: BLE001 - the briefing still prints
+                briefing_github = None
+            operational = briefing_sources.gather(
+                settings,
+                db,
+                catalog,
+                briefing_github,
+                TemplateLibrary(settings.workflow_templates_dir),
+            )
 
             report = briefing_report.build(
                 catalog,
@@ -1565,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
                 paused_jobs=operational.paused_jobs,
                 failing_jobs=operational.failing_jobs,
                 blocked_jobs=operational.blocked_jobs,
+                workflow_blocked_jobs=operational.workflow_blocked_jobs,
                 unhealthy_jobs=operational.unhealthy_jobs,
                 tokens=operational.tokens,
                 toxic_combinations=operational.toxic_combinations,

@@ -2699,8 +2699,17 @@ class StalledLaneOut(BaseModel):
     #: "failing", "silent" or "blocked". All three freeze findings and they
     #: need different fixes, so the UI must not render them the same.
     reason: str
-    #: The upstream capability holding a blocked lane; empty otherwise.
+    #: The upstream capability holding a blocked lane; empty otherwise. For a
+    #: GitHub `workflow_run` lane, the upstream workflow's name (#504).
     blocked_by: str = ""
+    #: "lane" (a Concourse `passed:` capability), "workflow" (a GitHub
+    #: workflow this lane runs after), or empty when not blocked (#504).
+    blocked_by_kind: str = ""
+    #: A workflow upstream's state: failed, errored, aborted, skipped,
+    #: not_run or disabled. Empty otherwise.
+    blocked_state: str = ""
+    #: The workflow upstream's latest run, where its repair starts.
+    blocked_upstream_url: str = ""
     consecutive_failures: int
     streak_capped: bool
     last_success: datetime | None
@@ -2798,6 +2807,9 @@ class BlockedLaneOut(CiLaneOut):
     root: str
     root_state: str
     since: datetime | None = None
+    #: Set for a GitHub `workflow_run` lane, whose pipeline is
+    #: `github-actions` in every repository (#504). Empty for Concourse.
+    repo_full_name: str = ""
 
 
 class TokenDeliveryOut(BaseModel):
@@ -2911,7 +2923,12 @@ async def post_deployment_briefing(
     languages, sast_tools = await _languages(request)
     state = request.app.state
     operational = await asyncio.to_thread(
-        briefing_sources.gather, state.settings, state.db, state.catalog
+        briefing_sources.gather,
+        state.settings,
+        state.db,
+        state.catalog,
+        state.github_factory,
+        state.templates,
     )
     report = briefing.build(
         request.app.state.catalog,
@@ -2920,6 +2937,7 @@ async def post_deployment_briefing(
         paused_jobs=operational.paused_jobs,
         failing_jobs=operational.failing_jobs,
         blocked_jobs=operational.blocked_jobs,
+        workflow_blocked_jobs=operational.workflow_blocked_jobs,
         unhealthy_jobs=operational.unhealthy_jobs,
         tokens=operational.tokens,
         toxic_combinations=operational.toxic_combinations,

@@ -144,6 +144,13 @@ export function stageState(stage: CiStage): string {
       return "failing";
     case "paused":
       return "paused";
+    // GitHub `workflow_run` lanes (#504). Blocked: skipped because the
+    // workflow it runs after did not pass, so the repair is upstream.
+    // Skipped: its own condition declined to run it. Neither is "off".
+    case "blocked":
+      return "blocked upstream";
+    case "skipped":
+      return "skipped";
     default:
       return "off";
   }

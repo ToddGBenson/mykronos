@@ -42,12 +42,20 @@ token against a limit other things need more (see `StatusCache`).
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import httpx2
+import yaml
 
-from mykronos.github.client import GitHubClient
+from mykronos.github.client import (
+    WORKFLOW_PATH_PREFIX,
+    GitHubClient,
+    WorkflowRef,
+    WorkflowRun,
+)
 from mykronos.logsafe import scrub
 
 logger = logging.getLogger(__name__)
@@ -419,6 +427,24 @@ class Reporting:
     against, and this is "did the lane run at all".
     """
 
+    blocked_by: str = ""
+    """The upstream workflow this lane is held behind, empty when it is not.
+
+    A GitHub `workflow_run` chain (#504): the lane runs after another workflow
+    and its latest run was skipped, or never came, because that upstream did
+    not pass. Not failing -- it did not run -- and re-running it produces one
+    more skipped run. The name is the one to repair.
+    """
+    skipped: bool = False
+    """The lane's latest run was skipped by GitHub, and nothing upstream
+    explains it (#504).
+
+    Its own state rather than `not_run` or a failure: the job's own `if:`
+    declined to run, and that is neither a broken lane nor one that has
+    never been scheduled. Reading it as the conclusion of the run before it is
+    how six skipped no-ops once read as "2 consecutive failures".
+    """
+
     unmapped: bool = False
     """Nothing says what capability this job produces (B-59330).
 
@@ -444,11 +470,17 @@ class Reporting:
         # already implies the failure underneath.
         if self.paused:
             return "paused"
+        # Before `failed`, and before `skipped`: a lane held behind a red
+        # upstream is skipped too, and the upstream is the actionable fact.
+        if self.blocked_by:
+            return "blocked"
         # Before the built_at check, because a failed build leaves built_at
         # unset - that is the whole reason a failing lane used to read as one
         # that had never run.
         if self.last_build_failed:
             return "failed"
+        if self.skipped:
+            return "skipped"
         built = _utc(self.built_at)
         scanned = _utc(self.scanned_at)
         if built is None:
@@ -468,6 +500,10 @@ class JobStatus:
     finished_at: datetime | None
     #: Concourse reports this on every job and it was being dropped here.
     paused: bool = False
+    #: The upstream workflow a GitHub `workflow_run` lane is held behind, where
+    #: the chain stops (#504). Always empty for Concourse, whose `passed:`
+    #: blocking is reported by `blocked_jobs_in` instead.
+    blocked_by: str = ""
 
     @property
     def ok(self) -> bool:
@@ -980,11 +1016,18 @@ class ConcourseClient:
 #: had never run — a silent, total false negative in exactly the check that
 #: exists to catch silent failures.
 #:
-#: `skipped` maps to `None` — *not run*. A skipped job produced no outcome,
-#: and calling it a success would let a lane that never executed vouch for a
-#: capability. `None` is also what an unrecognised conclusion becomes, which
-#: is the safe direction to be wrong in: "has not run" invites a look, while
-#: a wrong "succeeded" ends the conversation.
+#: `skipped` is its own status (#504), and still never a success: a skipped
+#: run produced no outcome, and calling it a success would let a lane that
+#: never executed vouch for a capability. It used to map to `None`, *not run*,
+#: which was true of the run and false of the lane -- a workflow skipped on
+#: every commit because its `workflow_run` upstream is red is not a lane that
+#: has not come round yet, and with no state of its own the briefing went on
+#: quoting the failures from before the skips began. `reconcile` reads it as
+#: `skipped` or, when an upstream explains it, `blocked`.
+#:
+#: `None` is what an unrecognised conclusion becomes, which is the safe
+#: direction to be wrong in: "has not run" invites a look, while a wrong
+#: "succeeded" ends the conversation.
 _STATUS_BY_CONCLUSION: dict[str, str] = {
     "success": "succeeded",
     "failure": "failed",
@@ -993,6 +1036,7 @@ _STATUS_BY_CONCLUSION: dict[str, str] = {
     "action_required": "errored",
     "cancelled": "aborted",
     "stale": "aborted",
+    "skipped": "skipped",
 }
 
 
@@ -1025,6 +1069,344 @@ def capability_by_workflow(templates: object) -> dict[str, str]:
         for capability, spec in specs.items()
         if getattr(spec, "target", None)
     }
+
+
+@dataclass(frozen=True)
+class WorkflowRunTrigger:
+    """A workflow's `on.workflow_run`, as written in its file (#504).
+
+    GitHub's counterpart of a Concourse `passed:` list. The workflow runs when
+    one of `workflows` -- named by their `name:`, not their filename --
+    finishes, and the gate that keeps it from running on a red upstream is
+    usually a job-level `if: github.event.workflow_run.conclusion ==
+    'success'`. With that upstream red, every run of this workflow is
+    `skipped`, and nothing about the skipped run says why.
+    """
+
+    workflows: tuple[str, ...]
+    types: tuple[str, ...] = ()
+    branches: tuple[str, ...] = ()
+    branches_ignore: tuple[str, ...] = ()
+
+    def accepts_branch(self, branch: str | None) -> bool | None:
+        """Would an upstream run on `branch` trigger this workflow?
+
+        None when it cannot be told: a filter is declared and GitHub did not
+        say which branch the run was for. A caller must not read that as no.
+        """
+        if not self.branches and not self.branches_ignore:
+            return True
+        if branch is None:
+            return None
+        if self.branches:
+            return _branch_filter_matches(self.branches, branch)
+        return not _branch_filter_matches(self.branches_ignore, branch)
+
+
+def _branch_pattern(pattern: str) -> re.Pattern[str]:
+    """GitHub's branch glob: `**` crosses `/`, `*` does not, `?` is one char."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append(".")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _branch_filter_matches(patterns: tuple[str, ...], branch: str) -> bool:
+    """In order, as GitHub reads them: a later `!pattern` un-matches."""
+    matched = False
+    for pattern in patterns:
+        if pattern.startswith("!"):
+            if _branch_pattern(pattern[1:]).match(branch):
+                matched = False
+        elif _branch_pattern(pattern).match(branch):
+            matched = True
+    return matched
+
+
+def _strings(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list):
+        return tuple(str(item) for item in value if isinstance(item, str | int | float))
+    return ()
+
+
+def workflow_run_trigger(text: str | None) -> WorkflowRunTrigger | None:
+    """Parse `on.workflow_run` out of a workflow file, or None if it has none.
+
+    Never raises: an unparseable file is a file this cannot reason about, and
+    the status read it serves must not fail on one.
+
+    YAML 1.1 reads a bare `on:` key as the boolean `True`, which is what PyYAML
+    hands back for every workflow file GitHub accepts -- so both keys are
+    looked up. `on: workflow_run` with no `workflows:` cannot be satisfied
+    (GitHub requires the list) and reads as no trigger.
+    """
+    if not text:
+        return None
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    on = document.get("on", document.get(True))
+    if not isinstance(on, dict):
+        return None
+    raw = on.get("workflow_run")
+    if not isinstance(raw, dict):
+        return None
+    workflows = _strings(raw.get("workflows"))
+    if not workflows:
+        return None
+    return WorkflowRunTrigger(
+        workflows=workflows,
+        types=_strings(raw.get("types")),
+        branches=_strings(raw.get("branches")),
+        branches_ignore=_strings(raw.get("branches-ignore")),
+    )
+
+
+@dataclass(frozen=True)
+class WorkflowBlock:
+    """A workflow that did not run because a `workflow_run` upstream did not pass.
+
+    The Actions counterpart of `BlockedJob` (#504). `demo-and-dast.yml` runs
+    after `Delivery` and only when Delivery succeeded; with Delivery red on
+    every commit from 2026-09-18, every Demo and DAST run was `skipped`, and
+    the briefing told somebody to re-scan a lane that could not start.
+    """
+
+    #: The held workflow's filename.
+    workflow_file: str
+    #: The workflow in this one's own `on.workflow_run.workflows` in the way,
+    #: by the name the file uses for it.
+    blocked_by: str
+    #: Where the chain stops: `blocked_by` itself when its latest run did not
+    #: pass, or the workflow further up that stopped it when `blocked_by` is
+    #: held in turn. Repairing this one is what lets the rest run.
+    root: str
+    #: `failed`, `errored`, `aborted`, `skipped` (by its own condition),
+    #: `not_run` (no completed run to read) or `disabled` -- the root's state.
+    root_state: str
+    root_since: datetime | None = None
+    root_url: str | None = None
+
+
+#: A workflow_run gate reads a completion. A trigger whose `types:` leaves it
+#: out (`requested` alone, say) is not gated on the upstream's outcome at all.
+_COMPLETED = "completed"
+
+
+def _workflow_keys(wf: WorkflowRef) -> tuple[str, ...]:
+    """What an `on.workflow_run.workflows` entry may call this workflow.
+
+    The `name:` is what GitHub matches. The stem and filename are there for a
+    workflow GitHub reported without a name, which it names after its path.
+    The name goes last so it wins a collision.
+    """
+    return (wf.file_name.rsplit(".", 1)[0], wf.file_name, wf.name)
+
+
+def workflow_run_blocks(
+    workflows: list[WorkflowRef],
+    runs: Mapping[str, WorkflowRun],
+    triggers: Mapping[str, WorkflowRunTrigger],
+) -> dict[str, WorkflowBlock]:
+    """Every workflow held back behind a `workflow_run` upstream, by filename.
+
+    `runs` is each workflow's latest completed run by filename and `triggers`
+    each workflow's parsed `on.workflow_run`; a workflow absent from
+    `triggers` is not workflow_run-driven, or its file was not read.
+
+    A workflow is reported when all of these hold:
+
+    * it is enabled (a disabled one is switched off, which is its own
+      state), and its latest run was `skipped` or there is none. A workflow
+      whose latest run actually executed is not held back by anything;
+    * an upstream named in its trigger did not pass: its latest run failed,
+      errored, was cancelled or was skipped by its own condition, or it has
+      no completed run, or it is disabled;
+    * or that upstream is itself held back, in which case this workflow is
+      behind the same root.
+
+    An upstream name that matches no workflow is skipped rather than guessed
+    at, as `blocked_jobs_in` skips a `passed:` name that is not a job. So is
+    an upstream whose latest run was on a branch the trigger's filter does
+    not take, or may not take: that run did not trigger this workflow, so it
+    says nothing about why this one did not run.
+    """
+    by_file = {wf.file_name: wf for wf in workflows}
+    by_name: dict[str, WorkflowRef] = {}
+    for wf in workflows:
+        for key in _workflow_keys(wf):
+            by_name[key] = wf
+
+    def skipped(file_name: str) -> bool:
+        run = runs.get(file_name)
+        return run is not None and run.conclusion == "skipped"
+
+    def stop(name: str, wf: WorkflowRef, state: str) -> WorkflowBlock:
+        run = runs.get(wf.file_name)
+        return WorkflowBlock(
+            workflow_file="",
+            blocked_by=name,
+            root=name,
+            root_state=state,
+            root_since=run.finished_at if run else None,
+            root_url=(run.url if run else None) or wf.url or None,
+        )
+
+    memo: dict[str, WorkflowBlock | None] = {}
+
+    def held(file_name: str, visiting: frozenset[str]) -> WorkflowBlock | None:
+        if file_name in memo:
+            return memo[file_name]
+        wf = by_file.get(file_name)
+        trigger = triggers.get(file_name)
+        if (
+            wf is None
+            or not wf.enabled
+            or trigger is None
+            or file_name in visiting
+            or not (file_name not in runs or skipped(file_name))
+            or (trigger.types and _COMPLETED not in trigger.types)
+        ):
+            return None
+        ups: list[tuple[str, WorkflowRef]] = []
+        for name in trigger.workflows:
+            up = by_name.get(name)
+            if up is None or up.file_name == file_name:
+                continue
+            up_run = runs.get(up.file_name)
+            if up_run is not None and trigger.accepts_branch(up_run.head_branch) is not True:
+                continue
+            ups.append((name, up))
+
+        found: WorkflowBlock | None = None
+        # Direct stops first: when one upstream is red and another is merely
+        # behind it, the red one is the workflow to name.
+        for name, up in ups:
+            up_run = runs.get(up.file_name)
+            if not up.enabled:
+                found = stop(name, up, "disabled")
+            elif up_run is None:
+                found = stop(name, up, "not_run")
+            elif up_run.conclusion not in ("success", "skipped"):
+                found = stop(
+                    name,
+                    up,
+                    status_from_conclusion(up_run.conclusion) or str(up_run.conclusion),
+                )
+            if found is not None:
+                break
+        if found is None:
+            for name, up in ups:
+                if not skipped(up.file_name):
+                    continue
+                inner = held(up.file_name, visiting | {file_name})
+                found = (
+                    WorkflowBlock(
+                        workflow_file="",
+                        blocked_by=name,
+                        root=inner.root,
+                        root_state=inner.root_state,
+                        root_since=inner.root_since,
+                        root_url=inner.root_url,
+                    )
+                    if inner is not None
+                    # Skipped by its own `if:`: it did not pass either, and
+                    # it is where this chain stops.
+                    else stop(name, up, "skipped")
+                )
+                break
+        if found is not None:
+            found = WorkflowBlock(
+                workflow_file=file_name,
+                blocked_by=found.blocked_by,
+                root=found.root,
+                root_state=found.root_state,
+                root_since=found.root_since,
+                root_url=found.root_url,
+            )
+        memo[file_name] = found
+        return found
+
+    return {f: b for f in by_file if (b := held(f, frozenset())) is not None}
+
+
+async def read_workflow_run_blocks(
+    github: GitHubClient,
+    repo_full_name: str,
+    workflows: list[WorkflowRef],
+    runs: Mapping[str, WorkflowRun],
+    candidates: list[str],
+) -> dict[str, WorkflowBlock]:
+    """`workflow_run_blocks` for `candidates`, reading only the files it needs.
+
+    A workflow file is read only for a workflow whose latest run was skipped
+    or is absent -- the only ones a `workflow_run` upstream can explain -- and
+    then for each upstream of those in the same position, so a chain is
+    followed to its root. Through `get_file`, the read the installer already
+    makes, against the default branch (`HEAD`), which is where GitHub reads a
+    `workflow_run` trigger from. A healthy repository costs no read at all.
+
+    One unreadable file drops that workflow's trigger rather than the whole
+    answer: a workflow this cannot read is reported as before, not as blocked.
+    """
+    by_file = {wf.file_name: wf for wf in workflows}
+    by_name: dict[str, str] = {}
+    for wf in workflows:
+        for key in _workflow_keys(wf):
+            by_name[key] = wf.file_name
+
+    def needs_reading(file_name: str) -> bool:
+        run = runs.get(file_name)
+        return file_name in by_file and (run is None or run.conclusion == "skipped")
+
+    triggers: dict[str, WorkflowRunTrigger] = {}
+    seen: set[str] = set()
+    pending = [f for f in candidates if needs_reading(f)]
+    while pending:
+        file_name = pending.pop()
+        if file_name in seen:
+            continue
+        seen.add(file_name)
+        try:
+            text = await github.get_file(
+                repo_full_name, f"{WORKFLOW_PATH_PREFIX}{file_name}", "HEAD"
+            )
+        except Exception as exc:  # noqa: BLE001 - see the module docstring
+            logger.warning(
+                "Reading %s's %s failed: %s",
+                scrub(repo_full_name),
+                scrub(file_name),
+                scrub(str(exc)),
+            )
+            continue
+        trigger = workflow_run_trigger(text)
+        if trigger is None:
+            continue
+        triggers[file_name] = trigger
+        for name in trigger.workflows:
+            upstream = by_name.get(name)
+            if upstream is not None and upstream not in seen and needs_reading(upstream):
+                pending.append(upstream)
+
+    blocks = workflow_run_blocks(workflows, runs, triggers)
+    return {f: blocks[f] for f in candidates if f in blocks}
 
 
 class StatusCache:
@@ -1153,6 +1535,67 @@ class ActionsClient:
         # first repository somebody forgot would go dark.
         return stem if (ACTIONS, stem) in CAPABILITY_BY_JOB else None
 
+    async def _read(
+        self, repo_full_name: str
+    ) -> tuple[list[WorkflowRef], dict[str, WorkflowRun], dict[str, WorkflowBlock]]:
+        """Workflows, latest runs by filename, and the lanes held behind a
+        `workflow_run` upstream (#504). Raises; both callers catch.
+
+        Blocks are looked for among this platform's lanes only, but an
+        upstream may be any workflow: `delivery.yml` produces no capability
+        and is rightly not cross-checked, and it is the one that decides
+        whether `demo-and-dast.yml` runs at all.
+        """
+        github = self._github
+        assert github is not None  # every caller checks `configured`
+        workflows = await github.list_workflows(repo_full_name)
+        runs = {run.workflow_file: run for run in await github.latest_workflow_runs(repo_full_name)}
+        lanes = [
+            wf.file_name for wf in workflows if self._job_name_for(wf.file_name) is not None
+        ]
+        blocks = await read_workflow_run_blocks(github, repo_full_name, workflows, runs, lanes)
+        return workflows, runs, blocks
+
+    async def blocked_lanes(
+        self, repo_full_name: str
+    ) -> list[tuple[JobStatus, WorkflowBlock]] | None:
+        """Every lane here held behind a `workflow_run` upstream, or None if
+        GitHub could not be read.
+
+        The Actions half of `ConcourseClient.blocked_jobs`, for the briefing:
+        `None` rather than `[]` when the read fails, because "nothing held
+        back" and "could not ask" must not render the same.
+        """
+        if not self.configured:
+            return None
+        try:
+            _, runs, blocks = await self._read(repo_full_name)
+        except Exception as exc:  # noqa: BLE001 - see the class docstring
+            logger.warning(
+                "Actions read of %s failed: %s", scrub(repo_full_name), scrub(str(exc))
+            )
+            return None
+        out: list[tuple[JobStatus, WorkflowBlock]] = []
+        for file_name, block in sorted(blocks.items()):
+            name = self._job_name_for(file_name)
+            if name is None:
+                continue
+            run = runs.get(file_name)
+            out.append(
+                (
+                    JobStatus(
+                        name=name,
+                        status=status_from_conclusion(run.conclusion) if run else None,
+                        build_name=str(run.run_number) if run and run.run_number else None,
+                        build_url=run.url if run else None,
+                        finished_at=run.finished_at if run else None,
+                        blocked_by=block.root,
+                    ),
+                    block,
+                )
+            )
+        return out
+
     async def status_for(self, repo_full_name: str) -> PipelineStatus:
         """Workflow state for one repository. Never raises."""
         url = f"https://github.com/{repo_full_name}/actions"
@@ -1164,11 +1607,8 @@ class ActionsClient:
                 unavailable="No GitHub App is configured for this deployment.",
             )
 
-        github = self._github
-        assert github is not None  # `configured` above
         try:
-            workflows = await github.list_workflows(repo_full_name)
-            runs = await github.latest_workflow_runs(repo_full_name)
+            workflows, by_file, blocks = await self._read(repo_full_name)
         except Exception as exc:  # noqa: BLE001 - see the class docstring
             logger.warning(
                 "Actions read of %s failed: %s", scrub(repo_full_name), scrub(str(exc))
@@ -1183,8 +1623,6 @@ class ActionsClient:
                 ),
             )
 
-        by_file = {run.workflow_file: run for run in runs}
-
         jobs: list[JobStatus] = []
         for workflow in workflows:
             capability = self._job_name_for(workflow.file_name)
@@ -1193,7 +1631,8 @@ class ActionsClient:
                 # table recognises — the repository's own CI, `delivery.yml`
                 # among them. Not cross-checked, which is the safe direction to
                 # be wrong in: claiming somebody else's lane produces a
-                # capability would invent coverage.
+                # capability would invent coverage. It can still be the
+                # upstream a lane is blocked behind (#504); `_read` looks.
                 continue
             run = by_file.get(workflow.file_name)
             # A workflow GitHub has switched off has not run and will not.
@@ -1205,6 +1644,7 @@ class ActionsClient:
                 if run is not None and workflow.enabled
                 else None
             )
+            block = blocks.get(workflow.file_name)
             jobs.append(
                 JobStatus(
                     name=capability,
@@ -1213,6 +1653,7 @@ class ActionsClient:
                     build_url=(run.url if run else None)
                     or f"{url}/workflows/{workflow.file_name}",
                     finished_at=run.finished_at if run and workflow.enabled else None,
+                    blocked_by=block.root if block else "",
                 )
             )
 
@@ -1519,6 +1960,11 @@ _MOST_ACTIONABLE: tuple[str, ...] = (
     "silent",
     "never_reported",
     "failed",
+    # The repair is on another workflow, named in the lane's `blocked_by`
+    # (#504). After `failed`, which names a job to read on this lane itself.
+    "blocked",
+    # The lane's own condition declined to run it: worth a look, not a repair.
+    "skipped",
     "not_run",
     "paused",
 )
@@ -1967,6 +2413,8 @@ def reconcile(
                     scanned_at=last_scan_at.get(capability),
                     last_build_failed=job.status in _DID_NOT_SUCCEED,
                     paused=job.paused,
+                    blocked_by=job.blocked_by,
+                    skipped=job.status == "skipped",
                 )
             )
     return out
