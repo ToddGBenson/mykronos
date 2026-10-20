@@ -51,6 +51,8 @@ class OperationalInputs:
     toxic_combinations: list[dict[str, Any]] | None = None
     toxic_coverage: dict[str, Any] | None = None
     exposure: list[dict[str, Any]] | None = None
+    #: How far each probed deployment is behind its branch (#452).
+    production_lag: list[briefing_report.ProductionLag] | None = None
 
 
 def onboarding_maps(db: Any) -> tuple[dict[str, str], dict[str, str]]:
@@ -311,4 +313,70 @@ def gather(
     except Exception:  # noqa: BLE001 - a briefing must not die on this
         logger.debug("Could not read public endpoints")
 
+    # How far production is behind its branch (#452): the sweep's cached
+    # GitHub compare, joined to the lake for the findings whose fix is in the
+    # undeployed range. No GitHub call here; the sweep made it.
+    try:
+        found.production_lag = production_lag(db, catalog)
+    except Exception:  # noqa: BLE001 - a briefing must not die on this
+        logger.debug("Could not read the deployment record")
+
     return found
+
+
+def production_lag(db: Any, catalog: Any) -> list[briefing_report.ProductionLag]:
+    """One `ProductionLag` per active repository with a deployment probe.
+
+    A probe configured before any sweep has run has nothing stored yet, and
+    says so as `unknown` rather than being left out: a repository missing from
+    this list reads as "has no production", which is a different claim.
+    """
+    from dataclasses import asdict
+
+    from mykronos import deployments
+
+    with db.session() as session:
+        rows = session.scalars(
+            select(RepoOnboarding).where(RepoOnboarding.status == "active")
+        ).all()
+        probed = [
+            (row.github_repo_full_name, str(row.default_branch or ""), deployments.stored_lag(row))
+            for row in rows
+            if (row.deployment_probe_url or "").strip()
+        ]
+
+    out: list[briefing_report.ProductionLag] = []
+    for repo, branch, lag in sorted(probed, key=lambda item: item[0]):
+        if lag is None:
+            out.append(
+                briefing_report.ProductionLag(
+                    repo_full_name=repo,
+                    status=deployments.UNKNOWN,
+                    branch=branch,
+                    detail=(
+                        "a probe is configured and the deployment-probe job has not "
+                        "recorded an answer yet."
+                    ),
+                )
+            )
+            continue
+        fixes = deployments.fixes_not_deployed(catalog, lag)
+        out.append(
+            briefing_report.ProductionLag(
+                repo_full_name=repo,
+                status=lag.status,
+                branch=lag.branch or branch,
+                deployed_revision=lag.deployed_revision,
+                head_revision=lag.head_revision,
+                behind_by=lag.behind_by,
+                not_on_branch=lag.not_on_branch,
+                deployed_committed_at=lag.deployed_committed_at,
+                oldest_undeployed_at=lag.oldest_undeployed_at,
+                checked_at=lag.checked_at,
+                commits_truncated=lag.commits_truncated,
+                detail=lag.detail,
+                undeployed_fixes=[asdict(fix) for fix in fixes.matched],
+                closed_since_unmatched=fixes.closed_since_unmatched,
+            )
+        )
+    return out

@@ -18,7 +18,13 @@ import pytest
 
 import mykronos.cli as cli
 from mykronos import briefing_sources
-from mykronos.briefing import BlockedLane, FailingLane, PausedLane, TokenDelivery
+from mykronos.briefing import (
+    BlockedLane,
+    FailingLane,
+    PausedLane,
+    ProductionLag,
+    TokenDelivery,
+)
 from mykronos.platform_health import JobHealth
 from tests.conftest import REPO, finding_payload, post_findings, post_scan
 from tests.test_onboarding import onboard
@@ -31,6 +37,11 @@ SECTIONS = {
     "unhealthy_jobs": ("name", "status", "detail", "consecutive_failures"),
     "tokens": ("repo_full_name", "state", "scanned_by"),
     "exposure": ("url", "repo_full_name", "last_status"),
+    # #452: the PRODUCTION IS BEHIND line, per repository.
+    "production_lag": (
+        "repo_full_name", "status", "behind_by", "not_on_branch", "detail",
+        "closed_since_unmatched",
+    ),
 }
 
 #: The CLI's flag for each source the API names in `unknown`.
@@ -40,6 +51,7 @@ UNKNOWN_FLAGS = {
     "ingestion_tokens": ("tokens_unknown",),
     "toxic": ("toxic_unknown",),
     "exposure": ("exposure_unknown",),
+    "deployments": ("production_lag_unknown",),
 }
 
 
@@ -74,6 +86,29 @@ def _everything_read() -> briefing_sources.OperationalInputs:
         toxic_coverage={"rules": 3, "cannot_fire": []},
         exposure=[{"url": "https://example.test", "repo_full_name": REPO,
                    "last_status": "open", "observations": []}],
+        production_lag=[
+            ProductionLag(
+                repo_full_name=REPO,
+                status="behind",
+                branch="main",
+                deployed_revision="a2a7566c0ffee",
+                behind_by=40,
+                not_on_branch=0,
+                deployed_committed_at=now,
+                undeployed_fixes=[
+                    {"finding_id": "f-1", "rule_id": "B608", "severity": "high",
+                     "title": "SQL", "status": "fixed", "basis": "last_seen_in_range",
+                     "commit": "a2a7566c0ffee"},
+                ],
+                closed_since_unmatched=2,
+            ),
+            ProductionLag(
+                repo_full_name="ToddGBenson/TheHub",
+                status="unknown",
+                branch="develop",
+                detail="the probe could not read the running revision",
+            ),
+        ],
     )
 
 
@@ -118,6 +153,9 @@ def test_the_api_has_every_section_the_cli_prints(
         assert terminal[section], f"the stub should fill {section}"
         assert _ids(api[section], keys) == _ids(terminal[section], keys), section
     assert api["toxic"] == terminal["toxic"] == []
+    assert [lag["undeployed_fixes"] for lag in api["production_lag"]] == [
+        lag["undeployed_fixes"] for lag in terminal["production_lag"]
+    ]
     assert api["toxic_coverage"] == terminal["toxic_coverage"]
     assert api["total_open"] == terminal["total_open"]
     assert len(api["stalled"]) == len(terminal["stalled"])

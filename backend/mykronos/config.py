@@ -90,7 +90,9 @@ class Settings(BaseSettings):
             "running (#361). Half-hourly, matching `fix_verification`: the "
             "question is whether a merge has reached production, and the "
             "interesting window is the one just after a deploy. Cheap enough "
-            "to run at that rate -- one unauthenticated GET per repository."
+            "to run at that rate -- one GET and one GitHub compare per "
+            "repository. Also the age limit of the cached 'N commits behind' "
+            "answer the briefing and dashboard read (#452)."
         ),
     )
 
@@ -102,6 +104,27 @@ class Settings(BaseSettings):
             "and then stalls, which is the failure that would otherwise hold "
             "the whole sweep open; a healthy probe answers in well under a "
             "second."
+        ),
+    )
+
+    deployment_probe_tokens: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Which perimeter token the deployment probe presents, per origin "
+            "(#452). A JSON object from `scheme://host[:port]` to a token, "
+            "sent as `X-Hub-Token`, e.g. "
+            '`{"http://mykronos-backend:8000": "@gate", '
+            '"http://thehub-backend:8000": "@hub"}`. `@gate` means '
+            "MYKRONOS_GATE_TOKEN and `@hub` means MYKRONOS_HUB_API_TOKEN, so "
+            "neither secret is written down twice; anything else is the token "
+            "itself. mykronos's `/healthz` and TheHub's `/health` serve "
+            "`build.sha` only to a caller presenting their perimeter token "
+            "(D-157, TheHub #60709), so without an entry the probe reads "
+            "`unparsed` and production lag is unknown. Keyed by origin, never "
+            "sent to an origin not listed: the two hosts' tokens differ (D-131), "
+            "and a probe URL is admin-editable, so a single global token would "
+            "hand whichever secret it is to whatever host the URL names. "
+            "Redirects are not followed, for the same reason."
         ),
     )
 

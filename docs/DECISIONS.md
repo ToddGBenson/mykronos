@@ -33,6 +33,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-162 — Backend tests run on every pull request as `backend-tests`, advisory until two weeks of runs show they are steady](decisions/D-162-backend-tests-run-on-every-pull-request-and-are-advisory-until-shown-steady.md)
 - [D-163 — The operator's review work moves into the Product Owner console: a review queue and review packet first, verification checks as data next](decisions/D-163-the-operators-review-queue-lives-in-the-po-console.md)
 - [D-164 — The maturity model and the STRIDE map are `governance` changes: a person approves every edit](decisions/D-164-the-maturity-model-and-stride-map-are-governance-changes.md)
+- [D-165 — The deployment probe presents a perimeter token per origin, and "N commits behind" is GitHub's count](decisions/D-165-the-deployment-probe-presents-a-perimeter-token-per-origin.md)
 
 <!-- decisions-index:end -->
 

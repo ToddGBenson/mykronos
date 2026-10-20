@@ -4421,6 +4421,8 @@ export interface components {
             unhealthy_jobs?: components["schemas"]["UnhealthyJobOut"][];
             /** Tokens */
             tokens?: components["schemas"]["TokenDeliveryOut"][];
+            /** Production Lag */
+            production_lag?: components["schemas"]["ProductionLagOut"][];
             /** Unknown */
             unknown?: components["schemas"]["BriefingUnknownOut"][];
         };
@@ -5318,6 +5320,37 @@ export interface components {
             detail: string;
         };
         /**
+         * DeployLagOut
+         * @description How far a repository's production is behind its branch (#452).
+         *
+         *     The deployment-probe job's cached GitHub compare; reading it calls nothing.
+         *     Null on a repository with no probe, which has no production to be behind.
+         */
+        DeployLagOut: {
+            /** Status */
+            status: string;
+            /**
+             * Branch
+             * @default
+             */
+            branch: string;
+            /** Behind By */
+            behind_by?: number | null;
+            /** Not On Branch */
+            not_on_branch?: number | null;
+            /** Deployed Revision */
+            deployed_revision?: string | null;
+            /** Deployed Committed At */
+            deployed_committed_at?: string | null;
+            /** Checked At */
+            checked_at?: string | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
          * DeploymentOut
          * @description What one repository is running, next to what was scanned (#361).
          */
@@ -5336,6 +5369,7 @@ export interface components {
             matches_scan: boolean | null;
             /** Probe Url */
             probe_url: string;
+            lag?: components["schemas"]["DeployLagOut"] | null;
         };
         /**
          * DeploymentProbeUpdate
@@ -5359,6 +5393,11 @@ export interface components {
             diverged: number;
             /** Not Configured */
             not_configured: number;
+            /**
+             * Behind
+             * @default 0
+             */
+            behind: number;
         };
         /**
          * DigestGroupOut
@@ -7377,6 +7416,7 @@ export interface components {
             running_revision: string | null;
             /** Observed At */
             observed_at: string | null;
+            lag?: components["schemas"]["DeployLagOut"] | null;
         };
         /** PoEnforcedTierOut */
         PoEnforcedTierOut: {
@@ -8079,6 +8119,7 @@ export interface components {
             raw_risk_score?: number | null;
             /** Risk Assessed At */
             risk_assessed_at?: string | null;
+            deploy_lag?: components["schemas"]["DeployLagOut"] | null;
         };
         /**
          * PortfolioSummary
@@ -8247,6 +8288,52 @@ export interface components {
             /** Writes Refused */
             writes_refused?: string | null;
             issues?: components["schemas"]["IssuesSourceOut"] | null;
+        };
+        /**
+         * ProductionLagOut
+         * @description `PRODUCTION IS BEHIND` (#452): one repository with a deployment probe.
+         */
+        ProductionLagOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Status */
+            status: string;
+            /**
+             * Branch
+             * @default
+             */
+            branch: string;
+            /** Deployed Revision */
+            deployed_revision?: string | null;
+            /** Head Revision */
+            head_revision?: string | null;
+            /** Behind By */
+            behind_by?: number | null;
+            /** Not On Branch */
+            not_on_branch?: number | null;
+            /** Deployed Committed At */
+            deployed_committed_at?: string | null;
+            /** Oldest Undeployed At */
+            oldest_undeployed_at?: string | null;
+            /** Checked At */
+            checked_at?: string | null;
+            /**
+             * Commits Truncated
+             * @default false
+             */
+            commits_truncated: boolean;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Undeployed Fixes */
+            undeployed_fixes?: components["schemas"]["UndeployedFixOut"][];
+            /**
+             * Closed Since Unmatched
+             * @default 0
+             */
+            closed_since_unmatched: number;
         };
         /**
          * ProfileProposalOut
@@ -10380,6 +10467,29 @@ export interface components {
          * @enum {string}
          */
         TriggeredBy: "pull_request" | "push" | "schedule" | "workflow_dispatch" | "manual";
+        /**
+         * UndeployedFixOut
+         * @description A finding whose fix is merged and not running (#452).
+         */
+        UndeployedFixOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Severity */
+            severity: string;
+            /** Title */
+            title: string;
+            /** Status */
+            status: string;
+            /** Basis */
+            basis: string;
+            /**
+             * Commit
+             * @default
+             */
+            commit: string;
+        };
         /**
          * UnhealthyJobOut
          * @description A scheduled job that is failing, late or has never run (#409):

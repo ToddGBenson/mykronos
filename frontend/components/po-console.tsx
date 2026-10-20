@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { DecideApproval } from "@/components/po-approval-decide";
 import { EmptyState, Pill, Section, StatTile } from "@/components/primitives";
+import { ProdLag } from "@/components/prod-lag";
 import type {
   PoDelivery,
   PoDeliveryRow,
@@ -138,7 +139,8 @@ export function DeliveryView({
         <span className="font-mono text-[11px] text-ink-3">
           (probe {probe.probe_status}
           {probe.observed_at ? `, ${day(probe.observed_at)}` : ""})
-        </span>
+        </span>{" "}
+        <ProdLag lag={probe.lag} />
         . Only the running revision is recorded, so other commits say &ldquo;deploy not
         recorded&rdquo;, not &ldquo;not deployed&rdquo;.
       </p>

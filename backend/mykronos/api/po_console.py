@@ -25,6 +25,7 @@ from mykronos import po_fleet, po_trace
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep, Role
 from mykronos.api import product_owner as phase1
+from mykronos.api.dashboard import DeployLagOut, deploy_lag_out, unrecorded_lag
 from mykronos.approvals import pull_requests
 from mykronos.approvals.engine import ApprovalError, decide
 from mykronos.approvals.policy import PolicyError, cached_policy
@@ -126,6 +127,8 @@ class PoDeploymentOut(BaseModel):
     probe_status: str
     running_revision: str | None
     observed_at: str | None
+    #: How far the running revision is behind the default branch (#452).
+    lag: DeployLagOut | None = None
 
 
 class PoDeliveryOut(BaseModel):
@@ -175,6 +178,7 @@ async def delivery(
             else "not_configured",
             running_revision=revision,
             observed_at=pc.iso(onboarding.deployed_revision_at) if onboarding else None,
+            lag=deploy_lag_out(unrecorded_lag(onboarding)) if onboarding else None,
         )
     since = pc.window_start(days)
     catalog = request.app.state.catalog
