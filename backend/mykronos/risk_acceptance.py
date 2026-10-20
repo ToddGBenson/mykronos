@@ -534,7 +534,7 @@ def propose(
     with db.session() as session:
         kev = _kev_listed(session, {m.rule_id for m in matched})
         checks = _premise_checks(session, catalog, repo, scope, premises, matched, fresh_days)
-        claimed = _covered_by(
+        claimed = covered_by(
             session,
             {m.finding_id for m in matched},
             statuses=("pending_approval", *LIVE),
@@ -699,7 +699,7 @@ register_dedicated_route("risk_acceptance", "/api/risk-acceptances")
 # -- Revocation, renewal, the sweep ---------------------------------------------
 
 
-def _covered_by(
+def covered_by(
     session: Session,
     finding_ids: set[str],
     *,
@@ -769,7 +769,7 @@ def release_findings(
     if not ids:
         return []
     with db.session() as session:
-        holders = _covered_by(session, set(ids), exclude=record_id)
+        holders = covered_by(session, set(ids), exclude=record_id)
         restamp: dict[tuple[date | None, str], list[str]] = {}
         for fid, other in holders.items():
             key = (
