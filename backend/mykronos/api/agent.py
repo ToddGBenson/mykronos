@@ -209,7 +209,12 @@ async def work(
         briefing_sources.onboarding_maps, state.db
     )
     operational = await asyncio.to_thread(
-        briefing_sources.gather, settings, state.db, state.catalog
+        briefing_sources.gather,
+        settings,
+        state.db,
+        state.catalog,
+        state.github_factory,
+        state.templates,
     )
     report = await asyncio.to_thread(
         lambda: briefing.build(
@@ -222,6 +227,7 @@ async def work(
             paused_jobs=operational.paused_jobs,
             failing_jobs=operational.failing_jobs,
             blocked_jobs=operational.blocked_jobs,
+            workflow_blocked_jobs=operational.workflow_blocked_jobs,
             unhealthy_jobs=operational.unhealthy_jobs,
             tokens=operational.tokens,
             toxic_combinations=operational.toxic_combinations,

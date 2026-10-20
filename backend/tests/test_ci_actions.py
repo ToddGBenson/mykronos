@@ -82,8 +82,12 @@ class TestVocabulary:
 
     def test_a_skipped_run_is_not_a_success(self) -> None:
         """A skipped job produced no outcome. Calling it a success would let
-        a lane that never executed vouch for a capability."""
-        assert status_from_conclusion("skipped") is None
+        a lane that never executed vouch for a capability.
+
+        Its own status since #504, not `None`: a lane skipped on every commit
+        is not one that has not come round yet."""
+        assert status_from_conclusion("skipped") == "skipped"
+        assert status_from_conclusion("skipped") != "succeeded"
 
     def test_an_unknown_conclusion_reads_as_not_run(self) -> None:
         """The safe direction: "has not run" invites a look, a wrong

@@ -14,14 +14,23 @@ security lanes sat paused for thirty-two days behind exactly that gap (#401).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+import weakref
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 
 from mykronos import briefing as briefing_report
-from mykronos.ci import ConcourseClient
+from mykronos.ci import (
+    ACTIONS,
+    CAPABILITY_BY_JOB,
+    ActionsClient,
+    ConcourseClient,
+    capability_by_workflow,
+)
 from mykronos.db.models import RepoOnboarding
 
 logger = logging.getLogger(__name__)
@@ -34,6 +43,9 @@ class OperationalInputs:
     paused_jobs: list[briefing_report.PausedLane] | None = None
     failing_jobs: list[briefing_report.FailingLane] | None = None
     blocked_jobs: list[briefing_report.BlockedLane] | None = None
+    #: GitHub lanes held behind a `workflow_run` upstream (#504). Separate
+    #: from `blocked_jobs`, whose `None` means Concourse could not be asked.
+    workflow_blocked_jobs: list[briefing_report.BlockedLane] | None = None
     unhealthy_jobs: list[Any] | None = None
     tokens: list[briefing_report.TokenDelivery] | None = None
     toxic_combinations: list[dict[str, Any]] | None = None
@@ -74,8 +86,98 @@ def repo_ids(db: Any) -> dict[str, str]:
     return {str(name): str(repo_id) for name, repo_id in rows}
 
 
-def gather(settings: Any, db: Any, catalog: Any) -> OperationalInputs:
-    """Read every non-lake input once. Never raises: each one fails to `None`."""
+def _capabilities(job: str) -> list[str]:
+    """What an Actions lane produces, by the name `ActionsClient` gives it.
+
+    A registry lane arrives under its capability already; a lane the
+    template registry does not know (`demo-and-dast`) under a name
+    `CAPABILITY_BY_JOB` maps, possibly to several.
+    """
+    mapped = CAPABILITY_BY_JOB.get((ACTIONS, job), job)
+    return list(mapped) if isinstance(mapped, tuple) else [mapped]
+
+
+#: How long one repository's `workflow_run` answer is reused (#504). The
+#: briefing is loaded by the API, the agent queue and the page, and asking
+#: GitHub per repository on every load is what made it 11 s once (#730). Five
+#: minutes late to notice that Delivery went green is still in time for the
+#: question this answers. Failed reads are never cached.
+WORKFLOW_BLOCKS_TTL_SECONDS = 300.0
+
+#: Per factory, so a test app's fake GitHub never answers for another's.
+_workflow_cache: weakref.WeakKeyDictionary[
+    Any, dict[str, tuple[float, list[briefing_report.BlockedLane]]]
+] = weakref.WeakKeyDictionary()
+
+
+async def _workflow_blocked(
+    github_factory: Any, templates: Any, installs: list[tuple[str, int]]
+) -> list[briefing_report.BlockedLane] | None:
+    """Every GitHub lane held behind a `workflow_run` upstream (#504).
+
+    Read for every onboarded repository with an installation, not only the
+    `github_actions` ones: mykronos is scanned by Concourse and its DAST lane
+    is still `demo-and-dast.yml`, which runs after Delivery. Concurrent, and
+    cached per repository for `WORKFLOW_BLOCKS_TTL_SECONDS`. `None` when no
+    repository could be read, so a GitHub outage reads as "could not ask".
+    """
+    workflow_caps = capability_by_workflow(templates)
+    try:
+        cache = _workflow_cache.setdefault(github_factory, {})
+    except TypeError:  # not weak-referenceable: read every time
+        cache = {}
+    now = time.monotonic()
+
+    async def one(repo: str, installation_id: int) -> list[briefing_report.BlockedLane] | None:
+        hit = cache.get(repo)
+        if hit is not None and now - hit[0] < WORKFLOW_BLOCKS_TTL_SECONDS:
+            return hit[1]
+        client = ActionsClient(
+            github_factory.for_installation(installation_id),
+            capability_by_workflow=workflow_caps,
+        )
+        held = await client.blocked_lanes(repo)
+        if held is None:
+            return None
+        lanes = [
+            briefing_report.BlockedLane(
+                pipeline=ACTIONS,
+                job=job.name,
+                blocked_by=block.blocked_by,
+                root=block.root,
+                root_state=block.root_state,
+                since=block.root_since,
+                last_status=job.status,
+                last_finished_at=job.finished_at,
+                build_url=block.root_url,
+                repo_full_name=repo,
+                capabilities=_capabilities(job.name),
+            )
+            for job, block in held
+        ]
+        cache[repo] = (now, lanes)
+        return lanes
+
+    answers = await asyncio.gather(*(one(repo, i) for repo, i in installs))
+    read = [lanes for lanes in answers if lanes is not None]
+    if installs and not read:
+        return None
+    return [lane for lanes in read for lane in lanes]
+
+
+def gather(
+    settings: Any,
+    db: Any,
+    catalog: Any,
+    github_factory: Any = None,
+    templates: Any = None,
+) -> OperationalInputs:
+    """Read every non-lake input once. Never raises: each one fails to `None`.
+
+    `github_factory` and `templates` are the App's, for the GitHub
+    `workflow_run` read (#504); without them that one input stays `None`.
+    Positional on purpose, so a test's `lambda *_args` stub still fits.
+    """
     found = OperationalInputs()
 
     # Paused and failing CI jobs (#401, #306): one client, the same endpoint.
@@ -141,6 +243,26 @@ def gather(settings: Any, db: Any, catalog: Any) -> OperationalInputs:
             )
     except Exception:  # noqa: BLE001 - a briefing must not die on CI
         logger.debug("Could not read CI job state")
+
+    # GitHub lanes skipped because a `workflow_run` upstream did not pass
+    # (#504): the Actions counterpart of `blocked_jobs`, which Concourse's
+    # `passed:` answers. Called from a worker thread by the API and from the
+    # CLI's main thread, neither with a running loop.
+    if github_factory is not None:
+        try:
+            with db.session() as session:
+                installs = [
+                    (str(row.github_repo_full_name), int(row.github_installation_id))
+                    for row in session.execute(
+                        select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+                    ).scalars()
+                    if row.github_installation_id is not None
+                ]
+            found.workflow_blocked_jobs = asyncio.run(
+                _workflow_blocked(github_factory, templates, installs)
+            )
+        except Exception:  # noqa: BLE001 - a briefing must not die on GitHub
+            logger.debug("Could not read GitHub workflow_run chains")
 
     # Job health (#409). The assessment belongs to `platform_health`, which
     # the API surface already uses -- a second copy of "is this job late" is a

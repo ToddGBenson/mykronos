@@ -262,8 +262,22 @@ class StalledLane:
     #: (`/api/dashboard/scan-runs/{id}`, TheHub #60761); empty if unknown.
     last_scan_run_id: str = ""
     #: For a **blocked** lane, the upstream capability whose failure is
-    #: holding it; empty otherwise.
+    #: holding it; empty otherwise. For a lane held by a GitHub `workflow_run`
+    #: chain it is the upstream *workflow's* name instead (#504), and
+    #: `blocked_by_kind` says which.
     blocked_by: str = ""
+    #: "lane" when `blocked_by` is a capability gated with Concourse
+    #: `passed:` (B-055), "workflow" when it is a GitHub workflow this lane
+    #: runs after through `on.workflow_run` (#504), empty when not blocked.
+    #: They take different repairs: a lane can be dispatched, and a workflow
+    #: like `Delivery` is the repository's own CI, which this platform does
+    #: not run.
+    blocked_by_kind: str = ""
+    #: The upstream's own state -- `failed`, `errored`, `aborted`, `skipped`,
+    #: `not_run` or `disabled` -- for a workflow-blocked lane; empty otherwise.
+    blocked_state: str = ""
+    #: The upstream's latest run, which is where the repair starts.
+    blocked_upstream_url: str = ""
     #: How this repository's scans are dispatched -- "concourse",
     #: "github_actions", "none", or "" when the caller did not say. Read from
     #: the onboarding ledger and handed over, the same way languages and
@@ -329,6 +343,19 @@ class StalledLane:
                 "route takes the onboarding id."
             )
             return
+        if self.reason == "blocked" and self.blocked_by_kind == "workflow":
+            # Ahead of the dispatch check, because the answer is the same
+            # whichever way the repository is dispatched: there is nothing to
+            # dispatch. GitHub starts this workflow when the upstream
+            # finishes, and its gate skips it unless the upstream succeeded,
+            # so `POST /scan` here produces one more skipped run (#504).
+            self.dispatch_refusal = (
+                f"{self.capability} runs after {self.blocked_by} through GitHub's "
+                f"workflow_run and is skipped unless {self.blocked_by} succeeds, so "
+                f"re-running {self.capability} produces one more skipped run."
+            )
+            self.action = self._workflow_blocked_action()
+            return
         self.dispatch_refusal = dispatch_refusal(
             self.scanned_by, concourse_token=self.concourse_token
         )
@@ -364,6 +391,30 @@ class StalledLane:
             effect=(
                 f"Dispatches the lane. {caveat} Two successful runs then "
                 f"close up to {self.open_findings} finding(s)."
+            ),
+        )
+
+    def _workflow_blocked_action(self) -> Action:
+        """A lane held behind a GitHub workflow: the repair is that workflow.
+
+        A read of the CI view, like `_undispatchable_action`, because the
+        upstream is the repository's own CI and no route here starts it. The
+        effect names it, its state and its last run, which is the instruction
+        that helps -- the one the briefing could not give before #504.
+        """
+        state = _UPSTREAM_STATE.get(self.blocked_state, "did not pass")
+        where = (
+            f" Its last run: {self.blocked_upstream_url}." if self.blocked_upstream_url else ""
+        )
+        return Action(
+            label=f"Fix {self.blocked_by} for {self.repo_full_name}",
+            method="GET",
+            path=f"/api/dashboard/repos/{self.repo_id}/ci",
+            effect=(
+                f"{self.dispatch_refusal} {self.blocked_by} {state}: repair it, and "
+                f"{self.capability} runs on its next success.{where} Two successful "
+                f"runs of {self.capability} then close up to {self.open_findings} "
+                f"finding(s)."
             ),
         )
 
@@ -414,6 +465,18 @@ class StalledLane:
                 f"up to {self.open_findings} finding(s)."
             ),
         )
+
+
+#: How a workflow-blocked lane's upstream is described (#504). Keyed by
+#: `ci.WorkflowBlock.root_state`; anything else "did not pass".
+_UPSTREAM_STATE: dict[str, str] = {
+    "failed": "is failing",
+    "errored": "errored",
+    "aborted": "was cancelled",
+    "skipped": "was itself skipped by its own condition",
+    "not_run": "has no completed run to read",
+    "disabled": "is disabled",
+}
 
 
 @dataclass
@@ -744,6 +807,13 @@ class BlockedLane:
     last_finished_at: datetime | None = None
     #: The root's build, which is where the repair starts.
     build_url: str | None = None
+    #: The repository, for a GitHub `workflow_run` lane (#504). Empty for
+    #: Concourse, where `pipeline` already names it; an Actions lane's
+    #: pipeline is `github-actions` in every repository.
+    repo_full_name: str = ""
+    #: The capabilities this job produces, for a GitHub lane: what lets a
+    #: stalled lane in the lake be matched to the workflow holding it.
+    capabilities: list[str] = field(default_factory=list)
 
     @property
     def days_blocked(self) -> float | None:
@@ -1108,6 +1178,7 @@ def stalled_lanes(
     scanned_by: dict[str, str] | None = None,
     concourse_token: bool = False,
     repo_ids: dict[str, str] | None = None,
+    workflow_blocks: dict[tuple[str, str], BlockedLane] | None = None,
 ) -> list[StalledLane]:
     """Lanes that cannot close findings, failing or silent.
 
@@ -1121,6 +1192,13 @@ def stalled_lanes(
     Every route a row can name takes the id, so a repository missing from it
     (or every repository, when it is omitted) gets the diagnosis and no path
     (#60739).
+
+    `workflow_blocks` maps `(repo, capability)` to the GitHub workflow lane
+    producing it when that lane is held behind a `workflow_run` upstream
+    (#504) -- read from GitHub by the caller, as the Concourse lists are. Such
+    a lane is **blocked** whatever the lake says, ahead of failing: its runs
+    are being skipped, so the failures the lake last saw are the conclusion of
+    runs from before the skips began, and re-running it changes nothing.
 
     **Failing** is counted consecutively from the newest run backwards, so a
     lane that failed twice and then recovered is not reported — it is working,
@@ -1191,7 +1269,8 @@ def stalled_lanes(
         gap = _usual_gap_days(runs)
         silent = since > max(SILENCE_MULTIPLE * gap, SILENCE_FLOOR_DAYS)
 
-        if failures == 0 and not silent:
+        held = (workflow_blocks or {}).get((repo, capability))
+        if failures == 0 and not silent and held is None:
             continue
 
         # Quiet because it cannot start, or quiet because it stopped? A lane
@@ -1217,17 +1296,36 @@ def stalled_lanes(
         # decided above: a lane that ran and FAILED has a job somebody can go
         # and read, and a lane held up by a red upstream is news whether or not
         # anybody pushed. Quiet explains silence and neither of those.
-        if not failures and not blocked_by and not moved.get((repo, capability), True):
+        if (
+            not failures
+            and not blocked_by
+            and held is None
+            and not moved.get((repo, capability), True)
+        ):
             continue
+
+        if held is not None:
+            # Ahead of failing, unlike a Concourse block: a skipped run is
+            # never read as the conclusion of the one before it (#504).
+            reason = "blocked"
+            blocked_by = held.root
+            detail = ""
+        else:
+            # A lane can be both; failing is the more actionable label,
+            # because it names a job somebody has to go and read.
+            reason = "failing" if failures else ("blocked" if blocked_by else "silent")
 
         stalled.append(
             StalledLane(
                 repo_full_name=repo,
                 capability=capability,
-                # A lane can be both; failing is the more actionable label,
-                # because it names a job somebody has to go and read.
-                reason="failing" if failures else ("blocked" if blocked_by else "silent"),
+                reason=reason,
                 blocked_by=blocked_by,
+                blocked_by_kind=(
+                    "workflow" if held is not None else ("lane" if blocked_by else "")
+                ),
+                blocked_state=held.root_state if held is not None else "",
+                blocked_upstream_url=(held.build_url or "") if held is not None else "",
                 consecutive_failures=failures,
                 streak_capped=bool(failures) and failures >= min(RECENT_RUNS, len(runs)),
                 last_success=_last_success(catalog, repo, capability),
@@ -1568,6 +1666,10 @@ def build(
     paused_jobs: list[PausedLane] | None = None,
     failing_jobs: list[FailingLane] | None = None,
     blocked_jobs: list[BlockedLane] | None = None,
+    # GitHub lanes held behind a `workflow_run` upstream (#504). Its own
+    # argument rather than more `blocked_jobs`, so "Concourse could not be
+    # asked" keeps meaning exactly that.
+    workflow_blocked_jobs: list[BlockedLane] | None = None,
     unhealthy_jobs: list[Any] | None = None,
     tokens: list[TokenDelivery] | None = None,
     toxic_combinations: list[dict[str, Any]] | None = None,
@@ -1625,6 +1727,7 @@ def build(
         for capability, count in sorted(totals.items(), key=lambda kv: -kv[1])
     ]
 
+    workflow_held = list(workflow_blocked_jobs or [])
     stalled = _only(
         stalled_lanes(
             catalog,
@@ -1632,6 +1735,11 @@ def build(
             scanned_by=scanned_by,
             concourse_token=concourse_token,
             repo_ids=repo_ids,
+            workflow_blocks={
+                (held.repo_full_name, capability): held
+                for held in workflow_held
+                for capability in held.capabilities
+            },
         ),
         asset_id,
     )
@@ -1663,7 +1771,8 @@ def build(
         # Not scoped by `asset_id`, for `paused`'s reason: a pipeline is not a
         # repository name, and dropping a held-back gate from a scoped view is
         # the omission this list exists to end.
-        blocked=list(blocked_jobs or []),
+        # The GitHub lanes ARE scoped: they carry their repository (#504).
+        blocked=list(blocked_jobs or []) + _only(workflow_held, asset_id),
         blocked_unknown=blocked_jobs is None,
         # Not scoped by `asset_id` either: a scheduled job belongs to the
         # platform, not to a repository, so a scoped briefing showing the
@@ -1856,6 +1965,12 @@ def render(briefing: Briefing) -> str:
                     lane.consecutive_failures
                 )
                 state = f"{streak} consecutive failures, {since}"
+            elif lane.reason == "blocked" and lane.blocked_by_kind == "workflow":
+                state = (
+                    f"blocked — skipped, not failing: it runs after "
+                    f"{lane.blocked_by}, which "
+                    f"{_UPSTREAM_STATE.get(lane.blocked_state, 'did not pass')}"
+                )
             elif lane.reason == "blocked":
                 state = (
                     f"blocked for {lane.days_since_run:.0f} days — "
@@ -1987,7 +2102,11 @@ def render(briefing: Briefing) -> str:
                 if gated.last_status
                 else "it has never finished a build"
             )
-            lines.append(f"  {gated.pipeline}/{gated.job}")
+            lines.append(
+                f"  {gated.repo_full_name} {gated.pipeline}/{gated.job}"
+                if gated.repo_full_name
+                else f"  {gated.pipeline}/{gated.job}"
+            )
             lines.append(f"      behind {gated.root} ({gated.root_state}){when}{via}")
             lines.append(f"      did not run — {own}")
             if gated.build_url:

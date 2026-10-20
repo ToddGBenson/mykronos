@@ -185,6 +185,10 @@ class WorkflowRun:
     run_number: int | None
     url: str
     finished_at: datetime | None
+    #: The branch the run was for. Read only to apply a `workflow_run`
+    #: trigger's `branches:` filter to an upstream's run (#504); None where
+    #: GitHub did not say, which that filter treats as "cannot tell".
+    head_branch: str | None = None
 
 
 @dataclass
@@ -1812,6 +1816,7 @@ class RestGitHubClient:
                 run_number=int(item["run_number"]) if item.get("run_number") else None,
                 url=str(item.get("html_url") or ""),
                 finished_at=_parse_time(item.get("updated_at")),
+                head_branch=str(item["head_branch"]) if item.get("head_branch") else None,
             )
         return list(latest.values())
 
