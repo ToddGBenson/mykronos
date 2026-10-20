@@ -241,6 +241,8 @@ class PullRequestFile:
 
 #: GitHub's compare endpoint lists at most this many files, on its first page.
 COMPARE_MAX_FILES = 300
+#: ...and at most this many commits, on its first page.
+COMPARE_MAX_COMMITS = 250
 
 
 @dataclass
@@ -250,10 +252,30 @@ class Comparison:
 
     files: list[PullRequestFile]
     merge_base_sha: str = ""
+    #: Commits on `head` that `base` does not have, and the reverse. `ahead_by`
+    #: is "how far behind the branch is the deployment" when `base` is the
+    #: deployed revision and `head` the default branch (#452).
+    ahead_by: int = 0
+    behind_by: int = 0
+    #: GitHub's own word: identical | ahead | behind | diverged. Empty when
+    #: the comparison was not read from GitHub (a fake built for files only).
+    status: str = ""
+    #: The commits in `base...head`, oldest first, as GitHub lists them: the
+    #: oldest `COMPARE_MAX_COMMITS` on the first page. `ahead_by` is the true
+    #: count either way.
+    commits: list[CommitInfo] = field(default_factory=list)
+    #: What `head` resolved to, and when `base` was committed.
+    head_sha: str = ""
+    base_committed_at: datetime | None = None
 
     @property
     def truncated(self) -> bool:
         return len(self.files) >= COMPARE_MAX_FILES
+
+    @property
+    def commits_truncated(self) -> bool:
+        """True when `commits` lists fewer than `ahead_by` commits."""
+        return len(self.commits) < self.ahead_by
 
 
 def _pull_request_file(item: dict[str, Any]) -> PullRequestFile:
@@ -1582,9 +1604,35 @@ class RestGitHubClient:
             "GET",
             f"/repos/{repo_full_name}/compare/{quote(base, safe='/')}...{quote(head, safe='/')}",
         )
+        commits = [
+            CommitInfo(
+                sha=str(c.get("sha", "")),
+                message=str((c.get("commit") or {}).get("message") or ""),
+                url=str(c.get("html_url") or ""),
+                committed_at=_parse_time(
+                    ((c.get("commit") or {}).get("committer") or {}).get("date")
+                ),
+            )
+            for c in item.get("commits") or []
+            if isinstance(c, dict)
+        ]
+        base_commit = item.get("base_commit") or {}
         return Comparison(
             files=[_pull_request_file(f) for f in item.get("files") or []],
             merge_base_sha=str((item.get("merge_base_commit") or {}).get("sha", "")),
+            ahead_by=int(item.get("ahead_by") or 0),
+            behind_by=int(item.get("behind_by") or 0),
+            status=str(item.get("status") or ""),
+            commits=commits,
+            # The last listed commit is `head` only when nothing was cut off;
+            # the merge base plus `ahead_by` is not a sha, so leave it empty
+            # rather than name the wrong commit.
+            head_sha=commits[-1].sha if commits and len(commits) >= int(
+                item.get("ahead_by") or 0
+            ) else "",
+            base_committed_at=_parse_time(
+                ((base_commit.get("commit") or {}).get("committer") or {}).get("date")
+            ),
         )
 
     async def list_commits(

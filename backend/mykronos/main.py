@@ -63,7 +63,7 @@ from mykronos.ci import ConcourseClient, StatusCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
 from mykronos.db.models import JobRun
-from mykronos.deployments import run_probe_sweep
+from mykronos.deployments import probe_tokens_from, run_probe_sweep
 from mykronos.digest import send_all as send_digests
 from mykronos.gate import PerimeterGate, presents_token
 from mykronos.github.auth import AppCredentials
@@ -511,10 +511,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Awaited rather than threaded: it is a handful of HTTP GETs with
             # their own timeout, and the DB write at the end is four columns
             # on a few rows.
+            # The perimeter tokens (D-157) per origin, and the App client for
+            # the compare that turns a revision into "N commits behind" (#452).
             sweep = await run_probe_sweep(
                 app.state.db,
                 app.state.catalog,
                 timeout=settings.deployment_probe_timeout_seconds,
+                tokens=probe_tokens_from(settings),
+                github_factory=app.state.github_factory,
             )
             for state in sweep.diverged:
                 logger.warning(

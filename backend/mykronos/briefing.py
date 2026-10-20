@@ -807,9 +807,60 @@ class TokenDelivery:
 
 
 @dataclass
+class ProductionLag:
+    """How far one repository's production sits behind its branch (#452).
+
+    `briefing.py`'s own docstring calls this "the briefing as a person reads
+    it after a deploy", which assumed the deploy happened. On 2026-09-18
+    production was 48 commits behind `main`, a briefing section merged the day
+    before was absent from the running briefing, and twelve accepted critical
+    findings that a merged fix would have closed sat on the page with no reason
+    to doubt them. This is the line that would have said why.
+
+    Built by `briefing_sources` from the deployment sweep's cached GitHub
+    compare (`deployments.DeploymentLag`) and the lake.
+    """
+
+    repo_full_name: str
+    #: behind | at_head | diverged | unknown
+    status: str
+    branch: str = ""
+    deployed_revision: str | None = None
+    head_revision: str | None = None
+    #: Commits on the branch production does not run. None when unknown.
+    behind_by: int | None = None
+    #: Commits production runs that the branch does not contain.
+    not_on_branch: int | None = None
+    #: When the running revision was committed: the age of what is running.
+    deployed_committed_at: datetime | None = None
+    #: When the oldest commit production lacks was committed.
+    oldest_undeployed_at: datetime | None = None
+    #: When the sweep asked GitHub. The answer is a cache, and says how old.
+    checked_at: datetime | None = None
+    commits_truncated: bool = False
+    #: Why the answer is `unknown`.
+    detail: str = ""
+    #: `deployments.UndeployedFix` as dicts: findings whose fixing change is
+    #: in the undeployed range, tied to it by a merge commit or by the last
+    #: scan that still saw them.
+    undeployed_fixes: list[dict[str, Any]] = field(default_factory=list)
+    #: Closed on the branch since the running revision was committed, and not
+    #: tied to the range by either rule: may or may not be running. The
+    #: approximation, counted and labelled, never listed as undeployed.
+    closed_since_unmatched: int = 0
+
+
+@dataclass
 class Briefing:
     generated_at: datetime
     total_open: int
+    #: One entry per repository with a deployment probe (#452). Leads the
+    #: page: every other section is computed by, and about fixes to, code
+    #: that may not be the code running.
+    production_lag: list[ProductionLag] = field(default_factory=list)
+    #: True when the deployment record could not be read. Not the same as an
+    #: empty list, which means no repository has a probe.
+    production_lag_unknown: bool = False
     stalled: list[StalledLane] = field(default_factory=list)
     #: Scheduled jobs that are failing, late, or have never run (#409). Typed
     #: loosely because the assessment belongs to `platform_health.assess_job`
@@ -930,6 +981,14 @@ class Briefing:
             unknown.append(("toxic", "Toxic combinations could not be computed."))
         if self.exposure_unknown:
             unknown.append(("exposure", "Public endpoints could not be read."))
+        if self.production_lag_unknown:
+            unknown.append(
+                (
+                    "deployments",
+                    "The deployment record could not be read, so whether "
+                    "production is behind its branch is unknown.",
+                )
+            )
         return unknown
 
 
@@ -1573,6 +1632,7 @@ def build(
     toxic_combinations: list[dict[str, Any]] | None = None,
     toxic_coverage: dict[str, Any] | None = None,
     exposure: list[dict[str, Any]] | None = None,
+    production_lag: list[ProductionLag] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1642,6 +1702,9 @@ def build(
     return Briefing(
         generated_at=stamp,
         total_open=sum(totals.values()),
+        # Scoped by `asset_id`: a deployment belongs to one repository.
+        production_lag=_only(list(production_lag or []), asset_id),
+        production_lag_unknown=production_lag is None,
         stalled=stalled,
         stale=_only(
             stale_lanes(
@@ -1708,6 +1771,163 @@ def _cadence(days: float) -> str:
         return f"{days:.0f} day" + ("s" if days >= 2 else "")
     hours = days * 24
     return f"{hours:.0f} hours" if hours >= 1 else "few minutes"
+
+
+#: How many undeployed fixes to name per repository before summarising. The
+#: count is the point; the list is so a reader can check one.
+UNDEPLOYED_FIXES_SHOWN = 8
+
+
+def _days_between(later: datetime, earlier: datetime) -> float:
+    if later.tzinfo is None:
+        later = later.replace(tzinfo=UTC)
+    if earlier.tzinfo is None:
+        earlier = earlier.replace(tzinfo=UTC)
+    return (later - earlier).total_seconds() / 86400
+
+
+def _age(now: datetime, then: datetime) -> str:
+    days = _days_between(now, then)
+    if days < 1:
+        return f"{max(days * 24, 0):.0f} hours old"
+    return f"{days:.0f} day{'s' if round(days) != 1 else ''} old"
+
+
+def _sha(revision: str) -> str:
+    """Ten characters of a commit: enough to paste into `git show`."""
+    return revision[:10]
+
+
+def _render_production(briefing: Briefing) -> list[str]:
+    """`PRODUCTION IS BEHIND` (#452): first, because it qualifies the rest.
+
+    Every section below is computed by the running backend and reports
+    findings as scans of the branch see them. When production is behind, some
+    of those findings are fixed on the branch and live in production, and
+    some of the code deciding them is older than what was merged.
+    """
+    if briefing.production_lag_unknown:
+        return [
+            "  Could not read the deployment record, so whether production is",
+            "  running what was merged is unknown — not the same as up to date.",
+            "",
+        ]
+    lags = briefing.production_lag
+    if not lags:
+        return [
+            "  No deployment probe is configured, so nothing here says whether",
+            "  production is running what was merged.",
+            "",
+        ]
+
+    lines: list[str] = []
+    behind = [lag for lag in lags if lag.status in ("behind", "diverged")]
+    unknown = [lag for lag in lags if lag.status not in ("behind", "diverged", "at_head")]
+    current = [lag for lag in lags if lag.status == "at_head"]
+
+    if behind:
+        lines += [
+            "PRODUCTION IS BEHIND",
+            "  Merged is not running. Findings below are as scans of the branch",
+            "  see them, so a fix in these commits reads as done here and is not",
+            "  done in production.",
+            "",
+        ]
+        for lag in sorted(behind, key=lambda item: -(item.behind_by or 0)):
+            branch = lag.branch or "its branch"
+            count = lag.behind_by or 0
+            noun = "commit" if count == 1 else "commits"
+            lines.append(f"  {lag.repo_full_name}  — {count} {noun} behind {branch}")
+            running = _sha(lag.deployed_revision or "?")
+            if lag.deployed_committed_at:
+                running += (
+                    f", committed {lag.deployed_committed_at:%Y-%m-%d} "
+                    f"({_age(briefing.generated_at, lag.deployed_committed_at)})"
+                )
+            facts = [f"running {running}"]
+            if lag.status == "diverged":
+                facts.append(
+                    f"OFF {branch}: production runs {lag.not_on_branch} "
+                    f"commit(s) that {branch} does not contain"
+                )
+            if lag.oldest_undeployed_at:
+                facts.append(
+                    f"undeployed commits since {lag.oldest_undeployed_at:%Y-%m-%d}"
+                )
+            if lag.commits_truncated:
+                facts.append("GitHub listed only the oldest 250 of those commits")
+            if lag.checked_at:
+                facts.append(f"checked {lag.checked_at:%Y-%m-%d %H:%M}")
+            lines += textwrap.wrap(
+                "; ".join(facts) + ".",
+                72,
+                initial_indent="      ",
+                subsequent_indent="      ",
+                break_long_words=False,
+            )
+            fixes = lag.undeployed_fixes
+            if fixes:
+                lines.append(
+                    f"      {len(fixes)} finding(s) fixed in those commits, NOT in production:"
+                )
+                for fix in fixes[:UNDEPLOYED_FIXES_SHOWN]:
+                    how = (
+                        f"fix merged in {_sha(str(fix.get('commit') or ''))}"
+                        if fix.get("basis") == "fix_merged"
+                        else f"last seen on {_sha(str(fix.get('commit') or ''))}"
+                    )
+                    lines.append(
+                        f"        {str(fix.get('severity') or '?'):<8} "
+                        f"{_short(str(fix.get('rule_id') or '?'))} — {fix.get('status')}, {how}"
+                    )
+                if len(fixes) > UNDEPLOYED_FIXES_SHOWN:
+                    lines.append(
+                        f"        … and {len(fixes) - UNDEPLOYED_FIXES_SHOWN} more"
+                    )
+            if lag.closed_since_unmatched:
+                lines += textwrap.wrap(
+                    f"{lag.closed_since_unmatched} more closed on {branch} since "
+                    f"{_sha(lag.deployed_revision or '?')} was committed, last seen "
+                    "on an older or unrecorded commit: their fix may or may not be "
+                    "running.",
+                    72,
+                    initial_indent="      ",
+                    subsequent_indent="      ",
+                )
+            lines.append(f"      → a deploy of {branch} closes this; nothing deploys on merge")
+        lines.append("")
+
+    if unknown:
+        lines += [
+            "PRODUCTION LAG COULD NOT BE MEASURED",
+            "  Unknown is not current. These may be any distance behind.",
+            "",
+        ]
+        for lag in sorted(unknown, key=lambda item: item.repo_full_name):
+            lines.append(f"  {lag.repo_full_name}")
+            lines += textwrap.wrap(
+                lag.detail or "no reason recorded.",
+                72,
+                initial_indent="      ",
+                subsequent_indent="      ",
+                break_long_words=False,
+            )
+        lines.append("")
+
+    if current:
+        names = ", ".join(
+            f"{lag.repo_full_name} ({_sha(lag.deployed_revision or '?')} on "
+            f"{lag.branch or 'its branch'})"
+            for lag in sorted(current, key=lambda item: item.repo_full_name)
+        )
+        lines += textwrap.wrap(
+            f"Production is at the head of its branch: {names}.",
+            72,
+            subsequent_indent="  ",
+            break_long_words=False,
+        )
+        lines.append("")
+    return lines
 
 
 def _render_toxic(briefing: Briefing) -> list[str]:
@@ -1826,6 +2046,7 @@ def render(briefing: Briefing) -> str:
         "",
     ]
 
+    lines += _render_production(briefing)
     lines += _render_toxic(briefing)
     lines += _render_exposure(briefing)
 

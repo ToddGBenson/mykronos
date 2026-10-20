@@ -144,9 +144,10 @@ class RepoOnboarding(Base):
     default_branch: Mapped[str] = mapped_column(String(255), default="main")
 
     #: Where to ask this repository's deployment what revision it is running
-    #: (#361). An unauthenticated GET returning JSON with a string at
-    #: `build.sha`. mykronos's `/healthz` and TheHub's `/health` stopped
-    #: publishing the sha (D-157, TheHub #60709), so neither answers it.
+    #: (#361). A GET returning JSON with a string at `build.sha`. mykronos's
+    #: `/healthz` and TheHub's `/health` serve the sha only with their
+    #: perimeter token (D-157, TheHub #60709), which the probe sends when
+    #: `deployment_probe_tokens` names the URL's origin (#452).
     #:
     #: Empty is the common state and is not a fault. A repository with no
     #: deployment this platform can reach -- a library, a scanner, a config
@@ -162,6 +163,11 @@ class RepoOnboarding(Base):
     deployed_revision_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     #: not_configured | ok | unreachable | unparsed — see `mykronos.deployments`.
     deployment_probe_status: Mapped[str] = mapped_column(String(32), default="not_configured")
+    #: How far the deployment sits behind `default_branch`, from the GitHub
+    #: compare API, as the last sweep found it (#452): `DeploymentLag.to_json`.
+    #: The cache the briefing and the dashboard read, so neither calls GitHub
+    #: while rendering. Null until a sweep has run with a probe configured.
+    deployment_lag: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
 
     onboarded_by: Mapped[str] = mapped_column(String(255), default="")
     onboarded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

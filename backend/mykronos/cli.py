@@ -1570,6 +1570,7 @@ def main(argv: list[str] | None = None) -> int:
                 toxic_combinations=operational.toxic_combinations,
                 toxic_coverage=operational.toxic_coverage,
                 exposure=operational.exposure,
+                production_lag=operational.production_lag,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))

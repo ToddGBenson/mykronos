@@ -86,7 +86,12 @@ from mykronos.db.models import (
     RiskProfile,
     capability_config_for,
 )
-from mykronos.deployments import DeploymentState, latest_scanned_revisions
+from mykronos.deployments import (
+    DeploymentLag,
+    DeploymentState,
+    latest_scanned_revisions,
+    stored_lag,
+)
 from mykronos.jobs import self_check as jobs_self_check
 from mykronos.knowledge.capture import (
     capture_classification_rejected,
@@ -137,6 +142,54 @@ class CapabilityStateOut(BaseModel):
     open_findings: int = 0
 
 
+class DeployLagOut(BaseModel):
+    """How far a repository's production is behind its branch (#452).
+
+    The deployment-probe job's cached GitHub compare; reading it calls nothing.
+    Null on a repository with no probe, which has no production to be behind.
+    """
+
+    #: behind | at_head | diverged | unknown. Unknown is never "current".
+    status: str
+    branch: str = ""
+    #: Commits on the branch production does not run. Null when unknown.
+    behind_by: int | None = None
+    #: Commits production runs that the branch does not contain.
+    not_on_branch: int | None = None
+    deployed_revision: str | None = None
+    deployed_committed_at: datetime | None = None
+    checked_at: datetime | None = None
+    #: Why `unknown`.
+    detail: str = ""
+
+
+def deploy_lag_out(lag: DeploymentLag | None) -> DeployLagOut | None:
+    if lag is None:
+        return None
+    return DeployLagOut(
+        status=lag.status,
+        branch=lag.branch,
+        behind_by=lag.behind_by,
+        not_on_branch=lag.not_on_branch,
+        deployed_revision=lag.deployed_revision,
+        deployed_committed_at=lag.deployed_committed_at,
+        checked_at=lag.checked_at,
+        detail=lag.detail,
+    )
+
+
+def unrecorded_lag(row: Any) -> DeploymentLag | None:
+    """The stored lag, or an `unknown` one for a probe no sweep has answered."""
+    lag = stored_lag(row)
+    if lag is None and (row.deployment_probe_url or "").strip():
+        return DeploymentLag(
+            repo_full_name=row.github_repo_full_name,
+            branch=str(row.default_branch or ""),
+            detail="the deployment-probe job has not recorded an answer yet.",
+        )
+    return lag
+
+
 class PortfolioRowOut(BaseModel):
     repo_id: str
     repo_full_name: str
@@ -183,6 +236,8 @@ class PortfolioRowOut(BaseModel):
         ),
     )
     risk_assessed_at: datetime | None = None
+    #: "prod N behind" (#452). Null when the repository has no probe.
+    deploy_lag: DeployLagOut | None = None
 
 
 class EstateOut(BaseModel):
@@ -1234,6 +1289,10 @@ async def portfolio(
     """The landing page (spec 10 §2.1)."""
     with request.app.state.db.session() as session:
         rows, summary = _queries(request).portfolio(session, include_removed=include_removed)
+        lags = {
+            str(onboarding.id): deploy_lag_out(unrecorded_lag(onboarding))
+            for onboarding in session.scalars(select(RepoOnboarding)).all()
+        }
 
     # The browser's Concourse, not this process's (see ConcourseClient): a
     # link to http://concourse:8080 resolves nowhere from a laptop.
@@ -1272,6 +1331,7 @@ async def portfolio(
                 recommendation=row.recommendation,
                 raw_risk_score=row.raw_risk_score,
                 risk_assessed_at=row.risk_assessed_at,
+                deploy_lag=lags.get(str(row.repo_id)),
             )
             for row in rows
         ],
@@ -2828,6 +2888,50 @@ class BriefingUnknownOut(BaseModel):
     detail: str
 
 
+class UndeployedFixOut(BaseModel):
+    """A finding whose fix is merged and not running (#452)."""
+
+    finding_id: str
+    rule_id: str
+    severity: str
+    title: str
+    #: The finding's status in the lake: `open` (a merged fix not yet
+    #: verified) or `fixed` (closed by scans of the branch).
+    status: str
+    #: fix_merged -- its Patchwork fix's merge commit is undeployed.
+    #: last_seen_in_range -- the last scan that saw it was of the running
+    #: revision or later, so whatever removed it is not running.
+    basis: str
+    commit: str = ""
+
+
+class ProductionLagOut(BaseModel):
+    """`PRODUCTION IS BEHIND` (#452): one repository with a deployment probe."""
+
+    repo_full_name: str
+    #: behind | at_head | diverged | unknown. Unknown is never "current".
+    status: str
+    branch: str = ""
+    deployed_revision: str | None = None
+    head_revision: str | None = None
+    #: Commits on the branch production does not run (GitHub compare
+    #: `ahead_by`). Null when unknown.
+    behind_by: int | None = None
+    #: Commits production runs that the branch does not contain.
+    not_on_branch: int | None = None
+    deployed_committed_at: datetime | None = None
+    oldest_undeployed_at: datetime | None = None
+    #: When the deployment-probe job asked GitHub; this is a cached answer.
+    checked_at: datetime | None = None
+    commits_truncated: bool = False
+    #: Why `unknown`, in a sentence that names what to configure.
+    detail: str = ""
+    undeployed_fixes: list[UndeployedFixOut] = Field(default_factory=list)
+    #: Closed on the branch since the running revision was committed and not
+    #: tied to the undeployed range: their fix may or may not be running.
+    closed_since_unmatched: int = 0
+
+
 class BriefingOut(BaseModel):
     generated_at: datetime
     total_open: int
@@ -2871,6 +2975,9 @@ class BriefingOut(BaseModel):
     blocked: list[BlockedLaneOut] = Field(default_factory=list)
     unhealthy_jobs: list[UnhealthyJobOut] = Field(default_factory=list)
     tokens: list[TokenDeliveryOut] = Field(default_factory=list)
+    #: How far each probed deployment is behind its branch (#452). Empty
+    #: means no repository has a probe; an unreadable record is in `unknown`.
+    production_lag: list[ProductionLagOut] = Field(default_factory=list)
     unknown: list[BriefingUnknownOut] = Field(default_factory=list)
 
 
@@ -2925,6 +3032,7 @@ async def post_deployment_briefing(
         toxic_combinations=operational.toxic_combinations,
         toxic_coverage=operational.toxic_coverage,
         exposure=operational.exposure,
+        production_lag=operational.production_lag,
         languages=languages,
         sast_tools=sast_tools,
         scanned_by=_scanned_by(request),
@@ -2989,6 +3097,10 @@ async def post_deployment_briefing(
             UnhealthyJobOut.model_validate(dataclasses.asdict(j)) for j in report.unhealthy_jobs
         ],
         tokens=[TokenDeliveryOut.model_validate(dataclasses.asdict(t)) for t in report.tokens],
+        production_lag=[
+            ProductionLagOut.model_validate(dataclasses.asdict(lag))
+            for lag in report.production_lag
+        ],
         unknown=[
             BriefingUnknownOut(source=source, detail=detail)
             for source, detail in report.unknown_sources()
@@ -6482,6 +6594,9 @@ class DeploymentOut(BaseModel):
     #: be the same class of wrong answer this endpoint exists to prevent.
     matches_scan: bool | None
     probe_url: str
+    #: How far this deployment is behind its default branch (#452). Null
+    #: when no probe is configured.
+    lag: DeployLagOut | None = None
 
 
 class DeploymentsOut(BaseModel):
@@ -6498,6 +6613,9 @@ class DeploymentsOut(BaseModel):
     #: and omitting it is how "nothing is wrong" and "nothing is measured"
     #: become indistinguishable.
     not_configured: int
+    #: Repositories whose production is behind (or diverged from) its default
+    #: branch, by the last sweep's GitHub compare (#452).
+    behind: int = 0
 
 
 @router.get("/deployments", response_model=DeploymentsOut)
@@ -6539,6 +6657,7 @@ async def deployments_page(request: Request, principal: PrincipalDep) -> Deploym
                     scanned_revision=state.scanned_revision,
                     matches_scan=state.matches_scan,
                     probe_url=row.deployment_probe_url or "",
+                    lag=deploy_lag_out(unrecorded_lag(row)),
                 )
             )
 
@@ -6547,4 +6666,7 @@ async def deployments_page(request: Request, principal: PrincipalDep) -> Deploym
         repos=rows,
         diverged=sum(1 for r in rows if r.matches_scan is False),
         not_configured=sum(1 for r in rows if not r.probe_url),
+        behind=sum(
+            1 for r in rows if r.lag is not None and r.lag.status in ("behind", "diverged")
+        ),
     )

@@ -14,6 +14,7 @@ import {
   StatTile,
   Verdict,
 } from "@/components/primitives";
+import { ProdLag } from "@/components/prod-lag";
 
 export const dynamic = "force-dynamic";
 
@@ -159,6 +160,14 @@ export default async function PortfolioPage({
                             benchmark
                           </span>
                         </Pill>
+                      </span>
+                    ) : null}
+                    {/* #452: production behind its branch, from the
+                        deployment probe and the GitHub compare. Absent for a
+                        repository with no probe. */}
+                    {repo.deploy_lag ? (
+                      <span className="ml-2">
+                        <ProdLag lag={repo.deploy_lag} />
                       </span>
                     ) : null}
                     <span className="ml-2 inline-flex gap-1.5 align-baseline">

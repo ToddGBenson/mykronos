@@ -1,6 +1,6 @@
 # Operator tasks
 
-Five things this platform cannot do for itself. Each needs a credential this
+Six things this platform cannot do for itself. Each needs a credential this
 repository must not hold, or a decision only the operator can make.
 
 They are not defects and not unfinished work. Every one of them is a built
@@ -277,6 +277,52 @@ cites the tab each answer came from; a model adds free text over the same
 The refusals are not a placeholder for the model. They stay when it arrives — a
 model that answers them anyway is worse than the list, because the list is what
 makes the rest trustworthy (D-104).
+
+---
+
+## 6 · #452 — let the deployment probe read the running revision
+
+**Effort:** ~10 minutes. **Unblocks:** "production is N commits behind" in
+the briefing, and the `prod N behind` badge on the portfolio and the
+Product Owner delivery view.
+
+The deployment probe reads `build.sha` from each repository's
+`deployment_probe_url`. Since D-157, mykronos's `/healthz` and TheHub's
+`/health` only serve that sha to a caller presenting their perimeter token.
+Without a token the probe reads `unparsed`, and the briefing says production
+lag is unknown and why. D-165 records the design.
+
+### Steps
+
+1. Set each repository's probe URL as the backend container reaches it
+   (admin token):
+
+       curl -s -X PUT -H "X-Hub-Token: $GATE" -H "Authorization: Bearer $ADMIN"          -H "Content-Type: application/json"          -d '{"probe_url": "http://127.0.0.1:8100/healthz"}'          "http://127.0.0.1:8100/api/repos/c4d9eff7-7ce6-4d39-89e1-49ff9d7ae774/deployment-probe"
+
+   For TheHub, use its `/health` URL as seen from inside `mykronos-backend`,
+   e.g. `http://host.docker.internal:8000/health`.
+
+2. Tell the probe which token to present to each origin. Add this to
+   `backend/.env` and redeploy:
+
+       MYKRONOS_DEPLOYMENT_PROBE_TOKENS={"http://127.0.0.1:8100": "@gate", "http://host.docker.internal:8000": "@hub"}
+
+   `@gate` is `MYKRONOS_GATE_TOKEN` and `@hub` is `MYKRONOS_HUB_API_TOKEN`,
+   so neither secret is written down twice. Any other value is used as the
+   token itself. Keys are origins (`scheme://host[:port]`), and an origin
+   not listed gets no token. That is deliberate, because a probe URL can be
+   edited and the two hosts' tokens differ (D-131).
+
+3. Wait for the `deployment-probe` job, which runs every
+   `MYKRONOS_DEPLOYMENT_PROBE_INTERVAL_SECONDS` (default 30 minutes), then
+   check:
+
+       curl -s -H "X-Hub-Token: $GATE" -H "Authorization: Bearer $VIEWER"          http://127.0.0.1:8100/api/dashboard/deployments          | python -c "import json,sys; [print(r['repo_full_name'], r['status'], r['lag']) for r in json.load(sys.stdin)['repos'] if r['probe_url']]"
+
+   Expect `ok` and a lag of `behind`, `at_head` or `diverged`. A lag of
+   `unknown` comes with a `detail` saying what is missing: a token for the
+   origin, a wrong token (the endpoint answers 200 either way), or an image
+   built without `MYKRONOS_BUILD_SHA`.
 
 ---
 
