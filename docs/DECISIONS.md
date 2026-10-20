@@ -34,6 +34,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-163 — The operator's review work moves into the Product Owner console: a review queue and review packet first, verification checks as data next](decisions/D-163-the-operators-review-queue-lives-in-the-po-console.md)
 - [D-164 — The maturity model and the STRIDE map are `governance` changes: a person approves every edit](decisions/D-164-the-maturity-model-and-stride-map-are-governance-changes.md)
 - [D-165 — The deployment probe presents a perimeter token per origin, and "N commits behind" is GitHub's count](decisions/D-165-the-deployment-probe-presents-a-perimeter-token-per-origin.md)
+- [D-166 — The host and LAN collectors run daily from Scheduled Tasks that hold no token](decisions/D-166-host-and-lan-collectors-run-daily-from-scheduled-tasks-that-hold-no-token.md)
 
 <!-- decisions-index:end -->
 
