@@ -142,6 +142,20 @@ logger = logging.getLogger(__name__)
 
 TOOL_NAME = "zap"
 
+#: The first line of a marker file a DAST lane writes beside ZAP's report when
+#: the scan did not finish inside its budget (the spider or the active scan
+#: never reached 100%). The report next to it is real and its findings are
+#: ingested, but it covers less than the lane promised, so the run is
+#: PARTIAL_FAILURE: never counted as a full pass, and never one of the
+#: successful scans absence reconciliation needs before it closes a finding.
+#:
+#: Plain text rather than JSON on purpose. An uploader older than this
+#: constant reads it as unparseable ZAP output, which is ALSO
+#: PARTIAL_FAILURE - so a lane pinned to an old uploader still cannot turn an
+#: overrun scan into a clean one. This constant only makes the reason legible
+#: in the run's `detail` instead of "not parseable JSON".
+INCOMPLETE_MARKER = "MYKRONOS-INCOMPLETE:"
+
 #: ZAP `riskcode`. There is no critical band — the highest ZAP expresses is
 #: High, and inventing a critical tier the tool did not report would
 #: misrepresent it. `"0"` (Informational) is deliberately absent: it never
@@ -325,8 +339,17 @@ def normalize_edge(raw_output: bytes, context: ScanContext) -> AdapterResult:
 def _normalize(raw_output: bytes, context: ScanContext, *, keep_origin: bool) -> AdapterResult:
     result = AdapterResult()
 
+    text = raw_output.decode("utf-8", errors="replace").strip()
+    if text.startswith(INCOMPLETE_MARKER):
+        reason = text[len(INCOMPLETE_MARKER) :].strip().splitlines()
+        result.warn(
+            "The DAST scan did not complete: "
+            + (reason[0][:300] if reason else "no reason given")
+        )
+        result.scan_status = ScanStatus.PARTIAL_FAILURE
+        return result
+
     try:
-        text = raw_output.decode("utf-8", errors="replace").strip()
         document = json.loads(text) if text else {}
     except json.JSONDecodeError as exc:
         result.warn(f"ZAP output is not parseable JSON ({exc})")

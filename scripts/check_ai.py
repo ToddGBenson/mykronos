@@ -78,11 +78,72 @@ TEST_DIRS = {"tests", "test", "__tests__", "testdata", "fixtures"}
 #: that detects AI mentions in pull request bodies, and this file's own
 #: docstring. A rule that fires on documentation about models teaches people
 #: that AI findings are noise.
+#:
+#: One model identifier. Shared by both patterns below so they cannot
+#: disagree about what a model id looks like.
+_MODEL_ID = r"((?:claude|gpt|o1|o3|gemini|llama|mistral)[a-z0-9.\-]*)"
+
+#: Assigned to a model-shaped name: `model=`, `model_id:`, and -- since the
+#: audit of 2026-10-20 -- any name *ending* in one, with or without a type
+#: annotation (`reviewer_model: str = "..."`, `REVIEWER_MODEL = "..."`).
+#: `\bmodel` alone missed every prefixed name, because `_` is a word
+#: character and `reviewer_model` has no boundary before `model`.
 MODEL_REFERENCE = re.compile(
-    r"""\bmodel(?:_name|_id)?["']?\s*[=:]\s*["'`]"""
-    r"""((?:claude|gpt|o1|o3|gemini|llama|mistral)[a-z0-9.\-]*)["'`]""",
+    r"""\b\w*model(?:_name|_id)?["']?\s*(?::\s*[\w\[\]|. ]+?\s*=|[=:])\s*["'`]"""
+    + _MODEL_ID
+    + r"""["'`]""",
     re.IGNORECASE,
 )
+
+#: A model id given as a DEFAULT or a FALLBACK rather than assigned to a
+#: model-named variable. This repository's own reviewer model is configured
+#: exactly this way -- a pydantic `Field(default=<id>)` in `config.py`, and an
+#: `or <id>` fallback after a `getattr` in `approvals/reviewer.py` -- and
+#: MODEL_REFERENCE saw neither (written without the literal here: a detector
+#: cannot quote its own signature in its own source, see TEST_DIRS), so the
+#: `ai` lane printed "No model references found - nothing to check." against a
+#: repository that ships a model call.
+#:
+#: Still a *code shape*, never a bare mention, for the reason MODEL_REFERENCE
+#: gives: a keyword tuple (`("claude-3", "gpt-4")`) or a docstring example is
+#: documentation about models, not a call to one. Each alternative needs
+#: syntax only code has:
+#:
+#: * `default="…"` / `default: "…"` -- a keyword or YAML default;
+#: * `or "…"`, `?? "…"`, `|| "…"` -- a fallback (quoted, so prose such as
+#:   "gpt-4 or claude-3" does not count);
+#: * `getattr(x, "y", "…")`, `.get("y", "…")`, `getenv("Y", "…")` -- the
+#:   last argument of a lookup;
+#: * `${VAR:-…}` -- a shell or compose default.
+MODEL_DEFAULT = re.compile(
+    r"""(?:\bdefault\s*[=:]\s*|\bor\s+|\?\?\s*|\|\|\s*)["'`]"""
+    + _MODEL_ID
+    + r"""["'`]"""
+    + r"""|(?:\bgetattr|\.get|\bgetenv)\([^()]*,\s*["'`]"""
+    + _MODEL_ID
+    + r"""["'`]\s*\)"""
+    + r"""|:-"""
+    + _MODEL_ID
+    + r"""(?=[}\s"'`]|$)""",
+    re.IGNORECASE,
+)
+
+
+def model_references(line: str) -> list[str]:
+    """Every model identifier on `line`, once each, in order of appearance.
+
+    A bare family word is prose, not a model reference: requiring a hyphen
+    keeps "claude" in a comment out of the results.
+    """
+    seen: dict[int, str] = {}
+    for pattern in (MODEL_REFERENCE, MODEL_DEFAULT):
+        for match in pattern.finditer(line):
+            for index, group in enumerate(match.groups(), 1):
+                if group and "-" in group:
+                    seen.setdefault(match.start(index), group)
+    return [seen[start] for start in sorted(seen)]
+
+
 PINNED = re.compile(r"(\d{8}|\d{4}-\d{2}-\d{2}|@\d|:\d)")
 
 #: Interpolation of caller-shaped data into a prompt-shaped string. Deliberately
@@ -157,12 +218,7 @@ def check(root: Path) -> tuple[list[Finding], bool]:
             continue
 
         for number, line in enumerate(lines, 1):
-            for match in MODEL_REFERENCE.finditer(line):
-                identifier = match.group(1)
-                # A bare family word is prose, not a model reference. Requiring
-                # a hyphen keeps "claude" in a comment out of the results.
-                if "-" not in identifier:
-                    continue
+            for identifier in model_references(line):
                 uses_a_model = True
                 if not PINNED.search(identifier):
                     findings.append(

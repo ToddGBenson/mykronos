@@ -123,8 +123,9 @@ class TestEvaluationCoverage:
     def test_a_repository_with_no_model_is_not_asked_for_evals(
         self, tmp_path: Path
     ) -> None:
-        """Nothing to evaluate. This is the state mykronos itself is in, and
-        demanding an eval suite of it would be noise."""
+        """Nothing to evaluate, and demanding an eval suite would be noise.
+        (Not mykronos's own state any more: its reviewer names a model - see
+        TestModelsGivenAsDefaultsAndFallbacks.)"""
         write(tmp_path, "app.py", "x = 1\n")
 
         findings, uses = check_ai.check(tmp_path)
@@ -322,3 +323,82 @@ class TestTheCheckerDoesNotFlagItsOwnCorpus:
             and "test" in str(getattr(f, "file_path", "")).lower()
         ]
         assert not offenders, f"checker flags its own test material: {offenders[:3]}"
+
+
+class TestModelsGivenAsDefaultsAndFallbacks:
+    """The audit of 2026-10-20: the `ai` lane said "No model references found
+    - nothing to check." against this repository, which configures its own
+    independent reviewer's model in `config.py` (a pydantic `default=`) and
+    falls back to it in `approvals/reviewer.py` (`... or "<id>"`).
+    MODEL_REFERENCE only knew `model = "..."`, so neither was seen.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            '    default="claude-opus-5",\n',
+            '    model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5")\n',
+            'reviewer_model: str = "claude-opus-5"\n',
+            'REVIEWER_MODEL = "gpt-5"\n',
+            'name = os.environ.get("REVIEWER", "claude-opus-5")\n',
+            'name = getattr(settings, "reviewer", "claude-opus-5")\n',
+            "const m = process.env.MODEL ?? 'claude-opus-5';\n",
+            "const m = cfg.reviewer || 'claude-opus-5';\n",
+            "      MYKRONOS_REVIEWER_MODEL: ${MYKRONOS_REVIEWER_MODEL:-claude-opus-5}\n",
+            "  default: 'gemini-2-pro'\n",
+        ],
+    )
+    def test_a_default_or_fallback_model_is_seen(self, tmp_path: Path, line: str) -> None:
+        write(tmp_path, "app.py", line)
+
+        findings, uses = check_ai.check(tmp_path)
+
+        assert uses is True, f"not seen as a model reference: {line!r}"
+        assert [f for f in findings if f.rule_id == "ai-model-unpinned"]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'KEYWORDS = ("copilot", "claude-3", "gpt-4", "llm")\n',
+            '"""Reviewed by gpt-4 or claude-3 in the example."""\n',
+            '    description="Only this model family, e.g. claude-opus-5.5.",\n',
+            "#: `claude-opus-5` reviewing `claude-opus-5.5` passed as a different family.\n",
+            'family: str = Field(description="e.g. `claude-opus-5.5`")\n',
+        ],
+    )
+    def test_documentation_about_models_is_still_not_a_reference(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        """The widening must not reopen the first draft's false positives."""
+        write(tmp_path, "aegis_signals.py", line)
+
+        findings, uses = check_ai.check(tmp_path)
+
+        assert uses is False, f"prose read as a model reference: {line!r}"
+        assert findings == []
+
+    def test_a_pinned_default_is_seen_and_not_flagged(self, tmp_path: Path) -> None:
+        write(tmp_path, "config.py", '    default="claude-sonnet-4-5-20250929",\n')
+        write(tmp_path, "evals/case.py", "x = 1\n")
+
+        findings, uses = check_ai.check(tmp_path)
+
+        assert uses is True
+        assert findings == []
+
+    def test_this_repository_is_not_reported_as_calling_no_model(self) -> None:
+        """The regression itself, against the real tree.
+
+        This repository runs a model (spec 34 §4.3's independent reviewer), so
+        "No model references found - nothing to check." is a false statement
+        about it. If the reviewer is ever removed, this test should be deleted
+        with it, not loosened.
+        """
+        root = Path(__file__).resolve().parents[2]
+
+        findings, uses = check_ai.check(root)
+
+        assert uses is True
+        flagged = {f.file for f in findings if f.rule_id == "ai-model-unpinned"}
+        assert "backend/mykronos/config.py" in flagged
+        assert "backend/mykronos/approvals/reviewer.py" in flagged
