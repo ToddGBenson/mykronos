@@ -388,6 +388,11 @@ def main(argv: list[str] | None = None) -> int:
                 root,
                 arguments.date,
                 arguments.registry,
+                # The compose files name the host's registry as
+                # `${REGISTRY:-localhost:5000}`. Unset, a baseline resolves to
+                # localhost, which inside a task is the task: image-refresh 6
+                # scanned nothing and published nothing (2026-10-21).
+                env={"REGISTRY": arguments.registry},
                 files=tuple(arguments.compose or MYKRONOS_COMPOSE_FILES),
             )
         elif arguments.compose:

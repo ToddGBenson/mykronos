@@ -455,6 +455,19 @@ def test_plan_reads_only_the_compose_file_it_is_given(tmp_path: Path, capsys) ->
     assert len(both.splitlines()) == 3
 
 
+def test_plan_puts_a_registry_baseline_on_the_registry_it_is_given(capsys) -> None:
+    """The real compose's registry baseline is `${REGISTRY:-localhost:5000}/...`.
+    The job runs in a task, where localhost is the task, so the baseline must
+    resolve to --registry or its scan finds nothing (image-refresh 6)."""
+    assert ir.main(["plan", "--recipes", "mykronos", "--root", str(REPO_ROOT),
+                    "--date", "20261021", "--registry", "192.168.65.254:5000",
+                    "--compose", "deploy/concourse/docker-compose.yml"]) == 0
+    currents = [line.split("	")[0] for line in capsys.readouterr().out.splitlines()]
+    registry = [c for c in currents if "/library/registry:" in c]
+    assert registry and all(c.startswith("192.168.65.254:5000/") for c in registry)
+    assert not [c for c in currents if c.startswith("localhost")]
+
+
 def test_compose_is_refused_for_thehub_recipes(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         ir.main(["plan", "--root", str(tmp_path), "--date", "20261016", "--registry", "r",
