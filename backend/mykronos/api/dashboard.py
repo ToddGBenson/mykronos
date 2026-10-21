@@ -63,10 +63,12 @@ from mykronos.ci import (
     ALL_STAGES,
     ActionsClient,
     ConcourseClient,
+    LaneResult,
     PipelineStatus,
     StatusCache,
     capability_by_workflow,
     coverage,
+    latest_lane_by_capability,
     pipeline_name_for,
     reconcile,
 )
@@ -75,6 +77,7 @@ from mykronos.dashboard import (
     DashboardQueries,
     PortfolioSummary,
     ranking_inputs,
+    with_lanes,
 )
 from mykronos.db.models import (
     CapabilityGrant,
@@ -140,6 +143,36 @@ class CapabilityStateOut(BaseModel):
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
+    lane_ci: Literal["concourse", "github_actions"] | None = Field(
+        default=None,
+        description=(
+            "Where the lane that produces this capability runs. The `lane_*` "
+            "fields are all null when no lane maps to the capability or the CI "
+            "could not be read — unknown, never assumed green."
+        ),
+    )
+    lane_pipeline: str | None = None
+    lane_job: str | None = None
+    lane_status: str | None = Field(
+        default=None,
+        description=(
+            "The lane's last finished build: succeeded, failed, errored, "
+            "aborted or skipped. Where several jobs produce the capability, "
+            "this is the most recently finished build across them."
+        ),
+    )
+    lane_build_name: str | None = None
+    lane_build_url: str | None = None
+    lane_finished_at: datetime | None = None
+    last_run_failed: bool = Field(
+        default=False,
+        description=(
+            "The capability's latest state is a failure: its last scan run did "
+            "not succeed, or the lane that produces it last failed or errored "
+            "(a lane can fail without producing a scan run at all). The "
+            "portfolio draws this red, never green."
+        ),
+    )
 
 
 class DeployLagOut(BaseModel):
@@ -1339,6 +1372,88 @@ async def _estate(request: Request, onboarded: set[str]) -> EstateOut:
     )
 
 
+#: The longest the landing page waits on GitHub Actions for lane state. Past
+#: it, those repositories' lanes are reported unknown and the page renders
+#: anyway: the portfolio must not hang on a CI server.
+PORTFOLIO_LANES_TIMEOUT = 5.0
+
+
+async def _portfolio_lanes(
+    request: Request, targets: list[tuple[str, str, int | None]]
+) -> dict[str, dict[str, LaneResult]]:
+    """Per repository, per capability, the producing lane's last build.
+
+    Concourse is asked which pipelines exist ONCE and then for each pipeline's
+    jobs — not `status_for` per repository, which repeats the pipelines read —
+    off the event loop, because the client is synchronous. Actions goes
+    through `_ci_status`, so the same `StatusCache` the repository CI page
+    uses protects the installation's rate limit.
+
+    Never raises. A repository missing from the result has unknown lanes,
+    and its cells fall back to the scan-run half of `last_run_failed`.
+    """
+    settings = request.app.state.settings
+    out: dict[str, dict[str, LaneResult]] = {}
+
+    concourse_repos = [
+        repo for repo, scanned_by, _ in targets if scanned_by not in ("github_actions", "none")
+    ]
+    if concourse_repos and settings.concourse_url:
+        client = ConcourseClient(
+            settings.concourse_url,
+            team=settings.concourse_team,
+            external_url=settings.concourse_external_url,
+        )
+
+        def read_concourse() -> dict[str, dict[str, LaneResult]]:
+            available = client.pipelines()
+            if available is None:
+                return {}
+            found: dict[str, dict[str, LaneResult]] = {}
+            for repo in concourse_repos:
+                name = pipeline_name_for(repo)
+                if name not in available:
+                    continue
+                jobs = client.pipeline_jobs(name)
+                if jobs is not None:
+                    found[repo] = latest_lane_by_capability(name, jobs)
+            return found
+
+        try:
+            out.update(await asyncio.to_thread(read_concourse))
+        except Exception as exc:  # noqa: BLE001 - the landing page must render
+            logger.warning("portfolio lane read from Concourse failed: %s", scrub(str(exc)))
+
+    actions = [
+        (repo, installation_id)
+        for repo, scanned_by, installation_id in targets
+        if scanned_by == "github_actions" and installation_id is not None
+    ]
+    if actions:
+
+        async def one(repo: str, installation_id: int) -> tuple[str, PipelineStatus]:
+            return repo, await _ci_status(request, repo, "github_actions", installation_id)
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(one(r, i) for r, i in actions), return_exceptions=True),
+                timeout=PORTFOLIO_LANES_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning("portfolio lane read from GitHub Actions timed out")
+            results = []
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "portfolio lane read from GitHub Actions failed: %s", scrub(str(result))
+                )
+                continue
+            repo, ci_status = result
+            if ci_status.unavailable is None:
+                out[repo] = latest_lane_by_capability(ACTIONS, ci_status.jobs)
+    return out
+
+
 @router.get("/portfolio", response_model=PortfolioOut)
 async def portfolio(
     request: Request,
@@ -1348,10 +1463,19 @@ async def portfolio(
     """The landing page (spec 10 §2.1)."""
     with request.app.state.db.session() as session:
         rows, summary = _queries(request).portfolio(session, include_removed=include_removed)
+        onboardings = session.scalars(select(RepoOnboarding)).all()
         lags = {
             str(onboarding.id): deploy_lag_out(unrecorded_lag(onboarding))
-            for onboarding in session.scalars(select(RepoOnboarding)).all()
+            for onboarding in onboardings
         }
+        ci_targets = [
+            (o.github_repo_full_name, o.scanned_by, o.github_installation_id)
+            for o in onboardings
+        ]
+
+    lanes = await _portfolio_lanes(request, ci_targets)
+    for row in rows:
+        with_lanes(row.capability_states, lanes.get(row.repo_full_name))
 
     # The browser's Concourse, not this process's (see ConcourseClient): a
     # link to http://concourse:8080 resolves nowhere from a laptop.

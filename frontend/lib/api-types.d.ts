@@ -4492,6 +4492,32 @@ export interface components {
              * @default 0
              */
             open_findings: number;
+            /**
+             * Lane Ci
+             * @description Where the lane that produces this capability runs. The `lane_*` fields are all null when no lane maps to the capability or the CI could not be read — unknown, never assumed green.
+             */
+            lane_ci?: ("concourse" | "github_actions") | null;
+            /** Lane Pipeline */
+            lane_pipeline?: string | null;
+            /** Lane Job */
+            lane_job?: string | null;
+            /**
+             * Lane Status
+             * @description The lane's last finished build: succeeded, failed, errored, aborted or skipped. Where several jobs produce the capability, this is the most recently finished build across them.
+             */
+            lane_status?: string | null;
+            /** Lane Build Name */
+            lane_build_name?: string | null;
+            /** Lane Build Url */
+            lane_build_url?: string | null;
+            /** Lane Finished At */
+            lane_finished_at?: string | null;
+            /**
+             * Last Run Failed
+             * @description The capability's latest state is a failure: its last scan run did not succeed, or the lane that produces it last failed or errored (a lane can fail without producing a scan run at all). The portfolio draws this red, never green.
+             * @default false
+             */
+            last_run_failed: boolean;
         };
         /** CapabilityUpdate */
         CapabilityUpdate: {
