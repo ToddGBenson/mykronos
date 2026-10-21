@@ -315,7 +315,7 @@ class TestTheIndependentReviewer:
                     grant_request_id="test",
                     duty=pull_requests.DUTY,
                     tiers=["routine"],
-                    approver_families=["claude-opus-5"],
+                    approver_families=["claude-opus-5-5"],
                     sampling=0.0,
                     expires_at=utcnow() + timedelta(days=1),
                 )
@@ -354,7 +354,7 @@ class TestTheIndependentReviewer:
         latest = _checks(github)[-1]
         assert latest["conclusion"] == "success"
         assert "platform-started" in latest["summary"]
-        assert "model `claude-opus-5`" in latest["summary"]
+        assert "model `claude-opus-5-5`" in latest["summary"]
 
 
 class TestRequestsNobodyMade:

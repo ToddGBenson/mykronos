@@ -96,7 +96,7 @@ function Stop-Here {
 # The family the delegation trusts is the model the reviewer runs: the
 # platform records `reviewer_model` as the reviewer's family (config.py).
 if (-not $Family) { $Family = Read-EnvValue 'MYKRONOS_REVIEWER_MODEL' }
-if (-not $Family) { $Family = 'claude-opus-5' }      # config.py's default
+if (-not $Family) { $Family = 'claude-opus-5-5' }      # config.py's default
 Write-Host "Delegating $Duty ($($Tiers -join ', ')) to the platform-started reviewer, family $Family" -ForegroundColor Cyan
 
 # -- 1. Can the reviewer run? -------------------------------------------------------------

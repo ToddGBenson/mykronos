@@ -400,5 +400,95 @@ class TestModelsGivenAsDefaultsAndFallbacks:
 
         assert uses is True
         flagged = {f.file for f in findings if f.rule_id == "ai-model-unpinned"}
-        assert "backend/mykronos/config.py" in flagged
-        assert "backend/mykronos/approvals/reviewer.py" in flagged
+        assert flagged == set(), (
+            f"this repository's own model ids are unpinned in {sorted(flagged)} (D-167)"
+        )
+
+
+class TestAnExactIdWithoutADate:
+    """TheHub #60866 (D-167). Anthropic's current model ids carry no date:
+    `claude-opus-5-5` is the complete, exact id, and appending one is an
+    error. `PINNED` only knew dates and versions, so it could not tell that id
+    from the family alias `claude-opus-5` this repository used to configure.
+    `EXACT_IDS` names the undated ids that are exact, one reviewed line each.
+    """
+
+    @pytest.mark.parametrize(
+        "identifier",
+        ["claude-opus-5-5", "claude-sonnet-4-5-20250929", "claude-opus-4-5@20251101"],
+    )
+    def test_an_exact_id_is_pinned(self, identifier: str) -> None:
+        assert check_ai.is_pinned(identifier)
+
+    @pytest.mark.parametrize(
+        "identifier",
+        ["claude-opus-5", "claude-sonnet-4-5", "claude-opus-latest", "gpt-5"],
+    )
+    def test_a_family_alias_is_not(self, identifier: str) -> None:
+        assert not check_ai.is_pinned(identifier)
+
+    def test_an_exact_id_as_a_default_is_not_flagged(self, tmp_path: Path) -> None:
+        write(tmp_path, "config.py", '    default="claude-opus-5-5",\n')
+        write(tmp_path, "evals/case.py", "x = 1\n")
+
+        findings, uses = check_ai.check(tmp_path)
+
+        assert uses is True
+        assert findings == []
+
+
+class TestThisRepositorysOwnModelIsPinned:
+    """Every place this repository configures its own Claude model names an
+    exact id, and they all name the same one (D-167).
+
+    `check_ai` scans Python and YAML only, so this reads the places it cannot
+    see too: `backend/.env.example` and `scripts/enable-agent-reviewer.ps1`.
+    The reviewer's shadow-agreement numbers are only comparable against a
+    fixed model, so a bare family alias anywhere here fails, and changing the
+    model is a change to every line below at once.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def configured(self) -> dict[str, str]:
+        import re
+
+        from mykronos.config import Settings
+
+        found: dict[str, str] = {
+            "Settings.reviewer_model": str(Settings.model_fields["reviewer_model"].default),
+        }
+        for rel in (
+            "backend/mykronos/config.py",
+            "backend/mykronos/approvals/reviewer.py",
+            "deploy/mykronos/docker-compose.yml",
+        ):
+            text = (self.ROOT / rel).read_text(encoding="utf-8")
+            for number, line in enumerate(text.splitlines(), 1):
+                for identifier in check_ai.model_references(line):
+                    found[f"{rel}:{number}"] = identifier
+        env = (self.ROOT / "backend/.env.example").read_text(encoding="utf-8")
+        match = re.search(r"^MYKRONOS_REVIEWER_MODEL=(\S+)$", env, re.M)
+        assert match, "backend/.env.example no longer sets MYKRONOS_REVIEWER_MODEL"
+        found["backend/.env.example"] = match.group(1)
+        ps1 = (self.ROOT / "scripts/enable-agent-reviewer.ps1").read_text(encoding="utf-8")
+        match = re.search(r"\$Family = '([^']+)'", ps1)
+        assert match, "enable-agent-reviewer.ps1 no longer has a default family"
+        found["scripts/enable-agent-reviewer.ps1"] = match.group(1)
+        return found
+
+    def test_each_place_is_found(self) -> None:
+        """Guards the test itself: a scan that finds nothing passes anything."""
+        found = self.configured()
+
+        assert any(k.startswith("backend/mykronos/config.py:") for k in found)
+        assert any(k.startswith("backend/mykronos/approvals/reviewer.py:") for k in found)
+        assert any(k.startswith("deploy/mykronos/docker-compose.yml:") for k in found)
+
+    def test_no_place_names_a_family_alias(self) -> None:
+        aliases = {k: v for k, v in self.configured().items() if not check_ai.is_pinned(v)}
+
+        assert aliases == {}, f"a family alias, not an exact model id: {aliases}"
+
+    def test_every_place_names_the_same_model(self) -> None:
+        assert set(self.configured().values()) == {"claude-opus-5-5"}

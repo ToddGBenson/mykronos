@@ -366,7 +366,7 @@ def run_review(
             "The request stays pending for a person."
         )
     shadow = current == "shadow"
-    model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5")
+    model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5-5")
     family = model
     req = _load(db, request_id)
     # The preflight asks whether `decide` would accept this reviewer's answer.

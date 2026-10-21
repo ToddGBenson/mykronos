@@ -100,7 +100,7 @@ counted in `not_delegable` instead. `by_tier` gives the figures per
   and compose passes it. `ANTHROPIC_API_KEY` in `backend/.env` does not reach
   the container;
 - it proposes the delegation for the reviewer's model family
-  (`MYKRONOS_REVIEWER_MODEL`, default `claude-opus-5`) with sampling 0.2 and a
+  (`MYKRONOS_REVIEWER_MODEL`, default `claude-opus-5-5`, pinned by D-167) with sampling 0.2 and a
   30-day expiry. Run it again after the one-hour cooling-off and it shows you
   the proposal and approves it with your decision;
 - it sets `MYKRONOS_REVIEWER_MODE=live`, recreates the backend on the image it
