@@ -763,14 +763,12 @@ jobs:
                 # fresh DuckDB catalog per test - and that work is already
                 # isolated, so it parallelises without touching a test. 32
                 # minutes to 6 on this host.
-                # No --cov here, deliberately (D-117). Coverage is collected on
-                # the Actions unit lane instead: mykronos is public, so Actions
-                # minutes are free, while this worker measured the same suite at
-                # 218s clean against 541s with coverage - 2.5x, on a lane that
-                # carries `trigger: true` with seven jobs gating on
-                # `passed: [unit, ...]`. Paying five and a half minutes per
-                # commit on the gating path buys a number the free runner can
-                # produce.
+                # No --cov here, deliberately (D-117): this worker measured the
+                # same suite at 218s clean against 541s with coverage - 2.5x, on
+                # a lane that carries `trigger: true` with seven jobs gating on
+                # `passed: [unit, ...]`. Coverage is collected by the weekly
+                # `coverage` job below instead (D-121), where nothing waits on it.
+                # (It was on the Actions unit lane until D-118 retired that lane.)
                 python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
@@ -782,9 +780,19 @@ jobs:
                 # commit_sha with a 422, and `|| true` swallowed it. The
                 # stages cross-check reported unit as never_reported, which
                 # is how this was found.
-                MYKRONOS_JOB=unit python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+                upload_rc=0
+                MYKRONOS_JOB=unit python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || upload_rc=$?
 
-                exit "$rc"
+                # The upload's verdict is checked, not swallowed. This line ended in
+                # `|| true` until 2026-10-20, which is how the 422 described above
+                # hid for weeks. The suite's result still decides first, so a red
+                # suite reads as a red suite; a green suite whose result never
+                # reached Mykronos now fails here instead of passing silently.
+                if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::The unit result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
+                  exit "$upload_rc"
+                fi
 
   # Coverage, deliberately not on the lane that gates seven jobs (D-121).
   #
@@ -863,6 +871,7 @@ jobs:
                 # coverage this is. The adapter rglobs the results directory
                 # and merges both files into one run (spec 31 §4), so the
                 # figure lands on the lane a person reads it against.
+                upload_rc=0
                 MYKRONOS_JOB=coverage python -m mykronos.upload \
                   --capability unit --tool junit \
                   --results-path ../../results \
@@ -871,9 +880,16 @@ jobs:
                   --commit-sha "$(git -C .. rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || upload_rc=$?
 
-                exit "$rc"
+                # Checked, not swallowed (`|| true` until 2026-10-20): a weekly
+                # figure that silently failed to arrive is the "never measured"
+                # state this job exists to end.
+                if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::The coverage result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
+                  exit "$upload_rc"
+                fi
 
   - name: lint-and-types
     public: true
@@ -961,6 +977,7 @@ jobs:
                   --case "mypy:${rc_mypy}:/tmp/mypy.txt"
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                upload_rc=0
                 MYKRONOS_JOB=lint-and-types python -m mykronos.upload \
                   --capability qa --tool junit \
                   --results-path ../../results \
@@ -968,10 +985,16 @@ jobs:
                   --repo ToddGBenson/mykronos \
                   --commit-sha "$(git -C .. rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || upload_rc=$?
 
-                # Reported either way, then the lint decides the job.
+                # Reported either way, then the lint decides the job - and then
+                # whether the report arrived (`|| true` until 2026-10-20: PS-1 made
+                # this lane report precisely so it could not be a silent green).
                 [ "$rc_ruff" -eq 0 ] && [ "$rc_mypy" -eq 0 ]
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::The lint-and-types result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
+                  exit "$upload_rc"
+                fi
 
   - name: qa-spec-links
     public: true
@@ -1020,12 +1043,18 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                MYKRONOS_JOB=qa-spec-links python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || true
+                upload_rc=0
+                MYKRONOS_JOB=qa-spec-links python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || upload_rc=$?
 
                 # The QA result decides the job, and it is reported either
                 # way: "the links are broken" and "nothing told us anything"
-                # are different facts.
-                exit "$rc"
+                # are different facts - which is why a failed report is no longer
+                # swallowed (`|| true` until 2026-10-20).
+                if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::The qa-spec-links result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
+                  exit "$upload_rc"
+                fi
 
   # The frontend, which had no Concourse lane at all until `ci.yml` was
   # retired: lint, build, and the contract check that matters more than either.
@@ -1392,6 +1421,50 @@ jobs:
                 test -f /tmp/osv.json || echo '{"results":[]}' > /tmp/osv.json
                 cp /tmp/osv.json ../evidence/osv.json
 
+                # Every manifest this job claims to scan must have yielded
+                # packages. Zero is not a clean result, it is a manifest the
+                # scanner did not read - the shape that hid the backend for
+                # this lane's whole life (build #265: 8 packages from
+                # deploy/zap, 517 from the frontend, nothing for the backend,
+                # because there was no backend lock until #961). Recorded now
+                # and decided after the upload (PS-3), the same as `rc`:
+                # unknown is not a pass. A manifest missing from the tree
+                # counts as not scanned, so deleting the backend lock turns
+                # this job red rather than quietly shrinking what it covers.
+                manifests_rc=0
+                python - /tmp/osv.json \
+                  backend/requirements.txt \
+                  backend/requirements-dev.txt \
+                  frontend/package-lock.json \
+                  deploy/zap/requirements.txt <<'PY' || manifests_rc=$?
+                import json, sys
+
+                document = json.load(open(sys.argv[1], encoding="utf-8"))
+                scanned = {}
+                for result in document.get("results") or []:
+                    path = (result.get("source") or {}).get("path") or ""
+                    scanned[path] = scanned.get(path, 0) + len(result.get("packages") or [])
+
+                missing = []
+                for manifest in sys.argv[2:]:
+                    counts = [n for path, n in scanned.items() if path == manifest or path.endswith("/" + manifest)]
+                    total = sum(counts)
+                    print(f"  {manifest}: " + (f"{total} package(s)" if counts else "not scanned"))
+                    if total == 0:
+                        missing.append(manifest)
+                # Anything else the recursive scan read and got nothing from.
+                for path, n in sorted(scanned.items()):
+                    if n == 0 and path not in missing:
+                        print(f"  {path}: 0 package(s)")
+                        missing.append(path)
+                if missing:
+                    print(
+                        "::error::osv-scanner read no packages from: " + ", ".join(missing)
+                        + ". That is a manifest nobody scanned, not a clean one."
+                    )
+                    sys.exit(1)
+                PY
+
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=dependencies python -m mykronos.upload \
@@ -1409,6 +1482,10 @@ jobs:
                 if [ "$rc" -gt 1 ]; then
                   echo "::error::osv-scanner exited $rc - that is a failure, not a result"
                   exit "$rc"
+                fi
+                if [ "$manifests_rc" -ne 0 ]; then
+                  echo "::error::A manifest this job scans yielded no packages (listed above); the supply-chain picture is incomplete."
+                  exit 1
                 fi
 
       # Supply-chain evidence (spec 07). This only ever existed in
@@ -1572,9 +1649,12 @@ jobs:
   # request discloses that a model wrote it - is Aegis's, because that is a
   # question about a person and these are questions about a repository.
   #
-  # It reports zero findings against this repository today, and says so: no
-  # model references, nothing to check. That is the honest output and it is
-  # not the same as a clean bill of health.
+  # It used to report zero findings against this repository and say "no model
+  # references, nothing to check" - which was false: the independent reviewer
+  # (spec 34 §4.3) names its model as a pydantic default and a fallback, and
+  # the checker only knew `model = "..."`. Since 2026-10-20 it reads defaults
+  # and fallbacks too, and reports the reviewer's model under
+  # `ai-model-unpinned` (a warning).
   - name: ai
     public: true
     # Concurrency added 2026-08-15: 17 of 18 jobs were unbounded, so a
@@ -1927,11 +2007,49 @@ jobs:
                 SHA=$(git rev-parse HEAD)
                 API=https://api.github.com/repos/ToddGBenson/mykronos
 
-                curl --fail --silent --show-error --max-time 30 \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$API/commits/$SHA/pulls" > pulls.json || echo '[]' > pulls.json
+                # Authenticated when a token is present. This pipeline has no
+                # GitHub credential today (nothing in this file or its vars
+                # reads one), so every call below is anonymous: 60 requests an
+                # hour shared by the whole host, and the collaborator-role
+                # call can never succeed. Adding a GITHUB_TOKEN param to this
+                # task, resolved from a Vault var, is all it takes once a token
+                # exists there - nothing here needs to change. (Not wired now:
+                # an unresolvable var would error this job, and `oracle-gate`
+                # waits on it.) The
+                # header is built into an array and never echoed; this script
+                # has no `set -x`.
+                GH_AUTH=()
+                if [ -n "${GITHUB_TOKEN:-}" ]; then
+                  GH_AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+                fi
 
-                PR=$(jq -r 'if type == "array" and length > 0 then .[0].number else "" end' pulls.json)
+                # The PR lookup must be a 200, or this job has learned nothing.
+                # It used to be `curl --fail ... || echo '[]'`, so a 403 from
+                # the anonymous rate limit, a 5xx, or a timeout all became an
+                # empty list - and an empty list takes the "no pull request"
+                # path below and exits 0. "GitHub refused to say" read as
+                # "there was no pull request", which is the unknown-reads-as-
+                # pass shape. Only a 200 with an empty array may take that
+                # path now.
+                PULLS_CODE=$(curl --silent --show-error --max-time 30 \
+                  -o pulls.json -w '%{http_code}' \
+                  -H "Accept: application/vnd.github.v3+json" "${GH_AUTH[@]}" \
+                  "$API/commits/$SHA/pulls") || PULLS_CODE="000"
+                if [ "$PULLS_CODE" != "200" ]; then
+                  echo "::error::The pull-request lookup for $SHA returned HTTP ${PULLS_CODE}, not 200."
+                  if [ "$PULLS_CODE" = "403" ] || [ "$PULLS_CODE" = "429" ]; then
+                    echo "That is GitHub's rate limit or a refusal, not an answer."
+                  fi
+                  jq -r '.message // empty' pulls.json 2>/dev/null || true
+                  echo "NO INSIDER-RISK ASSESSMENT WAS RECORDED, and that is not a pass."
+                  exit 1
+                fi
+                if [ "$(jq -r 'type' pulls.json)" != "array" ]; then
+                  echo "::error::The pull-request lookup for $SHA returned 200 but not a list; refusing to read that as 'no pull request'."
+                  exit 1
+                fi
+
+                PR=$(jq -r 'if length > 0 then .[0].number else "" end' pulls.json)
 
                 if [ -z "$PR" ] || [ "$PR" = "null" ]; then
                   echo "=================================================="
@@ -1948,16 +2066,16 @@ jobs:
                   exit 0
                 fi
 
-                # Errexit from here on. Up to this point a failed fetch is a
-                # tolerated outcome that takes the no-pull-request path; past
-                # it, every call is one whose failure would produce an
-                # assessment built from an empty payload - a null author and no
-                # signals, which posts as a clean 0/100.
+                # Errexit from here on. Every call past this point is one whose
+                # failure would produce an assessment built from an empty
+                # payload - a null author and no signals, which posts as a
+                # clean 0/100. (The lookup above is no longer a tolerated
+                # failure either: it exits 1 on anything but a 200.)
                 set -e
 
                 echo "Assessing pull request #$PR"
                 curl --fail --silent --show-error --max-time 30 \
-                  -H "Accept: application/vnd.github.v3+json" \
+                  -H "Accept: application/vnd.github.v3+json" "${GH_AUTH[@]}" \
                   "$API/pulls/$PR" > pr.json
 
                 AUTHOR=$(jq -r '.user.login' pr.json)
@@ -1966,9 +2084,16 @@ jobs:
                 # file and passed by path, never interpolated into a command.
                 jq -r '.body // ""' pr.json > pr-body.txt
 
+                # No `|| echo '[]'` any more. A failed fetch became an empty
+                # review list, which Aegis then assessed as a pull request
+                # nobody reviewed - a refusal from GitHub recorded as a fact
+                # about the change. How zero reviews are SCORED is unchanged
+                # (an open decision); this only stops a failed request from
+                # manufacturing zero reviews. Under errexit, a failure here
+                # fails the job.
                 curl --fail --silent --show-error --max-time 30 \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$API/pulls/$PR/reviews" > reviews.json || echo '[]' > reviews.json
+                  -H "Accept: application/vnd.github.v3+json" "${GH_AUTH[@]}" \
+                  "$API/pulls/$PR/reviews" > reviews.json
 
                 # The author's role on this repo, for `privilege_adjacent`.
                 # Tolerated failure: the endpoint needs push access, and a
@@ -1984,7 +2109,7 @@ jobs:
                 # nothing. The outcome is stated plainly below instead.
                 ROLE=""
                 if curl --fail --silent --max-time 30 \
-                  -H "Accept: application/vnd.github.v3+json" \
+                  -H "Accept: application/vnd.github.v3+json" "${GH_AUTH[@]}" \
                   "$API/collaborators/$AUTHOR/permission" > perm.json 2>/dev/null; then
                   # `role_name` distinguishes maintain from write; the older
                   # `permission` field collapses them, and maintain is exactly
@@ -2315,10 +2440,28 @@ jobs:
                   echo "Newly disclosed in unchanged images (not blocking): ${DISCLOSED}."
                 fi
 
-                if [ "$INTRODUCED_BLOCKING" = "true" ]; then
-                  echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
-                  echo "The floor is no new criticals and no new highs. Fix them, or"
-                  echo "disposition them - an accepted risk with a reason does not block."
+                # Exactly `true` or `false`. This used to block only on `true`,
+                # so a decision with the field missing (`jq -r` prints `null`),
+                # renamed, or carrying anything else passed the gate - an
+                # answer the gate could not read, treated as "nothing
+                # introduced". Unknown is not a pass. Still one `exit 1`: both
+                # refusals are about what this commit introduced, never about
+                # the score (D-048, test_thehub_gate).
+                REFUSE=1
+                case "$INTRODUCED_BLOCKING" in
+                  true)
+                    echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
+                    echo "The floor is no new criticals and no new highs. Fix them, or"
+                    echo "disposition them - an accepted risk with a reason does not block."
+                    ;;
+                  false)
+                    REFUSE=0
+                    ;;
+                  *)
+                    echo "::error::Oracle's decision has introduced_blocking='${INTRODUCED_BLOCKING}', not true or false. The gate cannot tell whether this commit introduced a blocking finding, so it does not pass."
+                    ;;
+                esac
+                if [ "$REFUSE" -ne 0 ]; then
                   exit 1
                 fi
 
@@ -3607,11 +3750,18 @@ jobs:
 
                 echo "== Spider, from inside the authenticated surface =="
                 zap_api "/JSON/spider/action/scan/?url=${FRONTEND}&recurse=true" >/dev/null
+                # A loop that runs out is a budget overrun, and it used to fall
+                # through silently into a report uploaded as a full pass. It
+                # is recorded instead, and becomes a marker beside the report
+                # below (see the same rule in .github/workflows/demo-and-dast.yml).
+                INCOMPLETE=""
+                st=""
                 for _ in $(seq 1 60); do
                   st=$(zap_api "/JSON/spider/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
                   sleep 5
                 done
+                [ "$st" = "100" ] || INCOMPLETE="the spider stopped at ${st:-?}% after its 300s budget"
                 AFTER=$(zap_api "/JSON/core/view/urls/" | jq '.urls | length')
                 echo "Site tree: ${AFTER} URL(s) after spidering, from ${URLS} seeded by the tests."
 
@@ -3627,22 +3777,34 @@ jobs:
                   echo "shared ZAP on the demo host."
                   exit 1
                 fi
+                st=""
                 for _ in $(seq 1 180); do
                   st=$(zap_api "/JSON/ascan/view/status/" | jq -r '.status')
                   [ "$st" = "100" ] && break
                   sleep 10
                 done
+                if [ "$st" != "100" ]; then
+                  INCOMPLETE="${INCOMPLETE:+${INCOMPLETE}; }the active scan stopped at ${st:-?}% after its 1800s budget"
+                fi
 
                 zap_api "/OTHER/core/other/jsonreport/" > ../results/zap.json
                 test -s ../results/zap.json || {
                   echo "::error::ZAP produced no report."
                   exit 1
                 }
+                # The zap adapter reads this as PARTIAL_FAILURE: the findings
+                # are kept, the run is not a full pass, and the dast upload
+                # below exits non-zero, so this job goes red.
+                if [ -n "$INCOMPLETE" ]; then
+                  echo "::warning::The DAST scan did not finish inside its budget (${INCOMPLETE}); uploading it as a partial run."
+                  echo "MYKRONOS-INCOMPLETE: ${INCOMPLETE}." > ../results/zap-incomplete.json
+                fi
 
                 echo "== Uploading =="
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
+                func_upload_rc=0
                 MYKRONOS_JOB=demo-and-dast python -m mykronos.upload \
                   --capability functional --tool junit \
                   --results-path ../results \
@@ -3650,7 +3812,7 @@ jobs:
                   --repo ToddGBenson/mykronos \
                   --commit-sha "$SHA" --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || func_upload_rc=$?
 
                 MYKRONOS_JOB=demo-and-dast python -m mykronos.upload \
                   --capability dast --tool zap \
@@ -3664,4 +3826,8 @@ jobs:
                 # The functional result decides the job. DAST findings are
                 # recorded and do not fail it: Oracle gates on them later,
                 # which is where a risk decision belongs.
-                exit "$FUNC_RC"
+                if [ "$FUNC_RC" -ne 0 ]; then exit "$FUNC_RC"; fi
+                if [ "$func_upload_rc" -ne 0 ]; then
+                  echo "::error::The functional result did not reach Mykronos: the upload exited $func_upload_rc."
+                  exit "$func_upload_rc"
+                fi

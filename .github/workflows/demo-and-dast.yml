@@ -503,12 +503,24 @@ jobs:
           # Always. This is the line the whole step exists to produce.
           zap_api "/OTHER/core/other/jsonreport/" > "$RUNNER_TEMP/dast/zap.json"
 
-          # Said out loud, and not as an error: an incomplete crawl is a
-          # narrower scan, not a broken one, and the findings it did produce
-          # are real. Reporting it as a failure is what made the platform
-          # discard them.
-          if [ "$SPIDER_OK" -eq 0 ] || [ "$ACTIVE_OK" -eq 0 ]; then
-            echo "::warning::The crawl did not finish inside its budget. The report covers the ${AFTER} URL(s) reached, which is a narrower scan rather than a failed one."
+          # An incomplete scan is a narrower scan, not a broken one: the
+          # findings it did produce are real and are still ingested. But it
+          # is not a FULL pass either, and it used to upload as one - run
+          # 39135292093's active scan stopped at its 2400s budget and the
+          # DAST run was recorded `success`, which absence reconciliation
+          # counts toward closing every finding the unfinished scan never
+          # reached. So a budget overrun leaves a marker beside the report;
+          # the zap adapter records the run PARTIAL_FAILURE (findings kept,
+          # no absence confirmed), and the upload step goes red rather than
+          # green (spec 04 §8). Raising the budget would only move the line.
+          INCOMPLETE=""
+          [ "$SPIDER_OK" -eq 0 ] && INCOMPLETE="the spider did not reach 100% within 600s"
+          if [ "$ACTIVE_OK" -eq 0 ]; then
+            INCOMPLETE="${INCOMPLETE:+${INCOMPLETE}; }the active scan did not reach 100% within 2400s"
+          fi
+          if [ -n "$INCOMPLETE" ]; then
+            echo "::warning::The scan did not finish inside its budget (${INCOMPLETE}). The report covers the ${AFTER} URL(s) reached and uploads as a PARTIAL run, not a full pass."
+            echo "MYKRONOS-INCOMPLETE: ${INCOMPLETE}; the report covers the ${AFTER} URL(s) reached." > "$RUNNER_TEMP/dast/zap-incomplete.json"
           fi
 
       - name: Scan the backend API from its OpenAPI document

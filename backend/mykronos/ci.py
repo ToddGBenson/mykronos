@@ -203,8 +203,10 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # called whatever it is called and still be cross-checked.
     #
     # Scoped to personal-soc, and this entry shows why scoping was needed in
-    # both directions: keel also has a job called `lint`, and keel's is a
-    # stub. Unscoped, keel's stub inherited this meaning.
+    # both directions: keel also has a job called `lint`, and when this was
+    # written keel's was a stub that inherited this meaning unscoped. keel's
+    # `lint` now runs ShellCheck and uploads `sast` too, so it has its own
+    # entry below rather than borrowing this one.
     ((PERSONAL_SOC,), "lint", "sast"),
     ((MYKRONOS, PERSONAL_SOC, THEHUB, ACTIONS), "secrets", "secrets"),
     ((MYKRONOS, THEHUB, ACTIONS), "containers", "containers"),
@@ -293,9 +295,9 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # would have guessed "sca" - which is the name of one of keel's stubs.
     #
     # Only these of keel's jobs upload anything (three of 26 at B-59330, plus
-    # `mykronos-sca`). The other 23 are stubs and are deliberately neither
-    # mapped nor acknowledged, so they report `unknown` - see the note on
-    # `ACKNOWLEDGED_UNMAPPED_JOBS`.
+    # `mykronos-sca`, `iac` and `lint`). The rest upload nothing and are
+    # deliberately neither mapped nor acknowledged, so they report `unknown` -
+    # see the note on `ACKNOWLEDGED_UNMAPPED_JOBS`.
     ((KEEL,), "mykronos-sast", "sast"),
     ((KEEL,), "mykronos-secrets", "secrets"),
     ((KEEL,), "mykronos-atlas", "atlas"),
@@ -303,6 +305,13 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # beside `mykronos-atlas`'s osv-scanner. Not the `sca` stub above -- that
     # one still invokes nothing and still reports `unknown`.
     ((KEEL,), "mykronos-sca", "atlas"),
+    # keel's `iac` and `lint` stopped being stubs (read off keel's pipeline,
+    # 2026-10-20): `iac` runs checkov and uploads `CAPABILITY: iac`, and
+    # `lint` runs ShellCheck and uploads `CAPABILITY: sast` (`TOOL:
+    # shellcheck`) - the same shape as personal-soc's `lint`. Left unmapped,
+    # both real uploads were reported as an unrecognised job.
+    ((KEEL,), "iac", "iac"),
+    ((KEEL,), "lint", "sast"),
 )
 
 
@@ -332,28 +341,34 @@ CAPABILITY_BY_JOB: dict[tuple[str, str], str | tuple[str, ...]] = _scoped(
 )
 
 
-#: keel's stub jobs whose names a real lane elsewhere also uses (B-59988).
+#: keel's jobs whose names a real lane elsewhere also uses, and which upload
+#: NOTHING themselves (B-59988).
 #:
-#: THE DEFECT THESE FOUR NAMED, now fixed by the key above rather than only
+#: THE DEFECT THIS NAMED, now fixed by the key above rather than only
 #: described. `CAPABILITY_BY_JOB` used to be keyed on the job name alone, so a
-#: name meant the same thing on every pipeline. keel's stubs called `sast`,
-#: `secrets`, `iac` and `lint` - 158-437 bytes each, invoking no scanner -
-#: inherited the meaning of the real jobs of those names on mykronos, thehub
-#: and personal-soc. Measured 2026-09-17: keel's real uploads arrive from
-#: `mykronos-sast` and `mykronos-secrets`, the lake held recent `sast` and
-#: `secrets` runs, and the stubs' green builds lined up against those runs and
-#: read `reporting`. A job that does nothing, reported as covering a
-#: capability, because a differently-named sibling uploaded.
+#: name meant the same thing on every pipeline. keel's `sast`, `secrets`,
+#: `iac` and `lint` - then stubs invoking no scanner - inherited the meaning of
+#: the real jobs of those names on mykronos, thehub and personal-soc, and read
+#: `reporting` off scan runs a differently-named sibling had uploaded.
 #:
-#: Kept as a named set after the fix, because it is what the regression test
-#: points at. The property worth holding is not "these four are absent" but
-#: that each is absent for KEEL and present for the pipeline that really runs
-#: it - a map that had simply lost them would satisfy the first and not the
-#: second. `test_ci_job_audit.py` asserts both directions.
+#: Two names remain (2026-10-20). keel's `sast` now runs CodeQL and its
+#: `secrets` runs gitleaks, but both are gates that upload nothing: keel's
+#: `sast` and `secrets` results arrive from `mykronos-sast` and
+#: `mykronos-secrets`, which are mapped. Mapping these two as well would credit
+#: them with their siblings' uploads, which is the original defect. `iac` and
+#: `lint` left this set because they upload for themselves now and are mapped
+#: above.
 #:
-#: Delete this when keel's stubs are deleted, and not before: the names are a
-#: property of keel's pipeline, not of this table.
-KEEL_STUBS_THAT_LOOK_MAPPED: frozenset[str] = frozenset({"sast", "secrets", "iac", "lint"})
+#: Kept as a named set because it is what the regression test points at. The
+#: property worth holding is not "these are absent" but that each is absent
+#: for KEEL and present for the pipeline that really runs it - a map that had
+#: simply lost them would satisfy the first and not the second.
+#: `test_ci_job_audit.py` asserts both directions.
+#:
+#: Delete an entry when keel's job starts uploading for itself (then map it),
+#: or when keel deletes the job: the names are a property of keel's pipeline,
+#: not of this table.
+KEEL_STUBS_THAT_LOOK_MAPPED: frozenset[str] = frozenset({"sast", "secrets"})
 
 #: How far a successful build may lead its capability's newest scan run before
 #: the results count as missing. Generous on purpose: a job's build finishes

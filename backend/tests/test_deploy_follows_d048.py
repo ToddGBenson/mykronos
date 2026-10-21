@@ -246,6 +246,34 @@ class TestTheGateJobAgrees:
         assert code == 1, output
         assert "introduced 0 critical and 1 high" in output
 
+    def test_the_gate_passes_an_explicit_false(self, tmp_path: Path) -> None:
+        code, output = run_gate(tmp_path, CLEAN)
+
+        assert code == 0, output
+
+    @pytest.mark.parametrize(
+        "value", [None, "yes", 1, "True"], ids=["null", "yes", "one", "capital-true"]
+    )
+    def test_the_gate_refuses_anything_but_true_or_false(
+        self, tmp_path: Path, value: object
+    ) -> None:
+        """It blocked only on `true`, so a missing or malformed field passed.
+        An answer the gate cannot read is not "nothing was introduced"."""
+        answer = {**CLEAN, "introduced_blocking": value}
+
+        code, output = run_gate(tmp_path, answer)
+
+        assert code == 1, output
+        assert "not true or false" in output
+
+    def test_the_gate_refuses_a_decision_without_the_field(self, tmp_path: Path) -> None:
+        answer = {k: v for k, v in CLEAN.items() if k != "introduced_blocking"}
+
+        code, output = run_gate(tmp_path, answer)
+
+        assert code == 1, output
+        assert "not true or false" in output
+
     @needs_pwsh
     @pytest.mark.parametrize(
         "answer", [BACKLOG_NO_GO, INTRODUCED_HIGH, NO_GO_AND_HIGH, CLEAN],

@@ -48,7 +48,6 @@ from mykronos.ci import (
     KEEL,
     KEEL_STUBS_THAT_LOOK_MAPPED,
     MYKRONOS,
-    PERSONAL_SOC,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -253,6 +252,10 @@ KEEL_UPLOADING_LANES = {
     "mykronos-atlas": "atlas",
     # mykronos#414 / keel#134: grype, uploading `atlas` alongside osv-scanner.
     "mykronos-sca": "atlas",
+    # 2026-10-20: no longer stubs. `iac` runs checkov and uploads `iac`;
+    # `lint` runs ShellCheck and uploads `sast` (keel's `CAPABILITY:` params).
+    "iac": "iac",
+    "lint": "sast",
 }
 
 
@@ -278,8 +281,10 @@ def test_keels_stubs_are_not_acknowledged_as_producing_nothing() -> None:
 
     23 of keel's 26 jobs invoke no scanner: 158-437 bytes each, among them
     `sca`, `container-scan`, `ai-guardrails`, `suppression-audit` and three
-    `compliance-*` lanes. Three of them (`secrets`, `iac`, `container-scan`)
-    even name gitleaks, checkov and trivy in their text without running them.
+    `compliance-*` lanes. (Counted at B-59988. Since then `iac` and `lint`
+    upload for themselves and are mapped, and `sast`/`secrets` run CodeQL and
+    gitleaks as gates that upload nothing - so they too report `unknown`,
+    rather than being acknowledged as producing nothing.)
 
     Acknowledging those would write down that keel's container scanning
     correctly produces no findings. It does not produce findings because it
@@ -294,7 +299,7 @@ def test_keels_stubs_are_not_acknowledged_as_producing_nothing() -> None:
             "compliance-weekly", "compliance-monthly", "full-suite",
             "verify-artifact", "build-and-attest", "release-preflight",
             "authorize-release", "metrics-snapshot", "test", "build",
-            "set-pipeline", "lint", "sast", "secrets", "iac",
+            "set-pipeline", "sast", "secrets",
         )
         if (KEEL, job) in ACKNOWLEDGED_UNMAPPED_JOBS
     )
@@ -322,8 +327,6 @@ def test_a_stub_is_not_credited_with_a_siblings_upload() -> None:
     really_runs_it = {
         "sast": MYKRONOS,
         "secrets": MYKRONOS,
-        "iac": MYKRONOS,
-        "lint": PERSONAL_SOC,
     }
     assert set(really_runs_it) == set(KEEL_STUBS_THAT_LOOK_MAPPED)
 
@@ -345,12 +348,16 @@ def test_a_stub_is_not_credited_with_a_siblings_upload() -> None:
 def test_the_scope_decides_the_capability_not_the_name() -> None:
     """The narrow statement of what scoping bought, in one comparison.
 
-    `lint` is personal-soc's PowerShell analyser (#390) and produces `sast`
-    there. keel has a stub of the same name. One name, two pipelines, and now
-    two answers.
+    `secrets` is mykronos's uploading gitleaks lane and produces `secrets`
+    there. keel has a job of the same name that runs gitleaks as a gate and
+    uploads nothing (`mykronos-secrets` uploads for it). One name, two
+    pipelines, and two answers.
+
+    This used to compare personal-soc's `lint` with keel's; keel's `lint`
+    uploads `sast` for itself now, so that pair no longer differs.
     """
-    assert CAPABILITY_BY_JOB[(PERSONAL_SOC, "lint")] == "sast"
-    assert (KEEL, "lint") not in CAPABILITY_BY_JOB
+    assert CAPABILITY_BY_JOB[(MYKRONOS, "secrets")] == "secrets"
+    assert (KEEL, "secrets") not in CAPABILITY_BY_JOB
 
 
 def test_every_declared_pipeline_actually_runs_that_job() -> None:
