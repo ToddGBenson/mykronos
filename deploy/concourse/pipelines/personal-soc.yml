@@ -1121,7 +1121,12 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [secrets, iac]
+        # `lint` is personal-soc's sast lane. TheHub #60848: Oracle now judges
+        # each required lane (policy scope.lanes_required_per_commit) on the
+        # commit it gates, so every one this pipeline runs - secrets, iac,
+        # sast - must have uploaded before the gate asks, or the verdict reads
+        # insufficient_evidence for a lane that simply had not finished.
+        passed: [secrets, iac, lint]
       - get: python
         attempts: *retry_fetch
       # PS-2, and D-151: this job's hooks report to Mykronos.
