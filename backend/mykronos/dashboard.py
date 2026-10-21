@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -73,6 +74,57 @@ CORRELATION_CEILING = 5000
 #: Beyond this, a repo's most recent scan is old enough to be worth flagging
 #: (spec 10 §2.1).
 STALE_AFTER_DAYS = 7
+
+#: Where a finding sits, for the Findings tab's `exposure` filter: the
+#: `RepoSurface.exposure` of the declared surface that places it
+#: (`surface_match.surface_for`, the same placement the environmental resolver
+#: rescores with), or `unplaced` when no declared surface places it.
+EXPOSURES: tuple[str, ...] = ("internet", "internal", "local", "unknown", "unplaced")
+
+#: Capabilities whose placement reads the raw record (`surface_match`). Every
+#: other capability is placed by `file_path` alone, so its raw bytes are never
+#: read for this.
+_RAW_PLACED = ("containers", "dast", "network")
+
+Many = str | Sequence[str] | None
+
+
+def _many(value: Many) -> tuple[str, ...]:
+    """A filter that may carry several values, as a de-duplicated tuple.
+
+    A bare string is one value, so every caller written before filters took
+    lists keeps working unchanged; `None` and an empty list are "no filter".
+    """
+    if value is None:
+        return ()
+    items = [value] if isinstance(value, str) else list(value)
+    out: list[str] = []
+    for item in items:
+        if item and item not in out:
+            out.append(item)
+    return tuple(out)
+
+
+def _like_pattern(text: str) -> str:
+    """A path filter as an ILIKE pattern: a glob when it has `*` or `?`,
+    otherwise a substring. `%` and `_` typed by a person are literals."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    if "*" in text or "?" in text:
+        return escaped.replace("*", "%").replace("?", "_")
+    return f"%{escaped}%"
+
+
+def _exposure_of(surface: Any | None) -> str:
+    """The `exposure` filter's value for a finding placed in `surface`."""
+    if surface is None:
+        return "unplaced"
+    value = str(getattr(surface, "exposure", None) or "unknown")
+    return value if value in EXPOSURES else "unknown"
+
+
+def _component_of(surface: Any | None) -> str:
+    """The `component` filter's value for a finding placed in `surface`."""
+    return "none" if surface is None else str(surface.id)
 
 #: Patchwork stages that mean it produced something (spec 19 §3.2). Read from
 #: `remediation_events` rather than predicted: a fixer cannot say whether it
@@ -981,21 +1033,25 @@ class DashboardQueries:
         repo_full_name: str,
         *,
         store: KnowledgeStore | None = None,
-        capability: str | None = None,
-        severity: str | None = None,
+        capability: Many = None,
+        severity: Many = None,
         rule_id: str | None = None,
-        finding_status: str = "open",
+        finding_status: Many = "open",
         limit: int = 400,
         session: Session | None = None,
         kev_only: bool = False,
         min_epss: float | None = None,
-        triage: str | None = None,
+        triage: Many = None,
         fixable: bool | None = None,
-        due: str | None = None,
-        owner: str | None = None,
-        effective: str | None = None,
-        rescored: str | None = None,
-        component: str | None = None,
+        due: Many = None,
+        owner: Many = None,
+        effective: Many = None,
+        rescored: Many = None,
+        component: Many = None,
+        exposure: Many = None,
+        path: str | None = None,
+        older_than_days: int | None = None,
+        newer_than_days: int | None = None,
         surfaces: list[Any] | None = None,
     ) -> dict[str, Any]:
         """One repo's outstanding work: deduplicated, triaged, correlated.
@@ -1031,12 +1087,19 @@ class DashboardQueries:
         property of the group, not a column any row carries, so — like
         `kev_only`/`min_epss` — it is applied after grouping, not in SQL.
 
-        `effective`, `rescored` and `component` (TheHub #60828) narrow by facts
-        held outside the lake — the stored `EnvironmentalScore` and the declared
-        surfaces — so they filter occurrences in Python, *before* grouping:
-        each is a fact about one finding, and `by_rescoring` counts findings,
-        so filtering to a count lists exactly that many. `component=none` keeps
-        findings no declared surface's selectors place (`surface_match`).
+        `effective`, `rescored`, `component` and `exposure` (TheHub #60828)
+        narrow by facts held outside the lake — the stored
+        `EnvironmentalScore` and the declared surfaces — so they filter
+        occurrences in Python, *before* grouping: each is a fact about one
+        finding, and `by_rescoring` / `by_exposure` count findings, so
+        filtering to a count lists exactly that many. `component=none` keeps
+        findings no declared surface's selectors place (`surface_match`); any
+        other `component` value is a surface id. `exposure` is the placing
+        surface's declared exposure, or `unplaced`.
+
+        Every category filter takes one value or several: a list is OR within
+        the filter and AND across filters. `finding_status` may name several
+        statuses too, and then the before-filter counts cover all of them.
         """
         columns = [
             "finding_id",
@@ -1058,10 +1121,26 @@ class DashboardQueries:
             "due_source",
             "owner",
         ]
+        statuses = _many(finding_status) or ("open",)
+        triages = set(_many(triage))
+        dues = set(_many(due))
+        effectives = set(_many(effective))
+        rescoreds = set(_many(rescored))
+        components = set(_many(component))
+        exposures = set(_many(exposure))
+        sql_filters: dict[str, Any] = {
+            "capability": _many(capability),
+            "severity": _many(severity),
+            "rule_id": rule_id,
+            "owner": _many(owner),
+            "path": path,
+            "older_than_days": older_than_days,
+            "newer_than_days": newer_than_days,
+        }
 
-        counts = self._severity_counts(repo_full_name, finding_status)
+        counts = self._severity_counts(repo_full_name, statuses)
         total = sum(counts.values())
-        by_capability = self._capability_counts(repo_full_name, finding_status)
+        by_capability = self._capability_counts(repo_full_name, statuses)
 
         # The stored environmental scores, counted over the same scope as
         # `total`: every finding of this status, before any filter (#60828).
@@ -1070,14 +1149,21 @@ class DashboardQueries:
             if session is not None
             else {}
         )
-        status_ids = self._status_finding_ids(repo_full_name, finding_status)
+        # Where each finding of this status sits (the Exposure and Component
+        # filters' counts), read once and reused for the filtering below.
+        declared = list(surfaces or [])
+        placed = self.placements(repo_full_name, statuses, declared)
+        status_ids = list(placed)
         by_rescoring = environment_view.count_states(status_ids, stored)
         by_effective = environment_view.count_effective(status_ids, stored)
-        unplaced: set[str] | None = (
-            self.unplaced_finding_ids(repo_full_name, finding_status, surfaces or [])
-            if component == "none"
-            else None
-        )
+        by_exposure = dict.fromkeys(EXPOSURES, 0)
+        by_component: dict[str, int] = {"none": 0}
+        for surface in declared:
+            by_component[str(surface.id)] = 0
+        for placed_surface in placed.values():
+            by_exposure[_exposure_of(placed_surface)] += 1
+            key = "none" if placed_surface is None else str(placed_surface.id)
+            by_component[key] = by_component.get(key, 0) + 1
 
         # The correlation pool is fetched separately from the rows on screen,
         # for the reason Patchwork's pipeline does the same (spec 08 §5a): a
@@ -1087,20 +1173,16 @@ class DashboardQueries:
         # another scanner, so a view filtered to `critical` would report no
         # combinations at exactly the moment somebody is looking at the worst
         # row.
-        pool = self._finding_rows(
-            repo_full_name, columns, finding_status, capabilities=CORRELATION_CAPABILITIES
-        )
         # Accepted findings join the open view's pool (operator decision
         # 2026-09-28, `mykronos.toxic`): accepting half of a toxic pair is a
         # decision about that half alone, and must not hide the pair here
         # while the risk decision still counts it.
-        if finding_status == "open":
-            pool = pool + self._finding_rows(
-                repo_full_name,
-                columns,
-                "accepted_risk",
-                capabilities=CORRELATION_CAPABILITIES,
-            )
+        pool_statuses = statuses
+        if "open" in statuses and "accepted_risk" not in statuses:
+            pool_statuses = (*statuses, "accepted_risk")
+        pool = self._finding_rows(
+            repo_full_name, columns, pool_statuses, capabilities=CORRELATION_CAPABILITIES
+        )
         combinations = correlate.detect(pool)
         by_id = {str(f["finding_id"]): f for f in pool}
         kev_cves: set[str] = set()
@@ -1127,53 +1209,54 @@ class DashboardQueries:
         # it is not a column a single row carries either — but it needs no
         # session, so it is kept a separate flag from the threat-intel one
         # rather than folded into it and made to look like it does.
-        wants_group_filter = (
+        wants_group_filter = bool(
             wants_threat_intel_filter
-            or triage is not None
+            or triages
             or fixable is not None
-            or due is not None
-            or effective is not None
-            or rescored is not None
-            or unplaced is not None
+            or dues
+            or effectives
+            or rescoreds
+            or components
+            or exposures
         )
 
         if wants_group_filter:
             rows = self._finding_rows(
                 repo_full_name,
                 columns,
-                finding_status,
-                capability=capability,
-                severity=severity,
-                rule_id=rule_id,
-                owner=owner,
+                statuses,
                 limit=CORRELATION_CEILING,
+                **sql_filters,
             )
             pool_truncated = len(rows) >= CORRELATION_CEILING
-            if effective is not None:
+            if effectives:
                 rows = [
                     r
                     for r in rows
                     if (score := stored.get(str(r["finding_id"]))) is not None
-                    and score.effective_severity == effective
+                    and score.effective_severity in effectives
                 ]
-            if rescored is not None:
+            if rescoreds:
                 rows = [
                     r
                     for r in rows
-                    if environment_view.state_of(str(r["finding_id"]), stored) == rescored
+                    if environment_view.state_of(str(r["finding_id"]), stored) in rescoreds
                 ]
-            if unplaced is not None:
-                rows = [r for r in rows if str(r["finding_id"]) in unplaced]
+            if components:
+                rows = [
+                    r for r in rows if _component_of(placed.get(str(r["finding_id"]))) in components
+                ]
+            if exposures:
+                rows = [
+                    r for r in rows if _exposure_of(placed.get(str(r["finding_id"]))) in exposures
+                ]
         else:
             rows = self._finding_rows(
                 repo_full_name,
                 columns,
-                finding_status,
-                capability=capability,
-                severity=severity,
-                rule_id=rule_id,
-                owner=owner,
+                statuses,
                 limit=limit + 1,
+                **sql_filters,
             )
             pool_truncated = len(rows) > limit
             rows = rows[:limit]
@@ -1208,12 +1291,12 @@ class DashboardQueries:
                 for g in groups
                 if g["epss_score"] is not None and g["epss_score"] >= min_epss
             ]
-        if triage is not None:
-            groups = [g for g in groups if g["triage"] == triage]
+        if triages:
+            groups = [g for g in groups if g["triage"] in triages]
         if fixable is not None:
             groups = [g for g in groups if g["fixable"] is fixable]
-        if due is not None:
-            groups = [g for g in groups if g["due_state"] == due]
+        if dues:
+            groups = [g for g in groups if g["due_state"] in dues]
 
         if wants_group_filter:
             truncated = pool_truncated or len(groups) > limit
@@ -1223,23 +1306,18 @@ class DashboardQueries:
         else:
             truncated = pool_truncated
 
+        unfiltered = not any(value not in (None, ()) for value in sql_filters.values())
         return {
             "repo_full_name": repo_full_name,
-            "finding_status": finding_status,
+            "finding_status": ",".join(statuses),
             "total": total,
             "matching": (
                 sum(g["occurrences"] for g in groups)
                 if wants_group_filter
                 else (
                     total
-                    if capability is None and severity is None and rule_id is None
-                    else self._finding_count(
-                        repo_full_name,
-                        finding_status,
-                        capability=capability,
-                        severity=severity,
-                        rule_id=rule_id,
-                    )
+                    if unfiltered
+                    else self._finding_count(repo_full_name, statuses, **sql_filters)
                 )
             ),
             "shown": sum(g["occurrences"] for g in groups),
@@ -1248,6 +1326,26 @@ class DashboardQueries:
             "by_capability": by_capability,
             "by_rescoring": by_rescoring,
             "by_effective_severity": by_effective,
+            "by_status": self._status_counts(repo_full_name),
+            "by_owner": self._owner_counts(repo_full_name, statuses),
+            "by_exposure": by_exposure,
+            "by_component": [
+                {
+                    "value": "none",
+                    "label": "in no component",
+                    "exposure": "unplaced",
+                    "count": by_component["none"],
+                },
+                *(
+                    {
+                        "value": str(surface.id),
+                        "label": str(surface.name),
+                        "exposure": _exposure_of(surface),
+                        "count": by_component.get(str(surface.id), 0),
+                    }
+                    for surface in declared
+                ),
+            ],
             "groups": groups,
             "toxic_combinations": [
                 self._describe_combination(combo, by_id, kev_cves) for combo in combinations
@@ -1445,39 +1543,61 @@ class DashboardQueries:
     def _status_clause(
         self,
         repo_full_name: str,
-        finding_status: str,
+        finding_status: Many,
         *,
-        capability: str | None = None,
-        severity: str | None = None,
+        capability: Many = None,
+        severity: Many = None,
         rule_id: str | None = None,
-        owner: str | None = None,
+        owner: Many = None,
+        path: str | None = None,
+        older_than_days: int | None = None,
+        newer_than_days: int | None = None,
     ) -> tuple[str, list[Any]]:
+        """The SQL half of the Findings tab's filters.
+
+        Every category filter takes one value or several (a list is OR within
+        the filter, AND across filters), so a single-value caller and an old
+        `?severity=high` link mean exactly what they always did.
+        """
         # asset_id, not repo_full_name (spec 14 §5): for a repository asset the
         # two hold the same string, so this is a rename rather than a change.
-        where = ["asset_id = ?", "status = ?"]
-        params: list[Any] = [repo_full_name, finding_status]
-        for column, value in (("capability", capability), ("severity", severity)):
-            if value:
+        where = ["asset_id = ?"]
+        params: list[Any] = [repo_full_name]
+        statuses = _many(finding_status) or ("open",)
+        for column, values in (
+            ("status", statuses),
+            ("capability", _many(capability)),
+            ("severity", _many(severity)),
+        ):
+            if len(values) == 1:
                 where.append(f"{column} = ?")
-                params.append(value)
-        if owner:
-            # Exact match, not a substring: `@org/payments` and
-            # `@org/payments-legacy` are different teams, and a "mine" filter
-            # that quietly included a neighbouring team's work would be worse
-            # than no filter. `unresolved` is a legitimate value to ask for —
-            # it is the queue of work nobody is answerable for yet.
-            if owner == "unresolved":
-                where.append("(owner IS NULL OR owner = '')")
-            elif owner == "unclaimed":
-                # Nobody has taken responsibility *by name*. Distinct from
-                # `unresolved`, which now means the platform could not work it
-                # out at all — rare, and a different problem. This is the queue
-                # B-034 exists for: findings that have an owner only because
-                # they fell to the account the repository belongs to.
-                where.append("(owner IS NULL OR owner = '' OR owner_source = 'repo_owner')")
-            else:
-                where.append("owner = ?")
-                params.append(owner)
+                params.append(values[0])
+            elif values:
+                where.append(f"{column} IN ({', '.join('?' for _ in values)})")
+                params += list(values)
+        owners = _many(owner)
+        if owners:
+            ors: list[str] = []
+            for name in owners:
+                # Exact match, not a substring: `@org/payments` and
+                # `@org/payments-legacy` are different teams, and a "mine"
+                # filter that quietly included a neighbouring team's work would
+                # be worse than no filter. `unresolved` is a legitimate value
+                # to ask for — it is the queue of work nobody is answerable
+                # for yet.
+                if name == "unresolved":
+                    ors.append("(owner IS NULL OR owner = '')")
+                elif name == "unclaimed":
+                    # Nobody has taken responsibility *by name*. Distinct from
+                    # `unresolved`, which now means the platform could not work
+                    # it out at all — rare, and a different problem. This is the
+                    # queue B-034 exists for: findings that have an owner only
+                    # because they fell to the account the repository belongs to.
+                    ors.append("(owner IS NULL OR owner = '' OR owner_source = 'repo_owner')")
+                else:
+                    ors.append("owner = ?")
+                    params.append(name)
+            where.append(f"({' OR '.join(ors)})")
         if rule_id:
             # Free-text, not a category filter with a count on a button
             # (spec 17 §3) — matched against rule_id and title, since Trivy's
@@ -1486,28 +1606,60 @@ class DashboardQueries:
             where.append("(rule_id ILIKE ? OR title ILIKE ?)")
             needle = f"%{rule_id}%"
             params += [needle, needle]
+        if path:
+            # Where it is: the file for code and config, the package for a
+            # dependency. A glob when it has `*` or `?` (`web/**`, `*.tf`),
+            # otherwise a substring, case-insensitive either way.
+            where.append(
+                "(file_path ILIKE ? ESCAPE '\\' OR package_name ILIKE ? ESCAPE '\\')"
+            )
+            pattern = _like_pattern(path)
+            params += [pattern, pattern]
+        now = utcnow()
+        if older_than_days is not None:
+            # First seen at least N days ago. A finding with no first sighting
+            # recorded matches neither age filter rather than both.
+            where.append("first_seen_at <= ?")
+            params.append(now - timedelta(days=older_than_days))
+        if newer_than_days is not None:
+            where.append("first_seen_at > ?")
+            params.append(now - timedelta(days=newer_than_days))
         return " AND ".join(where), params
 
     def _finding_count(
         self,
         repo_full_name: str,
-        finding_status: str,
-        *,
-        capability: str | None = None,
-        severity: str | None = None,
-        rule_id: str | None = None,
+        finding_status: Many,
+        **filters: Any,
     ) -> int:
-        clause, params = self._status_clause(
-            repo_full_name,
-            finding_status,
-            capability=capability,
-            severity=severity,
-            rule_id=rule_id,
-        )
+        clause, params = self._status_clause(repo_full_name, finding_status, **filters)
         rows = self.catalog.query(f"SELECT count(*) FROM findings WHERE {clause}", params)
         return int(rows[0][0]) if rows else 0
 
-    def _severity_counts(self, repo_full_name: str, finding_status: str) -> dict[str, int]:
+    def _status_counts(self, repo_full_name: str) -> dict[str, int]:
+        """How many findings this repository holds in each status (the Status
+        filter's counts). Every status, whatever the list is showing."""
+        return {
+            str(status): int(count)
+            for status, count in self.catalog.query(
+                "SELECT status, count(*) FROM findings WHERE asset_id = ? GROUP BY 1",
+                [repo_full_name],
+            )
+        }
+
+    def _owner_counts(self, repo_full_name: str, finding_status: Many) -> dict[str, int]:
+        """Findings of this status per owner, before filters. Unowned findings
+        are counted under `unresolved`, the value that lists them."""
+        clause, params = self._status_clause(repo_full_name, finding_status)
+        out: dict[str, int] = {}
+        for owner, count in self.catalog.query(
+            f"SELECT owner, count(*) FROM findings WHERE {clause} GROUP BY 1", params
+        ):
+            key = str(owner) if owner else "unresolved"
+            out[key] = out.get(key, 0) + int(count)
+        return out
+
+    def _severity_counts(self, repo_full_name: str, finding_status: Many) -> dict[str, int]:
         """How much of each severity is outstanding, before any filter.
 
         Before the filter deliberately: these numbers sit on the filter
@@ -1523,7 +1675,7 @@ class DashboardQueries:
                 counts[str(level)] = int(count)
         return counts
 
-    def _capability_counts(self, repo_full_name: str, finding_status: str) -> dict[str, int]:
+    def _capability_counts(self, repo_full_name: str, finding_status: Many) -> dict[str, int]:
         """How many findings of this status each scan type reported (#60821).
 
         The same clause and the same before-any-filter rule as
@@ -1542,7 +1694,7 @@ class DashboardQueries:
             )
         }
 
-    def _status_finding_ids(self, repo_full_name: str, finding_status: str) -> list[str]:
+    def _status_finding_ids(self, repo_full_name: str, finding_status: Many) -> list[str]:
         """Every finding id of this status: the scope `total` counts."""
         clause, params = self._status_clause(repo_full_name, finding_status)
         return [
@@ -1553,16 +1705,40 @@ class DashboardQueries:
         ]
 
     def unplaced_finding_ids(
-        self, repo_full_name: str, finding_status: str, surfaces: list[Any]
+        self, repo_full_name: str, finding_status: Many, surfaces: list[Any]
     ) -> set[str]:
         """Findings of this status that no declared surface places (#60828).
 
         The same `surface_for` the environmental resolver uses, so "maps to no
         component" here and "repository-level facts only" there are the same
-        finding. Raw output is read to place a container or DAST finding and
-        never leaves this method: only ids are returned.
+        finding.
+        """
+        return {
+            finding_id
+            for finding_id, surface in self.placements(
+                repo_full_name, finding_status, surfaces
+            ).items()
+            if surface is None
+        }
+
+    def placements(
+        self, repo_full_name: str, finding_status: Many, surfaces: list[Any]
+    ) -> dict[str, Any | None]:
+        """Every finding of this status, and the declared surface placing it.
+
+        `None` where no surface does. With no surface declared nothing is read
+        but the ids. Raw output is read only for the capabilities that are
+        placed by it (a container's image, a DAST URL, a network host) and
+        never leaves this method: only the surface is returned.
         """
         clause, params = self._status_clause(repo_full_name, finding_status)
+        if not surfaces:
+            return {
+                str(row[0]): None
+                for row in self.catalog.query(
+                    f"SELECT finding_id FROM findings WHERE {clause}", params
+                )
+            }
         columns = [
             "finding_id",
             "capability",
@@ -1571,14 +1747,17 @@ class DashboardQueries:
             "port",
             "raw_finding_json",
         ]
-        unplaced: set[str] = set()
+        raw_placed = ", ".join(f"'{c}'" for c in _RAW_PLACED)
+        select_list = ", ".join(columns[:-1]) + (
+            f", CASE WHEN capability IN ({raw_placed}) THEN raw_finding_json END"
+        )
+        out: dict[str, Any | None] = {}
         for row in self.catalog.query(
-            f"SELECT {', '.join(columns)} FROM findings WHERE {clause}", params
+            f"SELECT {select_list} FROM findings WHERE {clause}", params
         ):
             finding = dict(zip(columns, row, strict=True))
-            if not surfaces or surface_for(finding, surfaces) is None:
-                unplaced.add(str(finding["finding_id"]))
-        return unplaced
+            out[str(finding["finding_id"])] = surface_for(finding, surfaces)
+        return out
 
     @staticmethod
     def _attach_effective(
@@ -1603,14 +1782,11 @@ class DashboardQueries:
         self,
         repo_full_name: str,
         columns: list[str],
-        finding_status: str,
+        finding_status: Many,
         *,
-        capability: str | None = None,
-        severity: str | None = None,
-        rule_id: str | None = None,
-        owner: str | None = None,
         capabilities: frozenset[str] | None = None,
         limit: int = CORRELATION_CEILING,
+        **filters: Any,
     ) -> list[dict[str, Any]]:
         """Findings of one status for one repo, worst first.
 
@@ -1624,14 +1800,7 @@ class DashboardQueries:
         is a list of decisions; the bytes of a secrets finding belong on the
         detail pane behind the same admin check they always were (spec 12 §5).
         """
-        clause, params = self._status_clause(
-            repo_full_name,
-            finding_status,
-            capability=capability,
-            severity=severity,
-            rule_id=rule_id,
-            owner=owner,
-        )
+        clause, params = self._status_clause(repo_full_name, finding_status, **filters)
         if capabilities is not None:
             placeholders = ", ".join("?" for _ in capabilities)
             clause += f" AND capability IN ({placeholders})"

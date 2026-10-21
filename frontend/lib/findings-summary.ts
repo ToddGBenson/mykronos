@@ -10,6 +10,8 @@
  * in.
  */
 
+import { readValues } from "./findings-filters";
+
 /** Worst first, every level always present — a zero is an answer. */
 export const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"] as const;
 
@@ -19,7 +21,7 @@ export type SummaryCount = {
   /** What the reader sees: `high`, `Dependencies (SCA)`. */
   label: string;
   count: number;
-  /** Whether this count's filter is the one currently applied. */
+  /** Whether this count's value is among those currently applied. */
   active: boolean;
 };
 
@@ -40,6 +42,10 @@ export function findingsSummary(
   query: { status?: string; severity?: string; capability?: string },
   capabilityLabel: (capability: string) => string = (capability) => capability,
 ): FindingsSummary {
+  // Each filter may carry several values (`severity=critical,high`).
+  const severities = readValues(query.severity);
+  const capabilities = readValues(query.capability);
+  const statuses = readValues(query.status);
   const byCapability = Object.entries(page.by_capability ?? {})
     .filter(([, count]) => count > 0)
     // Most first, then by name so equal counts do not reshuffle between loads.
@@ -48,26 +54,30 @@ export function findingsSummary(
       value,
       label: capabilityLabel(value),
       count,
-      active: query.capability === value,
+      active: capabilities.includes(value),
     }));
   // A capability filter arriving from a link elsewhere still gets its chip,
   // at zero, so the applied filter is always visible and removable here.
-  if (query.capability && !byCapability.some((entry) => entry.value === query.capability)) {
-    byCapability.push({
-      value: query.capability,
-      label: capabilityLabel(query.capability),
-      count: 0,
-      active: true,
-    });
+  for (const capability of capabilities) {
+    if (!byCapability.some((entry) => entry.value === capability)) {
+      byCapability.push({
+        value: capability,
+        label: capabilityLabel(capability),
+        count: 0,
+        active: true,
+      });
+    }
   }
   return {
     total: page.total,
-    status: (query.status ?? "open").replace(/_/g, " "),
+    status: (statuses.length ? statuses : ["open"])
+      .map((status) => status.replace(/_/g, " "))
+      .join(" + "),
     bySeverity: SEVERITY_ORDER.map((value) => ({
       value,
       label: value,
       count: page.by_severity[value] ?? 0,
-      active: query.severity === value,
+      active: severities.includes(value),
     })),
     byCapability,
   };

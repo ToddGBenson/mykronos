@@ -41,6 +41,7 @@ import {
   Section,
 } from "@/components/primitives";
 import type { CiPage, ScanHealth, WorkflowsPage } from "@/lib/api";
+import { exportQuery, findingsApiQuery, normalizeQuery } from "@/lib/findings-filters";
 import { canonicalTab } from "@/lib/repo-tabs";
 import {
   getCi,
@@ -630,19 +631,7 @@ async function FindingsTab({
   // never what to do about it, while the scanners had been carrying the answer
   // in every report all along (B-032).
   const [findings, guidance] = await Promise.all([
-    getOpenFindings(repoId, {
-      severity: query.severity,
-      capability: query.capability,
-      finding_status: query.status,
-      rule_id: query.rule_id,
-      kev_only: query.kev_only === "1",
-      min_epss: query.min_epss ? Number(query.min_epss) : undefined,
-      triage: query.triage,
-      fixable: query.fixable === "1" ? true : undefined,
-      effective: query.effective,
-      rescored: query.rescored,
-      component: query.component,
-    }),
+    getOpenFindings(repoId, findingsApiQuery(normalizeQuery(query))),
     getRepoGuidance(repoId),
   ]);
 
@@ -690,21 +679,7 @@ async function FindingsTab({
  * when one is set the links say so rather than imply the file matches.
  */
 function ExportLinks({ repoId, query }: { repoId: string; query: FindingsQuery }) {
-  const params = new URLSearchParams();
-  if (query.severity) params.set("severity", query.severity);
-  if (query.capability) params.set("capability", query.capability);
-  params.set("finding_status", query.status ?? "open");
-  if (query.rule_id) params.set("rule_id", query.rule_id);
-  const unexported = [
-    query.kev_only && "KEV",
-    query.min_epss && "EPSS",
-    query.triage && "triage",
-    query.fixable && "fixable",
-    query.owner && "owner",
-    query.effective && "effective severity",
-    query.rescored && "rescoring",
-    query.component && "component",
-  ].filter(Boolean);
+  const { params, unexported } = exportQuery(normalizeQuery(query));
   const href = (format: string) =>
     `/api/repos/${repoId}/findings/export?format=${format}&${params.toString()}`;
   return (
