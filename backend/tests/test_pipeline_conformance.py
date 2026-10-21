@@ -391,6 +391,56 @@ def test_every_reporting_job_is_cross_checked() -> None:
     )
 
 
+_UPLOAD = re.compile(r"mykronos\.upload\b(?P<args>.*?)(?:\n\s*\n|\Z)", re.S)
+
+
+def _uploads(body: str) -> list[tuple[str, str]]:
+    """Every literal (capability, tool) a job's scripts pass to the uploader."""
+    found = []
+    for match in _UPLOAD.finditer(body):
+        args = match.group("args")
+        capability = re.search(r"--capability\s+(\S+)", args)
+        tool = re.search(r"--tool\s+(\S+)", args)
+        if capability and tool and "$" not in capability.group(1) + tool.group(1):
+            found.append((capability.group(1), tool.group(1)))
+    return found
+
+
+def test_every_upload_names_an_adapter_for_the_file_its_job_writes() -> None:
+    """thehub `prompt-evals` wrote JUnit XML and uploaded it as
+    `--capability ai --tool mykronos-ai-checks`, whose adapter reads only
+    `*.sarif`. Every build since #47 recorded a failed `ai` ScanRun --
+
+        WARNING adapter: No *.sarif files under ../results -- the Mykronos AI
+        checks step produced no output.
+
+    -- and, being the newest `ai` run on the commit, it is the one Mykronos
+    showed for TheHub's ai lane, over `ai-models`' good SARIF. The upload's
+    own failure was swallowed by the task's tolerated-failure guard, so the
+    job stayed green. A job cannot upload a file type it never writes.
+    """
+    from mykronos.adapters.registry import REGISTRY
+
+    wrong: list[str] = []
+    for path in checker.pipelines():
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in document["jobs"]:
+            body = checker._scripts(job)
+            for capability, tool in _uploads(body):
+                spec = REGISTRY.get((capability, tool))
+                if spec is None:
+                    wrong.append(f"{path.name}:{job['name']}: no adapter for {capability}/{tool}")
+                    continue
+                extension = spec.pattern.lstrip("*").rstrip("*")
+                if extension not in body:
+                    wrong.append(
+                        f"{path.name}:{job['name']}: uploads {capability}/{tool}, whose "
+                        f"adapter reads {spec.pattern}, but the job writes no {extension}"
+                    )
+
+    assert not wrong, "\n".join(wrong)
+
+
 def test_the_checker_can_actually_fail(tmp_path: Path) -> None:
     """Strip a timeout and a preflight; the checker must object to both."""
     source = checker.PIPELINE_DIR / "mykronos.yml"
