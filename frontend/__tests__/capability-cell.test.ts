@@ -111,6 +111,46 @@ describe("why a cell is red", () => {
   });
 });
 
+/**
+ * Several jobs per capability: the backend reports the most recently finished
+ * build across them, and the cell follows that build alone.
+ */
+describe("the most recent build across a capability's jobs decides", () => {
+  it("an older failure superseded by a newer success is green", () => {
+    // coverage #5 failed 10-18; unit #444 succeeded 10-20 and is what the API names.
+    const run: CapabilityRun = {
+      ...ok,
+      capability: "unit",
+      lane_pipeline: "mykronos",
+      lane_job: "unit",
+      lane_status: "succeeded",
+      lane_build_name: "444",
+      lane_finished_at: "2026-10-20T10:00:00Z",
+    };
+    expect(cellState({ enabled: true, pending: false, run })).toBe("reporting");
+  });
+
+  it("a newer failure after an older success is red and names that build", () => {
+    const state = cellState({ enabled: true, pending: false, run: laneFailed });
+    expect(state).toBe("failed");
+    expect(cellStateText(state, laneFailed)).toContain("thehub/unit #336");
+  });
+
+  it("the weekly job failing most recently is red and named", () => {
+    const run: CapabilityRun = {
+      ...laneFailed,
+      capability: "unit",
+      lane_pipeline: "mykronos",
+      lane_job: "coverage",
+      lane_build_name: "6",
+    };
+    expect(cellState({ enabled: true, pending: false, run })).toBe("failed");
+    expect(failureReason(run)).toBe(
+      "last run failed 2026-10-20 14:03 UTC (Concourse mykronos/coverage #6)",
+    );
+  });
+});
+
 describe("legend", () => {
   it("lists the red state beside the green one", () => {
     expect(LEGEND_ORDER).toEqual(["reporting", "failed", "silent", "pending", "off"]);

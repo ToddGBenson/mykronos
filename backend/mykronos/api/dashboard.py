@@ -157,8 +157,8 @@ class CapabilityStateOut(BaseModel):
         default=None,
         description=(
             "The lane's last finished build: succeeded, failed, errored, "
-            "aborted or skipped. Where several jobs produce the capability, a "
-            "failing one is reported in preference to a green sibling."
+            "aborted or skipped. Where several jobs produce the capability, "
+            "this is the most recently finished build across them."
         ),
     )
     lane_build_name: str | None = None

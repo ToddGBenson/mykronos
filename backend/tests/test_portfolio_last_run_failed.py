@@ -45,13 +45,29 @@ def job(name: str, status: str | None, at: datetime | None, *, paused: bool = Fa
 
 
 class TestLatestLaneByCapability:
-    def test_a_failing_job_beats_a_newer_green_sibling(self) -> None:
+    def test_an_older_failure_superseded_by_a_newer_success_is_green(self) -> None:
         """mykronos's `unit` is produced by `unit` and the weekly `coverage`.
-        A green coverage run after a red unit build does not make unit green."""
+        A coverage failure that a later green unit build superseded is history:
+        it held the cell red for a week before this rule."""
         lanes = latest_lane_by_capability(
-            MYKRONOS, [job("unit", "failed", T0), job("coverage", "succeeded", T1)]
+            MYKRONOS, [job("coverage", "failed", T0), job("unit", "succeeded", T1)]
         )
         assert lanes["unit"].job == "unit"
+        assert lanes["unit"].failed is False
+
+    def test_a_newer_failure_after_an_older_success_is_red(self) -> None:
+        lanes = latest_lane_by_capability(
+            MYKRONOS, [job("coverage", "succeeded", T0), job("unit", "failed", T1)]
+        )
+        assert lanes["unit"].job == "unit"
+        assert lanes["unit"].failed is True
+        assert lanes["unit"].finished_at == T1
+
+    def test_the_weekly_job_failing_most_recently_is_red_and_named(self) -> None:
+        lanes = latest_lane_by_capability(
+            MYKRONOS, [job("unit", "succeeded", T0), job("coverage", "failed", T1)]
+        )
+        assert lanes["unit"].job == "coverage"
         assert lanes["unit"].failed is True
         assert lanes["unit"].ci == "concourse"
 

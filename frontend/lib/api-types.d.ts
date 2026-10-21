@@ -4500,7 +4500,7 @@ export interface components {
             lane_job?: string | null;
             /**
              * Lane Status
-             * @description The lane's last finished build: succeeded, failed, errored, aborted or skipped. Where several jobs produce the capability, a failing one is reported in preference to a green sibling.
+             * @description The lane's last finished build: succeeded, failed, errored, aborted or skipped. Where several jobs produce the capability, this is the most recently finished build across them.
              */
             lane_status?: string | null;
             /** Lane Build Name */

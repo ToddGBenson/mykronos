@@ -2460,12 +2460,14 @@ def latest_lane_by_capability(pipeline: str, jobs: list[JobStatus]) -> dict[str,
     """Per capability, the lane whose last build the portfolio should show.
 
     A capability can be produced by several jobs (`unit` and `coverage`; two
-    `sast` lanes on a shell-heavy repository). **Any one of them whose last
-    finished build failed or errored makes the capability's lane failed** —
-    a red lane beside a green sibling is still a job that is failing, and
-    "the last state was failed jobs" is the question being answered. The most
-    recently finished failing job is the one named. With none failing, the
-    most recently finished job is reported.
+    `sast` lanes on a shell-heavy repository). **The most recently finished
+    build across those jobs is the capability's last run**, and the lane is
+    failed only if THAT build failed or errored. An older failure on one job
+    that a newer green build of a sibling has superseded is history, not the
+    current state: mykronos's weekly `coverage` failing on 10-18 would
+    otherwise hold `unit` red for a week across every green `unit` build
+    since. Conversely a weekly job that failed after the last green sibling
+    IS the latest state, and is red.
 
     Skipped: paused jobs (a decision, reported by `paused_jobs`), jobs that
     have never finished a build (no outcome to report), and jobs this
@@ -2488,8 +2490,7 @@ def latest_lane_by_capability(pipeline: str, jobs: list[JobStatus]) -> dict[str,
 
     out: dict[str, LaneResult] = {}
     for capability, pool in candidates.items():
-        failing = [j for j in pool if j.status in ConcourseClient.FAILED_STATUSES]
-        chosen = newest(failing or pool)
+        chosen = newest(pool)
         out[capability] = LaneResult(
             ci=ci,
             pipeline=pipeline,
