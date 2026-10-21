@@ -2173,6 +2173,13 @@ jobs:
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
+                # TheHub #60851: whether the pull request merged, for the
+                # unreviewed-governed-merge check. An env var, not a flag: the
+                # release pinned above may predate the check, and an unknown
+                # flag would exit 2 and fail this lane where an unknown
+                # variable is ignored. Empty means not merged. Without a
+                # GITHUB_TOKEN (TheHub #60867) the check reports itself not run.
+                AEGIS_PR_MERGED_AT=$(jq -r '.merged_at // ""' pr.json) \
                 python -m mykronos.aegis_signals \
                   --pr-number "$PR" \
                   --commit-sha "$SHA" \

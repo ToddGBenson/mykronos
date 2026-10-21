@@ -7,6 +7,7 @@ must never be able to explain itself using an input it did not record.
 """
 
 from mykronos.oracle.engine import (
+    INSUFFICIENT_EVIDENCE,
     NOT_ASSESSED,
     Decision,
     OracleEngine,
@@ -16,6 +17,7 @@ from mykronos.oracle.engine import (
 from mykronos.oracle.policy import Policy, PolicyError, cached_policy, load_policy, parse_policy
 
 __all__ = [
+    "INSUFFICIENT_EVIDENCE",
     "NOT_ASSESSED",
     "Decision",
     "OracleEngine",

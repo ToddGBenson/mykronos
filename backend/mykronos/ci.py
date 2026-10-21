@@ -2343,21 +2343,29 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "skill-integrity",
         "checks SKILL.md references before delivery; fails the build, files nothing",
     ),
+    # TheHub #60852 changed what the next three do; each sentence is held to
+    # personal-soc.yml by test_personal_soc_job_wording.
     (
         (PERSONAL_SOC,),
         "doc-drift",
-        "compares the docs against the tree; fails the build, files nothing",
+        "lists docs that may have drifted from the tree, report-only: drift "
+        "does not fail the build, only a check that could not run does; files "
+        "nothing",
     ),
     (
         (PERSONAL_SOC,),
         "external-exposure",
-        "reads the Shodan view of the household IP and alerts; uploads nothing",
+        "reads the Shodan view of the household IP and fails when a port not "
+        "on exposure-allowlist.yml is reachable from the internet, or when the "
+        "lookup could not be made; uploads nothing",
     ),
     (
         (PERSONAL_SOC,),
         "netassess-ingest",
-        "verifies and diffs the network scan published to MinIO and alerts on "
-        "the difference; it writes no scan run of its own",
+        "verifies the network scan published to MinIO and fails on NFS "
+        "exports, SMBv1, an open Wi-Fi access point, anonymous shares, or a "
+        "check that did not run; posts host adds and removes to Slack without "
+        "failing; it writes no scan run of its own",
     ),
     (
         (PERSONAL_SOC,),

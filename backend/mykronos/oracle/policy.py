@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from mykronos.schemas import Severity
+from mykronos.schemas import Capability, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +422,11 @@ class Policy:
     #: file from before 1.13) scores exactly as before with the shadow off.
     environmental: EnvironmentalPolicy = field(default_factory=EnvironmentalPolicy)
 
+    #: TheHub #60848 (policy 1.15). The scan lanes a gate decision requires to
+    #: have reported on the commit it judges. Defaulted empty so a Policy built
+    #: without it (a test, a policy file from before 1.15) judges no lane.
+    lanes_required_per_commit: tuple[str, ...] = ()
+
     def recommendation_for(self, score: float) -> str:
         if score >= self.no_go:
             return "no_go"
@@ -582,6 +587,20 @@ def parse_policy(document: dict[str, Any]) -> Policy:
 
     scope = document.get("scope") or {}
     minimum_severity = str(scope.get("minimum_severity", "low"))
+
+    # A misspelt lane would never match a scan run, so it would make every gate
+    # `insufficient_evidence` - or, on a repository that never ran it, be
+    # silently skipped. Either way refused here rather than discovered later.
+    lanes_raw = scope.get("lanes_required_per_commit", [])
+    if not isinstance(lanes_raw, list):
+        raise PolicyError("scope.lanes_required_per_commit must be a list of capabilities.")
+    capabilities = {c.value for c in Capability}
+    unknown_lanes = sorted(str(lane) for lane in lanes_raw if str(lane) not in capabilities)
+    if unknown_lanes:
+        raise PolicyError(
+            f"scope.lanes_required_per_commit names unknown capabilities: "
+            f"{', '.join(unknown_lanes)}. Known: {', '.join(sorted(capabilities))}."
+        )
     if minimum_severity not in known:
         raise PolicyError(f"scope.minimum_severity {minimum_severity!r} is not a severity.")
 
@@ -774,6 +793,7 @@ def parse_policy(document: dict[str, Any]) -> Policy:
         ),
         raw=document,
         environmental=EnvironmentalPolicy(mode=environmental_mode),
+        lanes_required_per_commit=tuple(str(lane) for lane in lanes_raw),
     )
 
 

@@ -94,6 +94,18 @@ CI_CONFIG_PREFIXES = (
     "workflow-templates/",
 )
 
+#: A governed change merged with no independent review (TheHub #60851). As
+#: heavy as `self_approval`, and for the same reason: once the pull request has
+#: merged, "nobody but the author approved it" is a fact rather than a
+#: heuristic. Still below the block threshold on its own.
+GOVERNED_MERGE_SCORE = 30.0
+GOVERNED_MERGE_KEY = "unreviewed_governed_merge"
+
+#: Governed files that are not under `CI_CONFIG_PREFIXES`: who must review
+#: what. Editing CODEOWNERS without review is editing the rule that review
+#: follows.
+GOVERNED_FILES = frozenset({"CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"})
+
 #: Elevated org access (spec 20 §2). Weighted with `self_approval` as the
 #: heaviest pair, matching `SIGNAL_CAP` — like that one it is a fact rather
 #: than a heuristic (GitHub either reports the role or it does not), and like
@@ -182,6 +194,14 @@ class PullRequestFacts:
     #: is unprivileged because the lookup failed is the wrong direction to be
     #: wrong in (spec 20 §2.2).
     author_role: str | None = None
+    #: Whether the pull request has merged: True, False, or None when the
+    #: caller did not say. Only a merged change can have been merged
+    #: unreviewed, and "unknown" is never read as "not merged" (TheHub #60851).
+    merged: bool | None = None
+    #: Whether `reviews` was fetched with a GitHub token. Anonymous reads are
+    #: rate-limited and see nothing of a private repository, so an empty list
+    #: fetched without one is not evidence that nobody reviewed (TheHub #60867).
+    reviews_authenticated: bool = False
 
 
 def matches_glob(path: str, pattern: str) -> bool:
@@ -560,6 +580,81 @@ def ci_config_signal(facts: PullRequestFacts) -> dict[str, Any] | None:
     }
 
 
+def _governed_paths(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[str]:
+    """Touched paths this change is governed on: the CI that gates it, the
+    pipelines, CODEOWNERS, and this repository's sensitive globs."""
+    return sorted(
+        path
+        for path in facts.changed_files
+        if any(path.startswith(prefix) for prefix in CI_CONFIG_PREFIXES)
+        or path in GOVERNED_FILES
+        or any(matches_glob(path, pattern) for pattern in sensitive_paths)
+    )
+
+
+def _independent_approvals(facts: PullRequestFacts) -> list[ReviewFact]:
+    return [
+        r for r in _approvals(facts) if r.reviewer_login.lower() != facts.author_login.lower()
+    ]
+
+
+def unreviewed_governed_merge_signal(
+    facts: PullRequestFacts, sensitive_paths: list[str]
+) -> dict[str, Any] | None:
+    """A governed change that merged with no independent approval (TheHub #60851).
+
+    The one review-integrity signal that fires on an empty review list, and
+    only because the pull request has merged: an open one with no reviews is
+    "not reviewed yet", a merged one is "landed with nobody independent
+    agreeing". Silent unless the reviews were read with a token - see
+    `checks_not_run` for what is reported instead.
+    """
+    if facts.merged is not True or not facts.reviews_authenticated:
+        return None
+    touched = _governed_paths(facts, sensitive_paths)
+    if not touched or _independent_approvals(facts):
+        return None
+
+    shown = ", ".join(touched[:3])
+    more = f" (+{len(touched) - 3} more)" if len(touched) > 3 else ""
+    return {
+        "key": GOVERNED_MERGE_KEY,
+        "score": GOVERNED_MERGE_SCORE,
+        "rationale": (
+            f"Governed path merged with no independent review: {shown}{more}. "
+            "This pull request merged without an approving review from anyone "
+            "other than its author, on paths that decide what is checked and "
+            "who may change it. A prompt to review it after the fact, not a "
+            "judgement about the author."
+        ),
+    }
+
+
+def checks_not_run(
+    facts: PullRequestFacts, sensitive_paths: list[str]
+) -> list[dict[str, str]]:
+    """Checks that applied to this change and could not be answered.
+
+    Reported so the platform can say "not run" rather than let an absent
+    signal read as a clean one. Only where the check applies, which is a
+    merged change on a governed path. A caller that does not say whether the
+    pull request merged is the Actions workflow, which runs on open pull
+    requests (`pull_request`, `pull_request_review`), where there is no merge
+    to judge yet.
+    """
+    if facts.merged is not True or not _governed_paths(facts, sensitive_paths):
+        return []
+    if not facts.reviews_authenticated:
+        reason = (
+            "Not run: no GitHub token was available to read this pull "
+            "request's reviews (TheHub #60867), and an anonymous read is not "
+            "evidence that nobody reviewed it. Insufficient evidence, not a "
+            "pass."
+        )
+        return [{"key": GOVERNED_MERGE_KEY, "reason": reason}]
+    return []
+
+
 def collect(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[dict[str, Any]]:
     """Every signal that fired, in a stable order.
 
@@ -578,6 +673,7 @@ def collect(facts: PullRequestFacts, sensitive_paths: list[str]) -> list[dict[st
         privilege_adjacent_signal(facts),
         overridden_objection_signal(facts),
         ci_config_signal(facts),
+        unreviewed_governed_merge_signal(facts, sensitive_paths),
     ]
     return [signal for signal in candidates if signal is not None]
 
@@ -694,6 +790,8 @@ def gather_facts(
     reviews: tuple[ReviewFact, ...] = (),
     ai_authored: bool = False,
     author_role: str | None = None,
+    merged: bool | None = None,
+    reviews_authenticated: bool = False,
 ) -> PullRequestFacts:
     """Read the facts out of the checked-out repository.
 
@@ -740,7 +838,23 @@ def gather_facts(
         diff_lines=diff_lines,
         ai_authored=ai_authored,
         author_role=author_role,
+        merged=merged,
+        reviews_authenticated=reviews_authenticated,
     )
+
+
+def _merged_from_env() -> bool | None:
+    """`AEGIS_PR_MERGED_AT` as the pipeline sets it from the pull request:
+    unset is unknown, empty is not merged, a timestamp is merged.
+
+    An environment variable rather than a flag on purpose. The pipelines run
+    this module from a pinned release, and an unknown flag would make an older
+    release exit 2 and fail the lane; an unknown variable is ignored.
+    """
+    value = os.environ.get("AEGIS_PR_MERGED_AT")
+    if value is None:
+        return None
+    return bool(value.strip()) and value.strip() != "null"
 
 
 def _head_commit_time(head_ref: str) -> str | None:
@@ -848,9 +962,13 @@ def main(argv: list[str] | None = None) -> int:
         reviews=reviews,
         ai_authored=discloses_ai(pr_body) or classified is True,
         author_role=args.author_role or None,
+        merged=_merged_from_env(),
+        # The same variable the pipeline sends as the GitHub bearer token. Its
+        # presence is read, never its value.
+        reviews_authenticated=bool(os.environ.get("GITHUB_TOKEN")),
     )
 
-    payload = {
+    submission: dict[str, Any] = {
         "pr_number": args.pr_number,
         "commit_sha": args.commit_sha,
         "author_login": args.author,
@@ -862,7 +980,13 @@ def main(argv: list[str] | None = None) -> int:
         # local heuristic must never say.
         "ai_authorship_flag": classified,
     }
-    json.dump(payload, sys.stdout, ensure_ascii=False)
+    # Only when there is something to say: a server from before TheHub #60851
+    # forbids the field, so a run with nothing unanswered still posts the
+    # shape every deployed server accepts.
+    not_run = checks_not_run(facts, args.sensitive_path)
+    if not_run:
+        submission["not_run"] = not_run
+    json.dump(submission, sys.stdout, ensure_ascii=False)
     return 0
 
 

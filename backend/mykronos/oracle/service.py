@@ -57,6 +57,9 @@ _CONCLUSION = {
     "review_recommended": "neutral",
     "no_go": "neutral",
     "not_assessed": "neutral",
+    # TheHub #60848: a required lane said nothing about this commit. Neutral
+    # for the reason `not_assessed` is: nothing failed, and nothing earned green.
+    "insufficient_evidence": "neutral",
 }
 
 
@@ -179,6 +182,17 @@ def render_check_run_summary(
             "score below is the absence of evidence, not evidence of safety. "
             "No `go` is recorded, because an unscanned repository must not be "
             "indistinguishable from a clean one.",
+            "",
+        ]
+
+    lanes = snapshot.get("lane_evidence") or {}
+    if lanes.get("go_withheld"):
+        lines += [
+            "> **Insufficient evidence — a required scan lane did not report on "
+            "this commit:** "
+            + ", ".join(f"`{lane}`" for lane in lanes.get("insufficient", []))
+            + ". The score below covers only the lanes that did. No `go` is "
+            "recorded, because a lane that said nothing is not a lane that passed.",
             "",
         ]
 

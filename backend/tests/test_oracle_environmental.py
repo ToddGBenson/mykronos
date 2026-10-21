@@ -461,9 +461,12 @@ class TestTheReport:
             _cve("CVE-2024-1111", "high", "a"),
             _cve("CVE-2024-2222", "medium", "b"),
         ])
-        _gate(client, 1, "aaaa111")  # no environmental data yet: agrees
+        # Both gates on the commit `_seed` scanned (conftest's `a91f2c7`): a
+        # `go` needs the lane to have reported on the commit it judges
+        # (TheHub #60848), and this test is about the shadow, not that.
+        _gate(client, 1, "a91f2c7")  # no environmental data yet: agrees
         _score(client, _ids(catalog)["CVE-2024-2222"], scanner="medium", effective="critical")
-        _gate(client, 2, "bbbb222")  # go live, review_recommended in the shadow
+        _gate(client, 2, "a91f2c7")  # go live, review_recommended in the shadow
         run_compaction()
         assert _service(client).record_gate_outcome(REPO, 2, "merged")
         run_compaction()

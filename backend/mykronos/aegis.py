@@ -62,6 +62,10 @@ SIGNAL_CAP: dict[str, float] = {
     # configuration to be right, unlike `sensitive_path` — which is why it sits
     # beside it in weight despite being narrower.
     "ci_config_modified": 25.0,
+    # TheHub #60851: a governed change merged with no independent approval.
+    # A fact once the pull request has merged, so weighted with
+    # `self_approval`; below the block threshold alone, like every signal.
+    "unreviewed_governed_merge": 30.0,
 }
 
 #: Signals the platform will accept. An unknown key is dropped rather than
@@ -140,6 +144,15 @@ def assess(
     a fault.
     """
     accepted, dropped = _clamp_signals(submission.signals)
+    # Checks the runner says applied and could not be answered (TheHub
+    # #60851). Kept apart from `signals_not_reported`, which cannot tell "did
+    # not fire" from "did not run": these did not run, and say why.
+    not_run: list[dict[str, str]] = []
+    for check in submission.not_run:
+        if check.key in KNOWN_SIGNALS and check.key not in {n["key"] for n in not_run}:
+            not_run.append({"key": check.key, "reason": check.reason})
+        else:
+            dropped.append(check.key)
     contributing = [s for s in accepted if s["score"] > 0]
     raw_total = sum(s["score"] for s in accepted)
     score = int(round(min(100.0, raw_total)))
@@ -184,6 +197,7 @@ def assess(
             KNOWN_SIGNALS - {s["key"] for s in accepted}
         ),
         "signals_rejected": sorted(set(dropped)),
+        "checks_not_run": not_run,
         "contributing_count": len(contributing),
     }
 
@@ -259,6 +273,19 @@ def render_check_run_summary(
         )
     else:
         lines.append("Evaluated; no undisclosed AI authorship detected.")
+
+    # `.get`: rows stored before TheHub #60851 have no such key.
+    not_run = breakdown.get("checks_not_run") or []
+    if not_run:
+        lines += [
+            "",
+            "### Not run",
+            "",
+            "These checks applied to this change and could not be answered. "
+            "Insufficient evidence, not a pass:",
+            "",
+        ]
+        lines += [f"- `{check['key']}`: {check['reason']}" for check in not_run]
 
     not_reported = breakdown["signals_not_reported"]
     if not_reported:
