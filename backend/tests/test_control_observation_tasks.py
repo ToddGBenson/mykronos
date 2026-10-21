@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -251,10 +252,28 @@ class TestTheRegistration:
         )
         assert code == 0, output
         assert "What if" in output
-        assert "Mykronos Observations (host, ToddGBenson/mykronos)" in output
-        assert "Mykronos Observations (LAN, ToddGBenson/mykronos)" in output
+        assert "Mykronos Observations (host, ToddGBenson_mykronos)" in output
+        assert "Mykronos Observations (LAN, ToddGBenson_mykronos)" in output
         assert '-TokenKey "MYKRONOS_CONCOURSE_TOKEN"' in output
         assert_no_token(output)
+
+    def test_no_task_name_carries_a_slash(
+        self, tmp_path: Path, env_file: Path
+    ) -> None:
+        # Task Scheduler refuses '/' in a name, and -WhatIf never asks it, so
+        # "(host, ToddGBenson/mykronos)" passed here and failed on the first
+        # real registration (2026-10-20).
+        code, output = self.register(
+            tmp_path,
+            env_file,
+            "-HostRepo ToddGBenson/mykronos,ToddGBenson/TheHub "
+            "-LanCidr 192.168.0.14/32 -LanAuthorizationReference 'CHG-1: test'",
+        )
+        assert code == 0, output
+        names = re.findall(r'on target "([^"]+)"', output)
+        assert len(names) == 3, output
+        for name in names:
+            assert "/" not in name and "\\" not in name, name
 
     def test_no_range_means_no_lan_task(self, tmp_path: Path, env_file: Path) -> None:
         code, output = self.register(tmp_path, env_file)

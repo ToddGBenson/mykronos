@@ -13,9 +13,9 @@
     inside the backend (the `exposure` job, every 6 hours). The host and LAN
     collectors run on this Windows host, so they need a Scheduled Task each:
 
-      "Mykronos Observations (host, <owner/repo>)"   daily 05:00
+      "Mykronos Observations (host, <owner_repo>)"   daily 05:00
           Publish-ControlObservations.ps1, one task per -HostRepo.
-      "Mykronos Observations (LAN, <owner/repo>)"    daily 05:30
+      "Mykronos Observations (LAN, <owner_repo>)"    daily 05:30
           python -m mykronos.lan_scan. Registered ONLY when -LanCidr and
           -LanAuthorizationReference are both given: there is no default
           range and no scan without an authorization (spec 14 section 3).
@@ -92,6 +92,14 @@ $Python = [IO.Path]::GetFullPath($Python)
 $invoke = Join-Path $PSScriptRoot 'Invoke-ControlObservationCollector.ps1'
 $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
 
+function Get-TaskName {
+    # Task Scheduler refuses '/' in a task name ("The parameter is incorrect";
+    # '\' would file it in a folder), so the repository is written owner_repo,
+    # as the collector's last-<collector>-<owner_repo>.log already is.
+    param([string] $Collector, [string] $Repo)
+    return "$TaskPrefix ($Collector, $($Repo -replace '[\\/]', '_'))"
+}
+
 function Format-Arg {
     # One argument for the task's command line, double-quoted. Nothing passed
     # here is a secret: the tokens are read from -EnvFile at run time.
@@ -103,7 +111,7 @@ $tasks = @()
 foreach ($repo in $HostRepo) {
     $entry = Get-RepoEntry -Repo $repo
     $tasks += [pscustomobject]@{
-        Name   = "$TaskPrefix (host, $repo)"
+        Name   = Get-TaskName -Collector 'host' -Repo $repo
         At     = $HostAt
         Limit  = New-TimeSpan -Minutes 15
         Params = [ordered]@{ Collector = 'host'; Repo = $repo; TokenKey = $entry.TokenKey
@@ -113,7 +121,7 @@ foreach ($repo in $HostRepo) {
 if ($LanCidr.Count -gt 0) {
     $entry = Get-RepoEntry -Repo $LanRepo
     $tasks += [pscustomobject]@{
-        Name   = "$TaskPrefix (LAN, $LanRepo)"
+        Name   = Get-TaskName -Collector 'LAN' -Repo $LanRepo
         At     = $LanAt
         Limit  = New-TimeSpan -Minutes 90
         Params = [ordered]@{ Collector = 'lan'; Repo = $LanRepo; TokenKey = $entry.TokenKey
