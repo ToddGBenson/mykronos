@@ -49,6 +49,7 @@ from mykronos.api.po_estate import router as po_estate_router
 from mykronos.api.po_review_queue import router as po_review_queue_router
 from mykronos.api.product_owner import router as product_owner_router
 from mykronos.api.repo_read import router as repo_read_router
+from mykronos.api.repo_risk_acceptances import router as repo_risk_acceptances_router
 from mykronos.api.repos import router as repos_router
 from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.rule_vectors import router as rule_vectors_router
@@ -916,6 +917,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agent_router)
     app.include_router(approvals_router)
     app.include_router(risk_acceptances_router)
+    app.include_router(repo_risk_acceptances_router)
     app.include_router(repo_read_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
