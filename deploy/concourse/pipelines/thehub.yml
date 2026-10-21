@@ -4895,12 +4895,20 @@ jobs:
                 TAIL=$(tail -3 /tmp/evals.log | tr -s '[:space:]' ' ' | cut -c1-200)
 
                 # PS-1: reported to Mykronos, not only to TheHub's own
-                # lifecycle. Evaluation coverage is one of the three concerns
-                # D-047 puts under the `ai` capability - the other two being
-                # prompt-injection surface and model provenance, which the
-                # `ai-models` lane covers. Two `ai` ScanRuns per commit under
-                # different tool names is intended: each answers for itself,
-                # and the coverage cross-check takes the newest.
+                # lifecycle.
+                #
+                # As `qa`/`junit`, the way `lint-and-types` and `api-inventory`
+                # report: what this task writes is a JUnit XML stage record,
+                # and a stage record carries a run, never a finding (D-046).
+                # Until 2026-10-20 it was uploaded as `ai`/`mykronos-ai-checks`,
+                # whose adapter reads only `*.sarif`, so every build since #47
+                # recorded a FAILED `ai` ScanRun ("No *.sarif files under
+                # ../results") -- and, being the newest `ai` run on the commit,
+                # that is the one Mykronos showed for TheHub's ai lane, over
+                # `ai-models`' good SARIF. The guard below swallowed the upload
+                # error, so the job stayed green. D-047's three `ai` concerns,
+                # evaluation coverage included, are what `check_ai.py` in
+                # `ai-models` reports; this lane's contribution is the run.
                 #
                 # Tolerated failure throughout. The eval gate is this job's
                 # product; a reporting problem must not become a second
@@ -4913,7 +4921,7 @@ jobs:
                     --out ../results/prompt-evals.xml --suite prompt-evals \
                     --case "prompt-evals:${rc}:/tmp/evals.log"
                   MYKRONOS_JOB=prompt-evals python -m mykronos.upload \
-                    --capability ai --tool mykronos-ai-checks \
+                    --capability qa --tool junit \
                     --results-path ../results \
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                     --repo ToddGBenson/TheHub \

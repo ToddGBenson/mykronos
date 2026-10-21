@@ -241,7 +241,9 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # so several runs per commit is a richer answer rather than a collision.
     ((MYKRONOS,), "lint-and-types", "qa"),
     ((MYKRONOS,), "frontend", "qa"),
-    ((THEHUB,), "prompt-evals", "ai"),
+    # `qa`, not `ai`: it uploads a JUnit stage record, and the `ai` adapter
+    # reads SARIF only -- as `ai` every upload failed (2026-10-20).
+    ((THEHUB,), "prompt-evals", "qa"),
     # thehub's `api-inventory` was declared here until #59100. It regenerated
     # the OpenAPI inventory against the RUNNING demo instance, so it went with
     # the demo environment when Path B was retired (ADR 0072).
