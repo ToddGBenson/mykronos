@@ -19,9 +19,10 @@ carries a `source`, an `as_of` and a `status`:
 - ``unavailable`` -- its source could not be read. It says so, with the
   reason, and never renders as an empty section that looks like "all clear".
   That gap is what kept four security lanes paused for thirty-two days (#401).
-- ``not_available`` -- not built yet. Sprint health and the board/PR side of
-  "needs you" read TheHub's board and GitHub, which is B3 (TheHub #60861).
-  They are present, named, and empty on purpose rather than invented.
+- ``not_available`` -- not built yet: present, named, and empty on purpose
+  rather than invented. Since B3 (TheHub #60861) no section is; "needs you",
+  sprint health and the board check behind suggested focus and next-sprint
+  candidates read TheHub's board and GitHub through `delivery_sources`.
 
 Every builder here catches its own failure and returns an ``unavailable``
 section: one unreadable store must never take the rest of the page with it.
@@ -30,6 +31,7 @@ section: one unreadable store must never take the rest of the page with it.
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -77,14 +79,6 @@ SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 #: Which statuses count as a closure, and the ones a person decided.
 CLOSED_STATUSES = ("fixed", "false_positive", "accepted_risk", "suppressed", "superseded")
 HUMAN_DISPOSITIONS = ("false_positive", "suppressed")
-
-#: B3's reason, word for word wherever it applies, so a reader can find it.
-B3_REASON = (
-    "B3 (TheHub #60861): this reads TheHub's board and GitHub's pull requests, "
-    "which this endpoint does not read yet. Nothing is shown rather than "
-    "something invented."
-)
-
 
 @dataclass
 class Line:
@@ -914,54 +908,510 @@ def trust_section(
 
 
 # ---------------------------------------------------------------------------
-# B3 and the roll-up
+# The board and the pull requests (B3, TheHub #60861)
 # ---------------------------------------------------------------------------
 
 
-def not_yet(key: str, title: str, source: str) -> Section:
-    return Section(
-        key=key, title=title, status=NOT_AVAILABLE, source=source, as_of=None, reason=B3_REASON
+#: Board conventions: the icebox holds what needs Todd's action, the backlog
+#: what needs his decision, each titled so (TheHub's own routing rule).
+OPERATOR_ACTION_PREFIX = "operator action:"
+DECISION_PREFIX = "decision:"
+
+#: A sprint story whose TheHub record has not changed in this many days is
+#: stuck. Measured by `updated_at`, the only move stamp the story list
+#: carries: an edit counts as a move, so this under-reports rather than
+#: over-reports.
+STUCK_DAYS = 3
+
+#: Gates at which a sprint story should have a change open or merged.
+#: `tested` and later have merged one already.
+PRE_MERGE_GATES = ("intake", "clarified", "designed", "ready", "in_progress")
+SHIPPED_GATES = ("deployed", "verified")
+
+#: GitHub `mergeable_state` values that do not stop a green, mergeable pull
+#: request from being merged by the person who merges every pull request:
+#: `blocked` is branch protection waiting on that person's review.
+_MERGEABLE_STATES = ("clean", "has_hooks", "unstable", "blocked", "")
+
+NEEDS_YOU_SOURCE = (
+    "TheHub board (icebox OPERATOR ACTION:, backlog DECISION:); GitHub open pull "
+    "requests on onboarded repositories (mergeable, checks, age)"
+)
+SPRINT_SOURCE = "TheHub board (sprint and done buckets); GitHub open pull requests"
+
+
+def _title(story: dict[str, Any]) -> str:
+    return str(story.get("title") or "").strip()
+
+
+def _story_ref(story: dict[str, Any]) -> str:
+    return f"TheHub #{story.get('id')}"
+
+
+def _parse(value: Any) -> datetime | None:
+    from mykronos.po_console import parse_time
+
+    return parse_time(value)
+
+
+def _days(since: datetime | None, now: datetime) -> int | None:
+    return max(0, (_naive(now) - since).days) if since is not None else None
+
+
+def _age(days: int | None) -> str:
+    return "" if days is None else f"open {days} day(s)"
+
+
+@dataclass
+class Readiness:
+    """Where one pull request stands, for the person who merges it."""
+
+    repo_full_name: str
+    number: int
+    url: str
+    title: str
+    #: ready | red | conflict | behind | waiting | pending | unknown | draft
+    state: str
+    why: str
+    age_days: int | None
+    checks: dict[str, int] | None
+    mergeable_state: str
+    story_ids: list[int]
+
+
+#: Which states are a blocker, as against "not decided yet".
+BLOCKED_STATES = ("red", "conflict", "behind", "waiting")
+
+
+def pr_readiness(pr: Any, *, now: datetime) -> Readiness:
+    """Ready to merge (mergeable and green), blocked (conflict, red checks, or
+    waiting on another pull request), or not yet known -- never guessed ready."""
+    checks = pr.checks
+    counts = (
+        {"total": checks.total, "passed": checks.passed, "failed": checks.failed,
+         "pending": checks.pending}
+        if checks is not None
+        else None
     )
+    stacked = bool(pr.base_branch) and bool(pr.default_branch) and (
+        pr.base_branch != pr.default_branch
+    )
+    if pr.draft:
+        state, why = "draft", "A draft: not offered for merge yet."
+    elif stacked or pr.depends_on:
+        on = ", ".join(f"#{n}" for n in pr.depends_on) or pr.base_branch
+        state, why = "waiting", f"Stacked on {on}; it merges after that does."
+    elif pr.mergeable is False or pr.mergeable_state == "dirty":
+        state, why = "conflict", f"Conflicts with {pr.base_branch or 'its base'}."
+    elif checks is not None and checks.failed:
+        state, why = "red", f"{checks.failed} of {checks.total} check(s) failed."
+    elif pr.mergeable_state == "behind":
+        state, why = "behind", "Behind its base branch and must be updated first."
+    elif checks is None:
+        state, why = "unknown", "Its checks could not be read."
+    elif checks.pending:
+        state, why = "pending", f"{checks.pending} check(s) still running."
+    elif pr.mergeable is None:
+        state, why = "unknown", (
+            "GitHub has not said whether it can merge."
+            if pr.detail_read
+            else "Its mergeable state was not read."
+        )
+    elif pr.mergeable_state not in _MERGEABLE_STATES:
+        state, why = "unknown", f"GitHub says {pr.mergeable_state}."
+    else:
+        state, why = "ready", (
+            f"Mergeable, {checks.passed}/{checks.total} check(s) green."
+            if checks.total
+            else "Mergeable; no checks ran on it."
+        )
+    return Readiness(
+        repo_full_name=pr.repo_full_name,
+        number=pr.number,
+        url=pr.url,
+        title=pr.title,
+        state=state,
+        why=why,
+        age_days=_days(_naive(pr.opened_at) if pr.opened_at else None, now),
+        checks=counts,
+        mergeable_state=pr.mergeable_state,
+        story_ids=list(pr.story_ids),
+    )
+
+
+def _pr_line(r: Readiness) -> Line | None:
+    name = f"{r.repo_full_name}#{r.number}"
+    age = _age(r.age_days)
+    tail = f" ({age})" if age else ""
+    if r.state == "ready":
+        return Line(
+            what=f"Merge {name}: {r.title}",
+            so_what=f"{r.why} Waiting only on you{tail}.",
+            work=MERGE, repo_full_name=r.repo_full_name, ref=r.url,
+        )
+    if r.state == "waiting":
+        return Line(
+            what=f"{name} waits on another pull request: {r.title}",
+            so_what=f"{r.why} Merge that first{tail}.",
+            work=MERGE, repo_full_name=r.repo_full_name, ref=r.url,
+        )
+    if r.state in ("red", "conflict", "behind"):
+        fix = {
+            "red": "Its checks failed, so it cannot merge until they pass",
+            "conflict": "It cannot merge until it is rebased",
+            "behind": "It cannot merge until the branch is updated",
+        }[r.state]
+        return Line(
+            what=f"{name} is blocked: {r.why}",
+            so_what=f"{fix}: {r.title}{tail}.",
+            work=STORY, repo_full_name=r.repo_full_name, ref=r.url,
+        )
+    return None
+
+
+def _board_items(board: Any, now: datetime) -> tuple[list[Line], list[Line], dict[str, Any]]:
+    actions = [
+        s for s in board.stories.get("icebox", [])
+        if _title(s).lower().startswith(OPERATOR_ACTION_PREFIX)
+    ]
+    decisions = [
+        s for s in board.stories.get("backlog", [])
+        if _title(s).lower().startswith(DECISION_PREFIX)
+    ]
+
+    def waited(story: dict[str, Any]) -> int | None:
+        return _days(_parse(story.get("moved_at")) or _parse(story.get("created_at")), now)
+
+    def oldest_first(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(stories, key=lambda s: -(waited(s) or 0))
+
+    action_lines = [
+        Line(
+            what=_title(s),
+            so_what="Needs your action, and nobody else can take it"
+            + (f": in the icebox {waited(s)} day(s)." if waited(s) is not None else "."),
+            work=STORY,
+            ref=_story_ref(s),
+        )
+        for s in oldest_first(actions)
+    ]
+    decision_lines = [
+        Line(
+            what=_title(s),
+            so_what="A call only you can make; the work behind it waits"
+            + (f" ({waited(s)} day(s) so far)." if waited(s) is not None else "."),
+            work=DECISION,
+            ref=_story_ref(s),
+        )
+        for s in oldest_first(decisions)
+    ]
+    data = {
+        "operator_actions": [
+            {"id": s.get("id"), "title": _title(s), "waiting_days": waited(s)} for s in actions
+        ],
+        "decisions": [
+            {"id": s.get("id"), "title": _title(s), "waiting_days": waited(s)} for s in decisions
+        ],
+    }
+    return action_lines, decision_lines, data
+
+
+def _stamps(*reads: Any) -> list[datetime]:
+    return [_naive(r.as_of) for r in reads if r is not None]
+
+
+def needs_you_section(delivery: Any, *, now: datetime) -> Section:
+    """What is waiting on the operator today: pull requests to merge or
+    unblock, and the board items only he can act on or decide."""
+    key, title = "needs_you_today", "Needs you today"
+    board, prs = delivery.board, delivery.pull_requests
+    if board is None and prs is None:
+        return unavailable(
+            key, title, NEEDS_YOU_SOURCE, f"{delivery.board_error} {delivery.pull_requests_error}"
+        )
+
+    missing: list[str] = []
+    lines: list[Line] = []
+    data: dict[str, Any] = {}
+
+    if prs is not None:
+        readiness = [pr_readiness(pr, now=now) for pr in prs.pull_requests]
+        readiness.sort(key=lambda r: -(r.age_days or 0))
+        ready = [r for r in readiness if r.state == "ready"]
+        blocked = [r for r in readiness if r.state in BLOCKED_STATES]
+        lines.extend(line for r in ready if (line := _pr_line(r)) is not None)
+        data["pr_readiness"] = {
+            "open": len(readiness),
+            "ready": [asdict(r) for r in ready],
+            "blocked": [asdict(r) for r in blocked],
+            "failed_checks": [asdict(r) for r in readiness if r.state == "red"],
+            "pending": [asdict(r) for r in readiness if r.state == "pending"],
+            "unknown": [asdict(r) for r in readiness if r.state == "unknown"],
+            "drafts": sum(1 for r in readiness if r.state == "draft"),
+            "unreachable_repos": [repo for repo, _ in prs.unreachable],
+            "details_unread": prs.details_unread,
+        }
+        if prs.stale:
+            missing.append(f"{prs.reason} Pull requests are as of {prs.as_of.isoformat()}.")
+        if prs.unreachable:
+            missing.append(
+                "GitHub would not list pull requests for "
+                + ", ".join(sorted({repo for repo, _ in prs.unreachable}))
+                + "."
+            )
+        if prs.details_unread:
+            missing.append(
+                f"{prs.details_unread} pull request(s) had no mergeable verdict read, so "
+                "they are not counted as ready."
+            )
+    else:
+        missing.append(delivery.pull_requests_error)
+        blocked = []
+
+    if board is not None:
+        action_lines, decision_lines, board_data = _board_items(board, now)
+        lines.extend(decision_lines)
+        lines.extend(action_lines)
+        data["board"] = board_data
+        if board.stale:
+            missing.append(f"{board.reason} The board is as of {board.as_of.isoformat()}.")
+    else:
+        missing.append(delivery.board_error)
+
+    lines.extend(line for r in blocked if (line := _pr_line(r)) is not None)
+    stamps = _stamps(board, prs)
+    return Section(
+        key=key,
+        title=title,
+        status=PARTIAL if missing else OK,
+        source=NEEDS_YOU_SOURCE,
+        # The oldest answer: the section is no fresher than that.
+        as_of=min(stamps) if stamps else None,
+        reason=" ".join(missing),
+        lines=lines,
+        data=data,
+    )
+
+
+def sprint_health_section(delivery: Any, *, now: datetime) -> Section:
+    """Sprint stories by gate, the stuck ones, the ones with no change open,
+    and what reached `deployed` in the window."""
+    from mykronos.product_owner import HUB_GATES
+
+    key, title = "sprint_health", "Sprint health"
+    board, prs = delivery.board, delivery.pull_requests
+    if board is None:
+        return unavailable(key, title, SPRINT_SOURCE, delivery.board_error)
+
+    sprint = board.stories.get("sprint", [])
+    counts = Counter(str(s.get("gate") or "intake") for s in sprint)
+    by_gate = {gate: counts.pop(gate, 0) for gate in HUB_GATES}
+    by_gate.update(sorted(counts.items()))
+
+    def is_board_item(story: dict[str, Any]) -> bool:
+        lowered = _title(story).lower()
+        return lowered.startswith((OPERATOR_ACTION_PREFIX, DECISION_PREFIX))
+
+    lines: list[Line] = []
+    stuck = []
+    for story in sprint:
+        gate = str(story.get("gate") or "intake")
+        idle = _days(_parse(story.get("updated_at")), now)
+        if gate in SHIPPED_GATES or idle is None or idle < STUCK_DAYS:
+            continue
+        stuck.append({"id": story.get("id"), "title": _title(story), "gate": gate,
+                      "idle_days": idle})
+    stuck.sort(key=lambda s: -int(s["idle_days"]))
+    for s in stuck:
+        lines.append(
+            Line(
+                what=f"TheHub #{s['id']} has not moved in {s['idle_days']} day(s) "
+                f"(at {s['gate']}): {s['title']}",
+                so_what="Stuck in the sprint: unblock it, split it, or take it out.",
+                work=DECISION,
+                ref=f"TheHub #{s['id']}",
+            )
+        )
+
+    missing: list[str] = []
+    no_pr: list[dict[str, Any]] | None = None
+    if prs is not None:
+        referenced = {sid for pr in prs.pull_requests for sid in pr.story_ids}
+        no_pr = [
+            {"id": s.get("id"), "title": _title(s), "gate": str(s.get("gate") or "intake")}
+            for s in sprint
+            if str(s.get("gate") or "intake") in PRE_MERGE_GATES
+            and not is_board_item(s)
+            and _int(s.get("id")) not in referenced
+        ]
+        for s in no_pr:
+            lines.append(
+                Line(
+                    what=f"TheHub #{s['id']} is in the sprint with no open pull request: "
+                    f"{s['title']}",
+                    so_what="Committed work nobody has opened a change for.",
+                    work=STORY,
+                    ref=f"TheHub #{s['id']}",
+                )
+            )
+        if prs.unreachable or prs.stale:
+            missing.append(
+                "Pull requests were not read for every repository, so a story counted "
+                "as having none may have one."
+            )
+    else:
+        missing.append(
+            "Which sprint stories have no pull request needs GitHub: "
+            + delivery.pull_requests_error
+        )
+    if board.stale:
+        missing.append(f"{board.reason} The board is as of {board.as_of.isoformat()}.")
+
+    since = _naive(now) - WINDOW
+    deployed = []
+    for story in [*sprint, *board.stories.get("done", [])]:
+        if str(story.get("gate") or "") not in SHIPPED_GATES:
+            continue
+        moved = [
+            t for t in (_parse(story.get(f)) for f in ("updated_at", "moved_at", "closed_at"))
+            if t is not None
+        ]
+        if moved and max(moved) >= since:
+            deployed.append({"id": story.get("id"), "title": _title(story),
+                             "gate": story.get("gate"), "at": max(moved).isoformat()})
+
+    return Section(
+        key=key,
+        title=title,
+        status=PARTIAL if missing else OK,
+        source=SPRINT_SOURCE,
+        as_of=_naive(board.as_of),
+        reason=" ".join(missing),
+        lines=lines,
+        data={
+            "sprint_stories": len(sprint),
+            "by_gate": by_gate,
+            "stuck_days": STUCK_DAYS,
+            "moves_measured_by": "updated_at",
+            "stuck": stuck,
+            "no_pull_request": no_pr,
+            "deployed_last_24h": deployed,
+        },
+    )
+
+
+def _int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Already on the board
+# ---------------------------------------------------------------------------
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
+
+
+#: A title shorter than this is too generic to match by containment.
+_MIN_TITLE_MATCH = 20
+
+
+def on_board(line: Line, stories: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The board story this line already is, by the finding or fix id it
+    references, or by title. None when it is new work."""
+    ref = line.ref.strip()
+    what = _norm(line.what)
+    for story in stories:
+        haystack = " ".join(
+            str(story.get(f) or "") for f in ("title", "detail", "source_ref")
+        )
+        if ref and len(ref) >= 6 and not ref.startswith(("/", "http")) and ref in haystack:
+            return story
+        title = _norm(_title(story))
+        if not title or not what:
+            continue
+        if title == what:
+            return story
+        shorter, longer = sorted((title, what), key=len)
+        if len(shorter) >= _MIN_TITLE_MATCH and shorter in longer:
+            return story
+    return None
+
+
+def _not_on_board(
+    lines: list[Line], stories: list[dict[str, Any]] | None
+) -> tuple[list[Line], list[dict[str, Any]]]:
+    if stories is None:
+        return lines, []
+    kept, dropped = [], []
+    for line in lines:
+        story = on_board(line, stories)
+        if story is None:
+            kept.append(line)
+        else:
+            dropped.append({"what": line.what, "story": _story_ref(story)})
+    return kept, dropped
+
+
+# ---------------------------------------------------------------------------
+# The roll-up
+# ---------------------------------------------------------------------------
 
 
 #: Decisions before stories: a decision unblocks the work behind it.
 _FOCUS_ORDER = {DECISION: 0, MERGE: 1, STORY: 2}
 FOCUS_LIMIT = 5
 
+#: Sections whose lines are board items or pull requests already: never
+#: filtered as "already on the board".
+_FROM_THE_BOARD = ("needs_you_today", "sprint_health")
+
 
 def focus_section(
     sections: list[Section],
     *,
     now: datetime,
+    board: Any = None,
+    board_error: str = "TheHub's board was not read.",
     key: str = "suggested_focus",
     title: str = "Suggested focus",
 ) -> Section:
-    """The few lines from the rest of the page to start with.
-
-    Always `partial` in B2: what is already on the board or in review is B3,
-    so this cannot tell a new item from one somebody has picked up.
-    """
-    source = "this briefing's sections; TheHub board (B3, not read)"
+    """The few lines from the rest of the page to start with, leaving out
+    the lake's items that are already a story on TheHub's board."""
+    source = "this briefing's sections; TheHub board (what is already a story)"
     readable = [s for s in sections if s.status in (OK, PARTIAL)]
     if not readable:
         return unavailable(key, title, source, "None of the sections it ranks could be read.")
-    ranked = sorted(
-        (line for s in readable for line in s.lines),
-        key=lambda line: _FOCUS_ORDER[line.work],
+    stories = board.open_stories() if board is not None else None
+    board_lines = [line for s in readable if s.key in _FROM_THE_BOARD for line in s.lines]
+    lake_lines, dropped = _not_on_board(
+        [line for s in readable if s.key not in _FROM_THE_BOARD for line in s.lines], stories
     )
-    unread = [s.title for s in sections if s.status not in (OK, NOT_AVAILABLE)]
-    reason = B3_REASON + (
-        f" Ranked without: {', '.join(unread)}." if unread else ""
-    )
+    ranked = sorted(board_lines + lake_lines, key=lambda line: _FOCUS_ORDER[line.work])
+
+    missing = []
+    if board is None:
+        missing.append(
+            f"Items already on the board could not be left out. {board_error}"
+        )
+    elif board.stale:
+        missing.append(f"{board.reason} The board is as of {board.as_of.isoformat()}.")
+    unread = [s.title for s in sections if s.status != OK]
+    if unread:
+        missing.append(f"Ranked without: {', '.join(unread)}.")
     return Section(
         key=key,
         title=title,
-        status=PARTIAL,
+        status=PARTIAL if missing else OK,
         source=source,
         as_of=now,
-        reason=reason,
+        reason=" ".join(missing),
         lines=ranked[:FOCUS_LIMIT],
-        data={"candidates": len(ranked)},
+        data={"candidates": len(ranked), "already_on_board": dropped},
     )
 
 
@@ -1072,7 +1522,10 @@ def deploy_and_health(report: briefing_report.Briefing, asset_id: str) -> Sectio
     return section
 
 
-CANDIDATES_SOURCE = "lake findings (guidance fix groups); stalled lanes; TheHub board (B3)"
+CANDIDATES_SOURCE = (
+    "lake findings (guidance fix groups); stalled lanes; TheHub board (what is "
+    "already a story)"
+)
 CANDIDATE_LIMIT = 5
 
 
@@ -1082,12 +1535,16 @@ def next_sprint_candidates(
     asset_id: str,
     *,
     as_of: datetime | None,
+    board: Any = None,
+    board_error: str = "TheHub's board was not read.",
 ) -> Section:
     """Changes that would close the most of this product's open findings.
 
     Derived from the scanner's own fix text (`guidance.fix_groups`), largest
     first, after any lane repair: a fix nobody can scan closes nothing.
-    Always `partial`: which of these are already stories is B3.
+    New work only: a candidate that is already a story on TheHub's board (by
+    the fix id it carries, or by title) is left out and listed in `data`.
+    `partial` when the board could not be read to check.
     """
     from mykronos import guidance
 
@@ -1109,7 +1566,7 @@ def next_sprint_candidates(
                 repo_full_name=asset_id,
             )
         )
-    for group in sorted(groups, key=lambda g: -g.findings)[:CANDIDATE_LIMIT]:
+    for group in sorted(groups, key=lambda g: -g.findings):
         lines.append(
             Line(
                 what=group.action,
@@ -1120,15 +1577,28 @@ def next_sprint_candidates(
                 ref=group.fix_id,
             )
         )
+    stories = board.open_stories() if board is not None else None
+    repairs = len(report.stalled) if report else 0
+    kept_repairs, dropped_repairs = _not_on_board(lines[:repairs], stories)
+    # The cap applies to the fix groups left after the board check, so a
+    # filtered one makes room for the next rather than shortening the list.
+    kept_fixes, dropped_fixes = _not_on_board(lines[repairs:], stories)
+    kept_fixes = kept_fixes[:CANDIDATE_LIMIT]
+    dropped = dropped_repairs + dropped_fixes
+    missing = ""
+    if board is None:
+        missing = f"Candidates already on the board could not be left out. {board_error}"
+    elif board.stale:
+        missing = f"{board.reason} The board is as of {board.as_of.isoformat()}."
     return Section(
         key=key,
         title=title,
-        status=PARTIAL,
+        status=PARTIAL if missing else OK,
         source=CANDIDATES_SOURCE,
         as_of=as_of,
-        reason=B3_REASON,
-        lines=lines,
-        data={"fix_groups": len(groups)},
+        reason=missing,
+        lines=kept_repairs + kept_fixes,
+        data={"fix_groups": len(groups), "already_on_board": dropped},
     )
 
 
@@ -1174,12 +1644,18 @@ def build_overall(
     *,
     now: datetime,
     threshold: int | None = None,
+    delivery: Any = None,
 ) -> DailyBriefing:
     """Every overall section, in the order the prototype reads them.
 
     `build_inputs` are `briefing.build`'s keyword arguments from outside the
-    lake (`briefing_sources.gather` and the onboarding ledger).
+    lake (`briefing_sources.gather` and the onboarding ledger); `delivery` is
+    `delivery_sources.gather`'s board and pull requests. Without it those
+    sections say they were not read.
     """
+    from mykronos.delivery_sources import DeliveryInputs
+
+    delivery = delivery if delivery is not None else DeliveryInputs()
     report, lake_error = _report(catalog, build_inputs, now=now, asset_id=None)
     risk, risk_error = _risk(catalog, db, now=now, asset_id=None, threshold=threshold)
     as_of = _as_of(catalog, None)
@@ -1192,20 +1668,19 @@ def build_overall(
     trust = trust_section(report, risk, as_of=as_of, lake_error=lake_error)
     delta = risk_delta_section(risk, risk_error)
     acceptances = acceptances_section(db, now=now)
-    focus = focus_section([production, trust, delta, acceptances], now=now)
+    needs_you = needs_you_section(delivery, now=now)
+    sprint = sprint_health_section(delivery, now=now)
+    focus = focus_section(
+        [needs_you, production, trust, delta, acceptances, sprint],
+        now=now,
+        board=delivery.board,
+        board_error=delivery.board_error,
+    )
     return DailyBriefing(
         generated_at=now,
         scope="overall",
         repo_full_name=None,
-        sections=[
-            not_yet("needs_you_today", "Needs you today", "TheHub board; GitHub pull requests"),
-            production,
-            trust,
-            delta,
-            acceptances,
-            not_yet("sprint_health", "Sprint health", "TheHub board"),
-            focus,
-        ],
+        sections=[needs_you, production, trust, delta, acceptances, sprint, focus],
     )
 
 
@@ -1217,8 +1692,12 @@ def build_product(
     asset_id: str,
     now: datetime,
     threshold: int | None = None,
+    delivery: Any = None,
 ) -> DailyBriefing:
     """One product: deploy and health, findings delta, lanes, candidates."""
+    from mykronos.delivery_sources import DeliveryInputs
+
+    delivery = delivery if delivery is not None else DeliveryInputs()
     report, lake_error = _report(catalog, build_inputs, now=now, asset_id=asset_id)
     risk, risk_error = _risk(catalog, db, now=now, asset_id=asset_id, threshold=threshold)
     as_of = _as_of(catalog, asset_id)
@@ -1238,6 +1717,13 @@ def build_product(
             deploy,
             delta,
             lane_strip(catalog, report, asset_id, as_of=as_of),
-            next_sprint_candidates(catalog, report, asset_id, as_of=as_of),
+            next_sprint_candidates(
+                catalog,
+                report,
+                asset_id,
+                as_of=as_of,
+                board=delivery.board,
+                board_error=delivery.board_error,
+            ),
         ],
     )

@@ -121,16 +121,20 @@ class TestShape:
             if section["status"] != "ok":
                 assert section["reason"], f"{section['key']} must say why it is not ok"
 
-    def test_the_board_sections_are_named_and_empty_until_b3(
+    def test_no_section_is_left_for_b3(self, client, admin_auth, gathered) -> None:
+        body = _get(client, admin_auth)
+        for section in body["sections"]:
+            assert section["status"] != "not_available", section["key"]
+            assert "B3" not in section["reason"], section["key"]
+
+    def test_without_thehub_the_board_sections_say_so(
         self, client, admin_auth, gathered
     ) -> None:
-        body = _get(client, admin_auth)
-        for key in ("needs_you_today", "sprint_health"):
-            section = _section(body, key)
-            assert section["status"] == "not_available"
-            assert "B3" in section["reason"]
-            assert section["lines"] == []
-            assert section["as_of"] is None
+        sprint = _section(_get(client, admin_auth), "sprint_health")
+        assert sprint["status"] == "unavailable"
+        assert "TheHub is not connected" in sprint["reason"]
+        assert sprint["lines"] == []
+        assert sprint["as_of"] is None
 
     def test_a_viewer_may_read_it(self, client, viewer_auth, gathered) -> None:
         assert client.get("/api/briefing/daily", headers=viewer_auth).status_code == 200
@@ -521,7 +525,7 @@ class TestAcceptances:
 
 
 class TestFocus:
-    def test_decisions_first_and_always_partial_in_b2(self) -> None:
+    def test_decisions_first_and_partial_without_the_board(self) -> None:
         now = utcnow()
         story = daily_briefing.Line(what="s", so_what="s", work="story")
         decision = daily_briefing.Line(what="d", so_what="d", work="decision")
@@ -533,7 +537,7 @@ class TestFocus:
         ]
         focus = daily_briefing.focus_section(sections, now=now)
         assert focus.status == "partial"
-        assert "B3" in focus.reason
+        assert "board" in focus.reason
         assert [line.work for line in focus.lines] == ["decision", "story"]
 
     def test_names_the_sections_it_ranked_without(self) -> None:
@@ -579,7 +583,7 @@ class TestProduct:
 
         candidates = _section(body, "next_sprint_candidates")
         assert candidates["status"] == "partial"
-        assert "B3" in candidates["reason"]
+        assert "TheHub is not connected" in candidates["reason"]
         assert candidates["lines"][0]["what"].startswith("Repair the sast lane")
         assert candidates["data"]["fix_groups"] >= 1
 
