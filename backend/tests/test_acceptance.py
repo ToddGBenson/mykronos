@@ -66,6 +66,12 @@ BATCH = 10_000
 BUDGET_SECONDS = 30.0 * PERF_MULTIPLIER
 #: spec 10 §6.
 PORTFOLIO_BUDGET_SECONDS = 2.0 * PERF_MULTIPLIER
+#: How many times the first ingest a rescan of the same rows may take. Not a
+#: wall-clock budget: both runs happen on the same worker seconds apart, so
+#: contention cancels and what is left is the cost of the update path itself.
+#: Measured at 0.89-1.00x on an idle developer machine (2026-10-21), so 3x
+#: is headroom for noise between the two runs, not for a slower update path.
+RESCAN_RATIO = 3.0
 
 
 @pytest.mark.slow
@@ -126,8 +132,10 @@ def test_rescanning_ten_thousand_findings_updates_rather_than_grows(
         for i in range(BATCH)
     ]
 
+    started = time.perf_counter()
     post_findings(client, auth, findings)
     run_compaction()
+    first_ingest = time.perf_counter() - started
     assert catalog.count("findings") == BATCH
 
     # Same findings, every line shifted by a header comment added to each file.
@@ -138,9 +146,24 @@ def test_rescanning_ten_thousand_findings_updates_rather_than_grows(
     run_compaction()
     elapsed = time.perf_counter() - started
 
+    # The first ingest is the calibration run: the same 10,000 rows on the same
+    # worker seconds earlier, so it pays whatever contention the host is under.
+    # The spec number still holds wherever the machine is fast enough to meet
+    # it; past that, the rescan is held to a fixed multiple of what this machine
+    # just measured for the insert path. Unit 446 took 183s here against a 90s
+    # budget while its whole suite ran 5.7x slower than the build before it.
+    budget = max(BUDGET_SECONDS, RESCAN_RATIO * first_ingest)
+    print(
+        f"\nrescan: {elapsed:.2f}s against a first ingest of {first_ingest:.2f}s "
+        f"(budget {budget:.1f}s = max({BUDGET_SECONDS:.0f}s, "
+        f"{RESCAN_RATIO:g} x first ingest))"
+    )
+
     assert catalog.count("findings") == BATCH, "a rescan must not grow the table"
-    assert elapsed < BUDGET_SECONDS, (
-        f"rescan of {BATCH} findings took {elapsed:.1f}s, budget {BUDGET_SECONDS:.0f}s"
+    assert elapsed < budget, (
+        f"rescan of {BATCH} findings took {elapsed:.1f}s, budget {budget:.1f}s "
+        f"(max of {BUDGET_SECONDS:.0f}s and {RESCAN_RATIO:g} x the "
+        f"{first_ingest:.1f}s first ingest)"
     )
 
 
