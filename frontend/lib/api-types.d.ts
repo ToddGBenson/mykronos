@@ -2010,6 +2010,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/briefing/daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Daily Briefing Route
+         * @description What changed, so what, and whether it is work (TheHub #60860).
+         *
+         *     Overall: Needs you today, Production truth, Can we trust our signals,
+         *     Risk delta, Acceptances, Sprint health, Suggested focus. Per product
+         *     (`repo_id`): Deploy and health, Findings delta, Capability lanes,
+         *     Next-sprint candidates.
+         *
+         *     Every section carries `source`, `as_of` and a `status`. A source that
+         *     could not be read is `unavailable` with its reason. Sprint health and the
+         *     board/PR side of "needs you" are B3 (TheHub #60861) and are
+         *     `not_available` until then. A read.
+         */
+        get: operations["daily_briefing_route_api_briefing_daily_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/control-observations": {
         parameters: {
             query?: never;
@@ -4450,6 +4480,28 @@ export interface components {
             ][];
             action: components["schemas"]["BriefingActionOut"] | null;
         };
+        /** BriefingLineOut */
+        BriefingLineOut: {
+            /** What */
+            what: string;
+            /** So What */
+            so_what: string;
+            /**
+             * Work
+             * @enum {string}
+             */
+            work: "merge" | "decision" | "story";
+            /**
+             * Repo Full Name
+             * @default
+             */
+            repo_full_name: string;
+            /**
+             * Ref
+             * @default
+             */
+            ref: string;
+        };
         /** BriefingOut */
         BriefingOut: {
             /**
@@ -4507,6 +4559,33 @@ export interface components {
             production_lag?: components["schemas"]["ProductionLagOut"][];
             /** Unknown */
             unknown?: components["schemas"]["BriefingUnknownOut"][];
+        };
+        /** BriefingSectionOut */
+        BriefingSectionOut: {
+            /** Key */
+            key: string;
+            /** Title */
+            title: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "unavailable" | "not_available";
+            /** Source */
+            source: string;
+            /** As Of */
+            as_of: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Lines */
+            lines?: components["schemas"]["BriefingLineOut"][];
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
         };
         /** BriefingUnknownOut */
         BriefingUnknownOut: {
@@ -5361,6 +5440,23 @@ export interface components {
             context?: {
                 [key: string]: unknown;
             };
+        };
+        /** DailyBriefingOut */
+        DailyBriefingOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "overall" | "product";
+            /** Repo Full Name */
+            repo_full_name?: string | null;
+            /** Sections */
+            sections: components["schemas"]["BriefingSectionOut"][];
         };
         /** DecisionIn */
         DecisionIn: {
@@ -13554,6 +13650,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeploymentsOut"];
+                };
+            };
+        };
+    };
+    daily_briefing_route_api_briefing_daily_get: {
+        parameters: {
+            query?: {
+                /** @description One product's briefing, by onboarding id (as every dashboard route takes it). Omit for the overall briefing. */
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyBriefingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
