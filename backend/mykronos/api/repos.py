@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import controls, worklist
-from mykronos.adminauth import AdminDep, PrincipalDep
+from mykronos.adminauth import PrincipalDep, WriterDep
 from mykronos.auth import TokenRegistry
 from mykronos.capabilities import (
     CapabilityConfigError,
@@ -401,7 +401,7 @@ def _get(session: Session, repo_id: str) -> RepoOnboarding:
 
 
 @router.get("/-/capabilities", tags=["onboarding"])
-async def list_capability_schemas(actor: AdminDep) -> dict[str, Any]:
+async def list_capability_schemas(actor: WriterDep) -> dict[str, Any]:
     """Config schema per capability, for the UI to render a form from.
 
     Under `/-/` so it cannot be mistaken for a repo id. The valid tool list in
@@ -412,7 +412,7 @@ async def list_capability_schemas(actor: AdminDep) -> dict[str, Any]:
 
 
 @router.post("", response_model=RepoSummary, status_code=status.HTTP_201_CREATED)
-async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) -> RepoSummary:
+async def onboard_repo(request: Request, body: OnboardRequest, actor: WriterDep) -> RepoSummary:
     """Idempotently register a repo (spec 02 §7).
 
     Usually the `installation` webhook gets here first; this exists for the
@@ -471,7 +471,7 @@ async def onboard_repo(request: Request, body: OnboardRequest, actor: AdminDep) 
 @router.get("", response_model=list[RepoSummary])
 async def list_repos(
     request: Request,
-    actor: AdminDep,
+    actor: WriterDep,
     include_removed: bool = Query(
         default=False,
         description=(
@@ -487,7 +487,7 @@ async def list_repos(
 
 
 @router.get("/{repo_id}", response_model=RepoDetail)
-async def get_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoDetail:
+async def get_repo(request: Request, repo_id: str, actor: WriterDep) -> RepoDetail:
     with request.app.state.db.session() as session:
         row = _get(session, repo_id)
         registry = TokenRegistry(session)
@@ -510,7 +510,7 @@ class ScannerUpdate(BaseModel):
 
 @router.patch("/{repo_id}", response_model=RepoSummary)
 async def set_scanner(
-    request: Request, repo_id: str, body: ScannerUpdate, actor: AdminDep
+    request: Request, repo_id: str, body: ScannerUpdate, actor: WriterDep
 ) -> RepoSummary:
     """Record which system scans this repository.
 
@@ -571,7 +571,7 @@ class DeploymentProbeUpdate(BaseModel):
 
 @router.put("/{repo_id}/deployment-probe", response_model=RepoSummary)
 async def set_deployment_probe(
-    request: Request, repo_id: str, body: DeploymentProbeUpdate, actor: AdminDep
+    request: Request, repo_id: str, body: DeploymentProbeUpdate, actor: WriterDep
 ) -> RepoSummary:
     """Set the URL the deployment probe asks (#361).
 
@@ -675,7 +675,7 @@ def _stranding_note(stranded: int, restored: int) -> str:
 
 @router.patch("/{repo_id}/capabilities", response_model=CapabilityUpdateResult)
 async def update_capabilities(
-    request: Request, repo_id: str, body: CapabilityUpdate, actor: AdminDep
+    request: Request, repo_id: str, body: CapabilityUpdate, actor: WriterDep
 ) -> CapabilityUpdateResult:
     """Set the enabled capability set and open the workflow-install PR.
 
@@ -971,7 +971,7 @@ async def update_capabilities(
 
 
 @router.delete("/{repo_id}", response_model=RepoSummary)
-async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> RepoSummary:
+async def offboard_repo(request: Request, repo_id: str, actor: WriterDep) -> RepoSummary:
     """Offboard a repo (spec 02 §6).
 
     Stops all scheduled activity and revokes every ingestion token and grant,
@@ -1014,7 +1014,7 @@ async def offboard_repo(request: Request, repo_id: str, actor: AdminDep) -> Repo
 async def scan_now(
     request: Request,
     repo_id: str,
-    actor: AdminDep,
+    actor: WriterDep,
     capabilities: Annotated[
         list[str] | None,
         Query(
@@ -1167,7 +1167,7 @@ def _workflow_file_for(templates: Any, capability: str) -> str:
 
 
 @router.get("/{repo_id}/workflows", response_model=WorkflowsPage)
-async def list_workflows(request: Request, repo_id: str, actor: AdminDep) -> WorkflowsPage:
+async def list_workflows(request: Request, repo_id: str, actor: WriterDep) -> WorkflowsPage:
     """What runs in this repository, and whether it is switched on
     (spec 32 §6.2).
 
@@ -1330,7 +1330,7 @@ async def _set_workflow_state(
 
 @router.put("/{repo_id}/workflows/{capability}/enable", response_model=WorkflowStateResult)
 async def enable_workflow(
-    request: Request, repo_id: str, capability: str, actor: AdminDep
+    request: Request, repo_id: str, capability: str, actor: WriterDep
 ) -> WorkflowStateResult:
     """Switch one installed workflow back on, with no pull request
     (spec 32 §6)."""
@@ -1339,7 +1339,7 @@ async def enable_workflow(
 
 @router.put("/{repo_id}/workflows/{capability}/disable", response_model=WorkflowStateResult)
 async def disable_workflow(
-    request: Request, repo_id: str, capability: str, actor: AdminDep
+    request: Request, repo_id: str, capability: str, actor: WriterDep
 ) -> WorkflowStateResult:
     """Stop one installed workflow now, with no pull request (spec 32 §6).
 
@@ -1436,7 +1436,7 @@ async def get_risk_profile(
 
 @router.put("/{repo_id}/risk-profile", response_model=RiskProfileOut)
 async def put_risk_profile(
-    request: Request, repo_id: str, body: RiskProfileUpdate, actor: AdminDep
+    request: Request, repo_id: str, body: RiskProfileUpdate, actor: WriterDep
 ) -> RiskProfileOut:
     """Record or replace this repository's risk profile (spec 21 §1.3).
 

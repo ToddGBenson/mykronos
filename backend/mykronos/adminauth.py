@@ -216,10 +216,15 @@ async def require_principal(
     )
 
 
-async def require_admin(
+async def require_writer(
     principal: Annotated[Principal, Depends(require_principal)],
 ) -> str:
-    """Admin-only endpoints. Returns the actor identity for the audit log."""
+    """Endpoints any principal that `may_write` may call: the admin token or an
+    agent credential (spec 34 §1.1). Not admin-only, whatever the 403 below
+    says: an agent passes too. A route only a person may take uses
+    `require_human`. The routes behind this are pinned in
+    `tests/test_writer_routes.py` (TheHub #60809). Returns the actor identity
+    for the audit log."""
     if not principal.may_write:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -248,6 +253,6 @@ async def require_human(
     return principal
 
 
-AdminDep = Annotated[str, Depends(require_admin)]
+WriterDep = Annotated[str, Depends(require_writer)]
 PrincipalDep = Annotated[Principal, Depends(require_principal)]
 HumanDep = Annotated[Principal, Depends(require_human)]

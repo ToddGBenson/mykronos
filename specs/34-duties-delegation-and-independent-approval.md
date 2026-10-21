@@ -58,7 +58,10 @@ A principal gains a **kind** and, for agents, a **provenance**.
   *As built (`backend/mykronos/agents.py`):* the credential is per instance, short-lived (12 hours
   by default, 7 days at most) and records family, instance, lineage, `on_behalf_of` and purpose. It
   is **not** scoped to duties. Every agent credential carries the one `agent` role, which may write
-  wherever `admin` may except where a route requires a person. What an agent may *approve* is
+  wherever `admin` may except where a route requires a person. In the route signatures that is
+  `WriterDep` (admin or agent; named `AdminDep` until TheHub #60809) against `HumanDep` (a person
+  only). The routes behind `WriterDep` are a committed list in `backend/tests/test_writer_routes.py`,
+  so any widening of what an agent may call fails a test and is reviewed. What an agent may *approve* is
   decided per request by the duty's tier and the active delegations (§3, §5), not by the credential. This is IA-9 (identification and authentication of non-person
   entities) applied to agents, and it is the prerequisite for everything below: independence
   cannot be checked between identities the platform cannot tell apart.

@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from mykronos.adminauth import AdminDep
+from mykronos.adminauth import WriterDep
 
 router = APIRouter(prefix="/api/triage", tags=["triage"])
 
@@ -55,7 +55,7 @@ def _retired() -> HTTPException:
     response_model=GroomResult,
     responses={410: {"description": "Retired (D-161). File the story in TheHub."}},
 )
-async def groom_finding(finding_id: str, actor: AdminDep) -> GroomResult:
+async def groom_finding(finding_id: str, actor: WriterDep) -> GroomResult:
     """Retired (D-161): always 410. Kept so callers learn where work went."""
     raise _retired()
 
@@ -65,6 +65,6 @@ async def groom_finding(finding_id: str, actor: AdminDep) -> GroomResult:
     response_model=GroomResult,
     responses={410: {"description": "Retired (D-161). File the story in TheHub."}},
 )
-async def groom_combination(repo_id: str, combination_id: str, actor: AdminDep) -> GroomResult:
+async def groom_combination(repo_id: str, combination_id: str, actor: WriterDep) -> GroomResult:
     """Retired (D-161): always 410. Kept so callers learn where work went."""
     raise _retired()

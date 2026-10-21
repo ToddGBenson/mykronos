@@ -18,7 +18,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from mykronos.adminauth import AdminDep, PrincipalDep
+from mykronos.adminauth import PrincipalDep, WriterDep
 from mykronos.knowledge.capture import capture_retro_note
 from mykronos.knowledge.promotion import (
     find_cross_project_candidates,
@@ -139,7 +139,7 @@ async def list_entries(
 
 
 @router.post("/notes", response_model=EntryOut, status_code=status.HTTP_201_CREATED)
-async def add_note(request: Request, body: RetroNote, actor: AdminDep) -> EntryOut:
+async def add_note(request: Request, body: RetroNote, actor: WriterDep) -> EntryOut:
     """Write down something noticed in a retro (spec 11 §4).
 
     The only entry type with no machine-generated component. Admin-only
@@ -319,7 +319,7 @@ class PromotionResult(BaseModel):
 
 @router.post("/promotion-candidates/{subject}/approve", response_model=PromotionResult)
 async def approve_promotion_candidate(
-    request: Request, subject: str, body: PromotionApproval, actor: AdminDep
+    request: Request, subject: str, body: PromotionApproval, actor: WriterDep
 ) -> PromotionResult:
     """Generalise a pattern to the next tier (spec 11 §2, §9; spec 19 §2.3).
 
