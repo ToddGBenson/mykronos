@@ -27,11 +27,11 @@ from typing import TYPE_CHECKING, Any
 import httpx2
 from sqlalchemy import select
 
-from mykronos import gate_liveness, timeout_audit
+from mykronos import dormant_lanes, gate_liveness, timeout_audit
 from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
-from mykronos.db.models import RepoOnboarding, capability_config_for
+from mykronos.db.models import JobRun, RepoOnboarding, capability_config_for
 from mykronos.github.client import GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import seal_secret
@@ -1462,4 +1462,109 @@ async def check_gate_liveness(
             (report.last_judged or "none")[:12],
             len(report.unjudged),
         )
+    return report
+
+
+#: The scheduled job's name, and the `job_runs` row its once-a-day rule reads.
+DORMANT_LANES_JOB = "dormant-lanes"
+
+
+class DormantLanesIncompleteError(RuntimeError):
+    """The dormant-lanes read could not finish, and nothing was posted.
+
+    Raised for `TimeoutAuditIncompleteError`'s reason: `_every` records the
+    run as FAILED, platform health shows `could not check`, and because
+    `last_succeeded_at` did not move, the next hourly run tries again the
+    same day.
+    """
+
+
+def _succeeded_today(db: Database | None, name: str, now: datetime) -> bool:
+    if db is None:
+        return False
+    with db.session() as session:
+        row = session.get(JobRun, name)
+        last = row.last_succeeded_at if row is not None else None
+    if last is None:
+        return False
+    # Stored naive UTC by `_record_run` (`utcnow()`).
+    last_utc = last.replace(tzinfo=UTC) if last.tzinfo is None else last.astimezone(UTC)
+    return last_utc.date() == now.astimezone(UTC).date()
+
+
+async def notify_dormant_lanes(
+    source: dormant_lanes.LaneSource,
+    *,
+    db: Database | None,
+    notifier: Notifier | None,
+    threshold_hours: float,
+    now: datetime | None = None,
+    job_name: str = DORMANT_LANES_JOB,
+) -> dormant_lanes.DormantLanesReport | None:
+    """Post, once per UTC day, every Concourse job off or red for days.
+
+    **Once a day, not once a run.** The job is scheduled hourly, and every
+    restart runs it again within ninety seconds (`_every`). So the day is
+    decided by this job's own `job_runs` row. If it already succeeded today,
+    the run returns None and posts nothing. A success means the read finished
+    and the notice, if there was one, was delivered. A day therefore produces
+    one post, and a restart does not produce a second.
+
+    Outcomes:
+
+    * **Something dormant.** One `warning` notification, one line per lane,
+      oldest first, with any unreadable pipeline named at the end. If it was
+      not delivered, the run raises, so the day stays open and the next hour
+      tries again. A notifier with no transport is a supported state
+      (`digest.send_all`): logged, and the run succeeds.
+    * **Nothing dormant, everything read.** Logged at info, and nothing is
+      posted. Quiet when healthy.
+    * **Nothing dormant, something unreadable.** `DormantLanesIncompleteError`,
+      so the run reads `could not check` and is retried. A partial read that
+      did find something is posted with the gap named, rather than retried
+      into an hourly repeat.
+    """
+    moment = now or datetime.now(UTC)
+    if _succeeded_today(db, job_name, moment):
+        logger.info("Dormant lanes: today's notice has already gone out; skipping")
+        return None
+
+    report = await asyncio.to_thread(
+        dormant_lanes.find, source, now=moment, threshold_hours=threshold_hours
+    )
+
+    if report.lanes:
+        lines = report.lines(moment)
+        logger.warning("Dormant lanes: %s", " | ".join(lines))
+        if notifier is not None and notifier.enabled:
+            delivered = await notifier.send(
+                Notification(
+                    title=(
+                        f"{len(report.lanes)} Concourse lane(s) paused or red "
+                        f"for more than {threshold_hours:g}h"
+                    ),
+                    detail=(
+                        "A paused or broken lane says nothing by itself. Each of "
+                        "these has been off or red for days:\n"
+                        + "\n".join(lines)
+                        + "\nOnce a day. `mykronos briefing` has the detail."
+                    ),
+                    repo_full_name="",
+                    level="warning",
+                )
+            )
+            if not delivered:
+                raise DormantLanesIncompleteError(
+                    f"{len(report.lanes)} dormant lane(s) found and the notice was not delivered"
+                )
+        return report
+
+    if not report.complete:
+        raise DormantLanesIncompleteError(
+            "could not check: " + "; ".join(scrub(entry) for entry in report.unreadable)
+        )
+
+    logger.info(
+        "Dormant lanes: none across %s pipeline(s)", len(report.pipelines_read)
+    )
     return report

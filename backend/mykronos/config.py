@@ -718,6 +718,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    dormant_lanes_interval_seconds: int = Field(
+        default=3_600,
+        ge=600,
+        description=(
+            "How often the dormant-lanes job (mykronos.dormant_lanes) checks "
+            "whether today's notice has gone out. It posts at most once per "
+            "UTC day: the first run of the day that reads Concourse sends it "
+            "and later runs skip, restarts included. Hourly so an unreadable "
+            "Concourse is retried within the day. Scheduled only when "
+            "concourse_url is set."
+        ),
+    )
+
+    dormant_lanes_threshold_hours: float = Field(
+        default=72.0,
+        gt=0,
+        description=(
+            "How long a Concourse job may be paused, or red on its last "
+            "build, before the daily dormant-lanes notice lists it."
+        ),
+    )
+
     pipeline_definitions_dir: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "deploy" / "concourse" / "pipelines",

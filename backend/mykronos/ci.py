@@ -699,6 +699,26 @@ class ConcourseClient:
             return None
         return [str(p["name"]) for p in payload if isinstance(p, dict) and "name" in p]
 
+    def pipeline_records(self) -> list[dict[str, object]] | None:
+        """Every visible pipeline as Concourse sends it (`paused`, `paused_at`
+        included), or None if unreachable."""
+        payload = self._get("/api/v1/pipelines")
+        if not isinstance(payload, list):
+            return None
+        return [p for p in payload if isinstance(p, dict) and "name" in p]
+
+    def jobs(self, pipeline: str) -> list[dict[str, object]] | None:
+        """One pipeline's job list as Concourse sends it, or None if unreadable.
+
+        Raw, for a caller that needs fields `JobStatus` drops: `paused_at`
+        and `transition_build`. It is the same anonymous read `paused_jobs`
+        makes, and carries no logs or resolved variables.
+        """
+        payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
+        if not isinstance(payload, list):
+            return None
+        return [j for j in payload if isinstance(j, dict)]
+
     def pipeline_url(self, pipeline: str) -> str:
         """Where a browser reaches this pipeline (not where this process does)."""
         return f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"

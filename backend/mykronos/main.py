@@ -75,10 +75,12 @@ from mykronos.github.factory import (
 from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
+    DORMANT_LANES_JOB,
     AcceptanceSweepResult,
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
+    notify_dormant_lanes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
     reconcile_installations,
@@ -689,6 +691,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             gate_liveness_sent["signature"] = report.signature if report.stale else None
 
+        async def _dormant_lanes() -> None:
+            # Every pipeline's paused or long-red jobs, pushed once a UTC day
+            # rather than waiting to be asked (agent_work, briefing). The day
+            # is read from this job's own `job_runs` row, so a restart does
+            # not post twice.
+            await notify_dormant_lanes(
+                ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                ),
+                db=app.state.db,
+                notifier=app.state.notifier,
+                threshold_hours=settings.dormant_lanes_threshold_hours,
+            )
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -797,6 +815,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             *(
                 [("gate-liveness", settings.gate_liveness_interval_seconds, _gate_liveness)]
+                if settings.concourse_url
+                else []
+            ),
+            *(
+                [(DORMANT_LANES_JOB, settings.dormant_lanes_interval_seconds, _dormant_lanes)]
                 if settings.concourse_url
                 else []
             ),
