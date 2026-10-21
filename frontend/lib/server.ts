@@ -41,7 +41,9 @@ import {
   type Briefing,
   type RepoGuidance,
   type ProductOwnerView,
+  type RepoRiskAcceptances,
   type RepoSurfaces,
+  type RiskAcceptanceDetail,
   type RuleVectorsPage,
   type SupplyChainPackages,
   type VulnerabilityManagement,
@@ -499,6 +501,52 @@ export async function getSurfaces(repoId: string): Promise<Result<RepoSurfaces>>
 }
 
 /** Rules with no published CVSS vector, for one repository (TheHub #60832). */
+export async function getRepoRiskAcceptances(
+  repoId: string,
+  filters: { state?: string; severity?: string; effective?: string } = {},
+): Promise<Result<RepoRiskAcceptances>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/risk-acceptances",
+      {
+        params: {
+          path: { repo_id: repoId },
+          query: {
+            state: filters.state || undefined,
+            severity: filters.severity || undefined,
+            effective_severity: filters.effective || undefined,
+          },
+        },
+        cache: "no-store",
+      },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the risk acceptances") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function getRepoRiskAcceptance(
+  repoId: string,
+  acceptanceId: string,
+): Promise<Result<RiskAcceptanceDetail>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/risk-acceptances/{acceptance_id}",
+      { params: { path: { repo_id: repoId, acceptance_id: acceptanceId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the risk acceptance") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getRuleVectors(repoId: string): Promise<Result<RuleVectorsPage>> {
   try {
     const { data, response } = await backendClient().GET(

@@ -22,6 +22,7 @@ import { PathToGreen } from "@/components/path-to-green";
 import { PO_VIEWS, ProductOwnerTab, type PoViewId } from "@/components/product-owner";
 import { poConsoleView, type PoConsoleQuery } from "@/components/po-console-panel";
 import { ReachabilityCard } from "@/components/reachability";
+import { RiskManagementTab } from "@/components/risk-management";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { ReleaseEvidence, SscsTab } from "@/components/sscs";
@@ -106,6 +107,10 @@ const TABS = [
   { id: "sscs", label: "Supply chain" },
   { id: "insider", label: "Insider Threat" },
   { id: "decisions", label: "Risk Decision" },
+  // Beside Risk Decision and not part of it: that tab is Oracle's ship/no-ship
+  // score; this is the register of risks accepted rather than fixed, and
+  // whether what each acceptance rests on still holds.
+  { id: "risk", label: "Risk management" },
   // Last, because it is the only tab nobody opens to do work: it answers
   // "what can we show an assessor" rather than "what should I fix". Its own
   // tab rather than a panel under Insider Threat — that tab is about who
@@ -244,6 +249,8 @@ export default async function RepoPage({
         <ExecutiveTab repoId={repoId} />
       ) : tab === "decisions" ? (
         <RiskDecisionsTab repoId={repoId} />
+      ) : tab === "risk" ? (
+        <RiskManagementTab repoId={repoId} query={query} />
       ) : tab === "sscs" ? (
         <SupplyChainTab repoId={repoId} />
       ) : tab === "insider" ? (

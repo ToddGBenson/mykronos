@@ -63,6 +63,13 @@ export type RuleVectorsPage =
   paths["/api/dashboard/repos/{repo_id}/rule-vectors"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RuleVectorRule = RuleVectorsPage["rules"][number];
 export type RuleVectorTemplate = RuleVectorsPage["templates"][number];
+/** One repository's risk acceptances, each with what it rests on (Risk management tab). */
+export type RepoRiskAcceptances =
+  paths["/api/dashboard/repos/{repo_id}/risk-acceptances"]["get"]["responses"]["200"]["content"]["application/json"];
+export type RiskAcceptanceRow = RepoRiskAcceptances["acceptances"][number];
+/** One acceptance in full: justification, premise evidence, scores, history. */
+export type RiskAcceptanceDetail =
+  paths["/api/dashboard/repos/{repo_id}/risk-acceptances/{acceptance_id}"]["get"]["responses"]["200"]["content"]["application/json"];
 /** A repository's declared process, backlog and sprint (spec 35). */
 export type ProductOwnerView =
   paths["/api/dashboard/repos/{repo_id}/product-owner"]["get"]["responses"]["200"]["content"]["application/json"];

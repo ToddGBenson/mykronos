@@ -4007,6 +4007,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/risk-acceptances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Risk Acceptances
+         * @description Every risk acceptance in this repository, each with what it rests on.
+         */
+        get: operations["repo_risk_acceptances_api_dashboard_repos__repo_id__risk_acceptances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/risk-acceptances/{acceptance_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Risk Acceptance
+         * @description One acceptance in full: justification, premises with their evidence,
+         *     environmental scores, audit history and the actions the API offers.
+         */
+        get: operations["repo_risk_acceptance_api_dashboard_repos__repo_id__risk_acceptances__acceptance_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repo-read/posture-summary": {
         parameters: {
             query?: never;
@@ -4104,6 +4145,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ActionOut
+         * @description An operation the acceptance API offers on this record now.
+         *
+         *     Described, not performed: no page calls these routes yet, so the tab
+         *     names them for an operator (or the agent playbook, which offers the same
+         *     ones) instead of inventing buttons.
+         */
+        ActionOut: {
+            /** Label */
+            label: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Effect */
+            effect: string;
+            /** Who */
+            who: string;
+        };
         /**
          * AegisAccepted
          * @description The scored result, returned so the workflow can render it in its log.
@@ -4256,6 +4317,24 @@ export interface components {
              * @default Written to the durability buffer.
              */
             detail: string;
+        };
+        /** AuditEventOut */
+        AuditEventOut: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Action */
+            action: string;
+            /** Actor */
+            actor: string;
+            /** Actor Kind */
+            actor_kind: string;
+            /** Detail */
+            detail: {
+                [key: string]: unknown;
+            };
         };
         /** AwaitingClosureOut */
         AwaitingClosureOut: {
@@ -5198,6 +5277,31 @@ export interface components {
              */
             kinds: string[];
         };
+        /** CoveredFindingOut */
+        CoveredFindingOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Title */
+            title: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Capability */
+            capability: string;
+            /** Package Name */
+            package_name: string;
+            /** Severity */
+            severity: string;
+            /** Effective Severity */
+            effective_severity: string;
+            /** Effective Source */
+            effective_source: string;
+            /** Status */
+            status: string;
+            /** Fixed Version */
+            fixed_version: string;
+            /** Now Fixable */
+            now_fixable: boolean;
+        };
         /** CreateRequest */
         CreateRequest: {
             /** Duty */
@@ -5757,6 +5861,52 @@ export interface components {
             unscored: number;
             /** Description */
             description: string;
+        };
+        /** EnvironmentalScoreOut */
+        EnvironmentalScoreOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Vector */
+            vector: string;
+            /** Vector Version */
+            vector_version: string;
+            /** Vector Source */
+            vector_source: string;
+            /** Base */
+            base: number;
+            /** Environmental */
+            environmental: number;
+            /** Base Band */
+            base_band: string;
+            /** Env Band */
+            env_band: string;
+            /** Scanner Severity */
+            scanner_severity: string;
+            /** Effective Severity */
+            effective_severity: string;
+            /** Facts */
+            facts: {
+                [key: string]: unknown;
+            }[];
+            /** Context Id */
+            context_id: string;
+            /** Computed At */
+            computed_at: string | null;
+        };
+        /** EnvironmentalScoresOut */
+        EnvironmentalScoresOut: {
+            /** Available */
+            available: boolean;
+            /** Reason */
+            reason: string;
+            /** Total */
+            total: number;
+            /** Shown */
+            shown: number;
+            /** Scored */
+            scored: number;
+            /** Items */
+            items: components["schemas"]["EnvironmentalScoreOut"][];
         };
         /**
          * EstateOut
@@ -8202,6 +8352,29 @@ export interface components {
             /** Not Applicable Because */
             not_applicable_because?: string[];
         };
+        /** PremiseVerdictOut */
+        PremiseVerdictOut: {
+            /** Index */
+            index: number;
+            /** Type */
+            type: string;
+            /** Status */
+            status: string;
+            /** Reason */
+            reason: string;
+            /** Premise */
+            premise: {
+                [key: string]: unknown;
+            };
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            }[];
+            /** Evidence At */
+            evidence_at: string | null;
+            /** Evidence Age Days */
+            evidence_age_days: number | null;
+        };
         /**
          * PriorDispositionOut
          * @description A decision recorded under an identifier that has since been replaced (#280).
@@ -8991,6 +9164,33 @@ export interface components {
             /** Actionable Findings */
             actionable_findings: number;
         };
+        /** RepoRiskAcceptancesOut */
+        RepoRiskAcceptancesOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Today
+             * Format: date
+             */
+            today: string;
+            /** Expiring Within Days */
+            expiring_within_days: number;
+            /** Premise Fresh Days */
+            premise_fresh_days: number;
+            /** Total */
+            total: number;
+            counts: components["schemas"]["RiskAcceptanceCountsOut"];
+            /** State */
+            state: string | null;
+            /** Severity */
+            severity: string | null;
+            /** Effective Severity */
+            effective_severity: string | null;
+            /** Acceptances */
+            acceptances: components["schemas"]["RiskAcceptanceRowOut"][];
+        };
         /** RepoSummary */
         RepoSummary: {
             /** Id */
@@ -9083,6 +9283,206 @@ export interface components {
         RevokeIn: {
             /** Reason */
             reason: string;
+        };
+        /** RiskAcceptanceCountsOut */
+        RiskAcceptanceCountsOut: {
+            /** By State */
+            by_state: {
+                [key: string]: number;
+            };
+            /** By Severity */
+            by_severity: {
+                [key: string]: number;
+            };
+            /** By Effective Severity */
+            by_effective_severity: {
+                [key: string]: number;
+            };
+        };
+        /** RiskAcceptanceDetailOut */
+        RiskAcceptanceDetailOut: {
+            /** Id */
+            id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** State */
+            state: string;
+            /** Status */
+            status: string;
+            /** Response */
+            response: string;
+            /** Deviation Type */
+            deviation_type: string;
+            /** Reason Code */
+            reason_code: string;
+            /** Severity */
+            severity: string;
+            /** Effective Severity */
+            effective_severity: string;
+            /** Residual Severity */
+            residual_severity: string;
+            /** Residual Likelihood */
+            residual_likelihood: string;
+            /** Residual Impact */
+            residual_impact: string;
+            /** Justification */
+            justification: string;
+            /** Risk Owner */
+            risk_owner: string;
+            /** Requested By */
+            requested_by: string;
+            /** Approved By */
+            approved_by: string | null;
+            /** Approval Request Id */
+            approval_request_id: string | null;
+            /** Legacy */
+            legacy: boolean;
+            /** Renews Id */
+            renews_id: string | null;
+            /** Renewal Count */
+            renewal_count: number;
+            /** Tracking Ref */
+            tracking_ref: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Effective At */
+            effective_at: string | null;
+            /** Review By */
+            review_by: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Days Left */
+            days_left: number | null;
+            /** Review Due */
+            review_due: boolean;
+            /** Alarm */
+            alarm: boolean;
+            /** Closed At */
+            closed_at: string | null;
+            /** Closed Reason */
+            closed_reason: string | null;
+            /** Compensating Controls */
+            compensating_controls: {
+                [key: string]: unknown;
+            }[];
+            /** Milestones */
+            milestones: {
+                [key: string]: unknown;
+            }[];
+            /** Premises */
+            premises: components["schemas"]["PremiseVerdictOut"][];
+            /** Premise Fresh Days */
+            premise_fresh_days: number;
+            /** Findings Total */
+            findings_total: number;
+            /** Now Fixable */
+            now_fixable: number;
+            /** Drift */
+            drift: number;
+            /** Findings */
+            findings: components["schemas"]["CoveredFindingOut"][];
+            /** Repo Id */
+            repo_id: string;
+            /** Scope */
+            scope: {
+                [key: string]: unknown;
+            };
+            scores: components["schemas"]["EnvironmentalScoresOut"];
+            /** History */
+            history: components["schemas"]["AuditEventOut"][];
+            /** Renewed By */
+            renewed_by: string[];
+            /** Actions */
+            actions: components["schemas"]["ActionOut"][];
+        };
+        /** RiskAcceptanceRowOut */
+        RiskAcceptanceRowOut: {
+            /** Id */
+            id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** State */
+            state: string;
+            /** Status */
+            status: string;
+            /** Response */
+            response: string;
+            /** Deviation Type */
+            deviation_type: string;
+            /** Reason Code */
+            reason_code: string;
+            /** Severity */
+            severity: string;
+            /** Effective Severity */
+            effective_severity: string;
+            /** Residual Severity */
+            residual_severity: string;
+            /** Residual Likelihood */
+            residual_likelihood: string;
+            /** Residual Impact */
+            residual_impact: string;
+            /** Justification */
+            justification: string;
+            /** Risk Owner */
+            risk_owner: string;
+            /** Requested By */
+            requested_by: string;
+            /** Approved By */
+            approved_by: string | null;
+            /** Approval Request Id */
+            approval_request_id: string | null;
+            /** Legacy */
+            legacy: boolean;
+            /** Renews Id */
+            renews_id: string | null;
+            /** Renewal Count */
+            renewal_count: number;
+            /** Tracking Ref */
+            tracking_ref: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Effective At */
+            effective_at: string | null;
+            /** Review By */
+            review_by: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Days Left */
+            days_left: number | null;
+            /** Review Due */
+            review_due: boolean;
+            /** Alarm */
+            alarm: boolean;
+            /** Closed At */
+            closed_at: string | null;
+            /** Closed Reason */
+            closed_reason: string | null;
+            /** Compensating Controls */
+            compensating_controls: {
+                [key: string]: unknown;
+            }[];
+            /** Milestones */
+            milestones: {
+                [key: string]: unknown;
+            }[];
+            /** Premises */
+            premises: components["schemas"]["PremiseVerdictOut"][];
+            /** Premise Fresh Days */
+            premise_fresh_days: number;
+            /** Findings Total */
+            findings_total: number;
+            /** Now Fixable */
+            now_fixable: number;
+            /** Drift */
+            drift: number;
+            /** Findings */
+            findings: components["schemas"]["CoveredFindingOut"][];
         };
         /**
          * RiskModelOut
@@ -16043,6 +16443,74 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_risk_acceptances_api_dashboard_repos__repo_id__risk_acceptances_get: {
+        parameters: {
+            query?: {
+                /** @description One of the derived states. */
+                state?: string | null;
+                severity?: string | null;
+                effective_severity?: string | null;
+            };
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoRiskAcceptancesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_risk_acceptance_api_dashboard_repos__repo_id__risk_acceptances__acceptance_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                acceptance_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RiskAcceptanceDetailOut"];
                 };
             };
             /** @description Validation Error */
