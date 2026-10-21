@@ -99,6 +99,14 @@ updates:
 
   # Backend Python dependencies (backend/pyproject.toml). Majors wait longest:
   # a major is a feature bump nobody is waiting on, and the extra window is free.
+  #
+  # The same directory holds the hash-locked requirements.txt and
+  # requirements-dev.txt that the image and the test lanes install. They are
+  # `uv pip compile` output and keep uv's header so this updater can recognise
+  # them and regenerate the hashes. Whether it does is unconfirmed until its
+  # first PR after the locks landed: a Dependabot PR that moves pyproject.toml
+  # and not the locks fails tests/test_dependency_lock.py, and the fix is
+  # `python scripts/lock_backend.py` on that branch.
   - package-ecosystem: pip
     directory: /backend
     schedule:

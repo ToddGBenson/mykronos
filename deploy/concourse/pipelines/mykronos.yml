@@ -746,7 +746,11 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
-                pip install --quiet -e ".[dev]"
+                # The locked set, hash-checked, then the project itself without a
+                # second resolve: what this lane tests is what the image ships
+                # (backend/requirements-dev.txt, scripts/lock_backend.py).
+                pip install --quiet --require-hashes -r requirements-dev.txt
+                pip install --quiet --no-deps -e .
 
                 # Said out loud, every run. A performance budget that was
                 # quietly relaxed is a budget nobody knows the value of.
@@ -844,7 +848,11 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
-                pip install --quiet -e ".[dev]"
+                # The locked set, hash-checked, then the project itself without a
+                # second resolve: what this lane tests is what the image ships
+                # (backend/requirements-dev.txt, scripts/lock_backend.py).
+                pip install --quiet --require-hashes -r requirements-dev.txt
+                pip install --quiet --no-deps -e .
 
                 mkdir -p ../../results
                 rc=0
@@ -918,7 +926,11 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source/backend
-                pip install --quiet -e ".[dev]"
+                # The locked set, hash-checked, then the project itself without a
+                # second resolve: what this lane tests is what the image ships
+                # (backend/requirements-dev.txt, scripts/lock_backend.py).
+                pip install --quiet --require-hashes -r requirements-dev.txt
+                pip install --quiet --no-deps -e .
 
                 # PS-1: this lane ran on every commit and reported nothing.
                 # Spec 15 SS3's quality gate is "unit - functional - QA - lint
@@ -1066,7 +1078,8 @@ jobs:
               - |
                 set -euo pipefail
                 cd source/backend
-                pip install --quiet -e .
+                pip install --quiet --require-hashes -r requirements.txt
+                pip install --quiet --no-deps -e .
                 cd ..
                 python scripts/dump_openapi.py "${TARGET}/openapi.json"
                 echo "Schema is $(wc -c < "${TARGET}/openapi.json") bytes"
@@ -1369,6 +1382,18 @@ jobs:
                   | sha256sum -c -
                 chmod +x /usr/local/bin/osv-scanner
 
+                # What this reads for the backend is backend/requirements.txt,
+                # the hash-locked set the image installs, found by the
+                # recursive walk (osv-scanner picks up `requirements*.txt`).
+                # osv-scanner 2.5.0 does not read pyproject.toml with these
+                # flags: run against 782a2c2 it found deploy/zap/requirements.txt
+                # and frontend/package-lock.json and nothing else, so before the
+                # lock the backend's Python dependencies were not scanned here
+                # at all. Every line in the lock is an exact `==`, so
+                # `--no-resolve` assesses the version that runs, not a floor,
+                # and the deps.dev resolver it avoids is not needed.
+                # requirements-dev.txt (the unit lanes' set) is read too.
+                #
                 # Exit 1 means vulnerabilities were found, which is a result.
                 # Anything else is a scan failure and must not read as a clean
                 # supply chain.

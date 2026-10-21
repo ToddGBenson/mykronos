@@ -64,8 +64,33 @@ RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + \
 # never have looked at them.
 RUN pip install --no-cache-dir --quiet --upgrade pip setuptools
 
+# The dependencies come from the lock, never from the resolver.
+#
+# `pip install <wheel>` resolved pyproject.toml's floors against PyPI on every
+# build, so two builds of one commit could ship different code, and a release
+# published an hour before a build -- including a malicious one from a
+# hijacked maintainer account -- went straight into production. The lock
+# names every package at an exact version with the sha256 of every artifact
+# PyPI holds for it; `--require-hashes` refuses anything else, including a
+# re-uploaded file under the same version. `--only-binary :all:` because an
+# sdist build fetches its build backend outside the hash check.
+#
+# Then the project's own wheel with `--no-deps`: by this point every
+# dependency is installed, and nothing is allowed to resolve a second time.
+# `pip check` fails the build if the lock and pyproject.toml have drifted far
+# enough that the wheel's requirements are not met (the test in
+# tests/test_dependency_lock.py catches it earlier, on every lane).
+#
+# Regenerate with the command at the top of backend/requirements.txt (also in
+# backend/README.md).
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --quiet --require-hashes --only-binary :all: \
+        -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
+
 COPY --from=build /dist/*.whl /tmp/
-RUN pip install --no-cache-dir --quiet /tmp/*.whl && rm -f /tmp/*.whl
+RUN pip install --no-cache-dir --quiet --no-deps /tmp/*.whl && rm -f /tmp/*.whl \
+    && python -m pip check
 
 # pip goes once it has done its job, following the same rule as npm in the
 # frontend image: removing a package removes every CVE it will ever have.

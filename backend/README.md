@@ -27,6 +27,37 @@ python -m uvicorn mykronos.main:app --reload --port 8077
 
 Interactive API docs at <http://127.0.0.1:8077/docs>.
 
+## Dependency locks
+
+`pyproject.toml` declares what the backend needs; two generated files say
+exactly what gets installed, every package at one version with the sha256 of
+every file PyPI holds for it:
+
+| File | Installed by |
+|---|---|
+| `requirements.txt` | the image (`backend/Dockerfile`, `--require-hashes`) and the `dump-openapi` step |
+| `requirements-dev.txt` | the `unit`, `coverage` and `lint-and-types` lanes and the `backend-tests` PR check |
+
+Both are what the `dependencies` lane's osv-scanner reads, so a finding there
+names the version that runs, not a declared floor.
+
+After any change to `pyproject.toml`'s dependencies, re-lock from the
+repository root and commit the result with the change:
+
+```bash
+python scripts/lock_backend.py                           # keep existing pins
+python scripts/lock_backend.py --upgrade-package fastapi # move one package
+python scripts/lock_backend.py --upgrade                 # move everything
+```
+
+It needs uv at the version the script pins (`pip install uv==0.12.23`) and
+resolves for the image's Python 3.13 on x86_64 Linux, not for this machine.
+`tests/test_dependency_lock.py` fails on every lane when a lock and
+`pyproject.toml` disagree.
+
+The locks target Linux, so on Windows keep using `pip install -e ".[dev]"` as
+above for a local venv; CI and the image are what install from the locks.
+
 ## The Phase 0 demo
 
 Spec 13 §3: *"curl a fake finding into the Ingestion API, query it back out via
