@@ -1,7 +1,7 @@
 """Every route, every kind of caller: who may reach what (spec 12).
 
 Authorisation in this app is spread across three layers and several styles.
-The route signature carries the coarse scheme (`PrincipalDep`, `AdminDep`,
+The route signature carries the coarse scheme (`PrincipalDep`, `WriterDep`,
 `HumanDep`, the ingestion `require_token`, the webhook's HMAC); a principal
 route that writes then checks `may_write` inside the handler, in whichever
 style its module settled on (`_require_writer`, `require_admin(principal,
@@ -63,8 +63,9 @@ MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 PUBLIC_SCHEME = "public"
 #: `PrincipalDep`: admin, viewer or agent. Writes check `may_write` in the handler.
 PRINCIPAL = "principal"
-#: `AdminDep`: a principal that `may_write` (admin or agent).
-ADMIN = "admin"
+#: `WriterDep`: a principal that `may_write` (admin or agent). The set is
+#: pinned in test_writer_routes.py (TheHub #60809).
+WRITER = "writer"
 #: `HumanDep`: a person with the admin role; never an agent.
 HUMAN = "human"
 #: `require_token`: one repository's ingestion token (D-009).
@@ -184,11 +185,11 @@ ROUTES: dict[str, str] = {
     "POST /api/exposure/probe": PRINCIPAL,
     # -- knowledge ---------------------------------------------------------
     "GET /api/knowledge/entries": PRINCIPAL,
-    "POST /api/knowledge/notes": ADMIN,
+    "POST /api/knowledge/notes": WRITER,
     "GET /api/knowledge/retro": PRINCIPAL,
     "GET /api/knowledge/trend": PRINCIPAL,
     "GET /api/knowledge/promotion-candidates": PRINCIPAL,
-    "POST /api/knowledge/promotion-candidates/{subject}/approve": ADMIN,
+    "POST /api/knowledge/promotion-candidates/{subject}/approve": WRITER,
     # -- oracle ------------------------------------------------------------
     "GET /api/oracle/policy": PRINCIPAL,
     "GET /api/oracle/policy/history": PRINCIPAL,
@@ -205,24 +206,24 @@ ROUTES: dict[str, str] = {
     "GET /api/patchwork/efficacy": PRINCIPAL,
     "GET /api/patchwork/repos/{repo_id}": PRINCIPAL,
     # -- onboarding --------------------------------------------------------
-    "GET /api/repos/-/capabilities": ADMIN,
-    "POST /api/repos": ADMIN,
-    "GET /api/repos": ADMIN,
-    "GET /api/repos/{repo_id}": ADMIN,
-    "PATCH /api/repos/{repo_id}": ADMIN,
-    "PUT /api/repos/{repo_id}/deployment-probe": ADMIN,
-    "PATCH /api/repos/{repo_id}/capabilities": ADMIN,
-    "DELETE /api/repos/{repo_id}": ADMIN,
-    "POST /api/repos/{repo_id}/scan": ADMIN,
-    "GET /api/repos/{repo_id}/workflows": ADMIN,
-    "PUT /api/repos/{repo_id}/workflows/{capability}/enable": ADMIN,
-    "PUT /api/repos/{repo_id}/workflows/{capability}/disable": ADMIN,
+    "GET /api/repos/-/capabilities": WRITER,
+    "POST /api/repos": WRITER,
+    "GET /api/repos": WRITER,
+    "GET /api/repos/{repo_id}": WRITER,
+    "PATCH /api/repos/{repo_id}": WRITER,
+    "PUT /api/repos/{repo_id}/deployment-probe": WRITER,
+    "PATCH /api/repos/{repo_id}/capabilities": WRITER,
+    "DELETE /api/repos/{repo_id}": WRITER,
+    "POST /api/repos/{repo_id}/scan": WRITER,
+    "GET /api/repos/{repo_id}/workflows": WRITER,
+    "PUT /api/repos/{repo_id}/workflows/{capability}/enable": WRITER,
+    "PUT /api/repos/{repo_id}/workflows/{capability}/disable": WRITER,
     "GET /api/repos/{repo_id}/reachability": PRINCIPAL,
     "GET /api/repos/{repo_id}/risk-profile": PRINCIPAL,
-    "PUT /api/repos/{repo_id}/risk-profile": ADMIN,
+    "PUT /api/repos/{repo_id}/risk-profile": WRITER,
     # -- triage ------------------------------------------------------------
-    "POST /api/triage/{finding_id}/groom": ADMIN,
-    "POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom": ADMIN,
+    "POST /api/triage/{finding_id}/groom": WRITER,
+    "POST /api/triage/repos/{repo_id}/combinations/{combination_id}/groom": WRITER,
     # -- webhooks ----------------------------------------------------------
     "POST /webhooks/github": HMAC,
     # -- agents ------------------------------------------------------------
@@ -402,8 +403,8 @@ def _derived_scheme(route: Any) -> str:
         stack.extend(dep.dependencies)
     if "require_human" in names:
         return HUMAN
-    if "require_admin" in names:
-        return ADMIN
+    if "require_writer" in names:
+        return WRITER
     if "require_principal" in names:
         return PRINCIPAL
     if "require_token" in names:
@@ -559,7 +560,7 @@ class TestTheClassification:
     def test_the_declared_scheme_is_the_one_the_route_carries(
         self, matrix: dict[str, Any]
     ) -> None:
-        """A route quietly moved from AdminDep to PrincipalDep fails here."""
+        """A route quietly moved from WriterDep to PrincipalDep fails here."""
         served = _served_routes(matrix["app"])
         wrong = {
             key: f"declared {ROUTES[key]}, carries {_derived_scheme(route)}"
@@ -584,7 +585,7 @@ class TestTheClassification:
         assert set(INGESTION_TOKEN_MAY_CALL) == {k for k, v in ROUTES.items() if v == INGEST}
 
     def test_a_viewer_exception_is_a_principal_route(self) -> None:
-        """An AdminDep/HumanDep route a viewer may call is a contradiction."""
+        """A WriterDep/HumanDep route a viewer may call is a contradiction."""
         assert all(ROUTES[k] == PRINCIPAL for k in VIEWER_MAY_CALL)
 
     def test_the_matrix_is_not_empty(self) -> None:

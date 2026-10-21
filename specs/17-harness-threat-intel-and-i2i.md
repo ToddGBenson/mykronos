@@ -144,8 +144,8 @@ primary execution environment, dispatch has to branch on `RepoOnboarding.scanned
   (§4a, anonymous), triggering a build is a write against infrastructure spec 15 §7 already
   flags as sensitive (a worker inside the LAN), so this call requires the credential-managed
   Concourse token spec 15 §6 already establishes for the deploy job — not a new secret, a new
-  authorized use of the existing one, admin-only (same `AdminDep` gate as
-  `PATCH /api/repos/{id}/capabilities`).
+  authorized use of the existing one, writers only (same `WriterDep` gate as
+  `PATCH /api/repos/{id}/capabilities`: admin or agent, never a viewer).
 - **`github_actions`**: the new `GitHubClient.dispatch_workflow` (§2.5.1).
 - **`none`**: the action is disabled in the UI with the same explanation `PipelinesPanel`
   already gives for an unconfigured repo.
