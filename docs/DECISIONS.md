@@ -5662,6 +5662,13 @@ not work is how `:latest` came to point at an eleven-day-old image.
 > the title no longer holds. `deploy.ps1` refuses a sha only when its decision has
 > `introduced_blocking` true; a backlog `no_go` prints a banner and proceeds
 > (`state: "backlog_no_go"` in the ledger). Asking first and failing open are unchanged.
+>
+> **Narrowed (2026-10-20):** failing open now means *could not ask* only. An
+> *asked, no decision exists* sha (`unjudged`) is refused unless `-Force
+> -ForceReason` is given, recorded in the ledger as `event: "override",
+> state: "unjudged"`. Concourse scores only a commit that passed every lane,
+> so an unjudged sha is most often one whose `unit` lane was red, and it used
+> to ship for exactly that reason. The table's NOT JUDGED row no longer holds.
 
 D-125 retired `:latest` and said plainly what it cost: with no tag for the
 Oracle gate to hold, *nothing mechanically stopped a `no_go` commit being

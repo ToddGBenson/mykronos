@@ -168,7 +168,9 @@ upstream of `oracle-gate` whose latest build failed, errored or is paused, or
 says none is. The wait is measured from the first build of that oldest
 commit. When Concourse or the decision store cannot be read, the run is
 recorded as failed with `could not check`, never as live. `deploy.ps1` names
-the nearest scored ancestor of an unjudged sha and its verdict.
+the nearest scored ancestor of an unjudged sha and its verdict, and refuses
+the unjudged sha unless `-Force -ForceReason` is given (fail open is kept
+only for "could not ask", D-126).
 
 ### PS-5 — A capability is granted, or it has a lane, or it has neither
 
