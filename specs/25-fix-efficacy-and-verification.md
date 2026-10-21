@@ -116,7 +116,8 @@ would be a dashboard-only number of the kind spec 10 §6 forbids.
 
 ### 3.1 What ships
 
-A per-fixer scoreboard, on the Remediation tab and portfolio-wide on `/remediation`:
+A per-fixer scoreboard, on the Remediation tab and portfolio-wide in the remediation library (`/remediate#library`;
+formerly its own page, `/remediation`, which redirects there):
 
 | Column | Meaning |
 |---|---|

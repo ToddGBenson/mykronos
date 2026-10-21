@@ -41,7 +41,7 @@ plus `frontend/package.json`, `frontend/lib/`, and the App Router tree.
 | `/decisions` | 336 |
 | `/incident` | 270 |
 | `/pull-requests` | 211 |
-| `/remediation` | 131 |
+| ~~`/remediation`~~ (retired 2026-10-20: the library is now the `#library` section of `/remediate`, and `/remediation` 308-redirects there (`frontend/lib/retired-routes.ts`)) | 131 |
 | `/repos/[repoId]` | **607** |
 | `/retro` | 357 |
 | `/threat-intel` | 149 |
@@ -275,7 +275,7 @@ five reach for the `EmptyState` primitive and four hand-roll it.
 | `/triage` | — | — | yes (2) |
 | `/decisions` | 6 | 4 | **no** |
 | `/incident` | 3 | 4 | **no** |
-| `/remediation` | 2 | 1 | **no** |
+| ~~`/remediation`~~ (now `/remediate#library`) | 2 | 1 | **no** |
 | `/trends` | 12 | 4 | **no** |
 
 This is *not* "missing empty states" — an earlier read of the aggregate counts
@@ -288,7 +288,9 @@ The weakest instance is `trends/page.tsx` L225 —
 markup, with 12 `.map()` calls and 4 zero-checks in the file.
 
 Note `/remediation` has 2 `.map()` calls but only 1 zero-check, so one list
-there may render nothing with no message. Not confirmed; worth a look.
+there may render nothing with no message. Not confirmed; worth a look. (That
+markup now lives in `components/remediation-library.tsx`, the `#library`
+section of `/remediate`.)
 
 **Recommended:** route the four hand-rolled pages through `EmptyState`. The
 primitive already exists and is used 21 times, so this is convergence, not new
@@ -352,6 +354,14 @@ Deliberately out of scope for a read-only pass, and required before Phases 3–5
 - **Responsive behavior** — needs the running app or a careful CSS read.
 
 ## The information architecture has a principle — do not flatten it
+
+> **2026-10-20:** the estate's two remediation nav entries ("Remediate today",
+> `/remediate`, and "Remediation library", `/remediation`) are now one. The
+> library is the `#library` section of `/remediate`, below the worklist, and
+> `/remediation` 308-redirects there. This does **not** flatten the split
+> described below: the library is still estate-only (it is not rendered on the
+> repository's Remediate today tab), and the comment quoted below now heads
+> `frontend/components/remediation-library.tsx`.
 
 **Resolved from source, 2026-08-30.** `/remediation` and `/decisions` exist as
 both top-level pages and repo tabs. They are **not duplicates**. The split is

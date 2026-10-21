@@ -88,8 +88,14 @@ class TestRepositoryDrilldown:
 
 
 class TestCrossPortfolioViews:
-    @pytest.mark.parametrize("path", ["/triage", "/trends", "/decisions", "/retro"])
+    @pytest.mark.parametrize(
+        "path",
+        ["/triage", "/trends", "/decisions", "/retro", "/remediate", "/remediation"],
+    )
     def test_it_renders(self, browser, path) -> None:
+        # `/remediation` is retired (merged into `/remediate#library`) and kept
+        # here on purpose, like the retired tab id above: an old bookmark must
+        # still land on a page. The client follows the 308.
         assert browser.get(path).status_code == 200
 
 

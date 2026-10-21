@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { EmptyState, ErrorPanel, Label, Pill } from "@/components/primitives";
 import { RemediationTab } from "@/components/remediation";
+import { RemediationLibrary } from "@/components/remediation-library";
 import { StaleLanes } from "@/components/stale-lanes";
 import { StalledLanes } from "@/components/stalled-lanes";
 import { closableToday } from "@/lib/repo-tabs";
@@ -30,11 +31,24 @@ export const dynamic = "force-dynamic";
  * So the sections are ordered by effort, cheapest first, and each one states
  * what it would take. A page that sorted by severity would put a critical
  * nobody can close today above 109 findings that close for free.
+ *
+ * Below the worklist, the remediation library: Patchwork's open pull requests
+ * across the estate grouped by fix, and fix efficacy. It was a second nav
+ * entry and its own page (`/remediation`, which now redirects to `#library`);
+ * it is a section here for the reason #60820 gave the repository page — two
+ * entries a few characters apart for one job is one too many.
  */
 export const metadata = { title: "Remediate today — Mykronos" };
 
 export default async function RemediatePage() {
-  return <RemediateToday />;
+  // Siblings, not nested: a briefing that fails replaces the worklist with
+  // its error, and the library below still renders — and vice versa.
+  return (
+    <div className="flex flex-col gap-5">
+      <RemediateToday />
+      <RemediationLibrary />
+    </div>
+  );
 }
 
 /**
@@ -337,8 +351,9 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
           and a test enforces that.
         </p>
         <p className="text-[12px] text-ink-3">
-          <Link href="/remediation" className="text-accent hover:underline">
-            Remediation
+          The{" "}
+          <Link href="/remediate#library" className="text-accent hover:underline">
+            remediation library
           </Link>{" "}
           has the per-fixer coverage table.
         </p>
@@ -346,7 +361,8 @@ export async function RemediateToday({ repoId }: { repoId?: string } = {}) {
         {/* What Patchwork did in this repository — the one thing the retired
             Remediation tab showed that nothing above does. Collapsed: it is
             history, and this page is ordered by what to do next. Repository
-            scope only; the estate's equivalent is /remediation. */}
+            scope only; the estate's equivalent is the library section,
+            /remediate#library. */}
         {patchwork === null ? null : !patchwork.ok ? (
           <p className="border border-rule bg-paper-2 px-3 py-2 text-[12px] text-critical">
             {patchwork.error}

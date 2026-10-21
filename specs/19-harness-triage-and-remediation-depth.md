@@ -36,7 +36,7 @@ correctly declined to build.
 | Remediation: new deterministic fixers | Done — npm and Go pinning |
 | Remediation: auto-preview on ingestion (`fixable` badge) | Done — read from observed outcome |
 | Remediation: toxic-combination partial fixes | Done — one rule, reviewed (D-070) |
-| Remediation: cross-repo batch digest | Done — /remediation |
+| Remediation: cross-repo batch digest | Done — /remediate#library (was /remediation, which redirects there) |
 | Auto-routing: fixable → PR, not-fixable → story | Done — routed on Patchwork's *observed* outcome, not a prediction (see §4.3) |
 | Auto-routing: `auto_fix_min_severity` config knob | Done |
 
@@ -217,7 +217,9 @@ Ten repos with the same unpinned dependency today means ten separate draft PRs, 
 time with no indication they're the same fix. Still ten PRs — never one PR touching ten repos, which
 would break per-repo review and CODEOWNERS — but grouped for the *reviewer*:
 
-- A new admin view, `/remediation` (portfolio-wide, alongside `/decisions` and `/pull-requests`),
+- A new admin view, `/remediation` (portfolio-wide, alongside `/decisions` and `/pull-requests`;
+  since 2026-10-20 the "Remediation library" section of `/remediate#library`, and `/remediation`
+  redirects there),
   grouping open `RemediationEvent`s across every repo by `(rule_id, fixer_name)` — "12 open PRs, same
   fix, same rationale, across 12 repos" as one card linking out to each individual PR.
 - No new backend query logic: `remediation_events` already carries everything needed
