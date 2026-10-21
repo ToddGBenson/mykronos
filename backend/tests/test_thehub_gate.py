@@ -70,6 +70,45 @@ class TestBothGatesUseTheSameRule:
         assert result.returncode == 0, result.stderr
 
 
+class TestOnlyTrueOrFalseIsAVerdict:
+    """thehub/oracle-gate failed only on `introduced_blocking == "true"`, so a
+    decision with the field missing or null (`jq -r` prints "null") passed --
+    a verdict nobody rendered, read as "nothing new blocks"."""
+
+    @staticmethod
+    def _verdict(value: str, blocking: str = "true") -> subprocess.CompletedProcess[str]:
+        """Run the gate's verdict block alone: from `REFUSE=1` to its `fi`."""
+        lines = gate_script("thehub.yml").splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip() == "REFUSE=1")
+        end = next(
+            i
+            for i in range(start, len(lines))
+            if lines[i].strip() == 'if [ "$REFUSE" -ne 0 ]; then'
+        )
+        block = "\n".join(lines[start : end + 3]).replace("../notify/message.txt", "/dev/null")
+        prelude = (
+            f'SHORT=abc1234\nNEW_CRITICAL=0\nNEW_HIGH=1\nORACLE_BLOCKING="{blocking}"\n'
+            f'INTRODUCED_BLOCKING="{value}"\n'
+        )
+        script = prelude + block + "\necho decided\n"
+        return subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+
+    @pytest.mark.parametrize("value", ["null", "", "True", "1", "yes"])
+    def test_what_is_not_a_verdict_fails_the_gate(self, value: str) -> None:
+        result = self._verdict(value)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "not true or false" in result.stdout
+
+    def test_the_off_switch_does_not_waive_a_missing_verdict(self) -> None:
+        result = self._verdict("null", blocking="false")
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_false_passes_and_true_blocks(self) -> None:
+        passed = self._verdict("false")
+        assert passed.returncode == 0 and "decided" in passed.stdout, passed.stderr
+        assert self._verdict("true").returncode == 1
+
+
 class TestTheOverrideSurvivesButIsOn:
     """The escape hatch stays — a control switched off invisibly is worse than
     one switched off loudly (D-081) — but its reason for being off is gone."""

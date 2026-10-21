@@ -236,6 +236,10 @@ class TestTheConfiguredSource:
         #           behind `deploy-demo` it went dark for seven days. The six
         #           are `deploy-demo`'s own list, so no lane left the set.
         #
+        #   2026-10-21  adds `unit` (CI audit): the six scanners stopped
+        #           waiting on `unit` so a red `unit` cannot freeze them on an
+        #           old commit's green, and the gate states the wait itself.
+        #
         # What would move it again: a job in that file whose success means
         # "production now runs this commit". #55167's reasoning is the
         # specification for rebuilding the gate if one appears, and none of
@@ -248,10 +252,13 @@ class TestTheConfiguredSource:
         # pass every test above and fail this one.
         assert "insider" not in gates, "insider was deleted by #60653"
         assert gates["oracle-gate"]["source"] == [
-            "containers", "dependencies", "iac", "prompt-evals", "sast", "secrets",
-        ], "oracle-gate gates on the six scanning lanes directly (TheHub#349)."
+            "containers", "dependencies", "iac", "prompt-evals", "sast", "secrets", "unit",
+        ], "oracle-gate gates on `unit` and the six scanning lanes directly (TheHub#349)."
         # The floor, and it is the assertion that makes the one above mean
         # something: `gates()` returning `{"oracle-gate": {"source": []}}`
         # for a file it failed to parse would otherwise read as agreement.
         assert gates["oracle-gate"]["source"], "oracle-gate has no `passed:` at all"
-        assert sum(1 for job in gates.values() if job) >= 10
+        # 8 since 2026-10-21, when seven scanning lanes stopped waiting on
+        # `unit`: build, containers, oracle-gate, deploy-demo, the three demo
+        # lanes and remediate still carry a `passed:`.
+        assert sum(1 for job in gates.values() if job) >= 8

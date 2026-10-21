@@ -98,13 +98,17 @@ ANALYSERS = ("containers", "dependencies", "iac", "prompt-evals", "sast", "secre
 #: the regression #55167 fixed and #59100 reintroduced. A *widening* nobody
 #: wrote down is how the chain becomes something no one can reason about, and
 #: it is equally worth a failed test and a sentence of explanation here.
+#: `unit` beside the analysers since 2026-10-21: the analysers scan every
+#: commit rather than wait for `unit` (a red `unit` froze them on an old
+#: commit's green), so the verdict and the demo deploy state the wait
+#: themselves. PS-4 in scripts/check_pipeline_conformance.py fails if they stop.
 REQUIRED_GATE: dict[str, dict[str, list[str]]] = {
-    "deploy-demo": {"source": sorted(ANALYSERS)},
+    "deploy-demo": {"source": sorted((*ANALYSERS, "unit"))},
     # The six lanes directly, beside `deploy-demo` and not behind it
     # (TheHub#349, operator decision 2026-10-15: decouple and report). It was
     # `["deploy-demo"]` from #59999; the set of analysers that must pass is
     # unchanged, and the demo deploy is no longer a precondition of a verdict.
-    "oracle-gate": {"source": sorted(ANALYSERS)},
+    "oracle-gate": {"source": sorted((*ANALYSERS, "unit"))},
     "api-inventory": {"source": ["deploy-demo"]},
     "dast-demo": {"source": ["deploy-demo"]},
     "functional-demo": {"source": ["deploy-demo"]},
@@ -148,7 +152,11 @@ RETIRED_DEPLOY_JOBS = ("deploy-prod",)
 #: `deploy-demo` left this set with TheHub#349: the gate reads findings by
 #: commit and nothing from a deployed demo, and the edge through it is what
 #: took the gate dark for seven days when a CRLF broke the demo deploy.
-MUST_PRECEDE_THE_DEEPEST_GATE = frozenset(ANALYSERS)
+#:
+#: `unit` and `build` are here because the analysers no longer wait on
+#: `unit` themselves (2026-10-21). A verdict on a commit whose own tests
+#: failed is the thing PS-4 exists to prevent.
+MUST_PRECEDE_THE_DEEPEST_GATE = frozenset({*ANALYSERS, "unit", "build"})
 
 #: Must NOT precede `oracle-gate` (TheHub#349). The demo lanes need a running
 #: demo; the gate does not, and a gate stuck behind a lane it reads nothing
@@ -170,6 +178,24 @@ MUST_NOT_PRECEDE_THE_DEEPEST_GATE = frozenset(
 #: `TestTheCommittedGate` is what stops this being load-bearing: the contents
 #: of every gated edge are pinned exactly, offline, against the file itself.
 EXPLAINED_DIVERGENCE = {
+    # Keyed on the report text, not a job name, so it covers exactly the
+    # lanes this decision ungated and not every future difference in them.
+    "ours=(none) theirs=['unit']": (
+        "ours scans every commit; TheHub's read-only mirror still gates "
+        "secrets, sast, dependencies, iac, prompt-evals, ai-models and qa on "
+        "`unit`. DECIDED 2026-10-21 (CI audit, Todd): behind `unit`, its red "
+        "run from 2026-10-19 left every develop commit unscanned while those "
+        "lanes kept showing an old commit's green. The verdict still waits: "
+        "`oracle-gate` and `deploy-demo` list `unit` themselves. The mirror "
+        "follows on the next export after set-pipeline"
+    ),
+    "deploy-demo: get source passed: ours=['containers', 'dependencies', "
+    "'iac', 'prompt-evals', 'sast', 'secrets', 'unit'] theirs=['containers', "
+    "'dependencies', 'iac', 'prompt-evals', 'sast', 'secrets']": (
+        "ours names `unit` beside the six analysers, which no longer wait on "
+        "it (2026-10-21, same decision as the entry above); the mirror "
+        "follows on the next export after set-pipeline"
+    ),
     "functional-demo": (
         "ours only, added 2026-10-17: TheHub's tests/functional suite against "
         "the running demo, behind `deploy-demo` like `api-inventory`. TheHub's "

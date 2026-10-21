@@ -461,6 +461,54 @@ def test_the_checker_can_actually_fail(tmp_path: Path) -> None:
     assert any("PS-7" in problem and "sast" in problem for problem in problems), problems
 
 
+THEHUB_SCANNERS = ("secrets", "sast", "dependencies", "iac", "prompt-evals", "ai-models")
+
+
+def _thehub() -> dict:
+    return yaml.safe_load((checker.PIPELINE_DIR / "thehub.yml").read_text(encoding="utf-8"))
+
+
+def _source_passed(job: dict) -> list[str]:
+    sources = [step for step in job["plan"] if step.get("get") == "source"]
+    return [upstream for step in sources for upstream in step.get("passed") or []]
+
+
+@pytest.mark.parametrize("lane", THEHUB_SCANNERS)
+def test_thehub_scanners_are_not_frozen_behind_unit(lane: str) -> None:
+    """2026-10-19 to 10-21: TheHub's `unit` was red (pip "resolution too
+    deep"), so no develop commit passed it, and every lane behind it kept
+    showing the green of the last commit that had -- scanning nothing new.
+    A scanner triggers on `source` itself."""
+    jobs = {job["name"]: job for job in _thehub()["jobs"]}
+    assert "unit" not in _source_passed(jobs[lane]), (
+        f"thehub `{lane}` waits on `unit` again; a red unit freezes it on an old green"
+    )
+
+
+@pytest.mark.parametrize("verdict", ["oracle-gate", "deploy-demo"])
+def test_the_checker_objects_to_a_verdict_that_stops_waiting_for_unit(
+    tmp_path: Path, verdict: str
+) -> None:
+    """With the scanners ungated, the verdict's own `passed: [unit, ...]` is
+    the only thing keeping an untested commit from being judged. Strip it and
+    the checker must say so."""
+    document = _thehub()
+    for job in document["jobs"]:
+        if job["name"] == verdict:
+            for step in job["plan"]:
+                if step.get("get") == "source":
+                    step["passed"] = [p for p in step["passed"] if p != "unit"]
+
+    broken = tmp_path / "thehub.yml"
+    broken.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    problems, _ = checker.check_pipeline(broken)
+    assert any(
+        f"{verdict} PS-4" in problem and "without waiting for `unit`" in problem
+        for problem in problems
+    ), problems
+
+
 def _ensured_scan(*, optional: bool) -> dict:
     """A one-job pipeline: a scanner with an `ensure:` upload of its output."""
     results: dict = {"name": "results"}

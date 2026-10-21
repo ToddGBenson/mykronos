@@ -78,11 +78,20 @@ def test_the_scan_profile_is_dast_prods() -> None:
     """Baseline, passive, 5-minute spider. Not an active scan through Cloudflare.
 
     The one addition is `--hook`, which loads the request signer (#60724) and
-    changes no rule, no spider budget and no scan mode.
+    changes no rule, no spider budget and no scan mode. `dast-prod` carries a
+    hook of its own since 2026-10-21 -- it seeds the crawl from TheHub's route
+    list -- and pipes its output to a log; neither is part of the profile.
     """
     profile = re.compile(r"zap-baseline\.py [^\n|]*")
-    edge = [re.sub(r' --hook="[^"]*"', "", line) for line in profile.findall(_script())]
-    assert edge == profile.findall(_script("dast-prod", "zap-baseline"))
+
+    def bare(lines: list[str]) -> list[str]:
+        return [
+            re.sub(r' --hook="[^"]*"| 2>&1| \\$', "", line).strip() for line in lines
+        ]
+
+    assert bare(profile.findall(_script())) == bare(
+        profile.findall(_script("dast-prod", "zap-baseline"))
+    )
     assert '--hook="$SIGNER_DIR/hook.py"' in _script()
     assert "zap-full-scan" not in _script()
     assert "zap-api-scan" not in _script()
