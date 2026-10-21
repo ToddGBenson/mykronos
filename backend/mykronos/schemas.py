@@ -329,6 +329,20 @@ class SubSignal(BaseModel):
     )
 
 
+class NotRunCheck(BaseModel):
+    """An insider-risk check that applied and could not be answered (TheHub #60851).
+
+    Distinct from a signal that did not fire. Without it the two read the
+    same - absent - and "we could not read the reviews" became "nothing was
+    wrong with the reviews".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
 class InsiderRiskSubmission(BaseModel):
     """What the insider-risk workflow posts (spec 06 §3, §4).
 
@@ -357,6 +371,15 @@ class InsiderRiskSubmission(BaseModel):
             "True if AI authorship is likely and undisclosed, false if "
             "evaluated and human, null if not evaluated. Null is the default "
             "because the classifier is opt-in (spec 06 §5)."
+        ),
+    )
+    not_run: list[NotRunCheck] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "Checks that applied to this change and could not be answered, each "
+            "with the reason - e.g. no GitHub token to read reviews with. "
+            "Recorded as not run, never as clean (TheHub #60851)."
         ),
     )
 

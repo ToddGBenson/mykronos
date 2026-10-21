@@ -6898,6 +6898,11 @@ export interface components {
              * @description True if AI authorship is likely and undisclosed, false if evaluated and human, null if not evaluated. Null is the default because the classifier is opt-in (spec 06 §5).
              */
             ai_authorship_flag?: boolean | null;
+            /**
+             * Not Run
+             * @description Checks that applied to this change and could not be answered, each with the reason - e.g. no GitHub token to read reviews with. Recorded as not run, never as clean (TheHub #60851).
+             */
+            not_run?: components["schemas"]["NotRunCheck"][];
         };
         /**
          * IssuesSourceOut
@@ -7211,6 +7216,20 @@ export interface components {
         NotConsulted: {
             /** Input */
             input: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * NotRunCheck
+         * @description An insider-risk check that applied and could not be answered (TheHub #60851).
+         *
+         *     Distinct from a signal that did not fire. Without it the two read the
+         *     same - absent - and "we could not read the reviews" became "nothing was
+         *     wrong with the reviews".
+         */
+        NotRunCheck: {
+            /** Key */
+            key: string;
             /** Reason */
             reason: string;
         };
