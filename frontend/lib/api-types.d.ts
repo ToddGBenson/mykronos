@@ -2027,9 +2027,11 @@ export interface paths {
          *     Next-sprint candidates.
          *
          *     Every section carries `source`, `as_of` and a `status`. A source that
-         *     could not be read is `unavailable` with its reason. Sprint health and the
-         *     board/PR side of "needs you" are B3 (TheHub #60861) and are
-         *     `not_available` until then. A read.
+         *     could not be read is `unavailable` with its reason. "Needs you", sprint
+         *     health and the board check behind the focus and candidate lists read
+         *     TheHub's board and GitHub (TheHub #60861), cached for a few minutes; an
+         *     earlier answer standing in for a failed read makes its section
+         *     `partial`. A read.
          */
         get: operations["daily_briefing_route_api_briefing_daily_get"];
         put?: never;
