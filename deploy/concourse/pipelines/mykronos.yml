@@ -802,6 +802,14 @@ jobs:
   #
   # `trigger: true` on the clock and NOT on `source`: this must not run on a
   # push, or it becomes the thing it was written to avoid.
+  #
+  # `passed: [unit]` on `source`: the commit measured is the newest one whose
+  # suite passed, not whatever main happened to be at 04:00. Build 5
+  # (2026-10-18) took da5496e, a merge that had broken 26 tests and that `unit`
+  # had already failed (build 431) and #914/#916 had already fixed. It went
+  # red on failures it could only repeat, and a rerun (5.1) reuses its inputs,
+  # so it repeated them again three days later. A coverage figure from a red
+  # suite is also not a figure: the failed tests' lines read as uncovered.
   - name: coverage
     public: true
     serial_groups: [worker-a]
@@ -817,6 +825,7 @@ jobs:
         trigger: true
       - get: source
         attempts: *retry_fetch
+        passed: [unit]
       - get: python
         attempts: *retry_fetch
       - *preflight
