@@ -322,6 +322,16 @@ anchors:
             # path. A job writes it to explain a verdict; a job that errored
             # never reached one, so whatever is on disk is a half-finished
             # thought from a run that died.
+            #
+            # TheHub #60852. OUTCOME=succeeded is the `on_success:` hook of a
+            # lane that reports without failing (netassess-ingest's host
+            # adds/removes). It posts only when the job wrote a message; a
+            # quiet success stays quiet, and must never fall through to the
+            # "failed" wording below.
+            if [ "${OUTCOME:-failed}" = "succeeded" ] && [ ! -s notify/message.txt ]; then
+              echo "Succeeded with nothing to report - no notification."
+              exit 0
+            fi
             if [ "${OUTCOME:-failed}" = "errored" ]; then
               TEXT="*personal-soc*: job \`$JOB_LABEL\` ERRORED (newest build) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
             elif [ -s notify/message.txt ]; then
@@ -1747,16 +1757,21 @@ jobs:
                 # what it covered, and the lake can see what it did not.
                 Write-Host ""
                 Write-Host "== not covered here, and why =="
-                Write-Host "  Invoke-BreachCheck.ps1   needs a paid HIBP key and a live endpoint;"
-                Write-Host "                           exercised weekly by the breach-check job."
-                Write-Host "  Get-ExternalExposure.ps1 exercised for real by external-exposure."
+                Write-Host "  Invoke-BreachCheck.ps1   NOT COVERED ANYWHERE: needs a paid HIBP key and a"
+                Write-Host "                           live endpoint, and breach-check, the job that ran it,"
+                Write-Host "                           was retired 2026-09-23 (#60004)."
+                Write-Host "  Get-ExternalExposure.ps1 its allowlist verdict and exit codes run offline in"
+                Write-Host "                           repo-tests (Test-ExposureVerdict.ps1); the live lookup"
+                Write-Host "                           runs weekly in external-exposure."
                 Write-Host "  Invoke-NetDiscovery /    need the Windows ARP table and netsh; they"
                 Write-Host "  ServiceScan / ShareEnum /  cannot run on this worker at all - see the"
                 Write-Host "  VulnScan / WifiPosture     netassess-ingest note."
                 Write-Host "  Invoke-WeeklyNetworkScan"
                 $group = 'not-covered'
-                Add-Case 'Invoke-BreachCheck.ps1' $true 'needs a paid HIBP key and a live endpoint; exercised weekly by breach-check' -Skipped
-                Add-Case 'Get-ExternalExposure.ps1' $true 'exercised for real by the external-exposure job' -Skipped
+                # TheHub #60852: this used to say "exercised weekly by
+                # breach-check" for four weeks after breach-check was retired.
+                Add-Case 'Invoke-BreachCheck.ps1' $true 'not covered anywhere (breach-check retired 2026-09-23); needs a paid HIBP key and a live endpoint' -Skipped
+                Add-Case 'Get-ExternalExposure.ps1 (live lookup)' $true 'the live InternetDB call runs weekly in external-exposure; the allowlist verdict is in repo-tests' -Skipped
                 Add-Case 'Windows-only discovery scripts' $true 'Invoke-NetDiscovery, ServiceScan, ShareEnum, VulnScan, WifiPosture and Invoke-WeeklyNetworkScan need the Windows ARP table and netsh; see netassess-ingest' -Skipped
 
                 Write-JUnit $report
@@ -2281,6 +2296,14 @@ jobs:
   # exits 0. This job goes red only when the script itself cannot run, which
   # in practice means a doc listed below was renamed or deleted.
 
+  # -- Doc drift: REPORT ONLY -----------------------------------------------
+  #
+  # TheHub #60852 (option C, 2026-10-20). This lane lists documentation that
+  # may have drifted from the code and NEVER fails on drift: Find-DocDrift
+  # exits 0 whether or not it finds any. It goes red only when it could not
+  # answer at all (not a git repository, a doc missing) - an unanswered check
+  # is not a clean one. Nothing should describe it as failing the build; the
+  # MyKronos registry entry was corrected to say so.
   - name: doc-drift
     public: true
     serial_groups: [worker]
@@ -2322,6 +2345,9 @@ jobs:
 
                 DRIFT=skills/update-docs/scripts/Find-DocDrift.ps1
 
+                echo "doc-drift is REPORT ONLY: drift listed below is for review and"
+                echo "does not fail this build. Only a check that could not run does."
+
                 # -NonInteractive on every invocation in this pipeline. A
                 # missing mandatory parameter otherwise prompts, and a prompt
                 # on a build with no terminal is a hung task rather than an
@@ -2341,6 +2367,12 @@ jobs:
                 check skills/personal-threat-monitor/SKILL.md    skills/personal-threat-monitor
                 check skills/update-docs/SKILL.md                skills/update-docs
 
+                echo ""
+                if [ "$rc" -eq 0 ]; then
+                  echo "Report only - any drift above is a review list, not a failure."
+                else
+                  echo "::error:: Find-DocDrift could not answer for at least one doc (see above) - that is a failure; drift itself never is."
+                fi
                 exit $rc
 
   # -- External (WAN) exposure --------------------------------------------
@@ -2403,7 +2435,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
+          outputs: [{ name: results }, { name: notify }]
           run:
             path: bash
             args:
@@ -2416,16 +2448,27 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null
 
+                # TheHub #60852 (option C). This lane used to print "Ports are
+                # visible from the internet" and exit 0 -- build #10 showed 7547
+                # and succeeded. Get-ExternalExposure.ps1 now judges every
+                # visible port against skills/network-assessment/config/
+                # exposure-allowlist.yml and exits:
+                #   0  nothing visible (or not indexed), or all allowlisted
+                #   1  a visible port is NOT allowlisted       -> red + Slack
+                #   2  could not check (no public IP, lookup   -> red + Slack;
+                #      failed, allowlist unreadable)              unknown is not a pass
+                # The allowlist ships empty: 7547 alerts until Todd decides.
                 rc=0
                 pwsh -NonInteractive -NoProfile \
                   -File source/skills/network-assessment/scripts/Get-ExternalExposure.ps1 \
                   -OutDir results 2>&1 | tee run.log || rc=$?
 
-                # The script `return`s when no public IP resolves, which is
-                # exit 0 having checked nothing. Silence there would report a
-                # clean edge that was never looked at.
+                # Kept from before the exit codes existed: the script used to
+                # `return` 0 here, having checked nothing. It now exits 2 on
+                # its own; this stays as a belt over that.
                 if grep -q "Could not determine public IP" run.log; then
                   echo "::error:: no public IP resolved - the WAN view was never taken"
+                  echo "*personal-soc / external-exposure*: could not check - no public IP resolved, so the WAN view was never taken. Not a pass." > notify/message.txt
                   exit 1
                 fi
 
@@ -2434,10 +2477,27 @@ jobs:
                 ls -l results/
                 if [ -f results/external-exposure.json ]; then
                   cat results/external-exposure.json
-                else
+                elif [ "$rc" -eq 0 ]; then
                   echo "No external-exposure.json written."
                   echo "That is InternetDB's 404 path: this IP is not indexed by Shodan, which is the good outcome."
+                else
+                  echo "No external-exposure.json written - the lookup did not complete (exit $rc)."
                 fi
+
+                # The one line Slack shows (the anchor reads the first line).
+                # Port numbers only: the public IP and hostnames stay in this
+                # private build log.
+                case "$rc" in
+                  0) ;;
+                  1)
+                    PORTS=$(pwsh -NonInteractive -NoProfile -Command \
+                      "(Get-Content results/external-exposure.json -Raw | ConvertFrom-Json).unexpected_ports -join ', '" 2>/dev/null || true)
+                    echo "*personal-soc / external-exposure*: port(s) ${PORTS:-?} visible from the internet and NOT in exposure-allowlist.yml. Close them, or allowlist them with a reason." > notify/message.txt
+                    ;;
+                  *)
+                    echo "*personal-soc / external-exposure*: could not check the WAN edge (exit $rc - lookup failed or allowlist unreadable). Not a pass." > notify/message.txt
+                    ;;
+                esac
 
                 exit $rc
 
@@ -2478,6 +2538,12 @@ jobs:
     on_failure:
       <<: *slack_alert
       params: { <<: *slack_params, JOB: netassess-ingest }
+    # TheHub #60852: host adds/removes are reported to Slack without failing
+    # the run. The anchor posts on success only when notify/message.txt was
+    # written, which this job does only when hosts changed.
+    on_success:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: succeeded, JOB: netassess-ingest }
     on_error:
       <<: *slack_alert
       params: { <<: *slack_params, OUTCOME: errored, JOB: netassess-ingest }
@@ -2507,6 +2573,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: netassess-run }, { name: source }]
+          outputs: [{ name: notify }]
           run:
             path: bash
             args:
@@ -2568,7 +2635,9 @@ jobs:
                 ls -1 current | sed 's/^/  /'
 
                 fail=0
-                note() { echo "::error:: $*"; fail=1; }
+                REASONS=""
+                HOSTCHG=""
+                note() { echo "::error:: $*"; fail=1; REASONS="${REASONS:+$REASONS; }$*"; }
 
                 # -- 1. is this a real scan? ---------------------------------
                 if [ ! -f current/inventory.csv ]; then
@@ -2601,6 +2670,21 @@ jobs:
                   grep -q 'EXPORTS PRESENT'  "$STATUS" && note "NAS is exporting NFS shares"
                   grep -q 'SMBv1 ENABLED'    "$STATUS" && note "NAS has SMBv1 enabled"
                   grep -q 'broadcasting'     "$STATUS" && note "an open Wi-Fi AP is broadcasting"
+
+                  # TheHub #60852. Run #15 said "NAS anonymous shares listed:
+                  # 5" and was accepted: only a count was written and nothing
+                  # read it. The scan now writes the names ("2 (media,
+                  # public)"), or 'unknown (...)' when net view did not answer
+                  # -- which the unknown check above already fails on. Any
+                  # share listed is a failure. A run from a scan older than
+                  # the change carries a bare count and still fails, saying
+                  # the names were not recorded.
+                  SHARES=$(grep -m1 'NAS anonymous shares listed' "$STATUS" | sed 's/.*listed:\*\*[[:space:]]*//' | tr -d '\r')
+                  case "$SHARES" in
+                    ""|0|unknown*) ;;
+                    *[!0-9]*) note "NAS lists shares without credentials: $SHARES" ;;
+                    *) note "NAS lists shares without credentials: $SHARES (names not recorded by this scan version)" ;;
+                  esac
                 fi
 
                 # -- 4. what changed since the previous run ------------------
@@ -2638,12 +2722,17 @@ jobs:
                     # red for it is a job that gets ignored.
                     comm -13 /tmp/prev.macs /tmp/cur.macs | while read -r m; do
                       [ -n "$m" ] && echo "  + new  $(grep -i "$m" current/inventory.csv | cut -d, -f1,3 | tr -d '"')"
-                    done
+                    done | tee /tmp/added
                     comm -23 /tmp/prev.macs /tmp/cur.macs | while read -r m; do
                       [ -n "$m" ] && echo "  - gone $(grep -i "$m" previous/inventory.csv | cut -d, -f1,3 | tr -d '"')"
-                    done
+                    done | tee /tmp/removed
                     if diff -q /tmp/prev.macs /tmp/cur.macs >/dev/null; then
                       echo "  (no host add/remove)"
+                    else
+                      # TheHub #60852: now also sent to Slack (on_success
+                      # hook), still never failed on. One line: the anchor
+                      # posts only the first. IP and vendor, never the MAC.
+                      HOSTCHG="+$(grep -c . /tmp/added || true) / -$(grep -c . /tmp/removed || true) host(s) vs $PREV_KEY: $(cat /tmp/added /tmp/removed | sed 's/^[[:space:]]*//; s/  */ /g' | paste -sd ';' - | sed 's/;/; /g')"
                     fi
                   else
                     echo "  (one side has no inventory.csv)"
@@ -2671,6 +2760,15 @@ jobs:
                     echo "posture score: skipped - findings.json is written by a full"
                     echo "               skill engagement, not by the weekly scan."
                   fi
+                fi
+
+                # The one line Slack shows. On failure the anchor posts it via
+                # on_failure; on success it is written only when hosts changed,
+                # and on_success posts it.
+                if [ "$fail" -ne 0 ]; then
+                  echo "*personal-soc / netassess-ingest*: run $CUR_KEY rejected - $REASONS" > notify/message.txt
+                elif [ -n "$HOSTCHG" ]; then
+                  echo "*personal-soc / netassess-ingest*: run $CUR_KEY accepted; $HOSTCHG (reported, not a failure)" > notify/message.txt
                 fi
 
                 echo ""
