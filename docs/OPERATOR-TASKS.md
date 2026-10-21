@@ -1,6 +1,6 @@
 # Operator tasks
 
-Six things this platform cannot do for itself. Each needs a credential this
+Seven things this platform cannot do for itself. Each needs a credential this
 repository must not hold, or a decision only the operator can make.
 
 They are not defects and not unfinished work. Every one of them is a built
@@ -323,6 +323,95 @@ lag is unknown and why. D-165 records the design.
    `unknown` comes with a `detail` saying what is missing: a token for the
    origin, a wrong token (the endpoint answers 200 either way), or an image
    built without `MYKRONOS_BUILD_SHA`.
+
+---
+
+## 7 · #60834 — schedule the host and LAN collectors
+
+**Effort:** ~15 minutes. **Unblocks:** environmental CVSS lowerings that stay
+applied. An observation lowers a score only while it is no older than 14 days
+(`control_observations.FRESH_DAYS`). A collector nobody runs is a lowering that
+quietly lapses two weeks later. D-166 records the design.
+
+What runs today:
+
+| Vantage | Collector | Schedule |
+|---|---|---|
+| `internet` | `exposure` job in the backend | every 6 h (`MYKRONOS_EXPOSURE_PROBE_INTERVAL_SECONDS`), already running. It records observations only for endpoints registered with a `repo_full_name` (step 4). |
+| `host` | `Publish-ControlObservations.ps1` | nothing until step 3 |
+| `lan` | `python -m mykronos.lan_scan` | nothing until step 3, and only if you pass a range and an authorization |
+
+The tasks read the tokens from `backend\.env` each time they fire:
+`MYKRONOS_CONCOURSE_TOKEN` for mykronos, `MYKRONOS_THEHUB_CONCOURSE_TOKEN` for
+TheHub, and `MYKRONOS_GATE_TOKEN`. The task definition holds the key names,
+never the values. `repair-ingestion-token.ps1` writes a rotated token to the
+same keys, so a rotation does not mean registering again.
+
+### Steps
+
+1. Give each repository's token the `network` grant. Without it ingest answers
+   403, because an observation can lower a score:
+
+       docker exec mykronos-backend mykronos grant ToddGBenson/mykronos network
+
+   Add `ToddGBenson/TheHub` too if you want a TheHub host task (step 3).
+
+2. See what would be registered. The script checks every input and prints the
+   task arguments. It registers nothing and prints no token:
+
+       pwsh -File deploy\concourse\Register-ControlObservationTasks.ps1 -WhatIf -Verbose
+
+   A `refused:` line names what is missing: a key in `backend\.env`, nmap, or
+   `backend\.venv` for the LAN scan.
+
+3. Register the tasks in your own (non-elevated) PowerShell:
+
+       pwsh -File deploy\concourse\Register-ControlObservationTasks.ps1
+
+   This registers `Mykronos Observations (host, ToddGBenson/mykronos)` daily
+   at 05:00. Options:
+
+   - Add TheHub with `-HostRepo ToddGBenson/mykronos,ToddGBenson/TheHub`. Its
+     containers are matched by `thehub*`. Check that with `docker ps` first.
+   - Add the LAN scan with both of the following. With only one, the script
+     refuses (spec 14 §3). There is no default range.
+
+         -LanCidr 192.168.0.14/32,192.168.0.20/32 `
+         -LanAuthorizationReference "CHG-nn: Todd authorises a daily scan of his own hosts, 2026-10-20"
+
+     It runs at 05:30 and files under `-LanRepo` (default mykronos). Write the
+     authorization as a standing one. It goes into the audit log on every run.
+
+   The tasks run as you, only while you are logged on. Docker Desktop runs only
+   then too, and no Windows password is stored. A run missed while logged off
+   or asleep happens at the next logon (StartWhenAvailable).
+
+4. Check that the internet collector has something to probe. If a public
+   endpoint has no repository, its answers are never filed:
+
+       curl -s -H "X-Hub-Token: $GATE" -H "Authorization: Bearer $VIEWER" \
+         http://127.0.0.1:8100/api/exposure
+
+   If an endpoint lacks `repo_full_name`, delete it and register it again
+   (`POST /api/exposure/endpoints` with `url`, `repo_full_name` and optionally
+   `surface_id`, admin token).
+
+5. Run each task once and look at the result:
+
+       Start-ScheduledTask -TaskName 'Mykronos Observations (host, ToddGBenson/mykronos)'
+       Get-Content "$env:LOCALAPPDATA\mykronos-observations\last-host-ToddGBenson_mykronos.log"
+
+   Expect `result: ok`. Last Run Result `2` means refused (the log says why),
+   and `1` means the post failed. Then
+   `GET /api/dashboard/repos/{repo_id}/control-observations` lists `host`
+   rows with `fresh: true`.
+
+### Expected, and not a bug
+
+There is no in-app warning yet when host or LAN observations stop arriving. A
+lapsed lowering shows only as `stale: last observed N days ago` on the
+environmental view. A briefing line for "no `host` observation in 3 days" is
+the follow-up.
 
 ---
 
