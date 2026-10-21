@@ -492,7 +492,9 @@ class TestOracleGateAlerts:
         if count:
             seed(client, auth, run_compaction, [critical(i) for i in range(count)])
         else:
-            post_scan(client, auth, scan_run_id="none")
+            # On the commit the gate judges: a `go` needs the lane to have
+            # reported on that commit, not only before it (TheHub #60848).
+            post_scan(client, auth, scan_run_id="none", commit_sha="abc123")
             post_findings(client, auth, [], scan_run_id="none")
             run_compaction()
 

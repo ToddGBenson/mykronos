@@ -116,7 +116,7 @@ def _env_term(terms: list[dict[str, Any]]) -> dict[str, Any]:
 class TestTheWeight:
     def test_the_weight_is_declared_in_policy(self, policy: Any) -> None:
         assert policy.triage_rank.environmental_per_band == 10
-        assert policy.version == "1.14"
+        assert policy.version == "1.15"
 
     def test_the_term_is_declared_for_disclosure(self) -> None:
         assert "environmental" in RANK_INPUTS

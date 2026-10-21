@@ -128,6 +128,22 @@ def resolve_decision_type(
 #: a reason to quieten it.
 NOT_ASSESSED = "not_assessed"
 
+#: The verdict for a gate whose required lanes did not all report on the
+#: commit it judges (TheHub #60848, option A).
+#:
+#: The per-commit sibling of `NOT_ASSESSED`. That one asks whether anything has
+#: *ever* looked at the repository, and deliberately repository-wide, so a lane
+#: that ran last week still counted as evidence for a commit it never saw. A
+#: gate could record `go` on a commit whose secrets scan uploaded nothing.
+#: Same rules as `NOT_ASSESSED`: it replaces `go` and nothing else, because a
+#: score that reached a real band was reached by findings, and a silent lane is
+#: never a reason to quieten a verdict.
+INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+#: A required lane this repository has never had a reporting run from. Not
+#: required of it: whether it should run the lane is coverage's question.
+LANE_NOT_RUN_HERE = "not_run_here"
+
 #: Scan statuses that count as a capability having *looked*.
 #:
 #: `failure` is excluded on purpose. A lane that crashed produced no observation
@@ -1269,6 +1285,96 @@ class OracleEngine:
             "reason": reason,
         }
 
+    def _lane_evidence(
+        self, repo_full_name: str, *, commit_sha: str, for_gate: bool
+    ) -> dict[str, Any]:
+        """Did each required lane report on *this* commit (TheHub #60848).
+
+        Judged only for a gate decision that names a commit: a portfolio
+        decision is a standing posture with no commit to hold a lane to. Each
+        lane in `policy.lanes_required_per_commit` gets one of three statuses:
+
+        - `reported`: a scan run in a reporting status carries this commit;
+        - `insufficient_evidence`: the repository has run the lane before, and
+          nothing reporting arrived for this commit - not uploaded, or failed;
+        - `not_run_here`: the repository has never had a reporting run from
+          the lane, so it is not required of it here.
+        """
+        required = list(self.policy.lanes_required_per_commit)
+        block: dict[str, Any] = {
+            "evaluated": False,
+            "commit_sha": commit_sha or None,
+            "required": required,
+            "lanes": [],
+            "insufficient": [],
+            # Set in `evaluate`, for the same reason `evidence.go_withheld` is.
+            "go_withheld": False,
+        }
+        if not for_gate or not commit_sha or not required:
+            block["reason"] = "Not judged per lane: " + (
+                "no lane is required per commit by this policy."
+                if not required
+                else "this decision does not judge one commit."
+            )
+            return block
+
+        reporting = ", ".join(f"'{s}'" for s in REPORTING_SCAN_STATUSES)
+        marks = ", ".join("?" for _ in required)
+        rows = self.catalog.query(
+            f"""
+            SELECT capability,
+                   count(*) FILTER (WHERE scan_status IN ({reporting})),
+                   count(*) FILTER (WHERE commit_sha = ? AND scan_status IN ({reporting})),
+                   count(*) FILTER (WHERE commit_sha = ?)
+            FROM scan_runs
+            WHERE repo_full_name = ? AND capability IN ({marks})
+            GROUP BY capability
+            """,
+            [commit_sha, commit_sha, repo_full_name, *required],
+        )
+        seen = {
+            str(capability): (int(ever), int(on_commit), int(attempted))
+            for capability, ever, on_commit, attempted in rows
+        }
+
+        short = commit_sha[:12]
+        insufficient: list[str] = []
+        lanes: list[dict[str, str]] = []
+        for capability in required:
+            ever, on_commit, attempted = seen.get(capability, (0, 0, 0))
+            if on_commit:
+                status = "reported"
+                reason = f"{on_commit} reporting scan run(s) on {short}."
+            elif not ever:
+                status = LANE_NOT_RUN_HERE
+                reason = (
+                    "This repository has never had a reporting run from this lane, "
+                    "so it is not required of it."
+                )
+            else:
+                status = INSUFFICIENT_EVIDENCE
+                reason = (
+                    f"{attempted} run(s) on {short}, every one of which failed."
+                    if attempted
+                    else f"No scan run was uploaded for {short}."
+                ) + " The lane has reported here before, so its silence is not a pass."
+                insufficient.append(capability)
+            lanes.append({"capability": capability, "status": status, "reason": reason})
+
+        block.update(
+            evaluated=True,
+            lanes=lanes,
+            insufficient=insufficient,
+            reason=(
+                "Required lane(s) with nothing reported on this commit: "
+                + ", ".join(insufficient)
+                + "."
+                if insufficient
+                else "Every required lane this repository runs reported on this commit."
+            ),
+        )
+        return block
+
     def _excluded(self, for_gate: bool) -> str:
         """The scope every scoring query shares: capabilities kept out of gates
         (spec 14 §7), and - policy 1.12, #666 - findings in images declared
@@ -2103,6 +2209,9 @@ class OracleEngine:
         # Read before anything is scored, because it decides what a zero at the
         # end of it is allowed to mean (issue #341).
         evidence = self._evidence(repo_full_name)
+        lane_evidence = self._lane_evidence(
+            repo_full_name, commit_sha=commit_sha, for_gate=for_gate
+        )
 
         # Which rules this repo has earned the right to quieten (spec 11
         # §6.1). Looked up before the counts so the query can split each
@@ -2470,6 +2579,12 @@ class OracleEngine:
         if recommendation == "go" and not evidence["available"]:
             recommendation = NOT_ASSESSED
             evidence["go_withheld"] = True
+        # TheHub #60848. The same rule one level down: a required lane that
+        # said nothing about this commit withholds the `go` it would have
+        # given. `not_assessed` wins where both hold - it is the larger gap.
+        elif recommendation == "go" and lane_evidence["insufficient"]:
+            recommendation = INSUFFICIENT_EVIDENCE
+            lane_evidence["go_withheld"] = True
 
         # 10. What would make this go (spec 26 §1). Computed only when it has
         #     something to say: a repository already at `go` gets an empty
@@ -2498,6 +2613,19 @@ class OracleEngine:
                     "Nothing has scanned this repository, so an empty worklist "
                     "here means nobody has looked, not that nothing was found. "
                     "Give it a way to report before reading its score."
+                ),
+            }
+        elif lane_evidence["go_withheld"]:
+            path = {
+                "available": False,
+                "steps": [],
+                "findings_not_listed": 0,
+                "reaches": INSUFFICIENT_EVIDENCE,
+                "reachable": False,
+                "note": (
+                    "No finding stands between this commit and `go`; a missing "
+                    "scan does. Re-run or fix the lane(s) that did not report on "
+                    "this commit: " + ", ".join(lane_evidence["insufficient"]) + "."
                 ),
             }
         else:
@@ -2533,6 +2661,7 @@ class OracleEngine:
             path_to_green=path,
             evidence=evidence,
             tool_images=self._tool_images(repo_full_name),
+            lane_evidence=lane_evidence,
         )
 
         # 11. Environmental severity, in shadow (TheHub #60830). Computed only
@@ -2668,6 +2797,7 @@ class OracleEngine:
         path_to_green: dict[str, Any] | None = None,
         evidence: dict[str, Any] | None = None,
         tool_images: dict[str, Any] | None = None,
+        lane_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Every input considered, including the ones with nothing to say.
 
@@ -2705,6 +2835,19 @@ class OracleEngine:
                 # has not established that anything is missing, and defaulting
                 # the flag on would make `render_reasoning` announce a verdict
                 # this decision never reached.
+                "go_withheld": False,
+                "reason": "Not computed for this decision.",
+            },
+            # Whether each lane the gate relies on reported on this commit
+            # (TheHub #60848). Beside `evidence` and for the same reason: it
+            # scores nothing, and it decides whether a zero may read as `go`.
+            "lane_evidence": lane_evidence
+            or {
+                "evaluated": False,
+                "commit_sha": None,
+                "required": [],
+                "lanes": [],
+                "insufficient": [],
                 "go_withheld": False,
                 "reason": "Not computed for this decision.",
             },
@@ -2807,11 +2950,16 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
     # snapshot has no evidence block, which is not a claim that nothing looked.
     evidence = snapshot.get("evidence") or {}
     withheld = bool(evidence.get("go_withheld"))
+    # TheHub #60848. `.get` for the same reason as `evidence` above.
+    lanes = snapshot.get("lane_evidence") or {}
+    lanes_withheld = bool(lanes.get("go_withheld"))
 
     if withheld:
         # Not a band, so it does not lead with the number. The number is the
         # thing this sentence exists to disown.
         opening = "Not assessed."
+    elif lanes_withheld:
+        opening = "Insufficient evidence."
     elif score >= thresholds["no_go"]:
         opening = f"No-go at {score}/100."
     elif score >= thresholds["review_recommended"]:
@@ -2840,6 +2988,18 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
         )
         if unavailable:
             sentence += " Not yet consulted: " + ", ".join(unavailable) + "."
+        return sentence
+
+    if lanes_withheld:
+        sentence = (
+            f"{opening} {lanes['reason']} Its score of {score}/100 covers only "
+            "the lanes that did report, so no `go` is recorded: a lane that "
+            "said nothing about this commit is not a lane that passed it."
+        )
+        if terms:
+            sentence += " Scored: " + "; ".join(
+                f"{term['label']} (+{term['contribution']:.1f})" for term in terms
+            ) + "."
         return sentence
 
     if not terms:

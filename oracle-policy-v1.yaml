@@ -102,7 +102,15 @@
 # the work queue only. Queue rows whose stored environmental score moved a
 # CVSS band now move by this many points per band; every other row ranks
 # exactly as it did under 1.13.
-version: "1.14"
+#
+# 1.15 - adds scope.lanes_required_per_commit (TheHub #60848, option A). No
+# score changes. A gate decision on a commit now judges each listed lane on
+# its own: a lane this repository has run before that has no reporting scan
+# run for the commit under evaluation is `insufficient_evidence`, and a verdict
+# that would have been `go` is recorded as `insufficient_evidence` instead.
+# Never a downgrade of review_recommended or no_go, and portfolio decisions
+# are not judged per commit.
+version: "1.15"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -514,6 +522,19 @@ scope:
   # role is declared, never guessed, and an image any compose file runs as a
   # service counts. Each decision records how many it left out.
   exclude_tool_images: true
+
+  # TheHub #60848 (policy 1.15): the scan lanes a gate decision requires to
+  # have reported on the very commit it judges. Without this, a lane that
+  # uploaded nothing for the commit was invisible - its runs on earlier commits
+  # still counted as `evidence` - and a gate could say `go` over it.
+  #
+  # Only lanes that scan the tree on every commit belong here. `dast`, `cloud`
+  # and `network` read a deployment or a host on their own schedule, so
+  # requiring them per commit would withhold every `go`; `aegis` writes an
+  # insider-risk signal, not a scan run. A listed lane a repository has never
+  # run is reported as `not_run_here` and not required of it: whether it should
+  # run that lane is a coverage question, not this gate's.
+  lanes_required_per_commit: [secrets, atlas, sast, iac, containers]
 
 # ---------------------------------------------------------------------------
 # Environmental severity (TheHub #60830; epic #60822, decision D2)

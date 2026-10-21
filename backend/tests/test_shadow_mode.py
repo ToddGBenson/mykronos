@@ -24,7 +24,11 @@ def oracle_auth(client: TestClient) -> dict[str, str]:
 
 def judge(client, oracle_auth, run_compaction, *, pr_number: int, criticals: int) -> str:
     """Put `criticals` open findings in the lake and score a PR against them."""
-    post_scan(client, oracle_auth, scan_run_id=f"scan-{pr_number}")
+    # On the commit the gate judges (TheHub #60848): a lane that reported only
+    # on another commit withholds the `go` these tests are counting.
+    post_scan(
+        client, oracle_auth, scan_run_id=f"scan-{pr_number}", commit_sha=f"sha{pr_number}"
+    )
     post_findings(
         client,
         oracle_auth,
