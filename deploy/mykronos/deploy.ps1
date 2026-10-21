@@ -57,7 +57,7 @@
     warn-and-proceed path that prints on every routine command stops being
     read, which is the failure mode this estate keeps meeting. So the four
     outcomes do not look alike: a clean answer is ONE quiet line, while
-    "could not ask" and "nothing ever scored this" are banners with a pause,
+    "could not ask" is a banner with a pause, "nothing ever scored this" stops,
     and every run's verdict is repeated as the last line on the screen and
     appended to `deploy-risk-log.jsonl` beside this script. "Could not ask"
     is not "asked and it was fine", and the operator must never have to infer
@@ -86,6 +86,16 @@
     is now a yellow banner with the score and recommendation, and the deploy
     proceeds. -Force is for what the gate refused, and nothing else.
 
+    AND NOTHING-EVER-SCORED-IT IS A REFUSAL. An "unjudged" sha used to print
+    NOT JUDGED and ship. But Concourse scores only a commit that passed every
+    lane, so a sha whose `unit` lane is red is never scored - and it shipped
+    precisely because it was red. Fail open (D-126) is kept for what it was
+    decided for, "could not ask": the platform unreachable, Vault sealed.
+    "Asked, and nothing scored this" is an answer, and it now refuses unless
+    -Force -ForceReason is given, recorded the same way as a floor override.
+    Wait for the gate (about 30 minutes after Delivery), or deploy the newest
+    sha it did score.
+
     SCOPE. D-125 retired the GHCR `:latest`, which is what this script pulls by
     default. A SECOND promote exists in the Concourse `mykronos.yml` pipeline
     and still retags `:latest` on the LAN registry (192.168.0.14:5000). If you
@@ -112,13 +122,14 @@
     deploy where the ledger's NOT JUDGED line is the accepted cost.
 
 .PARAMETER Force
-    Deploy a sha the risk gate refused. Requires -ForceReason, and the reason
+    Deploy a sha the risk gate refused, or one it never scored.
+    Requires -ForceReason, and the reason
     is written to a ledger beside this script before anything is pulled. An
     override nobody can find afterwards is not an override, it is an
     unrecorded exception.
 
 .PARAMETER ForceReason
-    Why this refused sha ships anyway. Recorded, not just printed.
+    Why this refused or unjudged sha ships anyway. Recorded, not just printed.
 
 .PARAMETER MigrateFrom
     Copy an existing lake and operational database into the volume before
@@ -160,7 +171,7 @@ param(
     # How long to wait for the gate to answer about $Tag (#735). 0 = ask once.
     [ValidateRange(0, 180)]
     [int]$GateWaitMinutes = 45,
-    # Ship a sha the gate refused. Needs -ForceReason; see the banner it
+    # Ship a sha the gate refused or never scored. Needs -ForceReason; see the banner it
     # prints and the ledger it writes.
     [switch]$Force,
     [string]$ForceReason,
@@ -238,14 +249,15 @@ function Get-RiskVerdict {
                      high (`introduced_blocking`, D-048) - the gate's floor
           backlog  - asked, and the recommendation is no_go but the commit
                      introduced nothing blocking. Warns, proceeds (D-159)
-          unjudged - asked, and NOTHING has ever scored this commit
-          unasked  - could not ask at all
+          unjudged - asked, and NOTHING has ever scored this commit.
+                     Refuses unless -Force
+          unasked  - could not ask at all. Warns, proceeds (D-126)
 
-        `unjudged` and `unasked` both end in "deploy proceeds", which is
-        exactly why they are separate states rather than one "warn" branch.
-        They have different causes and different fixes: one means the gate
-        workflow did not run for this commit, the other means this host could
-        not reach the platform.
+        `unjudged` and `unasked` are separate states because they have
+        different causes, different fixes and different outcomes: one means
+        the gate did not score this commit (most often because a lane was
+        red, so Concourse never reached the gate), the other means this host
+        could not reach the platform.
     #>
     param([string]$Sha, [string]$BaseUrl, [string]$Token)
 
@@ -320,8 +332,8 @@ function Find-NearestScored {
         Walks `git rev-list` in the checkout this script sits in and asks the
         same by-commit route for each ancestor. Stops at the first answer, and
         at the first "could not ask", because that will not get better one
-        commit further back. Never throws: this only adds to a banner, and the
-        deploy fails open either way (D-126).
+        commit further back. Never throws: this only adds to a message, and a
+        failure here must not change what the deploy decides.
     #>
     param([string]$Sha, [string]$BaseUrl, [string]$Token, [string]$RepoPath, [int]$Depth = 25)
     try {
@@ -461,26 +473,59 @@ switch ($verdict.State) {
         $nearest = Find-NearestScored -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken `
             -RepoPath (Join-Path $here "..\..")
         $nearestLine = Format-NearestScored -Nearest $nearest -Sha $Tag
-        Write-RiskBanner -Color Yellow `
-            -Heading "NOT JUDGED - NO RISK DECISION EXISTS FOR $Tag" `
-            -Lines @(
-                "The platform was reached and asked. It has never scored this commit.",
-                $(if ($GateWaitMinutes -gt 0) { "Waited $GateWaitMinutes minutes for the gate to answer." } else { "Did not wait for the gate (-GateWaitMinutes 0)." }),
+        $nearestSha = $(if ($nearest.Found) { $nearest.Sha } else { $null })
+        $nearestVerdict = $(if ($nearest.Found) { $nearest.Verdict } else { $null })
+        $waited = $(if ($GateWaitMinutes -gt 0) { "Waited $GateWaitMinutes minutes for the gate to answer." } else { "Did not wait for the gate (-GateWaitMinutes 0)." })
+        $why = @(
+            "The platform was reached and asked. It has never scored $Tag.",
+            $waited,
+            "",
+            "THAT IS NOT A PASS. Concourse scores only a commit that passed every",
+            "lane, so the usual cause is a red lane (unit, lint-and-types) for this",
+            "sha - exactly the commit that must not ship unassessed. Fail open",
+            "(D-126) is for COULD NOT ASK, not for this.",
+            "",
+            $nearestLine
+        )
+
+        if (-not $Force) {
+            $lines = @("NOT JUDGED - the risk gate has never scored $Tag. Nothing has been pulled.") + $why + @(
                 "",
-                "THAT IS NOT A PASS. It is the absence of one, and it is a different",
-                "fact from 'asked, and it was fine'. Most likely the oracle gate did",
-                "not run for this commit, or its decision never reached the lake.",
+                "What to do:",
+                "  * Wait. The gate answers about 30 minutes after Delivery goes",
+                "    green; re-run, or pass a larger -GateWaitMinutes.",
+                "  * Or deploy the last green sha - the newest one the gate DID score:",
+                $(if ($nearest.Found) { "      .\deploy.ps1 -Tag $($nearest.Sha.Substring(0, 12))   ($nearestVerdict)" } else { "      (none found above; check the lanes for the newest green head)" }),
+                "  * Check the lanes for $Tag. A red lane is never scored, and waiting",
+                "    will not change that - fix it and deploy the next green head.",
                 "",
-                $nearestLine,
-                "",
-                "Proceeding: the decided posture is fail open (#60487, D-126). A check",
-                "that cannot answer must not be worse than the no check before it."
+                "To deploy it unassessed anyway:",
+                "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships with no risk decision>"""
             )
-        $riskSummary = "Risk gate: NOT JUDGED - nothing has ever scored $Tag. It shipped unassessed. $nearestLine"
-        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unjudged";
+            Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "unjudged";
+                waited_minutes = $GateWaitMinutes;
+                nearest_scored = $nearestSha; nearest_verdict = $nearestVerdict } | Out-Null
+            throw ($lines -join [Environment]::NewLine)
+        }
+
+        Write-RiskBanner -Color Red `
+            -Heading "OVERRIDDEN - SHIPPING A SHA NOTHING HAS SCORED" `
+            -Lines (@("$Tag has no risk decision. It is being deployed anyway.") + $why + @(
+                "",
+                "Reason given: $ForceReason"
+            ))
+        # Recorded BEFORE the pull, as a floor override is. There is no
+        # decision to record it against on the platform, so the local ledger
+        # is the whole record - which makes the write the price of the deploy.
+        $recorded = Write-RiskLedger @{ event = "override"; tag = $Tag; state = "unjudged";
             waited_minutes = $GateWaitMinutes;
-            nearest_scored = $(if ($nearest.Found) { $nearest.Sha } else { $null });
-            nearest_verdict = $(if ($nearest.Found) { $nearest.Verdict } else { $null }) } | Out-Null
+            nearest_scored = $nearestSha; nearest_verdict = $nearestVerdict;
+            reason = $ForceReason }
+        if (-not $recorded) {
+            throw "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
+        }
+        Write-Host "Override recorded in $riskLedger (there is no decision to record it against on the platform)." -ForegroundColor Yellow
+        $riskSummary = "Risk gate: OVERRIDDEN - nothing has ever scored $Tag and it shipped with -Force. Reason: $ForceReason $nearestLine"
         Start-Sleep -Seconds 5
     }
 
@@ -591,7 +636,7 @@ switch ($verdict.State) {
     }
 }
 
-if ($Force -and $verdict.State -ne "refused") {
+if ($Force -and $verdict.State -notin @("refused", "unjudged")) {
     Write-Host "-Force was passed but the gate did not refuse $Tag; there was nothing to override." -ForegroundColor DarkGray
 }
 
