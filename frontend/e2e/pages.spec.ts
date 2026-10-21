@@ -54,3 +54,24 @@ test("the product-owner console lists every seeded repository", async ({ page })
     await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
   }
 });
+
+test("remediation is one page: the worklist, then the library", async ({ page }) => {
+  // One nav entry, not "Remediate today" beside "Remediation library".
+  await page.goto("/");
+  const rail = page.getByRole("navigation", { name: "Sections" });
+  await expect(rail.getByRole("link", { name: "Remediate today" })).toHaveAttribute(
+    "href",
+    "/remediate",
+  );
+  await expect(rail.getByRole("link", { name: "Remediation library" })).toHaveCount(0);
+
+  // An old bookmark to the library lands on its section of the merged page.
+  await page.goto("/remediation");
+  await expect(page).toHaveURL(/\/remediate#library$/);
+  await expect(
+    page.getByRole("heading", { name: "How to remediate the open findings today" }),
+  ).toBeVisible();
+  await expect(
+    page.locator("#library").getByRole("heading", { name: "Remediation library" }),
+  ).toBeVisible();
+});
