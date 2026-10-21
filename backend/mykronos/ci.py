@@ -733,6 +733,20 @@ class ConcourseClient:
             out[str(raw["name"])] = str(status) if isinstance(status, str) else None
         return out
 
+    def pipeline_jobs(self, pipeline: str) -> list[JobStatus] | None:
+        """Every job of one named pipeline with its last finished build, or
+        None if that pipeline is unreadable.
+
+        `status_for` without its `pipelines()` lookup, for a caller sweeping
+        several repositories that has already asked which pipelines exist
+        once and should not ask again per repository (the portfolio).
+        """
+        payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
+        if not isinstance(payload, list):
+            return None
+        url = self.pipeline_url(pipeline)
+        return [self._job(raw, url) for raw in payload if isinstance(raw, dict)]
+
     def job_builds(
         self, pipeline: str, job: str, *, limit: int = 10
     ) -> list[dict[str, object]] | None:
@@ -2417,4 +2431,72 @@ def reconcile(
                     skipped=job.status == "skipped",
                 )
             )
+    return out
+
+
+@dataclass(frozen=True)
+class LaneResult:
+    """The lane a portfolio cell answers to, and how its last build ended.
+
+    `ci` is `concourse` or `github_actions`, so a sentence about the build can
+    name where it ran without the reader decoding `github-actions` as a
+    pipeline name.
+    """
+
+    ci: str
+    pipeline: str
+    job: str
+    status: str | None
+    build_name: str | None
+    build_url: str | None
+    finished_at: datetime | None
+
+    @property
+    def failed(self) -> bool:
+        return (self.status or "") in ConcourseClient.FAILED_STATUSES
+
+
+def latest_lane_by_capability(pipeline: str, jobs: list[JobStatus]) -> dict[str, LaneResult]:
+    """Per capability, the lane whose last build the portfolio should show.
+
+    A capability can be produced by several jobs (`unit` and `coverage`; two
+    `sast` lanes on a shell-heavy repository). **Any one of them whose last
+    finished build failed or errored makes the capability's lane failed** —
+    a red lane beside a green sibling is still a job that is failing, and
+    "the last state was failed jobs" is the question being answered. The most
+    recently finished failing job is the one named. With none failing, the
+    most recently finished job is reported.
+
+    Skipped: paused jobs (a decision, reported by `paused_jobs`), jobs that
+    have never finished a build (no outcome to report), and jobs this
+    pipeline does not map to a capability (`reconcile` reports those as
+    `unknown`; they cannot colour a capability they are not known to produce).
+    """
+    ci = "github_actions" if pipeline == ACTIONS else "concourse"
+    candidates: dict[str, list[JobStatus]] = {}
+    for job in jobs:
+        if job.paused or job.status is None:
+            continue
+        mapped = CAPABILITY_BY_JOB.get((pipeline, job.name))
+        if mapped is None:
+            continue
+        for capability in (mapped,) if isinstance(mapped, str) else mapped:
+            candidates.setdefault(capability, []).append(job)
+
+    def newest(pool: list[JobStatus]) -> JobStatus:
+        return max(pool, key=lambda j: j.finished_at or datetime.min.replace(tzinfo=UTC))
+
+    out: dict[str, LaneResult] = {}
+    for capability, pool in candidates.items():
+        failing = [j for j in pool if j.status in ConcourseClient.FAILED_STATUSES]
+        chosen = newest(failing or pool)
+        out[capability] = LaneResult(
+            ci=ci,
+            pipeline=pipeline,
+            job=chosen.name,
+            status=chosen.status,
+            build_name=chosen.build_name,
+            build_url=chosen.build_url,
+            finished_at=chosen.finished_at,
+        )
     return out

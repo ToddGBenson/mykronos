@@ -199,9 +199,7 @@ export default async function PortfolioPage({
                       repoId={repo.repo_id}
                       enabled={repo.enabled_capabilities}
                       pending={repo.pending_capabilities ?? []}
-                      live={repo.capability_states
-                        .filter((state) => state.has_scanned)
-                        .map((state) => state.capability)}
+                      states={repo.capability_states}
                     />
                   </td>
 

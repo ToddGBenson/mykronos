@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import blast_radius, environment_view, prior_disposition, toxic, worklist
+from mykronos.ci import LaneResult
 from mykronos.config import get_settings
 from mykronos.controls import category_states
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
@@ -491,6 +492,58 @@ class CapabilityState:
     last_scan_at: datetime | None = None
     last_scan_status: str | None = None
     open_findings: int = 0
+    #: The CI lane that produces this capability and how its last finished
+    #: build ended (`with_lanes`). All None when no lane maps to it, or the CI
+    #: could not be read — "unknown", never "succeeded".
+    lane_ci: str | None = None
+    lane_pipeline: str | None = None
+    lane_job: str | None = None
+    lane_status: str | None = None
+    lane_build_name: str | None = None
+    lane_build_url: str | None = None
+    lane_finished_at: datetime | None = None
+    #: The latest state is a failure: the last scan run did not succeed, OR
+    #: the lane that produces it last failed/errored. The portfolio draws
+    #: this red rather than green — a capability that has *ever* scanned is
+    #: not one whose last run worked.
+    last_run_failed: bool = False
+
+
+#: Scan statuses that are a working run. `no_applicable_targets` is a scanner
+#: that ran and found nothing to scan; `reported` is the stand-in status of the
+#: `REPORTS_ELSEWHERE` capabilities, which have no runs to fail. Anything else
+#: — `failure`, `partial_failure`, or a status this table does not know — is
+#: not a success, and "green only when the latest run succeeded" means an
+#: unknown status must not be drawn green.
+SCAN_STATUSES_OK = frozenset({"success", "no_applicable_targets", "reported"})
+
+
+def scan_failed(status: str | None) -> bool:
+    """Whether a latest scan status is a failed run. None (never scanned) is not."""
+    return status is not None and status not in SCAN_STATUSES_OK
+
+
+def with_lanes(states: list[CapabilityState], lanes: dict[str, LaneResult] | None) -> None:
+    """Fold each capability's lane into its state, in place.
+
+    `last_run_failed` is recomputed from both halves: the last scan failed, or
+    the lane last failed. A lane can fail without producing a scan run at all
+    — the job broke before the upload — and then the scan half alone would
+    keep showing the last good run.
+    """
+    for state in states:
+        lane = (lanes or {}).get(state.capability)
+        if lane is not None:
+            state.lane_ci = lane.ci
+            state.lane_pipeline = lane.pipeline
+            state.lane_job = lane.job
+            state.lane_status = lane.status
+            state.lane_build_name = lane.build_name
+            state.lane_build_url = lane.build_url
+            state.lane_finished_at = lane.finished_at
+        state.last_run_failed = scan_failed(state.last_scan_status) or bool(
+            lane is not None and lane.failed
+        )
 
 
 @dataclass
@@ -633,6 +686,7 @@ class DashboardQueries:
                     last_scan_at=scan_state.get(capability, {}).get("last_scan_at"),
                     last_scan_status=scan_state.get(capability, {}).get("status"),
                     open_findings=scan_state.get(capability, {}).get("open_findings", 0),
+                    last_run_failed=scan_failed(scan_state.get(capability, {}).get("status")),
                 )
                 for capability in sorted({c.value for c in Capability} | enabled | set(scan_state))
             ]

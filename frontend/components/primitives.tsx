@@ -9,6 +9,14 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { SEVERITY_ORDER, type Severity } from "@/lib/api";
+import {
+  CELL_MEANING,
+  CELL_SKIN,
+  LEGEND_ORDER,
+  cellState,
+  cellStateText,
+  type CapabilityRun,
+} from "@/lib/capability-cell";
 import { checkHref } from "@/lib/checks";
 
 // Re-exported so callers have one import for display primitives, even
@@ -220,7 +228,7 @@ export function CapabilityGridHeader() {
 export function CapabilityGrid({
   enabled,
   pending = [],
-  live = [],
+  states = [],
   repoId,
 }: {
   enabled: string[];
@@ -232,43 +240,34 @@ export function CapabilityGrid({
    */
   repoId?: string;
   /**
-   * Capabilities that have actually reported a scan. Implemented-but-silent
-   * and implemented-and-reporting are different facts: the first is drawn as
-   * an outline, the second as a solid. Without the distinction, "enabled"
-   * quietly claims coverage that may not exist — the unit lane was enabled and
-   * had never reported once.
+   * The backend's per-capability states. Implemented-but-silent and
+   * implemented-and-reporting are different facts: the first is drawn as an
+   * outline, the second as a solid. Without the distinction, "enabled"
+   * quietly claims coverage that may not exist — the unit lane was enabled
+   * and had never reported once. And reporting is not the same as working:
+   * a capability whose last scan or lane failed is drawn red, not green
+   * (`lib/capability-cell`).
    */
-  live?: string[];
+  states?: CapabilityRun[];
 }) {
   return (
     <span className="inline-flex items-center gap-[2px]">
       {ALL_CAPABILITIES.map((capability) => {
         const meta = CAPABILITY_META[capability];
-        const isOn = enabled.includes(capability);
-        const isLive = isOn && live.includes(capability);
-        const isPending = !isOn && pending.includes(capability);
+        const run = states.find((s) => s.capability === capability);
+        const state = cellState({
+          enabled: enabled.includes(capability),
+          pending: pending.includes(capability),
+          run,
+        });
+        const words = cellStateText(state, run);
 
-        const state = isLive
-          ? "reporting"
-          : isOn
-            ? "enabled, not yet reporting"
-            : isPending
-              ? "pending install PR"
-              : "not enabled";
-
-        // Fill for evidence, outline for a claim, near-nothing for absence.
-        // Deliberately not three opacities of the same mark.
-        const skin = isLive
-          ? "border-pass bg-pass"
-          : isOn
-            ? "border-dashed border-accent bg-transparent"
-            : isPending
-              ? "border-dotted border-accent bg-accent-wash"
-              : "border-rule bg-paper";
-
-        const label = `${meta.label}: ${state}`;
-        const title = `${meta.label} — ${state}${"note" in meta ? ` (${meta.note})` : ""}`;
-        const className = `${CAP_CELL} h-[15px] border ${skin}`;
+        const label = `${meta.label}: ${words}`;
+        const title = `${meta.label} — ${words}${"note" in meta ? ` (${meta.note})` : ""}`;
+        const className = `${CAP_CELL} h-[15px] border ${CELL_SKIN[state]} ${CELL_MARK}`;
+        // A mark inside a failed cell, so failure differs from a pass by
+        // form and not only hue — the two solids are close in greyscale.
+        const mark = state === "failed" ? <span aria-hidden>!</span> : null;
 
         return repoId ? (
           <Link
@@ -276,36 +275,37 @@ export function CapabilityGrid({
             href={checkHref(repoId, capability)}
             aria-label={`${label} — open run history`}
             title={`${title} · click for run history`}
-            className={`${className} block hover:outline hover:outline-1 hover:outline-accent`}
-          />
+            className={`${className} hover:outline hover:outline-1 hover:outline-accent`}
+          >
+            {mark}
+          </Link>
         ) : (
-          <span
-            key={capability}
-            role="img"
-            aria-label={label}
-            title={title}
-            className={className}
-          />
+          <span key={capability} role="img" aria-label={label} title={title} className={className}>
+            {mark}
+          </span>
         );
       })}
     </span>
   );
 }
 
-/** What the three cell states mean, once, next to the grid that uses them. */
+/** Centres the failed cell's mark; harmless on the empty cells. */
+const CELL_MARK =
+  "flex items-center justify-center font-mono text-[10px] font-bold leading-none text-paper";
+
+/** What the cell states mean, once, next to the grid that uses them. */
 export function CapabilityLegend() {
-  const entries = [
-    { skin: "border-pass bg-pass", meaning: "reporting scans" },
-    { skin: "border-dashed border-accent", meaning: "enabled, not yet reporting" },
-    { skin: "border-dotted border-accent bg-accent-wash", meaning: "pending install PR" },
-    { skin: "border-rule bg-paper", meaning: "not enabled" },
-  ];
   return (
     <ul className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-      {entries.map((entry) => (
-        <li key={entry.meaning} className="flex items-center gap-1.5">
-          <span aria-hidden className={`inline-block h-[11px] w-[18px] border ${entry.skin}`} />
-          <span className="font-mono text-[11px] text-ink-3">{entry.meaning}</span>
+      {LEGEND_ORDER.map((state) => (
+        <li key={state} className="flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className={`inline-flex h-[11px] w-[18px] items-center justify-center border font-mono text-[9px] font-bold leading-none text-paper ${CELL_SKIN[state]}`}
+          >
+            {state === "failed" ? "!" : null}
+          </span>
+          <span className="font-mono text-[11px] text-ink-3">{CELL_MEANING[state]}</span>
         </li>
       ))}
     </ul>
