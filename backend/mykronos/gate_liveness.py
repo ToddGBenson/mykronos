@@ -154,7 +154,10 @@ class GateLivenessReport:
                 f"latest build. {GATE_JOB} itself last finished: {self.gate_status or 'never'}. "
                 "Check whether its decision reached the lake."
             )
-        out.append("Every deploy of these commits ships unjudged (deploy.ps1 fails open, D-126).")
+        out.append(
+            "deploy.ps1 refuses these commits as NOT JUDGED unless forced; "
+            "deploy the newest judged one instead."
+        )
         return out
 
 
