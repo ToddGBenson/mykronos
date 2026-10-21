@@ -147,10 +147,13 @@ without turning errexit *off*. A failing `scanner | tee` therefore kills the
 shell at the pipe, before `${PIPESTATUS}` can be read. Any lane measuring an
 exit code through a pipe needs an explicit `set +e` around it.
 
-### PS-4 — Scanning waits for the quality gate
+### PS-4 — Scanning waits for the quality gate, or the verdict does
 
 Every security lane declares `passed: [<the quality gate>]` on its `source`
-get.
+get — unless its pipeline lists it in `SCANS_EVERY_COMMIT`
+(`scripts/check_pipeline_conformance.py`), in which case it scans every commit
+and each verdict job of that pipeline must name the quality gate in its own
+`passed:`.
 
 **What it prevents.** Spec 15 §3: "there is no value in scanning a commit that
 does not pass its own tests." Five of TheHub's lanes had no `passed:` at all,
@@ -169,6 +172,19 @@ says none is. The wait is measured from the first build of that oldest
 commit. When Concourse or the decision store cannot be read, the run is
 recorded as failed with `could not check`, never as live. `deploy.ps1` names
 the nearest scored ancestor of an unjudged sha and its verdict.
+
+**The amendment (2026-10-21, TheHub).** Behind the gate, a red quality gate
+also freezes every scanning lane on the last commit it passed, and each lane
+keeps showing that commit's green. TheHub's `unit` went red on 2026-10-19
+(pip "resolution too deep") and no develop commit was scanned for two days
+while secrets, sast, dependencies, iac, ai-models and prompt-evals all read
+green — a stale green indistinguishable from a current one. So TheHub's
+scanners (and `qa`) scan every commit, and the rule moves to where the
+verdict is rendered: `oracle-gate` and `deploy-demo` list `unit` in their own
+`passed:`, so Concourse still picks one commit that passed `unit` *and* every
+scanner, and nothing untested is judged or deployed. The worker cost Spec 15
+§3 names is real and accepted: on a red-`unit` commit the scanners now run.
+`mykronos.yml` is unchanged.
 
 ### PS-5 — A capability is granted, or it has a lane, or it has neither
 
@@ -444,7 +460,7 @@ Accepted, and recorded in the README's status table.
 | PS-1 | `lint-and-types`, `frontend` now report `qa` | new `qa` lane; `api-inventory` → `qa`; `prompt-evals` → `ai` |
 | PS-2 | preflight in 14 jobs | preflight in 16 jobs |
 | PS-3 | `secrets`, `ai`, `dependencies` capture rc; `iac`, `containers` upload under `ensure` | `secrets`, `dependencies` capture rc; `iac`, `containers`, `cloud-posture` upload under `ensure` |
-| PS-4 | already conformant | 5 lanes gated on `unit` |
+| PS-4 | already conformant | 5 lanes gated on `unit`; since 2026-10-21 they scan every commit and `oracle-gate`/`deploy-demo` wait on `unit` |
 | PS-6 | 10 hardcoded branches → `$SCANNED_BRANCH` | already conformant |
 | PS-7 | 27 task timeouts (was 0) | 23 more, plus both hook anchors |
 | PS-8 | gitleaks + syft checksummed | gitleaks + syft checksummed |

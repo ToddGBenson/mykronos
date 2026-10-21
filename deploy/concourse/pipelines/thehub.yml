@@ -558,8 +558,8 @@ anchors:
   #
   # `unit` reports the start. `oracle-gate` reports success as its LAST step,
   # because it is the job whose success means every lane passed on this
-  # commit: `passed:` on the six scanning lanes, which wait on `unit` and
-  # `build`. Every job up to and including the gate reports failure from
+  # commit: `passed:` on `unit` and the six scanning lanes (`containers` also
+  # waiting on `build`). Every job up to and including the gate reports failure from
   # `on_failure:` and `on_error:`, LAST in each hook, so a red lane is a red
   # check and not a check left in progress, and a refused report cannot stop
   # the Slack alert or Hub report ahead of it.
@@ -2609,6 +2609,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                upload_rc=0
                 MYKRONOS_JOB=unit python -m mykronos.upload \
                   --capability unit --tool junit \
                   --results-path /tmp/results \
@@ -2617,7 +2618,7 @@ jobs:
                   --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || upload_rc=$?
 
                 # [#55173] 124 distinguishes "ran out of time" from "tests
                 # failed". #75 reported neither: an errored build carries no
@@ -2638,8 +2639,17 @@ jobs:
                 fi
                 if [ "$sec_rc" -ne 0 ]; then
                   echo "::error::tests/security failed (exit ${sec_rc}) - the unit tier passed"
+                  exit "$sec_rc"
                 fi
-                exit "$sec_rc"
+                # The upload's exit code is kept and fails the job AFTER both test tiers' verdicts
+                # (2026-10-21). It ended `|| true`, so a refused token, a schema
+                # 422 or an adapter that read nothing left this job green while
+                # Mykronos recorded no run - the lane looked reported and was not.
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::Uploading the unit results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
+                  exit "$upload_rc"
+                fi
+                exit 0
 
   # == Stage 2: build =======================================================
   #
@@ -2691,7 +2701,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -2726,6 +2744,7 @@ jobs:
                 python /tmp/check_links.py . --junit-xml=../results/qa.xml || rc=$?
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                upload_rc=0
                 MYKRONOS_JOB=qa python -m mykronos.upload \
                   --capability qa --tool junit \
                   --results-path ../results \
@@ -2733,9 +2752,19 @@ jobs:
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || upload_rc=$?
 
-                exit "$rc"
+                # The upload's exit code is kept and fails the job AFTER the job's own verdict
+                # (2026-10-21). It ended `|| true`, so a refused token, a schema
+                # 422 or an adapter that read nothing left this job green while
+                # Mykronos recorded no run - the lane looked reported and was not.
+                if [ "$rc" -ne 0 ]; then
+                  exit "$rc"
+                fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::Uploading the qa results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
+                  exit "$upload_rc"
+                fi
   - name: build
     public: true
     serial_groups: [worker]
@@ -2906,13 +2935,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # PS-4: behind the quality gate, like every other scanning lane in
-        # this pipeline and like the whole of the mykronos one. These five
-        # had no `passed:` at all, so they scanned commits whose own test
-        # suite had failed - spending the single worker on findings about
-        # code already known not to work. Spec 15 SS3: "there is no value
-        # in scanning a commit that does not pass its own tests."
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -3042,13 +3073,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # PS-4: behind the quality gate, like every other scanning lane in
-        # this pipeline and like the whole of the mykronos one. These five
-        # had no `passed:` at all, so they scanned commits whose own test
-        # suite had failed - spending the single worker on findings about
-        # code already known not to work. Spec 15 SS3: "there is no value
-        # in scanning a commit that does not pass its own tests."
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python313
         attempts: *retry_fetch
       - get: pwsh
@@ -3238,13 +3271,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # PS-4: behind the quality gate, like every other scanning lane in
-        # this pipeline and like the whole of the mykronos one. These five
-        # had no `passed:` at all, so they scanned commits whose own test
-        # suite had failed - spending the single worker on findings about
-        # code already known not to work. Spec 15 SS3: "there is no value
-        # in scanning a commit that does not pass its own tests."
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -3388,6 +3423,7 @@ jobs:
                 fi
                 OSV_SBOM_ARGS=""
                 UPLOAD_SBOM_ARGS=""
+                SBOM_UNREAD=""
                 for f in $SBOMS; do
                   OSV_SBOM_ARGS="$OSV_SBOM_ARGS -L $f"
                   UPLOAD_SBOM_ARGS="$UPLOAD_SBOM_ARGS --sbom $f"
@@ -3396,9 +3432,25 @@ jobs:
                   set +e
                   # shellcheck disable=SC2086  # deliberate word splitting
                   osv-scanner scan source $OSV_SBOM_ARGS \
-                    --format sarif --output-file /tmp/results/osv-sbom.sarif
-                  sbom_rc=$?
+                    --format sarif --output-file /tmp/results/osv-sbom.sarif 2>&1 \
+                    | tee /tmp/osv-sbom.log
+                  sbom_rc=${PIPESTATUS[0]}
                   set -e
+
+                  # An SBOM osv-scanner read 0 packages from was not assessed.
+                  # docs/sbom/latest-python.cdx.json lists 193 components and
+                  # carries no PURLs, and osv-scanner identifies a CycloneDX
+                  # component by its PURL alone, so every build logged
+                  # "found 0 packages" (#234) and the SBOM half of this lane
+                  # passed having checked nothing. Named here and failed below,
+                  # after the upload, so the declared scan still reports.
+                  for f in $SBOMS; do
+                    n=$(sed -n "s|^Scanned $f file and found \([0-9][0-9]*\) package.*|\1|p" /tmp/osv-sbom.log | tail -1)
+                    if [ "${n:-0}" -eq 0 ]; then
+                      echo "::error::osv-scanner read 0 packages from $f - an SBOM whose components carry no PURL is not scanned."
+                      SBOM_UNREAD="$SBOM_UNREAD $f"
+                    fi
+                  done
                   # 0 clean, 1 found something, 128 nothing to scan. Anything
                   # else is a scan that did not happen; its partial output is
                   # dropped rather than uploaded as if it were the answer.
@@ -3435,6 +3487,11 @@ jobs:
                 if [ "$rc" -gt 1 ]; then
                   echo "::error::osv-scanner exited $rc - a scan failure, not a result"
                   exit "$rc"
+                fi
+                if [ -n "$SBOM_UNREAD" ]; then
+                  echo "::error::Installed versions were not assessed for:$SBOM_UNREAD"
+                  echo "::error::osv-scanner read 0 packages from it. Regenerate it with PURLs (TheHub scripts/sbom.sh)."
+                  exit 1
                 fi
 
   # Scans the image this commit produced, out of the registry. Two tasks
@@ -3908,7 +3965,16 @@ jobs:
         # that demo DAST and the API inventory are not inputs to this verdict;
         # those two lanes still run, upload and go red on their own, behind
         # `deploy-demo`, where they genuinely belong.
-        passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
+        #
+        # `unit` is named here (2026-10-21) because the scanners no longer
+        # wait on it: they scan every commit, so that a red `unit` cannot
+        # freeze them on an old commit's green. `containers` still reaches
+        # `unit` through `build`, but the gate's dependence on a passing test
+        # suite is stated rather than inherited, so re-plumbing `containers`
+        # cannot quietly let an untested commit be judged. Concourse picks ONE
+        # version that passed every job listed, so the scanners' results the
+        # gate reads are for the same commit `unit` passed.
+        passed: [unit, secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -4009,40 +4075,65 @@ jobs:
                 echo "Those run against demo after deploy-demo and report on their own;"
                 echo "this gate does not wait for them, and their absence is not a pass."
 
-                if [ "$INTRODUCED_BLOCKING" = "true" ]; then
-                  # -- The gate can still be turned off, and it says so -----
-                  #
-                  # `((thehub-oracle-blocking))`, set in
-                  # set-thehub-pipeline.ps1, kept from the 2026-08-18 override
-                  # (D-081) rather than removed. The reason it existed - a
-                  # control switched off invisibly is worse than one switched
-                  # off loudly - is still right. What changed is that it now
-                  # guards a floor worth guarding, so it should stay "true".
-                  if [ "${ORACLE_BLOCKING:-true}" != "true" ]; then
-                    printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Gate is NON-BLOCKING, so this deployed anyway.' \
+                # Exactly `true` or `false`. This used to block only on `true`,
+                # so a decision with the field missing (`jq -r` prints `null`),
+                # renamed, or carrying anything else passed the gate - an
+                # answer the gate could not read, treated as "nothing
+                # introduced". Unknown is not a pass, whatever ORACLE_BLOCKING
+                # says: that switch waives blocking on findings, not a verdict
+                # that never arrived. Still one `exit 1`: both refusals are
+                # about what this commit introduced, never about the score
+                # (D-048, test_thehub_gate). The same rule as mykronos.yml's
+                # gate (mykronos #968).
+                REFUSE=1
+                case "$INTRODUCED_BLOCKING" in
+                  true)
+                    # -- The gate can still be turned off, and it says so ---
+                    #
+                    # `((thehub-oracle-blocking))`, set in
+                    # set-thehub-pipeline.ps1, kept from the 2026-08-18
+                    # override (D-081) rather than removed. The reason it
+                    # existed - a control switched off invisibly is worse than
+                    # one switched off loudly - is still right. What changed is
+                    # that it now guards a floor worth guarding, so it should
+                    # stay "true".
+                    if [ "${ORACLE_BLOCKING:-true}" != "true" ]; then
+                      printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Gate is NON-BLOCKING, so this deployed anyway.' \
+                        "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
+
+                      echo "=================================================="
+                      echo "THIS COMMIT INTRODUCED ${NEW_CRITICAL} CRITICAL AND"
+                      echo "${NEW_HIGH} HIGH FINDING(S), AND THE GATE IS"
+                      echo "NON-BLOCKING. It is proceeding because"
+                      echo "thehub-oracle-blocking is not 'true'."
+                      echo ""
+                      echo "This green tick is NOT a passing risk decision."
+                      echo "=================================================="
+                      exit 0
+                    fi
+
+                    # Written for the on_failure hook, which otherwise knows
+                    # only the job name. Counts of findings a commit introduced
+                    # describe the change, not a person, so this is safe to
+                    # broadcast.
+                    printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Nothing is deployed.' \
                       "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
 
-                    echo "=================================================="
-                    echo "THIS COMMIT INTRODUCED ${NEW_CRITICAL} CRITICAL AND"
-                    echo "${NEW_HIGH} HIGH FINDING(S), AND THE GATE IS"
-                    echo "NON-BLOCKING. It is proceeding because"
-                    echo "thehub-oracle-blocking is not 'true'."
-                    echo ""
-                    echo "This green tick is NOT a passing risk decision."
-                    echo "=================================================="
-                    exit 0
-                  fi
-
-                  # Written for the on_failure hook, which otherwise knows
-                  # only the job name. Counts of findings a commit introduced
-                  # describe the change, not a person, so this is safe to
-                  # broadcast.
-                  printf '*TheHub / Oracle* - commit `%s` introduced %s critical and %s high finding(s). Nothing is deployed.' \
-                    "$SHORT" "$NEW_CRITICAL" "$NEW_HIGH" > ../notify/message.txt
-
-                  echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
-                  echo "The floor is no new criticals and no new highs. Fix them, or"
-                  echo "disposition them - an accepted risk with a reason does not block."
+                    echo "::error::This commit introduced ${NEW_CRITICAL} critical and ${NEW_HIGH} high finding(s)."
+                    echo "The floor is no new criticals and no new highs. Fix them, or"
+                    echo "disposition them - an accepted risk with a reason does not block."
+                    ;;
+                  false)
+                    REFUSE=0
+                    ;;
+                  *)
+                    GOT=$(printf '%s' "$INTRODUCED_BLOCKING" | tr -cd '[:alnum:]_.-' | cut -c1-40)
+                    printf '*TheHub / Oracle* - commit `%s`: the decision carried no usable `introduced_blocking` (got `%s`). No verdict was rendered.' \
+                      "$SHORT" "$GOT" > ../notify/message.txt
+                    echo "::error::Oracle's decision has introduced_blocking='${GOT}', not true or false. The gate cannot tell whether this commit introduced a blocking finding, so it does not pass."
+                    ;;
+                esac
+                if [ "$REFUSE" -ne 0 ]; then
                   exit 1
                 fi
 
@@ -4084,7 +4175,7 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [secrets, sast, dependencies, containers, prompt-evals, iac]
+        passed: [unit, secrets, sast, dependencies, containers, prompt-evals, iac]
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -4379,6 +4470,7 @@ jobs:
                 python -m mykronos.junit_stage \
                   --out ../results/api-inventory.xml --suite api-inventory \
                   --case "inventory:${rc}:/tmp/inventory.txt"
+                upload_rc=0
                 MYKRONOS_JOB=api-inventory python -m mykronos.upload \
                   --capability qa --tool junit \
                   --results-path ../results \
@@ -4386,10 +4478,20 @@ jobs:
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || upload_rc=$?
 
                 # Reported either way, then the inventory decides the job.
-                exit "$rc"
+                # The upload's exit code is kept and fails the job AFTER the job's own verdict
+                # (2026-10-21). It ended `|| true`, so a refused token, a schema
+                # 422 or an adapter that read nothing left this job green while
+                # Mykronos recorded no run - the lane looked reported and was not.
+                if [ "$rc" -ne 0 ]; then
+                  exit "$rc"
+                fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::Uploading the api-inventory results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
+                  exit "$upload_rc"
+                fi
 
   # -- Functional: the deployed demo, as a visitor reaches it ------------------
   #
@@ -4467,6 +4569,7 @@ jobs:
 
                 # Exit 5 is "no tests collected", which is a broken suite, not
                 # a pass; any report that exists goes up either way.
+                upload_rc=0
                 if [ -s ../results/functional.xml ]; then
                   MYKRONOS_JOB=functional-demo python -m mykronos.upload \
                     --capability functional --tool junit \
@@ -4475,9 +4578,19 @@ jobs:
                     --repo ToddGBenson/TheHub \
                     --commit-sha "$(git rev-parse HEAD)" \
                     --branch "$SCANNED_BRANCH" --workspace "$PWD" \
-                    --severity-threshold low --blocking false || true
+                    --severity-threshold low --blocking false || upload_rc=$?
                 fi
-                exit "$rc"
+                # The upload's exit code is kept and fails the job AFTER the job's own verdict
+                # (2026-10-21). It ended `|| true`, so a refused token, a schema
+                # 422 or an adapter that read nothing left this job green while
+                # Mykronos recorded no run - the lane looked reported and was not.
+                if [ "$rc" -ne 0 ]; then
+                  exit "$rc"
+                fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::Uploading the functional-demo results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
+                  exit "$upload_rc"
+                fi
 
   # -- Unauthenticated baseline DAST: Demo ----------------------------------
   #
@@ -4687,13 +4800,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # PS-4: behind the quality gate, like every other scanning lane in
-        # this pipeline and like the whole of the mykronos one. These five
-        # had no `passed:` at all, so they scanned commits whose own test
-        # suite had failed - spending the single worker on findings about
-        # code already known not to work. Spec 15 SS3: "there is no value
-        # in scanning a commit that does not pass its own tests."
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python
         attempts: *retry_fetch
       - get: checkov
@@ -4815,13 +4930,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        # PS-4: behind the quality gate, like every other scanning lane in
-        # this pipeline and like the whole of the mykronos one. These five
-        # had no `passed:` at all, so they scanned commits whose own test
-        # suite had failed - spending the single worker on findings about
-        # code already known not to work. Spec 15 SS3: "there is no value
-        # in scanning a commit that does not pass its own tests."
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -5074,11 +5191,86 @@ jobs:
                 # is owned by the zap user this image runs as, so mkdir works.
                 mkdir -p /zap/wrk
 
+                # -- Seeded, because the spider alone reached 3 URLs -----------
+                #
+                # Unauthenticated, the spider sees what an anonymous caller sees
+                # of production: the login page and two assets. Builds #34-#38
+                # all logged "Total of 3 URLs", and each counted as a day of
+                # production DAST. So the crawl starts from TheHub's committed
+                # route list (docs/api/inventory.json, the OpenAPI inventory
+                # `api-inventory` keeps honest): every parameterless GET, asked
+                # for once through ZAP so the passive rules read each response.
+                # Still logged out -- no token is sent to production -- so most
+                # answer 401 from the gate. That is the perimeter this lane
+                # exists to describe: headers, cookies and error bodies on every
+                # route, not on three. OAuth callbacks and streams are skipped:
+                # one wants a provider's redirect, the other never ends.
+                SEED_DIR=$(mktemp -d)
+                export DAST_SEED_URLS="$SEED_DIR/urls.txt"
+                export DAST_SEED_STATUS="$SEED_DIR/status"
+                python3 - source/docs/api/inventory.json "$TARGET_URL" "$DAST_SEED_URLS" <<'PY'
+                import json
+                import sys
+
+                inventory, target, out = sys.argv[1], sys.argv[2].rstrip("/"), sys.argv[3]
+                try:
+                    with open(inventory, encoding="utf-8") as handle:
+                        operations = json.load(handle).get("operations") or []
+                except (OSError, ValueError) as exc:
+                    sys.exit("cannot read %s: %s" % (inventory, exc))
+                SKIP = ("callback", "stream")
+                paths = sorted({
+                    op["path"] for op in operations
+                    if op.get("method") == "GET"
+                    and "{" not in op.get("path", "{")
+                    and not any(word in op["path"] for word in SKIP)
+                })
+                with open(out, "w", encoding="utf-8") as handle:
+                    handle.write("".join(target + path + "\n" for path in paths))
+                print("Seeding the crawl with %d GET route(s) from %s" % (len(paths), inventory))
+                PY
+                SEEDED=$(wc -l < "$DAST_SEED_URLS" | tr -d ' ')
+                if [ "${SEEDED:-0}" -eq 0 ]; then
+                  echo "::error::No routes to seed from source/docs/api/inventory.json. Refusing to run a 3-URL crawl and call it coverage."
+                  exit 1
+                fi
+                # The floor: half of what was seeded. Far below it, the seed did
+                # not happen (the hook failed, ZAP refused the API calls, the
+                # target stopped answering), and what is left is the 3-URL crawl.
+                FLOOR=$(( SEEDED / 2 ))
+
+                # A zap-baseline hook, loaded once ZAP is up and before the
+                # spider starts. Requests are paced: this is production.
+                cat > "$SEED_DIR/hook.py" <<'PY'
+                import os
+                import time
+
+
+                def zap_started(zap, target):
+                    with open(os.environ["DAST_SEED_URLS"], encoding="utf-8") as handle:
+                        urls = [line.strip() for line in handle if line.strip()]
+                    reached = refused = 0
+                    for url in urls:
+                        try:
+                            zap.core.access_url(url=url, followredirects="false")
+                            reached += 1
+                        except Exception:  # one route ZAP could not fetch is not the scan
+                            refused += 1
+                        time.sleep(0.05)
+                    with open(os.environ["DAST_SEED_STATUS"], "w", encoding="utf-8") as handle:
+                        handle.write("%d of %d seeded URL(s) requested, %d refused" % (reached, len(urls), refused))
+                PY
+
                 # -I: informational warnings do not fail the run (the severity
                 # decision is Mykronos's, not the scanner's). -m 5: cap the
                 # spider at 5 minutes so the crawl is bounded on any target.
-                rc=0
-                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+                # `set +e` so ZAP's exit code survives the pipe into the log the
+                # URL count is read from (see `dependencies` for the trap).
+                set +e
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 --hook="$SEED_DIR/hook.py" 2>&1 \
+                  | tee "$SEED_DIR/zap.log"
+                rc=${PIPESTATUS[0]}
+                set -e
 
                 # 0 = nothing to report, 1 = a FAIL, 2 = warnings. All results.
                 # Anything higher is ZAP itself breaking.
@@ -5092,6 +5284,20 @@ jobs:
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
+
+                # Below the floor is not a day of production DAST, so it is not
+                # uploaded as one. Uploaded, a thin scan reads on the dashboard
+                # as coverage, and its silence about the routes it never reached
+                # counts toward closing their findings. Red here instead, with
+                # the numbers, and the lane shows as failed rather than current.
+                URLS=$(sed -n 's/^Total of \([0-9][0-9]*\) URLs.*/\1/p' "$SEED_DIR/zap.log" | tail -1)
+                echo "Seed: $(cat "$DAST_SEED_STATUS" 2>/dev/null || echo 'the hook never ran')."
+                echo "ZAP reached ${URLS:-an unknown number of} URL(s); the floor is $FLOOR of $SEEDED seeded."
+                if [ -z "$URLS" ] || [ "$URLS" -lt "$FLOOR" ]; then
+                  echo "::error::dast-prod reached ${URLS:-?} URL(s), under its floor of $FLOOR (half the $SEEDED routes seeded from docs/api/inventory.json)."
+                  echo "::error::That is not production DAST coverage. Not uploaded; nothing was scored from it."
+                  exit 1
+                fi
 
                 # --user because this runs unprivileged; python adds the user
                 # site directory to sys.path, so `python3 -m` finds it.
@@ -5140,12 +5346,13 @@ jobs:
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$COMMIT_SHA" \
+                  --triggered-by schedule \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                   --severity-threshold low --blocking false || {
                   echo "::error::Uploading the DAST findings to Mykronos failed."
                   exit 1
                 }
-                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against prod"
+                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries across $URLS URL(s) of prod"
 
   # -- Unauthenticated baseline DAST: Prod, through the public edge ---------
   #
@@ -5566,6 +5773,7 @@ jobs:
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$COMMIT_SHA" \
+                  --triggered-by schedule \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                   --severity-threshold low --blocking false || {
                   echo "::error::Uploading the edge DAST findings to Mykronos failed."
@@ -5850,6 +6058,7 @@ jobs:
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$COMMIT_SHA" \
+                  --triggered-by schedule \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                   --severity-threshold low --blocking false || {
                   echo "::error::Uploading the DAST findings to Mykronos failed."
@@ -6015,6 +6224,7 @@ jobs:
                     --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                     --repo ToddGBenson/TheHub \
                     --commit-sha "$(git -C source rev-parse HEAD)" \
+                    --triggered-by schedule \
                     --branch "$SCANNED_BRANCH" \
                     --workspace "$PWD/source" \
                     --severity-threshold low --blocking false
@@ -6466,7 +6676,15 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [unit]
+        # PS-4 (amended 2026-10-21): scans EVERY commit, NOT `passed: [unit]`.
+        # Behind `unit`, a red unit lane (2026-10-19 on, pip "resolution too
+        # deep") left every develop commit unscanned while this lane went on
+        # showing green from the last commit unit passed - a stale green
+        # nothing distinguished from a current one. A finding on a commit
+        # whose tests fail is still a finding. What must not happen is a
+        # VERDICT on an untested commit, and that is kept where it is
+        # decided: `oracle-gate` and `deploy-demo` still require `unit` on
+        # the same commit (see their `passed:` lists).
       - get: python
         attempts: *retry_fetch
       - *preflight
@@ -6660,6 +6878,7 @@ jobs:
 
                 pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                upload_rc=0
                 MYKRONOS_JOB=ai-models python -m mykronos.upload \
                   --capability ai --tool mykronos-ai-checks \
                   --results-path results \
@@ -6668,6 +6887,16 @@ jobs:
                   --commit-sha "$(git -C source rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD/source" \
-                  --severity-threshold low --blocking false || true
+                  --severity-threshold low --blocking false || upload_rc=$?
 
-                exit "$rc"
+                # The upload's exit code is kept and fails the job AFTER the job's own verdict
+                # (2026-10-21). It ended `|| true`, so a refused token, a schema
+                # 422 or an adapter that read nothing left this job green while
+                # Mykronos recorded no run - the lane looked reported and was not.
+                if [ "$rc" -ne 0 ]; then
+                  exit "$rc"
+                fi
+                if [ "$upload_rc" -ne 0 ]; then
+                  echo "::error::Uploading the ai-models results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
+                  exit "$upload_rc"
+                fi

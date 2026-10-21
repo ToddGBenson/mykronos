@@ -14,7 +14,8 @@ a running Concourse, so it lives in check_applied_pipelines.py:
 
     PS-2   a job that talks to Mykronos probes it first
     PS-3   a scanner's exit code cannot skip the upload
-    PS-4   scanning lanes wait for the quality gate
+    PS-4   scanning lanes wait for the quality gate, or scan every commit
+           while the verdict waits for it
     PS-6   no lane names its own branch
     PS-7   every non-hook task has a timeout
     PS-8   no binary is fetched into a shell unverified
@@ -136,6 +137,29 @@ RETRYABLE_TASKS = frozenset({"report-to-hub", "notify-slack"})
 #: rather than a stopped fleet.
 GATE_EXEMPT = frozenset({"pin-check"})
 
+#: PS-4, amended 2026-10-21: lanes that scan EVERY commit instead of waiting
+#: for the quality gate, per pipeline -- with the gate they no longer wait for
+#: and the jobs whose verdict still must.
+#:
+#: Behind the gate, a red quality gate freezes every lane on the last commit
+#: it passed, and each keeps showing that commit's green. TheHub's `unit` went
+#: red on 2026-10-19 (pip "resolution too deep") and for two days no develop
+#: commit was scanned while secrets, sast, dependencies, iac, ai-models and
+#: prompt-evals all read green. A finding about a commit whose tests fail is
+#: still a finding; a VERDICT on such a commit is what must not exist. So the
+#: price is moved, not waived: each verdict job named here must list the
+#: quality gate in its own `passed:` -- stated, not inherited through some
+#: other lane -- and the checker fails the day it stops.
+SCANS_EVERY_COMMIT: dict[str, dict[str, Any]] = {
+    "thehub.yml": {
+        "quality_gate": "unit",
+        "verdicts": ("oracle-gate", "deploy-demo"),
+        "lanes": frozenset(
+            {"secrets", "sast", "dependencies", "iac", "prompt-evals", "ai-models", "qa"}
+        ),
+    },
+}
+
 
 def _walk(node: Any, visit: Any) -> None:
     if isinstance(node, dict):
@@ -229,6 +253,16 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
             depended_on.update(node["passed"])
 
     _walk(document["jobs"], collect)
+
+    every_commit_rule = SCANS_EVERY_COMMIT.get(name)
+    if every_commit_rule:
+        names = {job["name"] for job in document["jobs"]}
+        for verdict in every_commit_rule["verdicts"]:
+            if verdict not in names:
+                problems.append(
+                    f"{name}:{verdict} PS-4 is named as a verdict that waits for "
+                    f"`{every_commit_rule['quality_gate']}` and does not exist"
+                )
 
     for job in document["jobs"]:
         job_name = job["name"]
@@ -337,9 +371,28 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
 
         triggered = any(step.get("get") == "source" and step.get("trigger") for step in plan)
         gated = bool(plan[0].get("passed"))
-        exempt = job_name in GATE_EXEMPT or job_name in depended_on
+        every_commit = SCANS_EVERY_COMMIT.get(name, {})
+        exempt = (
+            job_name in GATE_EXEMPT
+            or job_name in depended_on
+            or job_name in every_commit.get("lanes", ())
+        )
         if triggered and not gated and not exempt:
             problems.append(f"{name}:{job_name} PS-4 triggers on a commit with no quality gate")
+        if job_name in every_commit.get("verdicts", ()):
+            gate = every_commit["quality_gate"]
+            waits_for = {
+                upstream
+                for step in plan
+                if step.get("get") == "source"
+                for upstream in step.get("passed") or []
+            }
+            if gate not in waits_for:
+                problems.append(
+                    f"{name}:{job_name} PS-4 renders a verdict without waiting for `{gate}`: "
+                    f"its scanners run on every commit, so this `passed:` is the only "
+                    f"thing keeping an untested commit from being judged"
+                )
 
         capabilities = sorted(set(re.findall(r"--capability (\w+)", body)))
         rows.append(
