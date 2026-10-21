@@ -10,6 +10,8 @@
 
 import "server-only";
 
+import type { findingsApiQuery } from "./findings-filters";
+
 import {
   BackendUnavailable,
   backendClient,
@@ -146,24 +148,13 @@ export async function getFindings(
  * record, and the detail pane still reads from it — a disposition is recorded
  * against one finding, not against a group.
  */
+type OpenFindingsApiQuery = ReturnType<typeof findingsApiQuery>;
+
 export async function getOpenFindings(
   repoId: string,
-  query: {
-    capability?: string;
-    severity?: string;
-    finding_status?: string;
-    rule_id?: string;
-    kev_only?: boolean;
-    min_epss?: number;
-    triage?: string;
-    fixable?: boolean;
-    /** A stored effective severity (TheHub #60828). */
-    effective?: string;
-    /** down | up | unchanged | not_rescorable (TheHub #60828). */
-    rescored?: string;
-    /** `none`: findings no declared surface places (TheHub #60828). */
-    component?: string;
-  },
+  /** Built by `findingsApiQuery`: multi-value filters as arrays, which the
+   *  client sends as repeated parameters. */
+  query: OpenFindingsApiQuery,
 ): Promise<Result<OpenFindingsPage>> {
   try {
     const { data, response } = await backendClient().GET(
@@ -172,18 +163,9 @@ export async function getOpenFindings(
         params: {
           path: { repo_id: repoId },
           query: {
-            capability: query.capability as never,
-            severity: query.severity as never,
-            finding_status: (query.finding_status ?? "open") as never,
-            rule_id: query.rule_id as never,
-            kev_only: query.kev_only as never,
-            min_epss: query.min_epss as never,
-            triage: query.triage as never,
-            fixable: query.fixable as never,
-            effective: query.effective as never,
-            rescored: query.rescored as never,
-            component: query.component as never,
-          },
+            ...query,
+            finding_status: query.finding_status ?? ["open"],
+          } as never,
         },
         cache: "no-store",
       },

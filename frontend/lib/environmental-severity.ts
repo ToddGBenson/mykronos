@@ -193,7 +193,8 @@ export function rescoreChips(
     value,
     label,
     count: counts[value] ?? 0,
-    active: query.rescored === value,
+    // `rescored` may carry several values (`rescored=down,up`).
+    active: (query.rescored ?? "").split(",").includes(value),
   });
   return [
     chip("down", "rescored down (verified)"),

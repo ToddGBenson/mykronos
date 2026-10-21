@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -628,6 +628,32 @@ RescoredFilter = Literal["down", "up", "unchanged", "not_rescorable"]
 #: `none`: findings no declared surface places (#60828).
 ComponentFilter = Literal["none"]
 
+#: Where the declared surface placing a finding sits (`RepoSurface.exposure`),
+#: or `unplaced` when no surface places it — the Findings tab's Exposure filter.
+ExposureFilter = Literal["internet", "internal", "local", "unknown", "unplaced"]
+
+
+def _split_commas(value: Any) -> Any:
+    """One query value or several: `?severity=high,critical` and
+    `?severity=high&severity=critical` mean the same, and `?severity=high`
+    means what it always did. Duplicates collapse; blanks are dropped."""
+    if value is None:
+        return None
+    items = value if isinstance(value, list) else [value]
+    out: list[str] = []
+    for item in items:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part and part not in out:
+                out.append(part)
+    return out or None
+
+
+#: Marks a list query parameter as accepting comma-separated values too. Each
+#: value is still validated against the list's item type, so a typo is a 422
+#: naming the allowed values rather than a silently empty list.
+CommaList = BeforeValidator(_split_commas)
+
 
 class PriorDispositionOut(BaseModel):
     """A decision recorded under an identifier that has since been replaced (#280).
@@ -799,6 +825,15 @@ class ToxicCombinationOut(BaseModel):
     members: list[ToxicCombinationMemberOut]
 
 
+class ComponentCountOut(BaseModel):
+    """One declared surface, or `none`, and how many findings it places."""
+
+    value: str
+    label: str
+    exposure: str
+    count: int
+
+
 class OpenFindingsPage(BaseModel):
     """The outstanding-work view for one repository."""
 
@@ -836,6 +871,30 @@ class OpenFindingsPage(BaseModel):
             "Findings of this status per stored effective severity, before "
             "filters. Not-rescorable findings are in no bucket."
         ),
+    )
+    by_status: dict[str, int] = Field(
+        default_factory=dict,
+        description="Every finding this repository holds, per status, whatever "
+        "status the list is showing — the Status filter's counts.",
+    )
+    by_owner: dict[str, int] = Field(
+        default_factory=dict,
+        description="Findings of this status per owner, before filters. Unowned "
+        "findings count under `unresolved`, the value that lists them.",
+    )
+    by_exposure: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Findings of this status by the declared exposure of the surface "
+            "placing them (`internet`, `internal`, `local`, `unknown`), or "
+            "`unplaced`. Same scope as `total`, so it sums to it, and each "
+            "count is what `exposure=<value>` lists."
+        ),
+    )
+    by_component: list[ComponentCountOut] = Field(
+        default_factory=list,
+        description="Findings of this status per declared surface, plus `none` "
+        "for those no surface places. `value` is what `component=` takes.",
     )
     groups: list[FindingGroupOut]
     toxic_combinations: list[ToxicCombinationOut]
@@ -4021,19 +4080,46 @@ async def repo_open_findings(
     request: Request,
     repo_id: str,
     principal: PrincipalDep,
-    capability: Annotated[Capability | None, Query()] = None,
-    severity: Annotated[Severity | None, Query()] = None,
-    finding_status: Annotated[FindingStatus, Query()] = FindingStatus.OPEN,
+    capability: Annotated[list[Capability] | None, CommaList, Query()] = None,
+    severity: Annotated[list[Severity] | None, CommaList, Query()] = None,
+    finding_status: Annotated[list[FindingStatus] | None, CommaList, Query()] = None,
     rule_id: Annotated[str | None, Query(max_length=200)] = None,
     kev_only: Annotated[bool, Query()] = False,
     min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
-    triage: Annotated[TriageFilter | None, Query()] = None,
+    triage: Annotated[list[TriageFilter] | None, CommaList, Query()] = None,
     fixable: Annotated[bool | None, Query()] = None,
-    due: Annotated[DueFilter | None, Query()] = None,
-    owner: Annotated[str | None, Query(max_length=255)] = None,
-    effective: Annotated[Severity | None, Query()] = None,
-    rescored: Annotated[RescoredFilter | None, Query()] = None,
-    component: Annotated[ComponentFilter | None, Query()] = None,
+    due: Annotated[list[DueFilter] | None, CommaList, Query()] = None,
+    owner: Annotated[
+        list[Annotated[str, Field(max_length=255)]] | None,
+        CommaList,
+        Query(max_length=20),
+    ] = None,
+    effective: Annotated[list[Severity] | None, CommaList, Query()] = None,
+    rescored: Annotated[list[RescoredFilter] | None, CommaList, Query()] = None,
+    component: Annotated[
+        list[Annotated[str, Field(max_length=64)]] | None,
+        CommaList,
+        Query(
+            max_length=50,
+            description="`none` (no declared surface places the finding) or a "
+            "surface id from `by_component`.",
+        ),
+    ] = None,
+    exposure: Annotated[list[ExposureFilter] | None, CommaList, Query()] = None,
+    path: Annotated[
+        str | None,
+        Query(
+            max_length=255,
+            description="File path or package name: a glob when it has `*` or "
+            "`?` (`web/**`, `*.tf`), otherwise a case-insensitive substring.",
+        ),
+    ] = None,
+    older_than_days: Annotated[
+        int | None, Query(ge=0, le=3650, description="First seen at least N days ago.")
+    ] = None,
+    newer_than_days: Annotated[
+        int | None, Query(ge=0, le=3650, description="First seen within the last N days.")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
@@ -4048,16 +4134,19 @@ async def repo_open_findings(
     Raw tool output is not served here for anybody. The group is a decision to
     make; the bytes belong on the finding detail, behind the admin check that
     has always guarded them (spec 12 §5).
+
+    Every category filter takes several values, comma-separated or repeated
+    (`severity=critical,high`); one value means what it always did.
     """
     repo_full_name = _resolve_repo(request, repo_id)
     with request.app.state.db.session() as session:
         page = _queries(request).open_findings(
             repo_full_name,
             store=request.app.state.knowledge,
-            capability=capability.value if capability else None,
-            severity=severity.value if severity else None,
+            capability=[c.value for c in capability or []],
+            severity=[s.value for s in severity or []],
             rule_id=rule_id,
-            finding_status=finding_status.value,
+            finding_status=[s.value for s in finding_status or []] or "open",
             limit=limit,
             session=session,
             kev_only=kev_only,
@@ -4066,12 +4155,16 @@ async def repo_open_findings(
             fixable=fixable,
             due=due,
             owner=owner,
-            effective=effective.value if effective else None,
+            effective=[s.value for s in effective or []],
             rescored=rescored,
             component=component,
-            surfaces=(
-                surface_rows(session, repo_full_name) if component is not None else None
-            ),
+            exposure=exposure,
+            path=path,
+            older_than_days=older_than_days,
+            newer_than_days=newer_than_days,
+            # Always: the Exposure and Component counts are read on every
+            # load, and they come from the placement.
+            surfaces=surface_rows(session, repo_full_name),
         )
     return OpenFindingsPage.model_validate(page)
 

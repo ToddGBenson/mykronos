@@ -1281,6 +1281,9 @@ export interface paths {
          *     Raw tool output is not served here for anybody. The group is a decision to
          *     make; the bytes belong on the finding detail, behind the admin check that
          *     has always guarded them (spec 12 §5).
+         *
+         *     Every category filter takes several values, comma-separated or repeated
+         *     (`severity=critical,high`); one value means what it always did.
          */
         get: operations["repo_open_findings_api_dashboard_repos__repo_id__open_findings_get"];
         put?: never;
@@ -4829,6 +4832,20 @@ export interface components {
             introduced_blocking: boolean;
         };
         /**
+         * ComponentCountOut
+         * @description One declared surface, or `none`, and how many findings it places.
+         */
+        ComponentCountOut: {
+            /** Value */
+            value: string;
+            /** Label */
+            label: string;
+            /** Exposure */
+            exposure: string;
+            /** Count */
+            count: number;
+        };
+        /**
          * ComponentCoverageOut
          * @description How much of the open backlog the declared surfaces place (#60828).
          */
@@ -7131,6 +7148,32 @@ export interface components {
             by_effective_severity?: {
                 [key: string]: number;
             };
+            /**
+             * By Status
+             * @description Every finding this repository holds, per status, whatever status the list is showing — the Status filter's counts.
+             */
+            by_status?: {
+                [key: string]: number;
+            };
+            /**
+             * By Owner
+             * @description Findings of this status per owner, before filters. Unowned findings count under `unresolved`, the value that lists them.
+             */
+            by_owner?: {
+                [key: string]: number;
+            };
+            /**
+             * By Exposure
+             * @description Findings of this status by the declared exposure of the surface placing them (`internet`, `internal`, `local`, `unknown`), or `unplaced`. Same scope as `total`, so it sums to it, and each count is what `exposure=<value>` lists.
+             */
+            by_exposure?: {
+                [key: string]: number;
+            };
+            /**
+             * By Component
+             * @description Findings of this status per declared surface, plus `none` for those no surface places. `value` is what `component=` takes.
+             */
+            by_component?: components["schemas"]["ComponentCountOut"][];
             /** Groups */
             groups: components["schemas"]["FindingGroupOut"][];
             /** Toxic Combinations */
@@ -12326,19 +12369,27 @@ export interface operations {
     repo_open_findings_api_dashboard_repos__repo_id__open_findings_get: {
         parameters: {
             query?: {
-                capability?: components["schemas"]["Capability"] | null;
-                severity?: components["schemas"]["Severity"] | null;
-                finding_status?: components["schemas"]["FindingStatus"];
+                capability?: components["schemas"]["Capability"][] | null;
+                severity?: components["schemas"]["Severity"][] | null;
+                finding_status?: components["schemas"]["FindingStatus"][] | null;
                 rule_id?: string | null;
                 kev_only?: boolean;
                 min_epss?: number | null;
-                triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination") | null;
+                triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination")[] | null;
                 fixable?: boolean | null;
-                due?: ("overdue" | "due_soon" | "on_track" | "no_target") | null;
-                owner?: string | null;
-                effective?: components["schemas"]["Severity"] | null;
-                rescored?: ("down" | "up" | "unchanged" | "not_rescorable") | null;
-                component?: "none" | null;
+                due?: ("overdue" | "due_soon" | "on_track" | "no_target")[] | null;
+                owner?: string[] | null;
+                effective?: components["schemas"]["Severity"][] | null;
+                rescored?: ("down" | "up" | "unchanged" | "not_rescorable")[] | null;
+                /** @description `none` (no declared surface places the finding) or a surface id from `by_component`. */
+                component?: string[] | null;
+                exposure?: ("internet" | "internal" | "local" | "unknown" | "unplaced")[] | null;
+                /** @description File path or package name: a glob when it has `*` or `?` (`web/**`, `*.tf`), otherwise a case-insensitive substring. */
+                path?: string | null;
+                /** @description First seen at least N days ago. */
+                older_than_days?: number | null;
+                /** @description First seen within the last N days. */
+                newer_than_days?: number | null;
                 limit?: number;
             };
             header?: never;

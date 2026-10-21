@@ -26,9 +26,12 @@ import Link from "next/link";
 
 import { WorklistKeys } from "@/components/worklist";
 
-import { FilterSelect } from "@/components/filter-select";
-
 import { DispositionForm } from "@/components/disposition";
+import {
+  FindingsFilterBar,
+  type PillDef,
+  type PillOption,
+} from "@/components/findings-filter-bar";
 import { RemediationAction } from "@/components/remediation-action";
 import {
   CAPABILITY_META,
@@ -41,39 +44,44 @@ import {
 import type {
   FindingGroup,
   OpenFindingsPage,
-  Severity,
   ToxicCombination,
 } from "@/lib/api";
 import { rescoreChips, shift } from "@/lib/environmental-severity";
+import {
+  CLEAR_SELECTION,
+  DUE_LABELS,
+  EXPOSURE_LABELS,
+  OWNER_QUEUE_LABELS,
+  RESCORED_LABELS,
+  SEVERITIES,
+  STATUS_LABELS,
+  TRIAGE_LABELS,
+  findingsHref,
+  hasNarrowingFilters,
+  normalizeQuery,
+  sortGroups,
+  toggleValue,
+  valuesOf,
+  type FindingsQuery,
+} from "@/lib/findings-filters";
 import { findingsSummary, type SummaryCount } from "@/lib/findings-summary";
 
-/**
- * The statuses a person can ask for. `open` is the default and the point.
- *
- * `suppressed` and `superseded` (spec 05 §5a, spec 17 §5.1) used to be real
- * `Finding.status` values the backend already accepted with no UI way to ask
- * for them — a superseded finding's replacement (`superseded_by`, shown in
- * its detail pane) was unreachable by name, the same gap §5.1 closes.
- */
-const STATUSES = [
-  { id: "open", label: "open" },
-  { id: "accepted_risk", label: "accepted risk" },
-  { id: "false_positive", label: "false positive" },
-  { id: "fixed", label: "fixed" },
-  { id: "suppressed", label: "suppressed" },
-  { id: "superseded", label: "superseded" },
-  // Open when its capability lost the grant that lets it report (B-047).
-  // Not a judgement about the risk, which may well still be live -- a
-  // statement that no scan can close it while the lane is off. Re-enabling
-  // the capability puts these back to `open`.
-  { id: "stranded", label: "stranded" },
-] as const;
+export type { FindingsQuery } from "@/lib/findings-filters";
 
 const TRIAGE: Record<string, { tone: "critical" | "warn" | "accent" | "muted"; label: string }> = {
-  toxic_combination: { tone: "critical", label: "toxic combo" },
-  true_positive: { tone: "accent", label: "true positive" },
-  likely_false_positive: { tone: "muted", label: "likely false positive" },
-  needs_human_judgment: { tone: "warn", label: "needs judgment" },
+  toxic_combination: { tone: "critical", label: TRIAGE_LABELS.toxic_combination },
+  true_positive: { tone: "accent", label: TRIAGE_LABELS.true_positive },
+  likely_false_positive: { tone: "muted", label: TRIAGE_LABELS.likely_false_positive },
+  needs_human_judgment: { tone: "warn", label: TRIAGE_LABELS.needs_human_judgment },
+};
+
+/** The bar's fill per severity, from the theme's own severity tokens. */
+const SEVERITY_BG: Record<string, string> = {
+  critical: "bg-critical",
+  high: "bg-high",
+  medium: "bg-medium",
+  low: "bg-low",
+  info: "bg-info",
 };
 
 /**
@@ -86,45 +94,7 @@ function plain(text: string): string {
   return text.replace(/\*\*/g, "").replace(/`/g, "");
 }
 
-/**
- * Changing a filter clears the selection. The row that was open is routinely
- * not in the new list, and a detail pane describing something the table no
- * longer shows is worse than an empty one.
- */
-const CLEAR_SELECTION = { group: undefined, finding: undefined };
-
-export type FindingsQuery = {
-  tab?: string;
-  severity?: string;
-  capability?: string;
-  status?: string;
-  /** Free-text, matched against rule_id and title (spec 17 §3). */
-  rule_id?: string;
-  /** "1" when set — CISA KEV-listed CVEs only (spec 17 §3, #20). */
-  kev_only?: string;
-  /** EPSS threshold as a string, e.g. "0.5" (spec 17 §3, #20). */
-  min_epss?: string;
-  /** classify()'s classification, plus toxic_combination (spec 18 §5.1). */
-  triage?: string;
-  /** "1" when set — only groups Patchwork produced a fix for (spec 19 §3.2). */
-  fixable?: string;
-  /** A CODEOWNERS handle or team, or one of two queues: `unresolved` (the
-   *  platform could not work it out) and `unclaimed` (nobody has taken it by
-   *  name — it has an owner only because the repository does). */
-  owner?: string;
-  /** overdue | due_soon | on_track | no_target (spec 24 §2.4). */
-  due?: string;
-  /** A stored effective severity (TheHub #60828). */
-  effective?: string;
-  /** down | up | unchanged | not_rescorable (TheHub #60828). */
-  rescored?: string;
-  /** `none`: findings no declared surface places (TheHub #60828). */
-  component?: string;
-  /** Which deduplicated row is open. */
-  group?: string;
-  /** Which occurrence inside that row is open. */
-  finding?: string;
-};
+type Href = (patch: Partial<FindingsQuery>) => string;
 
 /** A deadline, shown as its state first and its date second.
  *
@@ -163,7 +133,7 @@ function DueCell({
 export function OpenFindings({
   repoId,
   page,
-  query,
+  query: rawQuery,
   detail,
   fixByRule = {},
 }: {
@@ -176,61 +146,46 @@ export function OpenFindings({
    *  fetch failed, which costs the "what to do" block and nothing else. */
   fixByRule?: Record<string, { fix: string; source: string; effort: string }>;
 }) {
-  const href = (patch: Record<string, string | undefined>) => {
-    const next = new URLSearchParams();
-    // Always explicit, never stripped (spec 17 §2.4): this component now
-    // renders behind its own "Findings" tab rather than at the default
-    // route, so a filter link that dropped `tab` would silently bounce the
-    // reader back to the Harness tab on every click.
-    next.set("tab", "findings");
-    for (const [key, value] of Object.entries({ ...query, ...patch })) {
-      if (value && key !== "tab") next.set(key, value);
-    }
-    return `/repos/${repoId}?${next.toString()}`;
-  };
+  // Next hands a repeated parameter over as an array; everything below reads
+  // one comma-joined string per filter.
+  const query = normalizeQuery(rawQuery as Record<string, unknown>);
+  // Always explicit, never stripped (spec 17 §2.4): this component renders
+  // behind its own "Findings" tab, so a filter link that dropped `tab` would
+  // silently bounce the reader back to the default tab on every click.
+  const href: Href = (patch) => findingsHref(repoId, query, patch);
+  const groups = sortGroups(page.groups, query.sort);
+  const narrowed = hasNarrowingFilters(query);
 
   // Same default as the triage queue: the first group, not an empty pane.
   const selected =
-    (query.group
-      ? page.groups.find((group) => group.group_key === query.group)
-      : undefined) ?? page.groups[0];
+    (query.group ? groups.find((group) => group.group_key === query.group) : undefined) ??
+    groups[0];
 
   return (
     <div className="flex flex-col gap-3">
       <Summary page={page} query={query} href={href} />
-      <Filters repoId={repoId} page={page} query={query} href={href} />
+      <FindingsFilterBar
+        repoId={repoId}
+        query={query}
+        primary={primaryPills(page)}
+        secondary={secondaryPills(page)}
+      />
 
       {page.toxic_combinations.length > 0 ? (
         <ToxicCombinations combinations={page.toxic_combinations} />
       ) : null}
 
-      {page.groups.length === 0 ? (
+      {groups.length === 0 ? (
         <EmptyState
           title={
-            query.severity ||
-            query.capability ||
-            query.rule_id ||
-            query.kev_only ||
-            query.min_epss ||
-            query.triage ||
-            query.fixable ||
-            query.effective ||
-            query.rescored ||
-            query.component
+            narrowed
               ? "Nothing matches these filters"
-              : `No ${(query.status ?? "open").replace("_", " ")} findings`
+              : `No ${valuesOf(query, "status")
+                  .map((status) => STATUS_LABELS[status] ?? status)
+                  .join(" or ") || "open"} findings`
           }
           detail={
-            query.severity ||
-            query.capability ||
-            query.rule_id ||
-            query.kev_only ||
-            query.min_epss ||
-            query.triage ||
-            query.fixable ||
-            query.effective ||
-            query.rescored ||
-            query.component
+            narrowed
               ? "Clear the filters to see everything outstanding."
               : "Either nothing has been found, or nothing has scanned yet — the scan health boxes above say which."
           }
@@ -243,17 +198,13 @@ export function OpenFindings({
               so the same trade is made here: the list keeps what you scan for
               and the columns move right, where there is room to read them. */}
           <WorklistKeys
-            ids={page.groups.map((group) => group.group_key)}
+            ids={groups.map((group) => group.group_key)}
             param="group"
             clears={["finding"]}
           />
           <div className="flex flex-col gap-3 lg:h-[calc(100vh-22rem)] lg:flex-row lg:gap-0">
             <div className="lg:w-[28rem] lg:shrink-0 lg:overflow-y-auto lg:border-r lg:border-rule">
-              <GroupList
-                groups={page.groups}
-                selectedKey={selected?.group_key}
-                href={href}
-              />
+              <GroupList groups={groups} selectedKey={selected?.group_key} href={href} />
               {page.truncated ? (
                 <p className="px-2 py-1 font-mono text-[11px] text-high">
                   Showing the worst {page.shown} of {page.matching}. Filter to
@@ -282,15 +233,166 @@ export function OpenFindings({
   );
 }
 
+const capabilityLabel = (capability: string) =>
+  CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.label ?? capability;
+
+const capabilityAbbr = (capability: string) =>
+  CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.abbr ?? capability;
+
+/** The always-visible pills, with the backend's before-filter counts. */
+function primaryPills(page: OpenFindingsPage): PillDef[] {
+  const byCapability = page.by_capability ?? {};
+  const capabilities = Object.keys(CAPABILITY_META).sort(
+    (a, b) => (byCapability[b] ?? 0) - (byCapability[a] ?? 0) || a.localeCompare(b),
+  );
+  return [
+    {
+      kind: "multi",
+      key: "status",
+      label: "Status",
+      anyLabel: "open",
+      options: Object.entries(STATUS_LABELS).map(([value, label]) => ({
+        value,
+        label,
+        count: page.by_status?.[value] ?? 0,
+      })),
+    },
+    {
+      kind: "multi",
+      key: "severity",
+      label: "Severity",
+      options: SEVERITIES.map((severity) => ({
+        value: severity,
+        label: severity,
+        count: page.by_severity[severity] ?? 0,
+      })),
+    },
+    {
+      kind: "multi",
+      key: "capability",
+      label: "Scan type",
+      options: capabilities.map((capability) => ({
+        value: capability,
+        label: capabilityLabel(capability),
+        count: byCapability[capability] ?? 0,
+      })),
+    },
+    {
+      kind: "multi",
+      key: "exposure",
+      label: "Exposure",
+      hint: "From the declared surface (Threat Model tab) that places each finding.",
+      options: Object.entries(EXPOSURE_LABELS).map(([value, label]) => ({
+        value,
+        label,
+        count: page.by_exposure?.[value] ?? 0,
+      })),
+    },
+    {
+      kind: "multi",
+      key: "due",
+      label: "Due",
+      options: Object.entries(DUE_LABELS).map(([value, label]) => ({ value, label })),
+    },
+  ];
+}
+
+/** The less-used filters, behind "+ Add filter". */
+function secondaryPills(page: OpenFindingsPage): PillDef[] {
+  const owners: PillOption[] = [
+    { value: "unclaimed", label: OWNER_QUEUE_LABELS.unclaimed },
+    {
+      value: "unresolved",
+      label: OWNER_QUEUE_LABELS.unresolved,
+      count: page.by_owner?.unresolved ?? 0,
+    },
+    ...Object.entries(page.by_owner ?? {})
+      .filter(([owner]) => owner !== "unresolved")
+      .sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+      .map(([owner, count]) => ({ value: owner, label: owner, count })),
+  ];
+  return [
+    {
+      kind: "multi",
+      key: "effective",
+      label: "Effective severity",
+      hint: "The severity here, after environmental rescoring.",
+      options: SEVERITIES.map((severity) => ({
+        value: severity,
+        label: severity,
+        count: page.by_effective_severity?.[severity] ?? 0,
+      })),
+    },
+    {
+      kind: "text",
+      key: "rule_id",
+      label: "Rule / CVE",
+      placeholder: "e.g. CWE-89 or CVE-2024-…",
+      hint: "Matched against the rule id and the title.",
+    },
+    {
+      kind: "multi",
+      key: "component",
+      label: "Component",
+      hint: "Declared surfaces from the Threat Model tab.",
+      options: (page.by_component ?? []).map((entry) => ({
+        value: entry.value,
+        label:
+          entry.value === "none"
+            ? entry.label
+            : `${entry.label} · ${EXPOSURE_LABELS[entry.exposure] ?? entry.exposure}`,
+        count: entry.count,
+      })),
+    },
+    {
+      kind: "text",
+      key: "path",
+      label: "Path",
+      placeholder: "e.g. web/ or *.tf or urllib3",
+      hint: "File path or package. Use * and ? as wildcards.",
+    },
+    { kind: "multi", key: "owner", label: "Owner", options: owners },
+    {
+      kind: "multi",
+      key: "triage",
+      label: "Triage",
+      hint: "The classifier's verdict per row.",
+      options: Object.entries(TRIAGE_LABELS).map(([value, label]) => ({ value, label })),
+    },
+    { kind: "intel", label: "Threat intel" },
+    {
+      kind: "toggle",
+      key: "fixable",
+      label: "Fixable",
+      onLabel: "fix available",
+      // `false` and "nobody has looked" are different facts, so there is a
+      // "fixable" filter and deliberately no "not fixable" one (spec 19 §3.2).
+      hint: "Rows auto-remediation produced a fix for.",
+    },
+    {
+      kind: "multi",
+      key: "rescored",
+      label: "Rescored",
+      options: Object.entries(RESCORED_LABELS).map(([value, label]) => ({
+        value,
+        label,
+        count: page.by_rescoring?.[value] ?? 0,
+      })),
+    },
+    { kind: "age", label: "First seen" },
+  ];
+}
+
 /**
  * Total, by severity, by scan type (TheHub #60821) — the three questions the
- * operator asks of this tab before reading a single row.
+ * operator asks of this tab before reading a single row — and the quickest way
+ * to filter by the last two.
  *
  * The counts are the backend's, for the status the list is showing and before
  * any other filter, so each one is exactly what clicking it lists. They do not
  * move as filters are applied: a count that changed when you pressed it would
- * describe the answer rather than the choice. Clicking an applied count
- * removes that filter again.
+ * describe the answer rather than the choice. Each segment and bar toggles
+ * its value in the filter; an outlined one is filtering.
  */
 function Summary({
   page,
@@ -299,75 +401,129 @@ function Summary({
 }: {
   page: OpenFindingsPage;
   query: FindingsQuery;
-  href: (patch: Record<string, string | undefined>) => string;
+  href: Href;
 }) {
-  const summary = findingsSummary(
-    page,
-    query,
-    (capability) =>
-      CAPABILITY_META[capability as keyof typeof CAPABILITY_META]?.label ?? capability,
-  );
-  const chip = (entry: SummaryCount, key: "severity" | "capability") => (
-    <Link
-      key={entry.value}
-      href={href({ [key]: entry.active ? undefined : entry.value, ...CLEAR_SELECTION })}
-      aria-current={entry.active ? "true" : undefined}
-      title={
-        entry.active
-          ? `Showing ${entry.label} only — click to clear`
-          : `Show ${entry.label} only`
-      }
-      className={`inline-flex items-baseline gap-1.5 border px-1.5 py-0.5 font-mono text-[12px] ${
-        entry.active
-          ? "border-accent bg-accent-wash"
-          : "border-rule hover:border-accent"
-      } ${entry.count === 0 ? "opacity-60" : ""}`}
-    >
-      {key === "severity" ? (
-        <SeverityText severity={entry.value as Severity} />
-      ) : (
-        <span className="text-ink-2">{entry.label}</span>
-      )}
-      <span className="font-bold text-ink">{entry.count}</span>
-    </Link>
-  );
+  const summary = findingsSummary(page, query, capabilityLabel);
+  const segments = summary.bySeverity.filter((entry) => entry.count > 0 || entry.active);
+  const widest = Math.max(1, ...summary.byCapability.map((entry) => entry.count));
+  const narrowed = hasNarrowingFilters(query);
+  const toggle = (key: "severity" | "capability", entry: SummaryCount) =>
+    href(toggleValue(query, key, entry.value));
+
   return (
     <section
-      aria-label="Findings summary"
-      className="flex flex-col gap-2 border border-rule bg-paper-2 px-3 py-2"
+      aria-label="Findings summary — click a severity or scan type to filter"
+      className="grid gap-x-8 gap-y-4 border border-rule bg-paper-2 px-4 py-3 md:grid-cols-[10rem_minmax(0,1fr)_minmax(0,1fr)]"
     >
-      <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="font-mono text-[20px] font-bold text-ink">{summary.total}</span>
-        <span className="font-mono text-[12px] text-ink-2">
-          {summary.status} finding{summary.total === 1 ? "" : "s"} in total
+      <div className="flex flex-col gap-0.5">
+        <Label>{summary.status}</Label>
+        <span className="font-mono text-[30px] font-semibold leading-tight text-ink">
+          {summary.total}
+        </span>
+        {/* The three numbers are different facts and all three get said:
+            how much is outstanding, how much the filters kept, and how much
+            of that the grouping collapsed. */}
+        <span className="text-[12px] text-ink-2">
+          {narrowed ? `${page.matching} match filters` : "no filters applied"}
         </span>
         <span className="font-mono text-[11px] text-ink-3">
-          · counts are for this status, before the other filters
+          {page.groups.length} row{page.groups.length === 1 ? "" : "s"}
+          {page.deduplicated > 0 ? ` · ${page.deduplicated} collapsed` : ""}
         </span>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
+
+      <div className="flex min-w-0 flex-col gap-1.5">
         <Label>By severity</Label>
-        {summary.bySeverity.map((entry) => chip(entry, "severity"))}
+        {segments.length === 0 ? (
+          <span className="font-mono text-[12px] text-ink-3">none</span>
+        ) : (
+          <div className="flex h-7 gap-0.5">
+            {segments.map((entry) => (
+              <Link
+                key={entry.value}
+                href={toggle("severity", entry)}
+                scroll={false}
+                aria-current={entry.active ? "true" : undefined}
+                aria-label={`${entry.label}: ${entry.count} — ${
+                  entry.active ? "filtering, click to remove" : "click to filter"
+                }`}
+                title={`${entry.label}: ${entry.count}`}
+                style={{ flexGrow: Math.max(entry.count, 1) }}
+                className={`flex min-w-[2.25rem] basis-0 items-center px-1.5 font-mono text-[11.5px] font-semibold text-paper ${
+                  SEVERITY_BG[entry.value] ?? "bg-ink-3"
+                } ${
+                  entry.active
+                    ? "outline-2 outline-offset-1 outline-ink"
+                    : "opacity-90 hover:opacity-100"
+                } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+              >
+                {entry.count}
+              </Link>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-x-3.5 gap-y-0.5 text-[11.5px] text-ink-2">
+          {summary.bySeverity.map((entry) => (
+            <span key={entry.value} className="inline-flex items-center gap-1">
+              <span aria-hidden className={`inline-block h-2 w-2 ${SEVERITY_BG[entry.value]}`} />
+              {entry.label}
+              {entry.count === 0 ? <span className="text-ink-3">0</span> : null}
+            </span>
+          ))}
+          <span className="text-ink-3">· outlined = filtering</span>
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
+
+      <div className="flex min-w-0 flex-col gap-1">
         <Label>By scan type</Label>
         {summary.byCapability.length === 0 ? (
           <span className="font-mono text-[12px] text-ink-3">none</span>
         ) : (
-          summary.byCapability.map((entry) => chip(entry, "capability"))
+          <ul className="flex flex-col gap-0.5">
+            {summary.byCapability.map((entry) => (
+              <li key={entry.value}>
+                <Link
+                  href={toggle("capability", entry)}
+                  scroll={false}
+                  aria-current={entry.active ? "true" : undefined}
+                  aria-label={`${entry.label}: ${entry.count} — ${
+                    entry.active ? "filtering, click to remove" : "click to filter"
+                  }`}
+                  title={entry.label}
+                  className={`grid grid-cols-[4.75rem_minmax(0,1fr)_2.5rem] items-center gap-2 py-0.5 text-[11.5px] hover:bg-paper-3 focus-visible:outline-2 focus-visible:outline-accent ${
+                    entry.active ? "outline-1 outline-accent" : ""
+                  }`}
+                >
+                  <span
+                    className={`truncate font-mono ${
+                      entry.active ? "font-semibold text-accent" : "text-ink"
+                    }`}
+                  >
+                    {capabilityAbbr(entry.value)}
+                  </span>
+                  <span className="block h-2 bg-paper-3">
+                    <span
+                      className={`block h-2 ${entry.active ? "bg-accent" : "bg-ink-3/60"}`}
+                      style={{ width: `${Math.round((entry.count / widest) * 100)}%` }}
+                    />
+                  </span>
+                  <span className="text-right font-mono text-ink-3">{entry.count}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
+
       {/* From the stored environmental scores, over the same scope as the
           counts above (TheHub #60828): each chip lists exactly that many. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Here</Label>
+      <div className="flex flex-wrap items-center gap-1.5 md:col-span-3">
+        <Label>Rescored here</Label>
         {rescoreChips(page.by_rescoring, query).map((entry) => (
           <Link
             key={entry.value}
-            href={href({
-              rescored: entry.active ? undefined : entry.value,
-              ...CLEAR_SELECTION,
-            })}
+            href={href(toggleValue(query, "rescored", entry.value))}
+            scroll={false}
             aria-current={entry.active ? "true" : undefined}
             title={
               entry.value === "down"
@@ -376,7 +532,7 @@ function Summary({
                   ? "No CVSS vector, so nothing to re-read for this system."
                   : "The environment raised the severity word."
             }
-            className={`inline-flex items-baseline gap-1.5 border px-1.5 py-0.5 font-mono text-[12px] ${
+            className={`inline-flex items-baseline gap-1.5 border px-1.5 py-0.5 font-mono text-[11.5px] ${
               entry.active ? "border-accent bg-accent-wash" : "border-rule hover:border-accent"
             } ${entry.count === 0 ? "opacity-60" : ""}`}
           >
@@ -384,208 +540,11 @@ function Summary({
             <span className="text-ink-2">{entry.label}</span>
           </Link>
         ))}
-        {query.component === "none" ? (
-          <Link
-            href={href({ component: undefined, ...CLEAR_SELECTION })}
-            aria-current="true"
-            title="Showing findings no declared surface places — click to clear"
-            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[12px] text-accent"
-          >
-            in no component ✕
-          </Link>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function Filters({
-  repoId,
-  page,
-  query,
-  href,
-}: {
-  repoId: string;
-  page: OpenFindingsPage;
-  query: FindingsQuery;
-  href: (patch: Record<string, string | undefined>) => string;
-}) {
-  const status = query.status ?? "open";
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {/* `open` is the default rather than an option that reads as a filter:
-            selecting it removes the parameter, which is what every link into
-            this view already produces. */}
-        <FilterSelect
-          label="Status"
-          name="status"
-          value={query.status}
-          anyLabel="open (default)"
-          clears={["group", "finding"]}
-          options={STATUSES.filter((entry) => entry.id !== "open").map((entry) => ({
-            value: entry.id,
-            label: entry.label,
-          }))}
-        />
-        {/* The three numbers are different facts and all three get said: how
-            much is outstanding, how much the filters kept, and how much of
-            that the grouping collapsed. A single number here would be read as
-            whichever one the reader expected. */}
-        <span className="ml-auto font-mono text-[12px] text-ink-3">
-          {page.total} {status.replace("_", " ")}
-          {page.matching !== page.total ? ` · ${page.matching} match the filters` : ""} ·{" "}
-          {page.groups.length} row{page.groups.length === 1 ? "" : "s"}
-          {page.deduplicated > 0 ? ` · ${page.deduplicated} collapsed as duplicates` : ""}
+        <span className="font-mono text-[11px] text-ink-3">
+          · counts are for this status, before the other filters
         </span>
       </div>
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {/* The counts move into the option labels rather than being lost:
-            "how many criticals" is the question that made the chips worth
-            reading, and a bare dropdown would have thrown it away. */}
-        <FilterSelect
-          label="Severity"
-          name="severity"
-          value={query.severity}
-          anyLabel="Any severity"
-          clears={["group", "finding"]}
-          options={(["critical", "high", "medium", "low", "info"] as Severity[]).map(
-            (severity) => ({
-              value: severity,
-              label: `${severity} (${page.by_severity[severity] ?? 0})`,
-            }),
-          )}
-        />
-        <FilterSelect
-          label="Effective"
-          name="effective"
-          value={query.effective}
-          anyLabel="Any effective severity"
-          clears={["group", "finding"]}
-          options={(["critical", "high", "medium", "low", "info"] as Severity[]).map(
-            (severity) => ({
-              value: severity,
-              label: `${severity} (${page.by_effective_severity?.[severity] ?? 0})`,
-            }),
-          )}
-        />
-        {query.capability ? (
-          <Link
-            href={href({ capability: undefined, ...CLEAR_SELECTION })}
-            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[11px] text-accent"
-          >
-            {query.capability} ✕
-          </Link>
-        ) : null}
-      </div>
-
-      {/* A plain GET form rather than a client component with `useState` and
-          a debounced fetch — the query already lives in the URL for every
-          other filter here, and a search box that broke that pattern would
-          be the one filter that didn't survive a page refresh or a shared
-          link (spec 17 §3). */}
-      <form method="get" action={`/repos/${repoId}`} className="flex items-center gap-1.5">
-        <input type="hidden" name="tab" value="findings" />
-        {query.status ? <input type="hidden" name="status" value={query.status} /> : null}
-        {query.severity ? <input type="hidden" name="severity" value={query.severity} /> : null}
-        {query.capability ? (
-          <input type="hidden" name="capability" value={query.capability} />
-        ) : null}
-        <Label>Rule / CVE</Label>
-        <input
-          type="search"
-          name="rule_id"
-          defaultValue={query.rule_id ?? ""}
-          placeholder="e.g. CWE-89 or CVE-2024-…"
-          className="border border-rule bg-paper px-1.5 py-0.5 font-mono text-[11px] text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none"
-        />
-        {query.rule_id ? (
-          <Link
-            href={href({ rule_id: undefined, ...CLEAR_SELECTION })}
-            className="border border-accent bg-accent-wash px-1.5 py-0.5 font-mono text-[11px] text-accent"
-          >
-            {query.rule_id} ✕
-          </Link>
-        ) : null}
-      </form>
-
-      {/* Threat intel (spec 17 §3, #20) — a fact and a probability, so two
-          separate toggles rather than one "exploitable" checkbox that would
-          conflate them. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Threat intel</Label>
-        <Link
-          href={href({
-            kev_only: query.kev_only === "1" ? undefined : "1",
-            ...CLEAR_SELECTION,
-          })}
-          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
-            query.kev_only === "1"
-              ? "border-critical bg-critical-wash text-critical"
-              : "border-rule text-ink-3 hover:border-accent"
-          }`}
-        >
-          KEV only
-        </Link>
-        <Link
-          href={href({
-            min_epss: query.min_epss === "0.5" ? undefined : "0.5",
-            ...CLEAR_SELECTION,
-          })}
-          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
-            query.min_epss === "0.5"
-              ? "border-high bg-high-wash text-high"
-              : "border-rule text-ink-3 hover:border-accent"
-          }`}
-        >
-          EPSS ≥ 50%
-        </Link>
-      </div>
-
-      {/* What Patchwork actually did (spec 19 §3.2). Deliberately only a
-          "fixable" chip and not a "not fixable" one: `false` and "nobody has
-          looked" are different facts, and one chip cannot honestly stand for
-          both. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Remediation</Label>
-        <Link
-          href={href({
-            fixable: query.fixable === "1" ? undefined : "1",
-            ...CLEAR_SELECTION,
-          })}
-          className={`border px-1.5 py-0.5 font-mono text-[11px] ${
-            query.fixable === "1"
-              ? "border-pass bg-pass-wash text-pass"
-              : "border-rule text-ink-3 hover:border-accent"
-          }`}
-        >
-          fix available
-        </Link>
-      </div>
-
-      {/* classify()'s own output (spec 18 §5.1) — the same classification
-          already rendered per group as a Pill, now also a filter. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Label>Triage</Label>
-        {Object.entries(TRIAGE).map(([id, meta]) => (
-          <Link
-            key={id}
-            href={href({
-              triage: query.triage === id ? undefined : id,
-              ...CLEAR_SELECTION,
-            })}
-            className={`border px-1.5 py-0.5 font-mono text-[11px] ${
-              query.triage === id
-                ? "border-accent bg-accent-wash text-accent"
-                : "border-rule text-ink-3 hover:border-accent"
-            }`}
-          >
-            {meta.label}
-          </Link>
-        ))}
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -736,7 +695,7 @@ function GroupList({
    *  the first group when nothing is selected, and a list that recomputed that
    *  rule separately would eventually disagree with the pane beside it. */
   selectedKey?: string;
-  href: (patch: Record<string, string | undefined>) => string;
+  href: Href;
 }) {
   return (
     <ul className="flex flex-col">
@@ -803,7 +762,7 @@ function GroupDetail({
 }: {
   group: FindingGroup;
   query: FindingsQuery;
-  href: (patch: Record<string, string | undefined>) => string;
+  href: Href;
   detail?: React.ReactNode;
   remediation?: { fix: string; source: string; effort: string };
   /** Needed only to link each occurrence to its full record (B-032). */
@@ -885,8 +844,12 @@ function GroupDetail({
           owner{" "}
           {group.owner ? (
             <Link
-              href={href({ owner: query.owner === group.owner ? undefined : group.owner })}
-              className={query.owner === group.owner ? "text-accent" : "text-ink-2 hover:text-accent"}
+              href={href(toggleValue(query, "owner", group.owner))}
+              className={
+                valuesOf(query, "owner").includes(group.owner)
+                  ? "text-accent"
+                  : "text-ink-2 hover:text-accent"
+              }
             >
               {group.owner}
             </Link>
@@ -897,7 +860,7 @@ function GroupDetail({
             // could not work it out at all — which is worth looking at rather
             // than shrugging past.
             <Link
-              href={href({ owner: query.owner === "unclaimed" ? undefined : "unclaimed" })}
+              href={href(toggleValue(query, "owner", "unclaimed"))}
               className="text-critical hover:underline"
             >
               nobody — show the queue
