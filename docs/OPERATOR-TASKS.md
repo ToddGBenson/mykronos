@@ -368,7 +368,7 @@ same keys, so a rotation does not mean registering again.
 
        pwsh -File deploy\concourse\Register-ControlObservationTasks.ps1
 
-   This registers `Mykronos Observations (host, ToddGBenson/mykronos)` daily
+   This registers `Mykronos Observations (host, ToddGBenson_mykronos)` daily
    at 05:00. Options:
 
    - Add TheHub with `-HostRepo ToddGBenson/mykronos,ToddGBenson/TheHub`. Its
@@ -398,7 +398,7 @@ same keys, so a rotation does not mean registering again.
 
 5. Run each task once and look at the result:
 
-       Start-ScheduledTask -TaskName 'Mykronos Observations (host, ToddGBenson/mykronos)'
+       Start-ScheduledTask -TaskName 'Mykronos Observations (host, ToddGBenson_mykronos)'
        Get-Content "$env:LOCALAPPDATA\mykronos-observations\last-host-ToddGBenson_mykronos.log"
 
    Expect `result: ok`. Last Run Result `2` means refused (the log says why),
