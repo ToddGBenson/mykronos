@@ -2087,12 +2087,12 @@ jobs:
 
   # -- The commit's verdict (D-151) ----------------------------------------
   #
-  # Nothing but the gather and the report. No existing job waited on every
-  # verifying lane: `oracle` waits on `secrets` and `iac`, `package` on the
-  # quality lanes but not on `iac` or `oracle`. Concourse's `passed:` takes a
-  # version only once it has passed every job listed, and `oracle`'s own
-  # `passed:` carries `secrets`, `iac` and `guard` with it, so this job's
-  # success means the commit cleared all seven.
+  # Nothing but the gather and the report. No other job waited on every
+  # verifying lane when this was written: `oracle` waits on `secrets` and
+  # `iac`. Concourse's `passed:` takes a version only once it has passed every
+  # job listed, and `oracle`'s own `passed:` carries `secrets`, `iac` and
+  # `guard` with it, so this job's success means the commit cleared all seven.
+  # `package` waits on this job, so delivery inherits the same seven.
   #
   # `public: true`: its log is a probe, one curl line and a sha.
   - name: all-lanes
@@ -2153,10 +2153,17 @@ jobs:
       # Scheduled Tasks then run it unattended at 03:00 on a Sunday, which is
       # the worst moment to discover that a SKILL.md points at a reference that
       # is not there. A gate that delivery does not wait for is advice.
+      #
+      # `all-lanes`, not a list of lanes. The list here was `[guard, secrets,
+      # lint, functional, skill-integrity]`: it left out `iac` and `oracle`,
+      # so a commit the risk gate refused still reached the host. `all-lanes`
+      # passes only a version that cleared all seven verifying lanes, oracle
+      # included, and one name cannot drift from that set the way a copy of
+      # it did. `pwsh` has no `passed:`, so there is nothing to keep in step.
       - get: source
         attempts: *retry_fetch
         trigger: true
-        passed: [guard, secrets, lint, functional, skill-integrity]
+        passed: [all-lanes]
       - get: pwsh
         attempts: *retry_fetch
       - task: bundle-and-publish
