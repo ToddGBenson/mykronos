@@ -87,6 +87,16 @@ def test_the_gate_waits_on_every_verifying_lane() -> None:
     assert _upstream_of(GATE) == VERIFYING
 
 
+def test_package_publishes_only_what_every_verifying_lane_and_the_oracle_passed() -> None:
+    """`package` puts a bundle on the host that Scheduled Tasks then run
+    unattended. It used to wait on `[guard, secrets, lint, functional,
+    skill-integrity]`, so it published past `iac` and the oracle gate. It now
+    sits behind `all-lanes`, which carries every verifying lane with it."""
+    upstream = _upstream_of("package")
+    assert "oracle" in upstream, "package publishes without the oracle gate"
+    assert VERIFYING | {GATE} <= upstream
+
+
 def test_the_gate_is_in_a_group() -> None:
     """Concourse hides a job that is in no group."""
     grouped = {job for group in _doc()["groups"] for job in group["jobs"]}
