@@ -146,6 +146,26 @@ def model_references(line: str) -> list[str]:
 
 PINNED = re.compile(r"(\d{8}|\d{4}-\d{2}-\d{2}|@\d|:\d)")
 
+#: Exact model ids that carry no date (D-167, TheHub #60866). Anthropic's
+#: current ids are complete as published -- `claude-opus-5-5` is the model, and
+#: a date suffix appended to it is an error -- so `PINNED`, which looks for a
+#: date or a version separator, cannot tell one from a family alias such as
+#: `claude-opus-5`. Structure cannot either: `claude-sonnet-4-5` is an alias
+#: for a dated snapshot and has the same shape. So each undated exact id is
+#: named here, one reviewed line at a time, and adding one is the same reviewed
+#: change as moving to it.
+EXACT_IDS = frozenset(
+    {
+        "claude-opus-5-5",
+    }
+)
+
+
+def is_pinned(identifier: str) -> bool:
+    """Whether `identifier` names one fixed model rather than a moving alias."""
+    return bool(PINNED.search(identifier)) or identifier.lower() in EXACT_IDS
+
+
 #: Interpolation of caller-shaped data into a prompt-shaped string. Deliberately
 #: narrow: `prompt`/`system`/`messages` near an f-string or template literal
 #: carrying something that reads like request input.
@@ -220,7 +240,7 @@ def check(root: Path) -> tuple[list[Finding], bool]:
         for number, line in enumerate(lines, 1):
             for identifier in model_references(line):
                 uses_a_model = True
-                if not PINNED.search(identifier):
+                if not is_pinned(identifier):
                     findings.append(
                         Finding(
                             rule_id="ai-model-unpinned",

@@ -423,10 +423,13 @@ class Settings(BaseSettings):
     )
 
     reviewer_model: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         description=(
             "The model the platform-started independent reviewer runs (spec 34 §4.3). "
-            "Recorded as the reviewer's family, so a delegation must name it."
+            "Recorded as the reviewer's family, so a delegation must name it. An "
+            "exact model id, never a family alias: the reviewer's shadow-agreement "
+            "numbers only compare against a fixed model, and moving it is a "
+            "reviewed change (D-167)."
         ),
     )
     threat_model_sync_interval_seconds: int = Field(

@@ -20,7 +20,7 @@ from mykronos.approvals.engine import Subject
 from mykronos.db.models import AgentCredential, ApprovalDecision, AuditLogEntry, Delegation
 from mykronos.schemas import utcnow
 
-REVIEWER_FAMILY = "claude-opus-5"
+REVIEWER_FAMILY = "claude-opus-5-5"  # config.py's pinned default (D-167)
 
 
 def _bearer(token: str) -> dict[str, str]:
@@ -303,7 +303,7 @@ class TestRefusedBeforeAnythingIsSpent:
         self, client, admin_auth, tiered, model
     ) -> None:
         """`different_family` exists so the reviewer does not share the
-        requester's blind spots. claude-opus-5 reviewing claude-opus-5.5 does:
+        requester's blind spots. claude-opus-5-5 reviewing claude-opus-5.5 does:
         the family is the model lineage, not the version string."""
         _delegate(client, tiers=("high",))
         fake = model(answer=APPROVE)
