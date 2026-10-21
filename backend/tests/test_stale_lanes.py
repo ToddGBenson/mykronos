@@ -334,6 +334,48 @@ class TestBranchDrift:
         assert "Point the resource at `main`" in lane.action.effect
         assert "a re-run changes nothing" in lane.action.effect
 
+    def test_a_pull_request_run_after_a_main_run_is_not_drift(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """keel's `unit` runs on push to main AND on pull requests. Its newest
+        run was a PR branch's, and the briefing said it was "scanning
+        fix/shellcheck-info-findings" and that nothing on main had been
+        scanned -- when main had been scanned an hour earlier."""
+        tok = token(client)
+        scan(client, tok, "unit", _utcnow() - timedelta(hours=2), "aaaaaaa")
+        scan(client, tok, "unit", _utcnow() - timedelta(hours=1), "bbbbbbb", branch="fix/pr")
+        scan(client, tok, "iac", _utcnow() - timedelta(hours=2), "aaaaaaa")
+        run_compaction()
+
+        assert lanes(catalog) == []
+
+    def test_a_pull_request_commit_does_not_make_main_s_lanes_pinned(
+        self, client, catalog, run_compaction
+    ) -> None:
+        """Movement is the default branch's. A PR commit first seen days ago
+        is not a head every main lane was supposed to have reached."""
+        tok = token(client)
+        scan(client, tok, "unit", _utcnow() - timedelta(days=5), "ppppppp", branch="fix/pr")
+        scan(client, tok, "iac", _utcnow() - timedelta(days=6), "aaaaaaa")
+        scan(client, tok, "iac", _utcnow() - timedelta(days=1), "aaaaaaa")
+        run_compaction()
+
+        assert "iac" not in {lane.capability for lane in lanes(catalog)}
+
+    def test_a_lane_that_only_ever_ran_on_pull_requests_is_still_drift(
+        self, client, catalog, run_compaction
+    ) -> None:
+        tok = token(client)
+        scan(client, tok, "unit", _utcnow() - timedelta(hours=2), "bbbbbbb", branch="fix/a")
+        scan(client, tok, "unit", _utcnow() - timedelta(hours=1), "ccccccc", branch="fix/b")
+        scan(client, tok, "iac", _utcnow() - timedelta(hours=2), "aaaaaaa")
+        run_compaction()
+
+        rows = {lane.capability: lane for lane in lanes(catalog)}
+
+        assert rows["unit"].reason == "wrong_branch"
+        assert rows["unit"].branch == "fix/b"
+
     def test_no_default_branch_recorded_means_no_claim(
         self, client, catalog, run_compaction
     ) -> None:

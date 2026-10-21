@@ -1470,20 +1470,34 @@ def stale_lanes(
         successes = [run for run in runs if run[0] == "success"]
         if not successes:
             continue
-        _, branch, commit_sha, last_ran = successes[0]
+        default_branch = branches.get(repo, "")
+
+        # The runs that speak for the default branch. A lane that also runs on
+        # pull requests uploads every PR branch it builds, so its newest run is
+        # routinely a PR's. That is extra coverage, not drift: keel's `unit`
+        # scanned `main` on push and was still reported as "scanning
+        # fix/shellcheck-info-findings" because a PR had run after it. Only a
+        # lane with NO default-branch run is on the wrong branch. A run with no
+        # branch recorded makes no claim either way, as before.
+        covering = [
+            run
+            for run in successes
+            if not default_branch or not run[1] or run[1] == default_branch
+        ]
+        judged = covering or successes
+        _, branch, commit_sha, last_ran = judged[0]
 
         # How long this lane has been on this commit, and over how many runs.
         # The leading block only: an older run of the same commit with a
         # different one in between is not a lane that stopped moving.
         block = []
-        for run in successes:
+        for run in judged:
             if run[2] != commit_sha:
                 break
             block.append(run)
         since = block[-1][3]
 
-        default_branch = branches.get(repo, "")
-        if default_branch and branch and branch != default_branch:
+        if not covering:
             stale.append(
                 StaleLane(
                     repo_full_name=repo,
@@ -1508,8 +1522,15 @@ def stale_lanes(
         # looked for: a pinned lane re-scanning an old tree today is the most
         # recent run, so reading the head off it would let the stale lane
         # define itself as current and this check would never fire.
+        #
+        # Movement is the default branch's. A commit that has only ever been
+        # scanned on a PR branch is not one the repository moved to, and a
+        # lane covering `main`'s head is not pinned because a sibling lane
+        # scanned an open pull request since.
         first_seen: dict[str, Any] = {}
-        for _, _, sha, ran in by_repo.get(repo, []):
+        for _, run_branch, sha, ran in by_repo.get(repo, []):
+            if default_branch and run_branch and run_branch != default_branch:
+                continue
             if sha not in first_seen or ran < first_seen[sha]:
                 first_seen[sha] = ran
         if len(first_seen) < 2:
