@@ -96,6 +96,13 @@ $READERS = @{
         EnvKey    = $null
         Apply     = $null
     }
+    "ToddGBenson/binnacle"     = @{
+        Secret    = "MYKRONOS_INGESTION_TOKEN"
+        VaultPath = "concourse/main/binnacle/mykronos_ingestion_token"
+        EnvFile   = $null
+        EnvKey    = $null
+        Apply     = $null
+    }
 }
 
 if (-not $READERS.ContainsKey($Repo)) {
