@@ -25,6 +25,7 @@ ARG DISTRIBUTION_TAG=v3.1.2
 ARG DISTRIBUTION_COMMIT=3220848f15d9279c66a41aa0a257469e6aede1e9
 ARG X_NET=v0.60.0
 ARG OTEL_EXPORTERS=v1.45.0
+ARG KLAUSPOST_COMPRESS=v1.18.7
 RUN apk add --no-cache git
 WORKDIR /src
 RUN git clone --depth 1 --branch "${DISTRIBUTION_TAG}" https://github.com/distribution/distribution.git . \
@@ -34,18 +35,21 @@ RUN git clone --depth 1 --branch "${DISTRIBUTION_TAG}" https://github.com/distri
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 # The OTLP trace exporters move together (CVE-2026-81870, fixed in 1.45.0);
 # `go get` brings the otel modules they require along with them.
+# klauspost/compress 1.18.7: CVE-2026-63209 (HIGH, s2 integer overflow and
+# out-of-bounds write, GHSA-259r-337f-4rfw), raised on 3-p20261019 2026-10-20.
 RUN go get "golang.org/x/net@${X_NET}" \
       "go.opentelemetry.io/otel/exporters/otlp/otlptrace@${OTEL_EXPORTERS}" \
       "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@${OTEL_EXPORTERS}" \
       "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@${OTEL_EXPORTERS}" \
+      "github.com/klauspost/compress@${KLAUSPOST_COMPRESS}" \
  && go mod tidy \
  && go mod vendor \
- && go list -m golang.org/x/net go.opentelemetry.io/otel/exporters/otlp/otlptrace
+ && go list -m golang.org/x/net go.opentelemetry.io/otel/exporters/otlp/otlptrace github.com/klauspost/compress
 RUN PKG=github.com/distribution/distribution/v3 \
  && go build -trimpath \
       -ldflags "-s -w -X ${PKG}/version.version=${DISTRIBUTION_TAG#v}+mykronos -X ${PKG}/version.revision=${DISTRIBUTION_COMMIT} -X ${PKG}/version.mainpkg=${PKG}" \
       -o /out/registry ./cmd/registry \
- && go version -m /out/registry | grep -E '^\s+(dep\s+golang.org/x/net|build\s+-trimpath)|go1\.'
+ && go version -m /out/registry | grep -E '^\s+(dep\s+(golang.org/x/net|github.com/klauspost/compress)|build\s+-trimpath)|go1\.'
 
 FROM ${BASE_IMAGE}
 ARG APK_REFRESH=unset
