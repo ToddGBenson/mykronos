@@ -53,6 +53,8 @@ class OperationalInputs:
     exposure: list[dict[str, Any]] | None = None
     #: How far each probed deployment is behind its branch (#452).
     production_lag: list[briefing_report.ProductionLag] | None = None
+    #: Every active repository's probe setup, tokens left out (TheHub #60918).
+    probe_setup: list[dict[str, Any]] | None = None
 
 
 def onboarding_maps(db: Any) -> tuple[dict[str, str], dict[str, str]]:
@@ -317,19 +319,29 @@ def gather(
     # GitHub compare, joined to the lake for the findings whose fix is in the
     # undeployed range. No GitHub call here; the sweep made it.
     try:
-        found.production_lag = production_lag(db, catalog)
+        found.production_lag = production_lag(db, catalog, settings)
     except Exception:  # noqa: BLE001 - a briefing must not die on this
         logger.debug("Could not read the deployment record")
+    try:
+        from mykronos import deployments
+
+        found.probe_setup = [s.public() for s in deployments.probe_setups(db, settings)]
+    except Exception:  # noqa: BLE001 - a briefing must not die on this
+        logger.debug("Could not read the deployment probe setup")
 
     return found
 
 
-def production_lag(db: Any, catalog: Any) -> list[briefing_report.ProductionLag]:
+def production_lag(
+    db: Any, catalog: Any, settings: Any = None
+) -> list[briefing_report.ProductionLag]:
     """One `ProductionLag` per active repository with a deployment probe.
 
     A probe configured before any sweep has run has nothing stored yet, and
     says so as `unknown` rather than being left out: a repository missing from
     this list reads as "has no production", which is a different claim.
+
+    With `settings`, a derived probe counts as a probe (TheHub #60918).
     """
     from dataclasses import asdict
 
@@ -339,10 +351,22 @@ def production_lag(db: Any, catalog: Any) -> list[briefing_report.ProductionLag]
         rows = session.scalars(
             select(RepoOnboarding).where(RepoOnboarding.status == "active")
         ).all()
-        probed = [
-            (row.github_repo_full_name, str(row.default_branch or ""), deployments.stored_lag(row))
+        has_probe = {
+            row.github_repo_full_name: (
+                deployments.probe_setup_for(row, settings).configured
+                if settings is not None
+                else bool((row.deployment_probe_url or "").strip())
+            )
             for row in rows
-            if (row.deployment_probe_url or "").strip()
+        }
+        probed = [
+            (
+                row.github_repo_full_name,
+                str(row.default_branch or ""),
+                deployments.stored_lag(row, probed=True),
+            )
+            for row in rows
+            if has_probe[row.github_repo_full_name]
         ]
 
     out: list[briefing_report.ProductionLag] = []

@@ -55,6 +55,11 @@ services:
       # the Hub's own HUB_API_TOKEN value (D-133); empty = "TheHub is not connected".
       MYKRONOS_HUB_API_URL: ${MYKRONOS_HUB_API_URL:-http://host.docker.internal:8000}
       MYKRONOS_HUB_API_TOKEN: ${MYKRONOS_HUB_API_TOKEN:-}
+      # Which perimeter token the deployment probe presents, per origin, as a
+      # JSON object (TheHub #60918): `{"http://host:port": "@gate"}`. It was
+      # never passed, so no configured probe could read build.sha. `{}`, not
+      # empty: empty does not parse.
+      MYKRONOS_DEPLOYMENT_PROBE_TOKENS: ${MYKRONOS_DEPLOYMENT_PROBE_TOKENS:-{}}
       # Patchwork's bump-image-date fixer lists tags on the registry the
       # image-refresh lanes publish to. That registry is published on this
       # host's loopback, which a container reaches through Docker Desktop's

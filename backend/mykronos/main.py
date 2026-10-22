@@ -551,6 +551,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 timeout=settings.deployment_probe_timeout_seconds,
                 tokens=probe_tokens_from(settings),
                 github_factory=app.state.github_factory,
+                # Derived probes, and what each repository is missing (#60918).
+                settings=settings,
             )
             for state in sweep.diverged:
                 logger.warning(

@@ -99,6 +99,22 @@ HUB_ALIAS = "@hub"
 #: The setting an operator needs to read when a probe cannot authenticate.
 TOKENS_SETTING = "MYKRONOS_DEPLOYMENT_PROBE_TOKENS"
 
+#: Where a repository's probe came from (TheHub #60918). Every repository read
+#: `not_configured` because the only source was a per-repository URL nobody
+#: had set. Two are now known without asking anybody: this platform's own
+#: revision is `MYKRONOS_BUILD_SHA`, and TheHub is wherever
+#: `MYKRONOS_HUB_API_URL` already sends the Product Owner tab, presenting the
+#: `MYKRONOS_HUB_API_TOKEN` that call already presents. A URL set on the
+#: repository always wins. "" is not configured.
+SOURCE_CONFIGURED = "configured"
+SOURCE_SELF = "this process (MYKRONOS_BUILD_SHA)"
+SOURCE_HUB = "derived from MYKRONOS_HUB_API_URL"
+
+#: Repository names (the part after the owner, lowercased) the two derived
+#: probes belong to.
+SELF_REPO_NAME = "mykronos"
+HUB_REPO_NAME = "thehub"
+
 
 @dataclass
 class DeploymentState:
@@ -198,6 +214,164 @@ def resolve_probe_tokens(
         if token:
             resolved[origin] = token
     return resolved
+
+
+@dataclass
+class ProbeSetup:
+    """How one repository's deployment is asked, and what is missing (TheHub #60918).
+
+    `missing` names settings and routes only, never a value: it is printed in
+    the briefing and served by the dashboard.
+    """
+
+    repo_full_name: str
+    repo_id: str = ""
+    #: What is asked. "" when nothing is, and for `SOURCE_SELF`, which asks
+    #: nobody: this process knows its own revision.
+    url: str = ""
+    source: str = ""
+    token: str = field(default="", repr=False)
+    missing: list[str] = field(default_factory=list)
+    #: `SOURCE_SELF` only: the revision this process was built from.
+    revision: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.source)
+
+    def public(self) -> dict[str, Any]:
+        """Everything but the token, for the briefing and the dashboard."""
+        return {
+            "repo_full_name": self.repo_full_name,
+            "repo_id": self.repo_id,
+            "url": self.url,
+            "source": self.source,
+            "missing": list(self.missing),
+        }
+
+
+def _token_gap(origin: str, settings: Any) -> str:
+    """Why no token is presented to `origin`, by setting name."""
+    for key, value in (getattr(settings, "deployment_probe_tokens", None) or {}).items():
+        if origin_of(str(key)) != origin:
+            continue
+        alias = str(value or "").strip()
+        if alias == GATE_ALIAS:
+            return (
+                f"MYKRONOS_GATE_TOKEN is not set, and {TOKENS_SETTING} names "
+                f"{GATE_ALIAS} for {origin}"
+            )
+        if alias == HUB_ALIAS:
+            return (
+                f"MYKRONOS_HUB_API_TOKEN is not set, and {TOKENS_SETTING} names "
+                f"{HUB_ALIAS} for {origin}"
+            )
+        return f"{TOKENS_SETTING} has an empty entry for {origin}"
+    return (
+        f"{TOKENS_SETTING} has no entry for {origin}, so the probe sends no "
+        "perimeter token and the endpoint withholds build.sha (D-157)"
+    )
+
+
+def probe_setup_for(row: Any, settings: Any) -> ProbeSetup:
+    """One repository's probe: configured, derived, or missing (TheHub #60918)."""
+    repo = str(row.github_repo_full_name)
+    repo_id = str(getattr(row, "id", "") or "")
+    tokens = probe_tokens_from(settings) if settings is not None else {}
+    url = (getattr(row, "deployment_probe_url", "") or "").strip()
+    if url:
+        origin = origin_of(url)
+        setup = ProbeSetup(repo, repo_id, url, SOURCE_CONFIGURED, tokens.get(origin, ""))
+        if not setup.token:
+            setup.missing.append(_token_gap(origin, settings))
+        return setup
+
+    name = repo.rsplit("/", 1)[-1].lower()
+    if settings is not None and name == SELF_REPO_NAME:
+        setup = ProbeSetup(
+            repo,
+            repo_id,
+            "",
+            SOURCE_SELF,
+            revision=str(getattr(settings, "build_sha", "") or "").strip(),
+        )
+        if not setup.revision:
+            setup.missing.append(
+                "MYKRONOS_BUILD_SHA is empty: the image was built without it, so "
+                "this process cannot say which commit it is running"
+            )
+        return setup
+    hub_url = str(getattr(settings, "hub_api_url", "") or "").strip().rstrip("/")
+    if settings is not None and name == HUB_REPO_NAME and hub_url:
+        health = hub_url + "/health"
+        token = tokens.get(origin_of(health)) or str(
+            getattr(settings, "hub_api_token", "") or ""
+        ).strip()
+        setup = ProbeSetup(repo, repo_id, health, SOURCE_HUB, token)
+        if not token:
+            setup.missing.append(
+                "MYKRONOS_HUB_API_TOKEN is not set: TheHub's /health serves "
+                "build.sha only to a caller presenting it"
+            )
+        return setup
+
+    return ProbeSetup(
+        repo,
+        repo_id,
+        missing=[
+            "no deployment probe URL: set one with PUT /api/repos/"
+            f"{repo_id or '<id>'}/deployment-probe if this repository has a "
+            "deployment this platform can reach; one with none needs nothing"
+        ],
+    )
+
+
+def probe_setups(db: Any, settings: Any) -> list[ProbeSetup]:
+    """`probe_setup_for` over every active repository, by name."""
+    from mykronos.db.models import RepoOnboarding
+
+    with db.session() as session:
+        rows = session.scalars(
+            select(RepoOnboarding).where(RepoOnboarding.status == "active")
+        ).all()
+        setups = [probe_setup_for(row, settings) for row in rows]
+    return sorted(setups, key=lambda s: s.repo_full_name.lower())
+
+
+async def sweep_setups(
+    setups: list[ProbeSetup],
+    scanned: dict[str, str],
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    tokens: dict[str, str] | None = None,
+) -> list[DeploymentState]:
+    """Ask every configured probe, derived ones included (TheHub #60918).
+
+    A URL probe goes through `sweep`, presenting the setup's own token for a
+    derived URL and `tokens` (MYKRONOS_DEPLOYMENT_PROBE_TOKENS) for a
+    configured one. `SOURCE_SELF` asks nobody: an empty build sha is
+    `unparsed`, never a guess.
+    """
+    by_url = {s.repo_full_name: s.url for s in setups if s.configured and s.url}
+    merged = dict(tokens or {})
+    for s in setups:
+        if s.source == SOURCE_HUB and s.token:
+            merged.setdefault(origin_of(s.url), s.token)
+    states = (await sweep(by_url, scanned, timeout=timeout, tokens=merged)).states if by_url else []
+    for s in setups:
+        if s.source != SOURCE_SELF:
+            continue
+        states.append(
+            DeploymentState(
+                repo_full_name=s.repo_full_name,
+                status=OK if s.revision else UNPARSED,
+                revision=s.revision or None,
+                observed_at=utcnow() if s.revision else None,
+                scanned_revision=scanned.get(s.repo_full_name),
+                detail="; ".join(s.missing),
+            )
+        )
+    return sorted(states, key=lambda st: st.repo_full_name)
 
 
 def probe_tokens_from(settings: Any) -> dict[str, str]:
@@ -563,8 +737,12 @@ async def compute_lag(
     return lag
 
 
-def lag_targets(db: Any) -> dict[str, tuple[int, str]]:
-    """Active repositories with a probe: installation id and default branch."""
+def lag_targets(db: Any, probed: set[str] | None = None) -> dict[str, tuple[int, str]]:
+    """Active repositories with a probe: installation id and default branch.
+
+    `probed` names the repositories with a probe when some are derived
+    (TheHub #60918); without it, a probe is a stored URL.
+    """
     from mykronos.db.models import RepoOnboarding
 
     with db.session() as session:
@@ -577,7 +755,11 @@ def lag_targets(db: Any) -> dict[str, tuple[int, str]]:
                 str(row.default_branch or "main"),
             )
             for row in rows
-            if (row.deployment_probe_url or "").strip()
+            if (
+                row.github_repo_full_name in probed
+                if probed is not None
+                else (row.deployment_probe_url or "").strip()
+            )
         }
 
 
@@ -789,13 +971,17 @@ def fixes_not_deployed(catalog: Any, lag: DeploymentLag) -> FixesNotDeployed:
     return result
 
 
-def stored_lag(row: Any) -> DeploymentLag | None:
+def stored_lag(row: Any, *, probed: bool | None = None) -> DeploymentLag | None:
     """What the last sweep stored for one onboarding row, or None.
 
     None for a repository with no probe, which is `not_configured` and not a
-    fault: a library has no production to be behind.
+    fault: a library has no production to be behind. `probed` says whether it
+    has one when the probe may be derived (TheHub #60918); without it, a
+    probe is a stored URL.
     """
-    if not (getattr(row, "deployment_probe_url", "") or "").strip():
+    if probed is None:
+        probed = bool((getattr(row, "deployment_probe_url", "") or "").strip())
+    if not probed:
         return None
     return DeploymentLag.from_json(
         row.github_repo_full_name, getattr(row, "deployment_lag", None)
@@ -809,20 +995,45 @@ async def run_probe_sweep(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     tokens: dict[str, str] | None = None,
     github_factory: GitHubClientFactory | None = None,
+    settings: Any = None,
 ) -> ProbeSweep:
     """The scheduled job: probe, compare against what was scanned and against
-    the default branch, record."""
-    targets = probe_targets(db)
-    if not targets:
-        logger.info(
-            "No deployment probes configured; nothing compares the running "
-            "artifact to the scanned one."
+    the default branch, record.
+
+    With `settings`, derived probes are swept too (TheHub #60918), and each
+    repository that has none is logged with what it is missing.
+    """
+    if settings is not None:
+        setups = probe_setups(db, settings)
+        for setup in setups:
+            if setup.missing:
+                logger.info(
+                    "Deployment probe for %s: %s",
+                    scrub(setup.repo_full_name),
+                    scrub("; ".join(setup.missing)),
+                )
+        configured = [s for s in setups if s.configured]
+        if not configured:
+            return ProbeSweep()
+        result = ProbeSweep(
+            states=await sweep_setups(
+                configured, latest_scanned_revisions(catalog), timeout=timeout, tokens=tokens
+            )
         )
-        return ProbeSweep()
-    result = await sweep(
-        targets, latest_scanned_revisions(catalog), timeout=timeout, tokens=tokens
-    )
+        probed: set[str] | None = {s.repo_full_name for s in configured}
+    else:
+        targets = probe_targets(db)
+        if not targets:
+            logger.info(
+                "No deployment probes configured; nothing compares the running "
+                "artifact to the scanned one."
+            )
+            return ProbeSweep()
+        result = await sweep(
+            targets, latest_scanned_revisions(catalog), timeout=timeout, tokens=tokens
+        )
+        probed = None
     record(db, result.states)
-    result.lags = await measure_lags(result.states, lag_targets(db), github_factory)
+    result.lags = await measure_lags(result.states, lag_targets(db, probed), github_factory)
     record_lags(db, result.lags)
     return result

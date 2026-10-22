@@ -93,6 +93,7 @@ from mykronos.deployments import (
     DeploymentLag,
     DeploymentState,
     latest_scanned_revisions,
+    probe_setup_for,
     stored_lag,
 )
 from mykronos.jobs import self_check as jobs_self_check
@@ -211,10 +212,16 @@ def deploy_lag_out(lag: DeploymentLag | None) -> DeployLagOut | None:
     )
 
 
-def unrecorded_lag(row: Any) -> DeploymentLag | None:
-    """The stored lag, or an `unknown` one for a probe no sweep has answered."""
-    lag = stored_lag(row)
-    if lag is None and (row.deployment_probe_url or "").strip():
+def unrecorded_lag(row: Any, *, probed: bool | None = None) -> DeploymentLag | None:
+    """The stored lag, or an `unknown` one for a probe no sweep has answered.
+
+    `probed` says whether the repository has a probe when it may be derived
+    (TheHub #60918); without it, a probe is a stored URL.
+    """
+    if probed is None:
+        probed = bool((row.deployment_probe_url or "").strip())
+    lag = stored_lag(row, probed=probed)
+    if lag is None and probed:
         return DeploymentLag(
             repo_full_name=row.github_repo_full_name,
             branch=str(row.default_branch or ""),
@@ -6851,6 +6858,12 @@ class DeploymentOut(BaseModel):
     #: How far this deployment is behind its default branch (#452). Null
     #: when no probe is configured.
     lag: DeployLagOut | None = None
+    #: Where the probe comes from: `configured` (a URL set on the
+    #: repository), derived from MYKRONOS_HUB_API_URL, or this process's
+    #: MYKRONOS_BUILD_SHA. Empty when there is none (TheHub #60918).
+    probe_source: str = ""
+    #: What stops the probe answering, by setting or route name. Never a value.
+    missing: list[str] = Field(default_factory=list)
 
 
 class DeploymentsOut(BaseModel):
@@ -6862,7 +6875,7 @@ class DeploymentsOut(BaseModel):
     #: Repositories running a revision other than the newest one scanned.
     #: The list the 2026-09-13 gap would have appeared in.
     diverged: int
-    #: Active repositories with no probe configured. A coverage number, not an
+    #: Active repositories with no probe, stored or derived. A coverage number, not an
     #: error — but it is the denominator that makes `diverged: 0` meaningful,
     #: and omitting it is how "nothing is wrong" and "nothing is measured"
     #: become indistinguishable.
@@ -6889,12 +6902,14 @@ async def deployments_page(request: Request, principal: PrincipalDep) -> Deploym
     from mykronos.db.models import RepoOnboarding
 
     scanned = latest_scanned_revisions(request.app.state.catalog)
+    settings = request.app.state.settings
     rows: list[DeploymentOut] = []
     with request.app.state.db.session() as session:
         onboardings = session.scalars(
             select(RepoOnboarding).where(RepoOnboarding.status == "active")
         ).all()
         for row in onboardings:
+            setup = probe_setup_for(row, settings)
             state = DeploymentState(
                 repo_full_name=row.github_repo_full_name,
                 status=row.deployment_probe_status or "not_configured",
@@ -6910,8 +6925,10 @@ async def deployments_page(request: Request, principal: PrincipalDep) -> Deploym
                     deployed_revision_at=state.observed_at,
                     scanned_revision=state.scanned_revision,
                     matches_scan=state.matches_scan,
-                    probe_url=row.deployment_probe_url or "",
-                    lag=deploy_lag_out(unrecorded_lag(row)),
+                    probe_url=setup.url,
+                    lag=deploy_lag_out(unrecorded_lag(row, probed=setup.configured)),
+                    probe_source=setup.source,
+                    missing=setup.missing,
                 )
             )
 
@@ -6919,7 +6936,7 @@ async def deployments_page(request: Request, principal: PrincipalDep) -> Deploym
     return DeploymentsOut(
         repos=rows,
         diverged=sum(1 for r in rows if r.matches_scan is False),
-        not_configured=sum(1 for r in rows if not r.probe_url),
+        not_configured=sum(1 for r in rows if not r.probe_source),
         behind=sum(
             1 for r in rows if r.lag is not None and r.lag.status in ("behind", "diverged")
         ),

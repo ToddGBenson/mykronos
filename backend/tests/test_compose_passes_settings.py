@@ -54,6 +54,9 @@ MUST_BE_PASSABLE = (
     "MYKRONOS_BRIEFING_DM_TIME",
     "MYKRONOS_BRIEFING_DM_TIMEZONE",
     "MYKRONOS_DASHBOARD_URL",
+    # TheHub #60918: the probe's per-origin tokens never reached the
+    # container, so no configured probe could read build.sha.
+    "MYKRONOS_DEPLOYMENT_PROBE_TOKENS",
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
