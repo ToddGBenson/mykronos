@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { LaneControl } from "@/components/lane-control";
 import { getScanRuns } from "@/lib/server";
 import {
   CAPABILITY_META,
@@ -15,6 +16,7 @@ import {
   checkHref,
   exactTime,
   laneLabel,
+  laneTone,
   lanesToOffer,
   parseHistoryFilter,
   percent,
@@ -23,6 +25,7 @@ import {
   shortSha,
 } from "@/lib/checks";
 import type { ScanRunRow } from "@/lib/api";
+import type { CheckLane } from "@/lib/checks";
 
 export const dynamic = "force-dynamic";
 
@@ -122,6 +125,24 @@ export default async function CheckHistoryPage({
         </nav>
       ) : null}
 
+      {page.lanes.length ? (
+        <Section
+          title="Lanes"
+          detail="a lane that stopped reads stale or retired, never current"
+        >
+          <ul className="flex flex-col divide-y divide-rule-soft font-mono text-[12px]">
+            {page.lanes.map((lane) => (
+              <LaneRow
+                key={`${lane.tool_name ?? ""}/${lane.job ?? ""}`}
+                repoId={repoId}
+                capability={capability}
+                lane={lane}
+              />
+            ))}
+          </ul>
+        </Section>
+      ) : null}
+
       {page.runs.length === 0 ? (
         <EmptyState
           title={
@@ -217,6 +238,44 @@ export default async function CheckHistoryPage({
         </Section>
       )}
     </div>
+  );
+}
+
+/** One lane with its state (TheHub #60816) and the operator's control. */
+function LaneRow({
+  repoId,
+  capability,
+  lane,
+}: {
+  repoId: string;
+  capability: string;
+  lane: CheckLane;
+}) {
+  return (
+    <li className="flex flex-wrap items-baseline gap-2 px-3 py-2">
+      {lane.state ? <Pill tone={laneTone(lane.state)}>{lane.state}</Pill> : null}
+      <span className="text-ink">{laneLabel(lane)}</span>
+      <span className="text-ink-3">
+        {lane.runs} run{lane.runs === 1 ? "" : "s"}
+        {lane.last_run_at ? (
+          <>
+            {" "}
+            · last <RelativeTime value={lane.last_run_at} />
+          </>
+        ) : null}
+      </span>
+      {lane.state_reason ? (
+        <span className="basis-full text-[11px] text-ink-2">{lane.state_reason}</span>
+      ) : null}
+      {lane.reported_since_retired ? (
+        <span className="basis-full text-[11px] text-warn">
+          It has reported since it was retired: restore it if it is in use.
+        </span>
+      ) : null}
+      <span className="ml-auto">
+        <LaneControl repoId={repoId} capability={capability} lane={lane} />
+      </span>
+    </li>
   );
 }
 

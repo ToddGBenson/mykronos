@@ -24,7 +24,47 @@ export type CheckLane = {
   job: string | null;
   runs: number;
   last_run_at: string | null;
+  /**
+   * current | stale | retired (TheHub #60816). A lane that stopped reads
+   * stale or retired, never current. Optional so an older backend still types.
+   */
+  state?: LaneState;
+  /** config | operator (retired), age | never_finished (stale), "" (current). */
+  state_basis?: string;
+  state_reason?: string;
+  retired_by?: string | null;
+  retired_at?: string | null;
+  reported_since_retired?: boolean;
 };
+
+export type LaneState = "current" | "stale" | "retired";
+
+/** Green only when current: a stale lane is amber, a retired one grey. */
+export function laneTone(state: string | undefined): "pass" | "warn" | "muted" {
+  if (state === "current") return "pass";
+  if (state === "retired") return "muted";
+  return "warn";
+}
+
+/** Which operator control a lane offers: retire, restore, or none. */
+export function laneControl(lane: Pick<CheckLane, "state" | "state_basis">): "retire" | "restore" | null {
+  if (lane.state === "retired") return lane.state_basis === "operator" ? "restore" : null;
+  return "retire";
+}
+
+/** The body the retire/restore routes take for this lane. */
+export function laneActionBody(
+  lane: Pick<CheckLane, "tool_name" | "job">,
+  reason: string,
+): { ok: true; body: { tool_name: string | null; job: string | null; reason: string } } | {
+  ok: false;
+  error: string;
+} {
+  const text = reason.trim();
+  if (!text) return { ok: false, error: "Say why: the reason is audited with the change." };
+  if (text.length > 2000) return { ok: false, error: "Keep the reason under 2000 characters." };
+  return { ok: true, body: { tool_name: lane.tool_name, job: lane.job, reason: text } };
+}
 
 /** The run-history page for one check, optionally narrowed and paged. */
 export function checkHref(repoId: string, capability: string, filter: HistoryFilter = {}): string {
