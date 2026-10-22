@@ -47,6 +47,7 @@ from mykronos.api.executive import router as executive_router
 from mykronos.api.exposure import router as exposure_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
+from mykronos.api.lanes import router as lanes_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.po_console import router as po_console_router
@@ -1002,6 +1003,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(risk_acceptances_router)
     app.include_router(repo_risk_acceptances_router)
     app.include_router(repo_read_router)
+    app.include_router(lanes_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
     # A body with NaN in a constrained float is a 422, not a 500.

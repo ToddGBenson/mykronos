@@ -1357,7 +1357,9 @@ export interface paths {
          *
          *     Paged by `limit` and `offset`; `has_more` says whether another page
          *     exists. With a `capability`, `lanes` lists the tools and jobs that report
-         *     under it, so a page can offer to narrow by them.
+         *     under it, so a page can offer to narrow by them - each with its `state`
+         *     (current | stale | retired) and why (TheHub #60816), so a lane that
+         *     stopped never reads as current beside one that did not.
          */
         get: operations["repo_scan_runs_api_dashboard_repos__repo_id__scan_runs_get"];
         put?: never;
@@ -4342,6 +4344,46 @@ export interface paths {
         put?: never;
         /** Revoke */
         post: operations["revoke_api_repo_read_tokens__token_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/checks/{capability}/lanes/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire Lane
+         * @description A person says a lane is deliberately unused: it reads retired, not stale.
+         */
+        post: operations["retire_lane_api_dashboard_repos__repo_id__checks__capability__lanes_retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/checks/{capability}/lanes/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Lane
+         * @description Withdraw an operator's retirement: the lane is expected to report again.
+         */
+        post: operations["restore_lane_api_dashboard_repos__repo_id__checks__capability__lanes_restore_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7535,6 +7577,15 @@ export interface components {
             /** Detail */
             detail: string;
         };
+        /** LaneIn */
+        LaneIn: {
+            /** Tool Name */
+            tool_name?: string | null;
+            /** Job */
+            job?: string | null;
+            /** Reason */
+            reason: string;
+        };
         /**
          * LibrariesOut
          * @description The estate's dependency surface, for reducing it.
@@ -9886,6 +9937,32 @@ export interface components {
         RetireRequest: {
             /** Note */
             note?: string | null;
+        };
+        /** RetiredLaneOut */
+        RetiredLaneOut: {
+            /** Id */
+            id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Tool Name */
+            tool_name: string | null;
+            /** Job */
+            job: string | null;
+            /** Reason */
+            reason: string;
+            /** Retired By */
+            retired_by: string;
+            /**
+             * Retired At
+             * Format: date-time
+             */
+            retired_at: string;
+            /** Restored At */
+            restored_at: string | null;
+            /** Restored By */
+            restored_by: string | null;
         };
         /** RetroNote */
         RetroNote: {
@@ -17746,6 +17823,78 @@ export interface operations {
                     "application/json": {
                         [key: string]: boolean;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_lane_api_dashboard_repos__repo_id__checks__capability__lanes_retire_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaneIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetiredLaneOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_lane_api_dashboard_repos__repo_id__checks__capability__lanes_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+                capability: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaneIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetiredLaneOut"];
                 };
             };
             /** @description Validation Error */

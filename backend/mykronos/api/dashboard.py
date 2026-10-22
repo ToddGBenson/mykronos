@@ -56,6 +56,7 @@ from mykronos.api.ingest import (
     installation_client_for_repo,
     profile_owner_for_repo,
 )
+from mykronos.api.lanes import annotate as annotate_lanes
 from mykronos.approvals.engine import ApprovalError
 from mykronos.approvals.engine import create_request as create_approval_request
 from mykronos.approvals.policy import cached_policy as cached_approval_policy
@@ -4623,7 +4624,9 @@ async def repo_scan_runs(
 
     Paged by `limit` and `offset`; `has_more` says whether another page
     exists. With a `capability`, `lanes` lists the tools and jobs that report
-    under it, so a page can offer to narrow by them.
+    under it, so a page can offer to narrow by them - each with its `state`
+    (current | stale | retired) and why (TheHub #60816), so a lane that
+    stopped never reads as current beside one that did not.
     """
     repo_full_name = _resolve_repo(request, repo_id)
     report = _scan_run_report(request)
@@ -4639,7 +4642,16 @@ async def repo_scan_runs(
         "offset": offset,
         "has_more": len(runs) > limit,
         "runs": runs[:limit],
-        "lanes": report.lanes(repo_full_name, capability) if capability else [],
+        "lanes": (
+            annotate_lanes(
+                request.app.state.db,
+                repo_full_name,
+                capability,
+                report.lanes(repo_full_name, capability),
+            )
+            if capability
+            else []
+        ),
     }
 
 

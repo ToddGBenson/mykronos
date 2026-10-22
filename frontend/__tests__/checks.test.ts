@@ -9,7 +9,10 @@ import {
   asUtc,
   checkHref,
   exactTime,
+  laneActionBody,
+  laneControl,
   laneLabel,
+  laneTone,
   lanesToOffer,
   parseHistoryFilter,
   percent,
@@ -134,5 +137,28 @@ describe("percent", () => {
     expect(percent(null)).toBeNull();
     expect(percent(0)).toBe("0%");
     expect(percent(0.8125)).toBe("81.3%");
+  });
+});
+
+describe("lane state (TheHub #60816)", () => {
+  it("is green only when current", () => {
+    expect(laneTone("current")).toBe("pass");
+    expect(laneTone("stale")).toBe("warn");
+    expect(laneTone("retired")).toBe("muted");
+    expect(laneTone(undefined)).toBe("warn");
+  });
+  it("offers retire on a live lane and restore only on an operator's retirement", () => {
+    expect(laneControl({ state: "current", state_basis: "" })).toBe("retire");
+    expect(laneControl({ state: "stale", state_basis: "age" })).toBe("retire");
+    expect(laneControl({ state: "retired", state_basis: "operator" })).toBe("restore");
+    // Retired because the configuration dropped it: the fix is the config.
+    expect(laneControl({ state: "retired", state_basis: "config" })).toBeNull();
+  });
+  it("needs a reason, and names the lane by tool and job", () => {
+    expect(laneActionBody({ tool_name: "zap", job: "dast-demo" }, "  ").ok).toBe(false);
+    expect(laneActionBody({ tool_name: "zap", job: "dast-demo" }, " gone ")).toEqual({
+      ok: true,
+      body: { tool_name: "zap", job: "dast-demo", reason: "gone" },
+    });
   });
 });

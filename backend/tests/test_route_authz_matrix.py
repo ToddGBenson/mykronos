@@ -139,6 +139,8 @@ ROUTES: dict[str, str] = {
     "PATCH /api/dashboard/rule-vectors/{rule_vector_id}": PRINCIPAL,
     "POST /api/dashboard/rule-vectors/{rule_vector_id}/confirm": HUMAN,
     "POST /api/dashboard/rule-vectors/{rule_vector_id}/retire": PRINCIPAL,
+    "POST /api/dashboard/repos/{repo_id}/checks/{capability}/lanes/retire": HUMAN,
+    "POST /api/dashboard/repos/{repo_id}/checks/{capability}/lanes/restore": HUMAN,
     "POST /api/dashboard/repos/{repo_id}/surfaces": PRINCIPAL,
     "DELETE /api/dashboard/repos/{repo_id}/surfaces/{surface_id}": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/controls": PRINCIPAL,

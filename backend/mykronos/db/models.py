@@ -558,6 +558,33 @@ class RiskAcceptance(Base):
     closed_reason: Mapped[str | None] = mapped_column(String(255), default=None)
 
 
+class RetiredLane(Base):
+    """An operator's record that a scan lane is deliberately unused (TheHub #60816).
+
+    A lane is a `(tool_name, job)` pair under one capability of one
+    repository. One that the configuration no longer lists is inferred
+    retired (`lane_status`); this is for one still configured that somebody
+    has stopped using on purpose, so it reads retired rather than stale.
+    Restoring sets `restored_at` rather than deleting the row: the audit log
+    says who did each, and the row says what held when.
+    """
+
+    __tablename__ = "retired_lanes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    capability: Mapped[str] = mapped_column(String(32), default="")
+    #: Empty, never null, when the lane has no tool or no job (a run from
+    #: before #449 has no job), so the pair matches like a key.
+    tool_name: Mapped[str] = mapped_column(String(100), default="")
+    job: Mapped[str] = mapped_column(String(200), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    retired_by: Mapped[str] = mapped_column(String(255), default="")
+    retired_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    restored_by: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
 class ApprovalStamp(Base):
     """One thing the platform posted outside itself about a request (spec 34 §1.2).
 
