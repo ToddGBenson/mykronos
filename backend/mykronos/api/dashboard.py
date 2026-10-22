@@ -48,6 +48,7 @@ from mykronos import (
     test_estate,
     worklist,
 )
+from mykronos import jobs as jobs_module
 from mykronos.adapters.registry import default_tool
 from mykronos.adminauth import PrincipalDep
 from mykronos.analysers import read_languages
@@ -6758,6 +6759,9 @@ class DependencyHealthOut(BaseModel):
     name: str
     reachable: bool
     detail: str
+    #: False when this deployment does not have the dependency at all. Not a
+    #: failure, and it does not make the page `degraded` (B-014).
+    configured: bool = True
 
 
 class PlatformHealthOut(BaseModel):
@@ -6809,9 +6813,29 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     dependencies: list[platform_health.DependencyHealth] = []
     try:
         for name, result in await jobs_self_check(settings):
+            if name == "ingestion":
+                # Judged by what it serves, not by a probe this network cannot
+                # make (TheHub #60905): the lake is read only when the probe
+                # failed, so a healthy check costs nothing extra.
+                hours = (
+                    None
+                    if result.reachable
+                    else await asyncio.to_thread(
+                        jobs_module.hours_since_an_actions_upload, settings.datalake_dir
+                    )
+                )
+                dependency = platform_health.assess_ingestion(
+                    result, hours_since_actions_upload=hours
+                )
+                dependency.detail = scrub(dependency.detail)
+                dependencies.append(dependency)
+                continue
             dependencies.append(
                 platform_health.DependencyHealth(
-                    name=name, reachable=result.reachable, detail=scrub(result.detail)
+                    name=name,
+                    reachable=result.reachable,
+                    detail=scrub(result.detail),
+                    configured=result.configured,
                 )
             )
     except Exception:  # noqa: BLE001 — job health still stands

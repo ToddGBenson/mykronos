@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from mykronos import platform_health
+import pytest
+
+from mykronos import jobs, platform_health
 
 NOW = datetime(2026, 9, 3, 12, 0, 0)
 HOURLY = 3_600
@@ -210,3 +212,114 @@ class TestSkipped:
         row.skipped_reason = "old"  # type: ignore[attr-defined]
 
         assert platform_health.assess_job(row, now=NOW).status == "failing"
+
+
+class TestIngestionIsJudgedByWhatItServes:
+    """MyKronos Health read "Needs attention" on every load (TheHub #60905).
+
+    The ingestion row asked the public URL from inside the backend container,
+    and a host inside this network cannot reach its own public hostname
+    (hairpin NAT, measured 2026-09-12). The probe failed on every load while
+    GitHub-hosted runners - which can only reach this platform through that
+    URL - kept uploading. A permanent red is a page nobody reads.
+
+    What ingestion serves is uploads. A run carrying a workflow run id came
+    from a GitHub runner, through the public URL, so one inside the grace
+    window is the evidence the in-network probe cannot give.
+    """
+
+    def _unreachable(self) -> jobs.ReachabilityResult:
+        return jobs.ReachabilityResult(
+            url="https://mykronos.example/healthz",
+            detail="https://mykronos.example/healthz could not be reached: timed out",
+        )
+
+    def test_a_reachable_probe_is_reachable(self) -> None:
+        result = jobs.ReachabilityResult(url="https://x/healthz", reachable=True)
+
+        dep = platform_health.assess_ingestion(result, hours_since_actions_upload=None)
+
+        assert dep.reachable
+        assert dep.name == "ingestion"
+
+    def test_a_recent_upload_outweighs_the_in_network_probe(self) -> None:
+        dep = platform_health.assess_ingestion(
+            self._unreachable(), hours_since_actions_upload=1.5
+        )
+
+        assert dep.reachable, "uploads are landing through the public URL"
+        assert "hairpin" in dep.detail
+        assert "1.5h" in dep.detail
+        assert not platform_health.PlatformHealth(dependencies=[dep]).degraded
+
+    def test_no_recent_upload_is_a_real_failure(self) -> None:
+        dep = platform_health.assess_ingestion(
+            self._unreachable(),
+            hours_since_actions_upload=jobs.ACTIONS_UPLOAD_GRACE_HOURS + 1,
+        )
+
+        assert not dep.reachable
+        assert "No GitHub Actions upload for" in dep.detail
+        assert platform_health.PlatformHealth(dependencies=[dep]).degraded
+
+    def test_no_evidence_is_not_reassurance(self) -> None:
+        dep = platform_health.assess_ingestion(
+            self._unreachable(), hours_since_actions_upload=None
+        )
+
+        assert not dep.reachable
+        assert "nothing corroborates" in dep.detail
+
+
+class TestAnUnconfiguredDependencyIsNotAFailure:
+    """B-014's rule, which `self-check` follows and this page did not: a
+    dependency the deployment does not have is not one that failed."""
+
+    def test_it_does_not_degrade(self) -> None:
+        health = platform_health.PlatformHealth(
+            dependencies=[
+                platform_health.DependencyHealth(
+                    name="vault", reachable=False, detail="not set", configured=False
+                )
+            ]
+        )
+
+        assert not health.degraded
+
+    @pytest.mark.asyncio
+    async def test_concourse_with_no_url_is_not_configured(self) -> None:
+        result = await jobs.check_concourse("")
+
+        assert not result.configured
+        assert not result.reachable
+
+
+class TestThePage:
+    def test_a_blind_probe_with_uploads_landing_is_healthy(
+        self, client, admin_auth, monkeypatch
+    ) -> None:
+        from mykronos.api import dashboard
+
+        async def checks(_settings: object) -> list[tuple[str, jobs.ReachabilityResult]]:
+            return [
+                (
+                    "ingestion",
+                    jobs.ReachabilityResult(url="https://x/healthz", detail="timed out"),
+                ),
+                (
+                    "vault",
+                    jobs.ReachabilityResult(detail="no vault", configured=False),
+                ),
+                ("concourse", jobs.ReachabilityResult(url="c", reachable=True)),
+            ]
+
+        monkeypatch.setattr(dashboard, "jobs_self_check", checks)
+        monkeypatch.setattr(jobs, "hours_since_an_actions_upload", lambda _dir: 0.5)
+
+        body = client.get("/api/dashboard/platform-health", headers=admin_auth).json()
+
+        deps = {d["name"]: d for d in body["dependencies"]}
+        assert deps["ingestion"]["reachable"] is True
+        assert deps["vault"]["configured"] is False
+        assert not any(j["status"] in ("failing", "late") for j in body["jobs"])
+        assert body["degraded"] is False

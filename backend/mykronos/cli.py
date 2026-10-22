@@ -558,42 +558,13 @@ def ingestion_verdict(hours_since_actions_upload: float | None) -> list[str]:
 
 
 def _hours_since_an_actions_upload(settings: object) -> float | None:
-    """Hours since a scan run arrived that could only have come from GitHub.
+    """`jobs.hours_since_an_actions_upload` over this deployment's lake. One
+    copy, shared with MyKronos Health (TheHub #60905)."""
+    from mykronos import jobs as jobs_module
 
-    A run carrying `github_workflow_run_id` was uploaded by a GitHub-hosted
-    runner, and a GitHub runner cannot reach this LAN. So such a run is
-    positive evidence that the public ingestion URL was working when it
-    landed — which is exactly the claim `self-check` cannot make from inside
-    the network.
-
-    None when the lake cannot be read or has no such run. The caller treats
-    that as "no evidence either way" and keeps the stronger wording: an
-    unreadable lake is not permission to reassure anybody.
-    """
-    try:
-        from mykronos.lake.catalog import Catalog
-
-        catalog = Catalog(settings.datalake_dir)  # type: ignore[attr-defined]
-        rows = catalog.query(
-            """
-            SELECT max(started_at) FROM scan_runs
-            WHERE github_workflow_run_id IS NOT NULL
-              AND github_workflow_run_id <> ''
-            """
-        )
-    except Exception:  # noqa: BLE001 - self-check must not fail on its own diagnostics
-        return None
-    if not rows or rows[0][0] is None:
-        return None
-    from mykronos.schemas import utcnow
-
-    # `utcnow()` here is naive, and the lake hands back naive UTC too --
-    # but not always, so drop any tzinfo rather than adding one. Adding
-    # it raises "can't subtract offset-naive and offset-aware", which is
-    # what the first version of this did.
-    latest = rows[0][0].replace(tzinfo=None)
-
-    return float((utcnow() - latest).total_seconds()) / 3600
+    return jobs_module.hours_since_an_actions_upload(
+        settings.datalake_dir  # type: ignore[attr-defined]
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
