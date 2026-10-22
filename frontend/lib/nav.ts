@@ -61,7 +61,12 @@ export const NAV: {
       // watches. It reports on four repositories and had no page reporting on
       // itself; a job that stopped here is invisible in exactly the way a
       // stopped scan lane is, and with the same consequence.
-      { label: "Platform health", href: "/platform-health" },
+      //
+      // Named for the product rather than "Platform health" (TheHub #60883):
+      // the estate it watches has platforms of its own, and the label should
+      // say whose health this is. The route keeps its old name so bookmarks
+      // and runbooks still land.
+      { label: "MyKronos Health", href: "/platform-health" },
     ],
   },
 ];

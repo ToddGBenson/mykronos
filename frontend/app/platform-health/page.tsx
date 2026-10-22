@@ -98,14 +98,14 @@ function DependencyRow({ dependency }: { dependency: Dependency }) {
 export default async function PlatformHealthPage() {
   const result = await getPlatformHealth();
   if (!result.ok) {
-    return <ErrorPanel title="Platform health unavailable" detail={result.error} />;
+    return <ErrorPanel title="MyKronos Health unavailable" detail={result.error} />;
   }
   const { degraded, jobs, dependencies, note } = result.data;
 
   return (
     <div className="flex flex-col gap-4">
       <header className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-lg font-bold tracking-tight">Platform health</h1>
+        <h1 className="text-lg font-bold tracking-tight">MyKronos Health</h1>
         <Pill tone={degraded ? "critical" : "pass"}>
           {degraded ? "Needs attention" : "Healthy"}
         </Pill>

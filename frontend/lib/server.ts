@@ -1007,7 +1007,7 @@ export async function getPlatformHealth(): Promise<Result<PlatformHealthView>> {
       cache: "no-store",
     });
     if (!data) {
-      return { ok: false, error: describe(response, "Could not read platform health") };
+      return { ok: false, error: describe(response, "Could not read MyKronos Health") };
     }
     return { ok: true, data };
   } catch (error) {
