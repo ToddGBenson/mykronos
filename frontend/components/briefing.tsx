@@ -16,9 +16,11 @@ import Link from "next/link";
 import { PrintButton } from "@/components/print-button";
 import { Pill } from "@/components/primitives";
 import {
+  SIGNAL_WORD,
   WORK_LABEL,
   briefingHref,
   groupByWork,
+  productSignals,
   refLink,
   repoHref,
   statusMeta,
@@ -27,6 +29,7 @@ import {
   type BriefingProduct,
   type BriefingSection,
   type DailyBriefing,
+  type ProductSignal,
 } from "@/lib/briefing";
 
 function Stamp({ value }: { value: string | null }) {
@@ -78,6 +81,33 @@ function LineRow({
   );
 }
 
+function SignalTable({ signals }: { signals: ProductSignal[] }) {
+  // Every listed signal, measured or not: a missing row would read as fine.
+  return (
+    <ul className="mt-2" data-signals>
+      {signals.map((signal) => (
+        <li
+          key={signal.key}
+          className="border-t border-rule-soft px-3 py-2"
+          data-signal={signal.key}
+          data-signal-status={signal.status}
+        >
+          <p className="flex flex-wrap items-baseline gap-x-3 text-[13px] text-ink">
+            <span className="font-bold">{signal.label}</span>
+            <span className="font-mono text-[11px] text-ink-3">{SIGNAL_WORD[signal.status]}</span>
+          </p>
+          <p className="mt-0.5 max-w-prose text-[12px] text-ink-2">
+            {signal.status === "measured" ? signal.value : signal.reason}
+          </p>
+          {signal.source ? (
+            <p className="mt-1 font-mono text-[11px] text-ink-3">{signal.source}</p>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function BriefingSectionCard({
   section,
   repoIds,
@@ -87,6 +117,7 @@ export function BriefingSectionCard({
 }) {
   const meta = statusMeta(section.status);
   const groups = groupByWork(section.lines);
+  const signals = productSignals(section);
   return (
     <section
       className="ticks border border-rule bg-paper-2"
@@ -115,6 +146,7 @@ export function BriefingSectionCard({
           {section.reason}
         </p>
       ) : null}
+      {signals.length > 0 ? <SignalTable signals={signals} /> : null}
       {groups.length > 0 ? (
         groups.map((group) => (
           <div key={group.work} className="mt-2" data-group={group.work}>

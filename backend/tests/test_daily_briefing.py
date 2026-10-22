@@ -30,7 +30,13 @@ OVERALL = [
     "sprint_health",
     "suggested_focus",
 ]
-PRODUCT = ["deploy_and_health", "findings_delta", "capability_lanes", "next_sprint_candidates"]
+PRODUCT = [
+    "deploy_and_health",
+    "findings_delta",
+    "capability_lanes",
+    "next_sprint_candidates",
+    "product_signals",
+]
 
 
 def _everything_read(**overrides: Any) -> briefing_sources.OperationalInputs:
