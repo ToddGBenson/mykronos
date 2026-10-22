@@ -48,6 +48,12 @@ MUST_BE_PASSABLE = (
     "MYKRONOS_WEEKLY_DIGEST_INTERVAL_SECONDS",
     "MYKRONOS_CONCOURSE_API_TOKEN",
     "MYKRONOS_GITHUB_BOT_LOGINS",
+    # TheHub #60864: the briefing DM's target and link. Unpassed, the job
+    # would read them empty in the container and skip every morning.
+    "MYKRONOS_BRIEFING_DM_CHANNEL",
+    "MYKRONOS_BRIEFING_DM_TIME",
+    "MYKRONOS_BRIEFING_DM_TIMEZONE",
+    "MYKRONOS_DASHBOARD_URL",
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"

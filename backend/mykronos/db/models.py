@@ -1343,6 +1343,12 @@ class JobRun(Base):
     #: last success, nine days old, read as "late" on every briefing - an
     #: alarm about a decision, which is how alarms stop being read.
     scheduled: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: Why the latest due run did nothing, when it was skipped rather than run
+    #: (`jobs.JobSkipped`): the briefing DM with no Slack configured for it
+    #: (TheHub #60864). Empty after any run that was not skipped. Its own
+    #: column because a skip is neither of the other two outcomes: nothing
+    #: failed, and nothing was done.
+    skipped_reason: Mapped[str] = mapped_column(Text, default="")
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<JobRun {self.name} failures={self.consecutive_failures}>"

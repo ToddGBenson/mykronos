@@ -886,6 +886,49 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- The morning briefing DM (TheHub #60864) -----------------------
+
+    briefing_dm_channel: str = Field(
+        default="",
+        description=(
+            "Who the 07:00 briefing DM goes to: a Slack member id (`U...`), "
+            "which `chat.postMessage` delivers as a direct message from the "
+            "bot, or a channel id. Posted with `slack_bot_token`; an incoming "
+            "webhook cannot address a person. Empty, the `briefing-dm` job "
+            "records `skipped` with this name as the reason - never a quiet "
+            "success."
+        ),
+    )
+
+    briefing_dm_time: str = Field(
+        default="07:00",
+        pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
+        description=(
+            "Local time (HH:MM, 24-hour, in `briefing_dm_timezone`) from which "
+            "the day's briefing DM is due. Sent once per local day: a "
+            "deployment that was down at 07:00 sends when it comes back."
+        ),
+    )
+
+    briefing_dm_timezone: str = Field(
+        default="America/Phoenix",
+        description=(
+            "IANA zone `briefing_dm_time` is read in. The estate's own: the "
+            "Concourse scan windows use America/Phoenix. An unknown zone fails "
+            "the job, visibly, rather than silently sending at a UTC 07:00."
+        ),
+    )
+
+    dashboard_url: str = Field(
+        default="",
+        description=(
+            "Where a browser reaches this dashboard, e.g. `https://mykronos."
+            "example`. The briefing DM links to `<dashboard_url>/briefing`; a "
+            "DM with no link to the page it summarises is skipped rather than "
+            "sent."
+        ),
+    )
+
     @property
     def buffer_dir(self) -> Path:
         return self.datalake_dir / "_buffer"

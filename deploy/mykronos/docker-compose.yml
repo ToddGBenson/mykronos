@@ -106,6 +106,13 @@ services:
       MYKRONOS_SLACK_BOT_TOKEN: ${MYKRONOS_SLACK_BOT_TOKEN:-}
       MYKRONOS_SLACK_CHANNEL: ${MYKRONOS_SLACK_CHANNEL:-}
       MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY: ${MYKRONOS_SLACK_NOTIFY_MIN_SEVERITY:-high}
+      # The 07:00 briefing DM (TheHub #60864). Posted with the bot token above
+      # to a person, not the alert channel; with the target or the dashboard
+      # URL empty the `briefing-dm` job records `skipped` and names which.
+      MYKRONOS_BRIEFING_DM_CHANNEL: ${MYKRONOS_BRIEFING_DM_CHANNEL:-}
+      MYKRONOS_BRIEFING_DM_TIME: ${MYKRONOS_BRIEFING_DM_TIME:-07:00}
+      MYKRONOS_BRIEFING_DM_TIMEZONE: ${MYKRONOS_BRIEFING_DM_TIMEZONE:-America/Phoenix}
+      MYKRONOS_DASHBOARD_URL: ${MYKRONOS_DASHBOARD_URL:-}
 
       # #60754: the Slack lesson a third time. docs/OPERATOR-TASKS.md says to
       # set MYKRONOS_DIGEST_ENABLED=true in backend/.env, and none of the lines

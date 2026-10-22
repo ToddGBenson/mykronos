@@ -16,6 +16,7 @@ const STATUS: Record<
   late: { tone: "warn", word: "Late" },
   never_ran: { tone: "muted", word: "Never ran" },
   unknown: { tone: "muted", word: "Unknown" },
+  skipped: { tone: "warn", word: "Skipped" },
 };
 
 /**
@@ -48,6 +49,8 @@ const CONSEQUENCE: Record<string, string> = {
     "Insider-risk rows outlive their retention period, which spec 06 §9 makes normative.",
   digest: "Nobody is told anything on a schedule.",
   routing: "Findings are never routed to a tracker.",
+  "briefing-dm":
+    "The 07:00 briefing DM does not arrive. The /briefing page still answers when asked.",
 };
 
 function JobRow({ job }: { job: Job }) {
