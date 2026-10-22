@@ -36,6 +36,7 @@ clear last week".
 | Claim, snooze, and batch actions (§3) | **Built, API only**: `POST`/`DELETE /api/dashboard/triage/{finding_id}/claim` and `/snooze`, `POST /api/dashboard/triage/batch`, and the queue's `claimed_by` and `include_snoozed` filters. The Triage page has no controls for them and shows no holder |
 | Weekly per-owner digest (§4) | **Built** — off unless `digest_enabled` |
 | Throughput and burn-down (§5) | **Built, API only**: `GET /api/dashboard/triage/throughput`. No panel renders it above the queue |
+| Clusters: one decision for a group (TheHub #60887, D-168) | **Built**: `GET /api/dashboard/triage/clusters`, `POST /api/dashboard/triage/clusters/{cluster_id}/disposition`, and a "group by cluster" toggle on the Triage page |
 
 ## 1. Ranking
 

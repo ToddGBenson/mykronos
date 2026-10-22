@@ -2171,7 +2171,16 @@ class DashboardQueries:
             "due_at",
             "due_source",
             "owner",
+            # What the clusters (TheHub #60887) match on, beyond the row above:
+            # the enclosing symbol, the CWE set two scanners share, and the
+            # image a container finding was reported in.
+            "symbol",
+            "cwe_ids_json",
+            "image",
         ]
+        selected = {
+            "image": "json_extract_string(raw_finding_json, '$.image') AS image",
+        }
         # Same reasoning as open_findings() (spec 17 §3, #20): a KEV/EPSS filter
         # is applied in Python against a different database, so the SQL
         # fetch has to stay generous enough that LIMIT doesn't cut candidates
@@ -2187,7 +2196,8 @@ class DashboardQueries:
             else limit
         )
         rows = self.catalog.query(
-            f"SELECT {', '.join(columns)} FROM findings WHERE {clause} "
+            f"SELECT {', '.join(selected.get(c, c) for c in columns)} "
+            f"FROM findings WHERE {clause} "
             "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
             "WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, first_seen_at "
             "LIMIT ?",

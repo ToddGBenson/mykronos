@@ -308,6 +308,14 @@ def evidence_summary(duty: str, evidence: Any) -> str:
         residual = (data.get("residual") or {}).get("severity", "")
         return f"{residual} acceptance: {str(data.get('justification') or '')[:160]}".strip()
     if duty == "finding_disposition":
+        members = data.get("findings") or []
+        if members:
+            # A cluster's one request (TheHub #60887): say how many it closes.
+            first = members[0] if isinstance(members[0], dict) else {}
+            return (
+                f"cluster of {len(members)}: {first.get('title', 'finding')} -> "
+                f"{data.get('proposed_status', '')}"
+            ).strip(" ->")
         finding = data.get("finding") or {}
         return f"{finding.get('title', 'finding')} -> {data.get('status', '')}".strip(" ->")
     return str(data.get("title") or "")[:160]
