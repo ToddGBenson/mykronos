@@ -72,6 +72,9 @@ from mykronos.ci import (
     pipeline_name_for,
     reconcile,
 )
+from mykronos.ci import (
+    browser_url as ci_browser_url,
+)
 from mykronos.dashboard import (
     STRIDE_CATEGORIES,
     DashboardQueries,
@@ -1478,9 +1481,10 @@ async def portfolio(
         with_lanes(row.capability_states, lanes.get(row.repo_full_name))
 
     # The browser's Concourse, not this process's (see ConcourseClient): a
-    # link to http://concourse:8080 resolves nowhere from a laptop.
+    # link to http://concourse:8080 resolves nowhere from a laptop, and one
+    # to localhost only on the host (TheHub #60924).
     settings = request.app.state.settings
-    concourse = (settings.concourse_external_url or settings.concourse_url or "").rstrip("/")
+    concourse = ci_browser_url(settings.concourse_external_url, settings.concourse_url)
     team = settings.concourse_team
 
     def pipeline_url(repo_full_name: str) -> str | None:

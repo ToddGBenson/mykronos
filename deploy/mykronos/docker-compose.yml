@@ -86,7 +86,13 @@ services:
       # Vault -- which is the state this deployment comes back in after every
       # restart, and which took a day to notice on 2026-08-28 (B-014).
       MYKRONOS_VAULT_URL: ${MYKRONOS_VAULT_URL:-http://vault:8200}
-      MYKRONOS_CONCOURSE_EXTERNAL_URL: ${MYKRONOS_CONCOURSE_EXTERNAL_URL:-http://localhost:8080}
+      # The LAN or public URL a person opens Concourse at, for links. Empty by
+      # default (TheHub #60924): it used to be http://localhost:8080, so every
+      # link in the briefing and its DM opened only on this host. Concourse is
+      # published on 127.0.0.1 (deploy/concourse/docker-compose.yml), so until
+      # it is reachable elsewhere the honest link is none. A loopback value is
+      # ignored by the backend.
+      MYKRONOS_CONCOURSE_EXTERNAL_URL: ${MYKRONOS_CONCOURSE_EXTERNAL_URL:-}
       MYKRONOS_CONCOURSE_TEAM: ${MYKRONOS_CONCOURSE_TEAM:-main}
 
       # Alerting (spec 16 §12). Empty by default and nothing is posted -- but

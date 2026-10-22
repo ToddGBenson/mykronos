@@ -61,7 +61,7 @@ def concourse(monkeypatch):
 
     monkeypatch.setattr("mykronos.ci.httpx2.get", fake_get)
     client = ConcourseClient(
-        "http://concourse:8080", team="main", external_url="http://localhost:8080"
+        "http://concourse:8080", team="main", external_url="http://ci.lan:8080"
     )
     return client, routes
 
@@ -84,7 +84,7 @@ def concourse_writable(monkeypatch):
 
     monkeypatch.setattr("mykronos.ci.httpx2.post", fake_post)
     client = ConcourseClient(
-        "http://concourse:8080", team="main", external_url="http://localhost:8080"
+        "http://concourse:8080", team="main", external_url="http://ci.lan:8080"
     )
     return client, posts
 
@@ -122,11 +122,11 @@ class TestStatus:
         status = client.status_for("ToddGBenson/mykronos")
 
         assert status.pipeline == "mykronos"
-        assert status.url == "http://localhost:8080/teams/main/pipelines/mykronos"
+        assert status.url == "http://ci.lan:8080/teams/main/pipelines/mykronos"
         unit = status.jobs[0]
         assert unit.status == "succeeded"
         assert unit.build_url == (
-            "http://localhost:8080/teams/main/pipelines/mykronos/jobs/unit/builds/8"
+            "http://ci.lan:8080/teams/main/pipelines/mykronos/jobs/unit/builds/8"
         )
 
     def test_the_link_uses_the_browser_url_not_the_internal_one(self, concourse) -> None:
