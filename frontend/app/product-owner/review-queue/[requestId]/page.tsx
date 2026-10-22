@@ -1,6 +1,7 @@
 import { DecideApproval } from "@/components/po-approval-decide";
 import { Crumb, ErrorPanel, Pill, Section } from "@/components/primitives";
 import { getReviewPacket } from "@/lib/po-console";
+import { poTabHref } from "@/lib/po-tabs";
 import { reviewerStanding } from "@/lib/review-queue";
 
 export const dynamic = "force-dynamic";
@@ -33,7 +34,7 @@ export default async function ReviewPacketPage({
   const checks = (packet.reviewer?.checks ?? []) as Check[];
   return (
     <div className="flex flex-col gap-4">
-      <Crumb href="/product-owner/review-queue">Review queue</Crumb>
+      <Crumb href={poTabHref("review")}>Review queue</Crumb>
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-bold tracking-tight">
           {packet.duty} · {packet.tier}
