@@ -1,136 +1,66 @@
 import Link from "next/link";
 
-import { EmptyState, ErrorPanel, Pill } from "@/components/primitives";
-import { getPoEstate, type PoEstate } from "@/lib/po-console";
+import { PoEstateTab } from "@/components/po-estate";
+import { PullRequestsTab } from "@/components/po-pull-requests";
+import { ReviewQueueTab } from "@/components/po-review-queue";
+import { ErrorPanel } from "@/components/primitives";
+import { PO_TABS, isPoTab, poTabHref } from "@/lib/po-tabs";
 
 export const dynamic = "force-dynamic";
 
 /**
- * The estate roll-up of the Product Owner tab (spec 35 §8.7, D-148).
+ * The Product Owner page (TheHub #60884): the estate roll-up, the review queue
+ * and the open pull requests, as three tabs of one page rather than three nav
+ * entries. Each tab is the page it replaced, unchanged; `/product-owner/review-queue`
+ * and `/pull-requests` redirect to their tab.
  *
- * One row per repository, and each row is that repository's own tab read,
- * so the two pages cannot disagree. A repository with no manifest is listed
- * as declaring no process. Leaving it out would answer "which repositories
- * have a process" with only the ones that do.
+ * The per-repository Product Owner tab is a different page and is untouched.
  */
+export default async function ProductOwnerPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string; pr?: string }>;
+}) {
+  const { tab = "estate", pr } = await searchParams;
 
-type Row = PoEstate["rows"][number];
-
-function processTone(row: Row): "pass" | "critical" | "warn" | "muted" {
-  if (row.manifest_state === "valid") return "pass";
-  if (row.manifest_state === "invalid") return "critical";
-  if (row.manifest_state === "unreadable") return "warn";
-  return "muted";
-}
-
-function cell(value: number | null | undefined): string {
-  return value === null || value === undefined ? "—" : String(value);
-}
-
-export default async function ProductOwnerEstatePage() {
-  const result = await getPoEstate();
-  if (!result.ok) {
-    return <ErrorPanel title="Product Owner estate unavailable" detail={result.error} />;
+  // As on the repository page (B-006): a wrong link that rendered Estate would
+  // look like a working one.
+  if (!isPoTab(tab)) {
+    return (
+      <ErrorPanel
+        title="No such tab"
+        detail={`'${tab}' is not a tab on this page. Valid ids: ${PO_TABS.map(
+          (entry) => entry.id,
+        ).join(", ")}.`}
+      />
+    );
   }
-  const { rows, totals } = result.data;
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-bold tracking-tight">Product Owner · estate</h1>
-        <p className="max-w-prose text-[12px] text-ink-2">
-          Every onboarded repository&rsquo;s declared process and sprint, read from its own{" "}
-          <span className="font-mono">.sdlc/process.yaml</span> and from TheHub. Each row is
-          that repository&rsquo;s Product Owner tab; open it for the detail. Decisions waiting
-          on you across all of them are in the{" "}
-          <Link href="/product-owner/review-queue" className="text-accent hover:underline">
-            review queue
+      <h1 className="text-xl font-bold tracking-tight">Product Owner</h1>
+      <nav className="flex flex-wrap border-b-2 border-ink-2" aria-label="Product Owner views">
+        {PO_TABS.map((entry) => (
+          <Link
+            key={entry.id}
+            href={poTabHref(entry.id)}
+            aria-current={tab === entry.id ? "page" : undefined}
+            className={`-mb-0.5 border-b-2 px-3 py-1.5 font-mono text-[12px] ${
+              tab === entry.id
+                ? "border-accent font-bold text-ink"
+                : "border-transparent text-ink-3 hover:text-accent"
+            }`}
+          >
+            {entry.label}
           </Link>
-          .
-        </p>
-      </div>
-      {rows.length === 0 ? (
-        <EmptyState title="No repositories" detail="No repository is onboarded and active." />
+        ))}
+      </nav>
+      {tab === "review" ? (
+        <ReviewQueueTab />
+      ) : tab === "pull-requests" ? (
+        <PullRequestsTab selectedNumber={pr} />
       ) : (
-        <div className="overflow-x-auto border border-rule bg-paper-2">
-          <table className="w-full border-collapse text-[12px]">
-            <thead>
-              <tr className="border-b border-rule text-left font-mono text-[11px] uppercase tracking-[0.08em] text-ink-3">
-                <th className="px-3 py-2">Repository</th>
-                <th className="px-3 py-2">Process</th>
-                <th className="px-3 py-2 text-right">Sprint done / committed</th>
-                <th className="px-3 py-2 text-right">Needs a human</th>
-                <th className="px-3 py-2">Risk decision</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.repo_id} className="border-b border-rule-soft">
-                  <td className="px-3 py-1.5">
-                    <Link href={row.link} className="font-mono text-ink hover:text-accent">
-                      {row.repo_full_name}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <Pill tone={processTone(row)} title={row.error ?? undefined}>
-                      {row.process}
-                    </Pill>
-                    {row.manifest_name ? (
-                      <span className="ml-2 font-mono text-[11px] text-ink-3">
-                        {row.manifest_name}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-mono tabular">
-                    {row.hub_connected ? (
-                      `${cell(row.sprint_done)} / ${cell(row.sprint_committed)}`
-                    ) : (
-                      <span className="text-ink-3" title={row.error ?? undefined}>
-                        TheHub not read
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-mono tabular">
-                    {cell(row.needs_human)}
-                  </td>
-                  <td className="px-3 py-1.5 font-mono text-[11px]">
-                    {row.oracle_recommendation ? (
-                      <span
-                        className={
-                          row.oracle_recommendation === "no_go" ? "text-critical" : "text-ink-2"
-                        }
-                      >
-                        {row.oracle_recommendation}
-                        {row.oracle_score !== null ? ` · ${row.oracle_score}` : ""}
-                      </span>
-                    ) : (
-                      <span className="text-ink-3">none recorded</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="font-mono text-[12px] font-bold text-ink">
-                <td className="px-3 py-2">{totals.repos} repositories</td>
-                <td className="px-3 py-2 text-[11px] font-normal text-ink-2">
-                  {totals.declared} declared · {totals.declares_no_process} declare no process
-                  {totals.invalid_or_unreadable
-                    ? ` · ${totals.invalid_or_unreadable} invalid or unreadable`
-                    : ""}
-                </td>
-                <td className="px-3 py-2 text-right tabular">
-                  {totals.sprint_done} / {totals.sprint_committed}
-                </td>
-                <td className="px-3 py-2 text-right tabular">{totals.needs_human}</td>
-                <td className="px-3 py-2 text-[11px] font-normal text-ink-3">
-                  {totals.rows_without_hub
-                    ? `${totals.rows_without_hub} row(s) without TheHub, not counted`
-                    : "sum of the rows"}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
+        <PoEstateTab />
       )}
     </div>
   );

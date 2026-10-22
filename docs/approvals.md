@@ -183,7 +183,8 @@ old way; the union merge covers them.
 
 ## The review queue in the dashboard
 
-`/product-owner/review-queue` (D-163) lists every pending request across the
+The Review queue tab of `/product-owner` (`?tab=review`, D-163; the old
+`/product-owner/review-queue` redirects there, TheHub #60884) lists every pending request across the
 estate, soonest expiry first, with the platform's summary of its evidence,
 the requester's claim labelled as a claim, and the platform reviewer's latest
 verdict as advice. Beneath them it lists approved pull requests that are

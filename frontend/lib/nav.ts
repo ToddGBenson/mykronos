@@ -47,16 +47,15 @@ export const NAV: {
       // estate view and the repository view are called the same thing.
       // `/remediation` redirects here (`lib/retired-routes.ts`).
       { label: "Remediate today", href: "/remediate" },
-      { label: "Pull requests", href: "/pull-requests" },
       { label: "Decisions", href: "/decisions" },
       { label: "Trends", href: "/trends" },
       { label: "Retros", href: "/retro" },
       // The work rather than the code (spec 35 §8.7): every repository's
-      // declared process and sprint, one row each, linking to its tab.
+      // declared process and sprint, one row each, linking to its tab. One
+      // entry (TheHub #60884): the review queue (D-163) and the open pull
+      // requests are its tabs, not nav items of their own, and their old
+      // paths redirect there (`lib/retired-routes.ts`).
       { label: "Product Owner", href: "/product-owner" },
-      // The operator's own question across that estate (D-163): which
-      // decisions are waiting on a person, and which approved PRs can merge.
-      { label: "Review queue", href: "/product-owner/review-queue" },
       // Last, and the only item about this platform rather than the estate it
       // watches. It reports on four repositories and had no page reporting on
       // itself; a job that stopped here is invisible in exactly the way a

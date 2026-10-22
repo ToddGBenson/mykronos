@@ -55,6 +55,29 @@ test("the product-owner console lists every seeded repository", async ({ page })
   }
 });
 
+test("product owner is one page: estate, review queue and pull requests as tabs", async ({
+  page,
+}) => {
+  // One nav entry, not Product Owner beside Review queue and Pull requests.
+  await page.goto("/");
+  const rail = page.getByRole("navigation", { name: "Sections" });
+  await expect(rail.getByRole("link", { name: "Product Owner" })).toHaveAttribute(
+    "href",
+    "/product-owner",
+  );
+  await expect(rail.getByRole("link", { name: "Review queue" })).toHaveCount(0);
+  await expect(rail.getByRole("link", { name: "Pull requests" })).toHaveCount(0);
+
+  // Old bookmarks land on their tab.
+  await page.goto("/product-owner/review-queue");
+  await expect(page).toHaveURL(/\/product-owner\?tab=review$/);
+  await expect(page.getByRole("heading", { name: "Review queue" })).toBeVisible();
+
+  await page.goto("/pull-requests");
+  await expect(page).toHaveURL(/\/product-owner\?tab=pull-requests$/);
+  await expect(page.getByRole("heading", { name: "Pull requests" })).toBeVisible();
+});
+
 test("remediation is one page: the worklist, then the library", async ({ page }) => {
   // One nav entry, not "Remediate today" beside "Remediation library".
   await page.goto("/");

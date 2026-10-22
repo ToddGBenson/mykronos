@@ -9,6 +9,10 @@ export const RETIRED_ROUTES: Readonly<Record<string, string>> = {
   // Its content — open Patchwork PRs grouped by fix, and fix efficacy — is now
   // the #library section of Remediate today.
   "/remediation": "/remediate#library",
+  // TheHub #60884: the review queue and the pull requests list were nav
+  // entries of their own beside Product Owner. They are its tabs now.
+  "/product-owner/review-queue": "/product-owner?tab=review",
+  "/pull-requests": "/product-owner?tab=pull-requests",
 };
 
 /** Where a retired path now lands. Throws for a path that was never retired. */
