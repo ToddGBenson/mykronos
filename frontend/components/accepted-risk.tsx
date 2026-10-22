@@ -109,6 +109,8 @@ export function CoveredFinding({
     effective_severity: string;
     status: string;
     package_name: string;
+    /** The host, for a network finding (TheHub #60813). */
+    asset?: string;
   };
 }) {
   if (finding.status === "missing") {
@@ -130,6 +132,7 @@ export function CoveredFinding({
       <span className="font-mono text-[12px] text-ink-3">
         {finding.rule_id}
         {finding.package_name ? ` · ${finding.package_name}` : ""}
+        {finding.asset ? ` · host ${finding.asset}` : ""}
         {finding.status && finding.status !== "accepted_risk" ? ` · ${finding.status}` : ""}
       </span>
     </span>

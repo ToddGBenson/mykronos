@@ -1289,6 +1289,36 @@ class NetassessRun(Base):
         return f"<NetassessRun {self.repo_full_name} {self.run_key}>"
 
 
+class IngestRefusal(Base):
+    """An upload turned away because its capability is not granted (TheHub #60813).
+
+    Lane health, kept so "refused" and "never sent" stop being the same
+    absence. `api.refusals` has announced a refusal since B-062 - once an hour,
+    to Slack - and kept nothing, so a page asking "has this lane ever
+    reported?" saw no scan run either way: the lane that ran, produced
+    findings and was turned away at the door read exactly like a lane that
+    never ran. personal-soc's network lanes are the case in hand: wired before
+    the `network` grant, they would be refused until somebody grants it.
+
+    One row per (repository, capability), updated in place: what a person
+    needs is that it is happening, since when, how often and most recently
+    when - not a row per request. Nothing here reaches a risk score.
+    """
+
+    __tablename__ = "ingest_refusals"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    capability: Mapped[str] = mapped_column(String(64), primary_key=True)
+    first_refused_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_refused_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    refusals: Mapped[int] = mapped_column(Integer, default=0)
+    #: The refusal as the uploader read it, with the grants held at the time.
+    detail: Mapped[str] = mapped_column(Text, default="")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<IngestRefusal {self.repo_full_name} {self.capability} x{self.refusals}>"
+
+
 class ControlObservation(Base):
     """One machine-collected fact about whether a control holds (TheHub #60826).
 

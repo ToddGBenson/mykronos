@@ -5031,6 +5031,17 @@ export interface components {
              * @default false
              */
             last_run_failed: boolean;
+            /**
+             * Last Refused At
+             * @description The last upload of this capability turned away because it is not granted (TheHub #60813). Null: never refused.
+             */
+            last_refused_at?: string | null;
+            /**
+             * Refused
+             * @description Refused more recently than any scan was accepted: a lane is running and being turned away at the door. Told apart from 'never sent', which leaves the same absence of scan runs behind.
+             * @default false
+             */
+            refused: boolean;
         };
         /** CapabilityUpdate */
         CapabilityUpdate: {
@@ -5881,6 +5892,11 @@ export interface components {
             capability: string;
             /** Package Name */
             package_name: string;
+            /**
+             * Asset
+             * @default
+             */
+            asset: string;
             /** Severity */
             severity: string;
             /** Effective Severity */
@@ -6990,6 +7006,11 @@ export interface components {
             package_version?: string | null;
             /** Version Basis */
             version_basis?: string | null;
+            /**
+             * Asset
+             * @description The host, for a network finding (`address:port`); null otherwise.
+             */
+            asset?: string | null;
             /** First Seen At */
             first_seen_at?: string | null;
             /** @description The scanner's severity shifted by the bands the stored environmental score moved (TheHub #60828). Null when no score is stored: the finding is not rescorable, and the scanner's word in its place would claim a re-reading nobody did. */
@@ -7040,6 +7061,18 @@ export interface components {
             package_version?: string | null;
             /** Version Basis */
             version_basis?: string | null;
+            /**
+             * Address
+             * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.
+             */
+            address?: string | null;
+            /** Port */
+            port?: number | null;
+            /**
+             * Asset
+             * @description `address` and `port` as one string (`192.168.0.5:445`), the host a network finding is about. Network lanes file against the repository that scanned (TheHub #60813, option A), so this - not the repository - says which machine. Null for findings with a file or package.
+             */
+            asset?: string | null;
             /** Status */
             status: string;
             /** Owner */
@@ -11473,6 +11506,18 @@ export interface components {
             package_version?: string | null;
             /** Version Basis */
             version_basis?: string | null;
+            /**
+             * Address
+             * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.
+             */
+            address?: string | null;
+            /** Port */
+            port?: number | null;
+            /**
+             * Asset
+             * @description `address` and `port` as one string (`192.168.0.5:445`), the host a network finding is about. Network lanes file against the repository that scanned (TheHub #60813, option A), so this - not the repository - says which machine. Null for findings with a file or package.
+             */
+            asset?: string | null;
             /**
              * Triage
              * @description What the classifier concluded about this row, and why. Carried on every row rather than only when filtered, so a queue can show it without a second request (B-019).

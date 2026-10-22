@@ -39,6 +39,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-168 — A cluster is the unit of a triage decision, and its rules are deterministic](decisions/D-168-a-cluster-is-the-unit-of-a-triage-decision.md)
 - [D-169 — Deterministic auto-triage applies on recorded evidence, with an audit row and a one-click undo](decisions/D-169-deterministic-auto-triage-applies-with-evidence-audit-and-undo.md)
 - [D-170 — MyKronos files ranked next-sprint candidates to TheHub's backlog, and nowhere else](decisions/D-170-mykronos-files-ranked-candidates-to-thehubs-backlog-and-nowhere-else.md)
+- [D-171 — Network findings attach to the scanning repository, with their host in address and port](decisions/D-171-network-findings-attach-to-the-scanning-repository-with-their-host.md)
 
 <!-- decisions-index:end -->
 

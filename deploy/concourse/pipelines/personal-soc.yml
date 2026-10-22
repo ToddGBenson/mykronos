@@ -57,7 +57,9 @@ groups:
 
   # The world outside this repository. These run on a clock rather than on a
   # commit, which is why they are worth their own tab: after an outage or a
-  # holiday, this is the list you check.
+  # holiday, this is the list you check. Since TheHub #60813 they also file
+  # `network` findings to Mykronos, against this repository, each naming its
+  # host.
   - name: exposure
     jobs: [external-exposure, netassess-ingest, netassess-freshness]
 
@@ -2433,6 +2435,10 @@ jobs:
         attempts: *retry_fetch
       - get: pwsh
         attempts: *retry_fetch
+      - get: python
+        attempts: *retry_fetch
+      # PS-2: the upload below talks to Mykronos.
+      - *preflight
       - task: shodan-internetdb
         # PS-7. 15m from 4 observed run(s): median 95s, slowest 207s.
         timeout: 15m
@@ -2474,19 +2480,28 @@ jobs:
                 if grep -q "Could not determine public IP" run.log; then
                   echo "::error:: no public IP resolved - the WAN view was never taken"
                   echo "*personal-soc / external-exposure*: could not check - no public IP resolved, so the WAN view was never taken. Not a pass." > notify/message.txt
+                  # TheHub #60813: filed as unknown - a failed run, never an
+                  # empty edge. See the upload hook below.
+                  printf '{"check": "unknown", "reason": "no public IP resolved"}\n' > results/external-exposure.json
                   exit 1
                 fi
 
                 echo ""
                 echo "== output =="
                 ls -l results/
+                # TheHub #60813: every outcome leaves a file for the upload, so
+                # the lake can tell three things apart - ports seen, an IP not
+                # indexed (a real, empty edge), and a lookup that never happened
+                # (unknown: a failed run, which closes nothing).
                 if [ -f results/external-exposure.json ]; then
                   cat results/external-exposure.json
                 elif [ "$rc" -eq 0 ]; then
                   echo "No external-exposure.json written."
                   echo "That is InternetDB's 404 path: this IP is not indexed by Shodan, which is the good outcome."
+                  printf '{"indexed": false}\n' > results/external-exposure.json
                 else
                   echo "No external-exposure.json written - the lookup did not complete (exit $rc)."
+                  printf '{"check": "unknown", "reason": "the lookup did not complete (exit %s)"}\n' "$rc" > results/external-exposure.json
                 fi
 
                 # The one line Slack shows (the anchor reads the first line).
@@ -2505,6 +2520,66 @@ jobs:
                 esac
 
                 exit $rc
+        # TheHub #60813 (option A): the WAN view reaches the lake. Each visible port is
+        # a finding on the public IP - medium when not allowlisted, info when it
+        # is - and an unknown is a failed run, never a clean edge.
+        # An `ensure:`, so a red verdict still files - the result that turned
+        # the job red is the one most worth recording - and the upload never
+        # changes the verdict: it ends `exit 0`, and the task above decides
+        # the build. Filed against ToddGBenson/personal-soc, the repository
+        # that scanned, with the host in each finding's address and port.
+        ensure:
+          task: upload-network-findings
+          # PS-7. An apt install of git, a pip install of the uploader and one
+          # upload: the secrets lane does the same last two in under 3m.
+          timeout: 10m
+          image: python
+          params:
+            MYKRONOS_URL: ((mykronos-url))
+            MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+            MYKRONOS_REF: ((mykronos-ref))
+            # The network has no branch. Its lanes file under the branch every
+            # other lane of this repository uses, so the portfolio reads them
+            # together; reconciliation keeps them apart by tool.
+            BRANCH: main
+          config:
+            platform: linux
+            # Optional, both (PS-3): a verdict task that never started leaves
+            # no `results`, and the uploader reports a missing file as a failed
+            # scan instead of this hook erroring on a missing input.
+            inputs:
+              - { name: results, optional: true }
+              - { name: source, optional: true }
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -uo pipefail
+                  if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                    echo "NO MYKRONOS TOKEN - the verdict above stands, but nothing was filed."
+                    exit 0
+                  fi
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  # The network has no commit. The scripts' commit says which
+                  # version of the scan judged it; read the way the check-run
+                  # hook reads it.
+                  SHA=$(tr -d ' \n\r\t' < source/.git/HEAD 2>/dev/null || true)
+                  case "$SHA" in *[!0-9a-f]*|"") SHA=unknown ;; esac
+                  MYKRONOS_JOB=external-exposure python -m mykronos.upload \
+                    --capability network --tool shodan-internetdb \
+                    --results-path results/external-exposure.json \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$SHA" --branch "$BRANCH" --triggered-by schedule \
+                    --severity-threshold low --blocking false \
+                    || echo "upload did not complete cleanly - the verdict above still stands."
+                  exit 0
 
   # -- Netassess ingest ----------------------------------------------------
   #
@@ -2560,6 +2635,10 @@ jobs:
         attempts: *retry_fetch
       - get: pwsh
         attempts: *retry_fetch
+      - get: python
+        attempts: *retry_fetch
+      # PS-2: the upload below talks to Mykronos.
+      - *preflight
       - task: verify-and-diff
         # PS-7. 15m from 1 observed run(s): median 33s, slowest 33s.
         # One sample only, so the headroom is deliberately wide.
@@ -2578,7 +2657,7 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: netassess-run }, { name: source }]
-          outputs: [{ name: notify }]
+          outputs: [{ name: notify }, { name: results }]
           run:
             path: bash
             args:
@@ -2638,6 +2717,21 @@ jobs:
                 echo ""
                 echo "== contents =="
                 ls -1 current | sed 's/^/  /'
+
+                # TheHub #60813: the run, for the upload hook - written before
+                # any check below can stop this task, so a rejected run is
+                # filed too. `nas-nfs.txt` is nmap's own output and the only
+                # place the run records the NAS's address. pwsh, because it is
+                # what this image has that can write JSON.
+                RUN_KEY="$CUR_KEY" pwsh -NonInteractive -NoProfile -Command '
+                  function Read-Optional($Path) { if (Test-Path $Path) { Get-Content $Path -Raw } else { $null } }
+                  [ordered]@{
+                    run_key           = $env:RUN_KEY
+                    network_status_md = Read-Optional "current/network-status.md"
+                    inventory_csv     = Read-Optional "current/inventory.csv"
+                    nas_probe         = Read-Optional "current/raw/nas-nfs.txt"
+                  } | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 results/netassess-run.json
+                ' || echo "::error:: could not write results/netassess-run.json - this run will be filed as a failed scan."
 
                 fail=0
                 REASONS=""
@@ -2779,6 +2873,67 @@ jobs:
                 echo ""
                 [ "$fail" -eq 0 ] && echo "Run accepted." || echo "Run rejected."
                 exit "$fail"
+        # TheHub #60813 (option A): the weekly LAN scan reaches the lake. NFS exports,
+        # SMBv1 and anonymous shares are findings on the NAS's address, an open
+        # access point on `wifi:<SSID>`; a check that reported `unknown` makes
+        # the run partial, so nothing it did not look at is closed.
+        # An `ensure:`, so a red verdict still files - the result that turned
+        # the job red is the one most worth recording - and the upload never
+        # changes the verdict: it ends `exit 0`, and the task above decides
+        # the build. Filed against ToddGBenson/personal-soc, the repository
+        # that scanned, with the host in each finding's address and port.
+        ensure:
+          task: upload-network-findings
+          # PS-7. An apt install of git, a pip install of the uploader and one
+          # upload: the secrets lane does the same last two in under 3m.
+          timeout: 10m
+          image: python
+          params:
+            MYKRONOS_URL: ((mykronos-url))
+            MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+            MYKRONOS_REF: ((mykronos-ref))
+            # The network has no branch. Its lanes file under the branch every
+            # other lane of this repository uses, so the portfolio reads them
+            # together; reconciliation keeps them apart by tool.
+            BRANCH: main
+          config:
+            platform: linux
+            # Optional, both (PS-3): a verdict task that never started leaves
+            # no `results`, and the uploader reports a missing file as a failed
+            # scan instead of this hook erroring on a missing input.
+            inputs:
+              - { name: results, optional: true }
+              - { name: source, optional: true }
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -uo pipefail
+                  if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                    echo "NO MYKRONOS TOKEN - the verdict above stands, but nothing was filed."
+                    exit 0
+                  fi
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  # The network has no commit. The scripts' commit says which
+                  # version of the scan judged it; read the way the check-run
+                  # hook reads it.
+                  SHA=$(tr -d ' \n\r\t' < source/.git/HEAD 2>/dev/null || true)
+                  case "$SHA" in *[!0-9a-f]*|"") SHA=unknown ;; esac
+                  MYKRONOS_JOB=netassess-ingest python -m mykronos.upload \
+                    --capability network --tool netassess \
+                    --results-path results/netassess-run.json \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$SHA" --branch "$BRANCH" --triggered-by schedule \
+                    --severity-threshold low --blocking false \
+                    || echo "upload did not complete cleanly - the verdict above still stands."
+                  exit 0
 
   # -- Netassess freshness -------------------------------------------------
   #
@@ -2816,6 +2971,13 @@ jobs:
         trigger: true
       - get: pwsh
         attempts: *retry_fetch
+      # For the upload hook: the commit it files against, and its image.
+      - get: source
+        attempts: *retry_fetch
+      - get: python
+        attempts: *retry_fetch
+      # PS-2: the upload below talks to Mykronos.
+      - *preflight
       - task: check-age
         # PS-7. 15m from 4 observed run(s): median 95s, slowest 228s.
         timeout: 15m
@@ -2833,6 +2995,7 @@ jobs:
           MAX_AGE_DAYS: ((netassess-max-age-days))
         config:
           platform: linux
+          outputs: [{ name: results }]
           run:
             path: bash
             args:
@@ -2856,8 +3019,23 @@ jobs:
                 HOSTPORT=${MINIO_ENDPOINT#*://}
                 export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
 
-                LATEST=$(mc --quiet ls "store/$BUCKET/runs/" 2>/dev/null \
-                  | awk '{print $NF}' | grep '^netassess-.*\.zip$' | sort -V | tail -1)
+                # TheHub #60813: the listing is kept for the upload hook, and a
+                # listing that failed is said to have failed. It used to fall
+                # through as "no runs at all", which blamed a Scheduled Task
+                # that may have been fine for a bucket nobody could read.
+                if ! LISTING=$(mc --quiet ls "store/$BUCKET/runs/" 2>&1); then
+                  echo "::error:: could not list $BUCKET - freshness is unknown, which is not a pass."
+                  printf '{"check": "unknown", "reason": "the bucket could not be listed"}\n' > results/netassess-freshness.json
+                  exit 1
+                fi
+                # Strict, so every key is safe to write into JSON unescaped.
+                KEYS=$(printf '%s\n' "$LISTING" | awk '{print $NF}' \
+                  | grep -E '^netassess-[0-9]+\.[0-9]+\.[0-9]+\.zip$' | sort -V || true)
+                printf '{"max_age_days": %d, "checked_on": "%s", "keys": [%s]}\n' \
+                  "$MAX_AGE_DAYS" "$(date -u +%F)" \
+                  "$(printf '%s\n' "$KEYS" | sed '/^$/d; s/.*/"&"/' | paste -sd, -)" \
+                  > results/netassess-freshness.json
+                LATEST=$(printf '%s\n' "$KEYS" | sed '/^$/d' | tail -1)
 
                 if [ -z "$LATEST" ]; then
                   echo "::error:: no runs at all in $BUCKET."
@@ -2884,6 +3062,67 @@ jobs:
                 fi
 
                 echo "Scan cadence is healthy."
+        # TheHub #60813 (option A): the cadence is recorded as lane health. No
+        # findings - a stale scanner is not a vulnerability on a host - but a
+        # stale, empty or unreadable bucket is a failed `network` run, so the
+        # portfolio shows it red instead of showing the last good scan.
+        # An `ensure:`, so a red verdict still files - the result that turned
+        # the job red is the one most worth recording - and the upload never
+        # changes the verdict: it ends `exit 0`, and the task above decides
+        # the build. Filed against ToddGBenson/personal-soc, the repository
+        # that scanned, with the host in each finding's address and port.
+        ensure:
+          task: upload-network-findings
+          # PS-7. An apt install of git, a pip install of the uploader and one
+          # upload: the secrets lane does the same last two in under 3m.
+          timeout: 10m
+          image: python
+          params:
+            MYKRONOS_URL: ((mykronos-url))
+            MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
+            MYKRONOS_REF: ((mykronos-ref))
+            # The network has no branch. Its lanes file under the branch every
+            # other lane of this repository uses, so the portfolio reads them
+            # together; reconciliation keeps them apart by tool.
+            BRANCH: main
+          config:
+            platform: linux
+            # Optional, both (PS-3): a verdict task that never started leaves
+            # no `results`, and the uploader reports a missing file as a failed
+            # scan instead of this hook erroring on a missing input.
+            inputs:
+              - { name: results, optional: true }
+              - { name: source, optional: true }
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  set -uo pipefail
+                  if [ -z "${MYKRONOS_TOKEN:-}" ]; then
+                    echo "NO MYKRONOS TOKEN - the verdict above stands, but nothing was filed."
+                    exit 0
+                  fi
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  # The network has no commit. The scripts' commit says which
+                  # version of the scan judged it; read the way the check-run
+                  # hook reads it.
+                  SHA=$(tr -d ' \n\r\t' < source/.git/HEAD 2>/dev/null || true)
+                  case "$SHA" in *[!0-9a-f]*|"") SHA=unknown ;; esac
+                  MYKRONOS_JOB=netassess-freshness python -m mykronos.upload \
+                    --capability network --tool netassess-freshness \
+                    --results-path results/netassess-freshness.json \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/personal-soc \
+                    --commit-sha "$SHA" --branch "$BRANCH" --triggered-by schedule \
+                    --severity-threshold low --blocking false \
+                    || echo "upload did not complete cleanly - the verdict above still stands."
+                  exit 0
 
   # -- Breach confirmation -------------------------------------------------
   #

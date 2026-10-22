@@ -571,9 +571,11 @@ function WorklistDetail({
         <span className="break-all font-mono text-[12px] text-ink-2">
           {item.file_path
             ? `${item.file_path}${item.line_start ? `:${item.line_start}` : ""}`
-            : item.package_name
-              ? `${item.package_name}@${item.package_version ?? "?"}`
-              : "—"}
+            : item.asset
+              ? `host ${item.asset}`
+              : item.package_name
+                ? `${item.package_name}@${item.package_version ?? "?"}`
+                : "—"}
         </span>
         <span className="flex flex-wrap items-baseline gap-1.5 font-mono text-[11px] text-ink-3">
           first seen <RelativeTime value={item.first_seen_at} />
@@ -691,9 +693,11 @@ function ClusterRow({ cluster }: { cluster: TriageCluster }) {
               <span className="break-all font-mono text-[11px] text-ink-2">
                 {member.file_path
                   ? `${member.file_path}${member.line_start ? `:${member.line_start}` : ""}`
-                  : member.package_name
-                    ? `${member.package_name}@${member.package_version ?? "?"}`
-                    : member.rule_id}
+                  : member.asset
+                    ? `host ${member.asset}`
+                    : member.package_name
+                      ? `${member.package_name}@${member.package_version ?? "?"}`
+                      : member.rule_id}
               </span>
               {cluster.folded_ids?.includes(member.finding_id) ? (
                 <Pill tone="muted">folded {member.rule_id}</Pill>

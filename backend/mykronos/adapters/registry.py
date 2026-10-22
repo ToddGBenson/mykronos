@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mykronos.adapters import network_nmap, tests_junit
+from mykronos.adapters import network_exposure, network_netassess, network_nmap, tests_junit
 from mykronos.adapters.base import AdapterResult, ScanContext
 from mykronos.adapters.sarif import sarif_to_findings
 from mykronos.schemas import ScanStatus
@@ -128,6 +128,34 @@ def _build_registry() -> dict[tuple[str, str], AdapterSpec]:
         # nmap XML and nuclei JSONL side by side in one results directory.
         AdapterSpec("network", "nmap", network_nmap.normalize, "*.xml", "nmap"),
         AdapterSpec("network", "nuclei", network_nmap.normalize, "*.json*", "nuclei"),
+        # personal-soc's three network lanes (TheHub #60813, option A): filed
+        # against the scanning repository, each finding naming its host in
+        # `address`/`port`. Three tools, not one, because reconciliation
+        # partitions on the tool: the WAN view's silence says nothing about
+        # the NAS, and the freshness check's empty result says nothing about
+        # either. Exact file names rather than `*.json`, so a results
+        # directory holding more than one of them is read by the right one.
+        AdapterSpec(
+            "network",
+            "shodan-internetdb",
+            network_exposure.normalize,
+            "external-exposure.json",
+            "Shodan InternetDB (WAN edge)",
+        ),
+        AdapterSpec(
+            "network",
+            "netassess",
+            network_netassess.normalize,
+            "netassess-run.json",
+            "personal-soc weekly network scan",
+        ),
+        AdapterSpec(
+            "network",
+            "netassess-freshness",
+            network_netassess.normalize_freshness,
+            "netassess-freshness.json",
+            "personal-soc network scan freshness",
+        ),
         # Quality stages (D-046). JUnit XML because every runner emits it, and
         # neither produces findings - what reaches the lake is that a suite
         # ran and how it ended.

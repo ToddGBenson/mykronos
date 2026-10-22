@@ -15,16 +15,28 @@ the notifier is. One notification per repository and capability per quiet
 window, not one per request: a scheduled lane that has lost its grant would
 otherwise repeat itself every run, and a channel that repeats itself gets
 muted, which costs more than the alert was ever worth (spec 16 §14).
+
+**And it is recorded, every time, as lane health (TheHub #60813).** The
+notification is deduplicated; the record is not. `IngestRefusal` keeps one row
+per repository and capability - first and last refusal, how many - so the
+portfolio can say "refused" where it would otherwise say "never sent": both
+leave no scan run behind, and only one of them means a lane is running and
+being turned away.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from mykronos.db.models import IngestRefusal
 from mykronos.notify import Notification
+from mykronos.schemas import utcnow
+
+logger = logging.getLogger(__name__)
 
 #: How long after notifying about one (repository, capability) refusal the
 #: handler stays quiet about the same pair. An hour covers a lane retrying
@@ -55,10 +67,43 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(CapabilityRefusedError)
     async def _refused(request: Request, exc: CapabilityRefusedError) -> JSONResponse:
+        record_refusal(request, exc)
         await notify_refusal(request, exc)
         # The same body a plain HTTPException would have sent, so every
         # uploader and every existing test reads the refusal exactly as before.
         return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": exc.detail})
+
+
+def record_refusal(request: Request, exc: CapabilityRefusedError) -> bool:
+    """Count this refusal against its (repository, capability).
+
+    Never raises: the refusal is the answer the uploader is owed, and a
+    database that cannot be written must not turn a 403 into a 500. Returns
+    whether the record was written.
+    """
+    db = getattr(request.app.state, "db", None)
+    if db is None:
+        return False
+    try:
+        with db.session() as session:
+            row = session.get(IngestRefusal, (exc.repo_full_name, exc.capability))
+            now = utcnow()
+            if row is None:
+                row = IngestRefusal(
+                    repo_full_name=exc.repo_full_name,
+                    capability=exc.capability,
+                    first_refused_at=now,
+                    refusals=0,
+                )
+                session.add(row)
+            row.last_refused_at = now
+            row.refusals = int(row.refusals or 0) + 1
+            row.detail = exc.detail
+            session.commit()
+    except Exception:  # see the docstring: a 403 must not become a 500
+        logger.exception("Could not record the refusal of %s for a repository", exc.capability)
+        return False
+    return True
 
 
 async def notify_refusal(request: Request, exc: CapabilityRefusedError) -> bool:

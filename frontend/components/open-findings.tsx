@@ -887,9 +887,11 @@ function GroupDetail({
                 }`}
               >
                 {location.file_path ??
-                  (group.package_name
-                    ? `${group.package_name}@${location.package_version ?? "?"}`
-                    : location.finding_id.slice(0, 12))}
+                  (location.asset
+                    ? `host ${location.asset}`
+                    : group.package_name
+                      ? `${group.package_name}@${location.package_version ?? "?"}`
+                      : location.finding_id.slice(0, 12))}
                 {location.line_start ? `:${location.line_start}` : ""}
               </Link>
               {/* A floor is what the repository permits, not what it runs
