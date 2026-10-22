@@ -11,19 +11,27 @@ import {
   Verdict,
 } from "@/components/primitives";
 import { ClassificationReview } from "@/components/classification-review";
+import { AutoTriageUndo } from "@/components/auto-triage-undo";
 import { ClusterDisposition } from "@/components/cluster-disposition";
 import { WorklistKeys } from "@/components/worklist";
 import { FilterSelect } from "@/components/filter-select";
 import {
   SEVERITY_ORDER,
+  type AutoTriageDigest,
   type ClusterQueue,
   type Severity,
   type TriageCluster,
   type TriageItem,
 } from "@/lib/api";
+import { actionHeadline, digestLine, undoable } from "@/lib/auto-triage";
 import { CLUSTER_KIND_LABEL, clusterSpread, type ClusterKind } from "@/lib/clusters";
 import { environmentalLine, rankTermLine, rankingCaveat } from "@/lib/rank-terms";
-import { getBriefing, getTriage, getTriageClusters } from "@/lib/server";
+import {
+  getAutoTriageDigest,
+  getBriefing,
+  getTriage,
+  getTriageClusters,
+} from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -134,6 +142,9 @@ export default async function TriagePage({
   // A failed briefing costs the "what to do" block and nothing else. The queue
   // was the page before this and still is.
   const briefing = await getBriefing();
+  // What the platform closed by itself (TheHub #60888). A failed read costs
+  // this panel and nothing else.
+  const autoTriage = await getAutoTriageDigest(24);
   const fixByRule: Record<string, { fix: string; source: string; effort: string }> = {};
   if (briefing.ok) {
     for (const capability of briefing.data.guidance) {
@@ -309,6 +320,8 @@ export default async function TriagePage({
           {environmentalLine(ranking?.environmental)}
         </p>
       ) : null}
+
+      {autoTriage.ok ? <AutoTriagePanel digest={autoTriage.data} /> : null}
 
       {/* One decision for a group (TheHub #60887): the same CVE across images
           and repositories, or the same weakness at the same place from
@@ -694,6 +707,50 @@ function ClusterRow({ cluster }: { cluster: TriageCluster }) {
           ))}
         </ul>
       </div>
+    </details>
+  );
+}
+
+/**
+ * What auto-triage closed in the last 24 hours (TheHub #60888, D-169).
+ *
+ * Collapsed by default and above the queue: these findings left the queue
+ * without anybody deciding, so the place to notice one that should not have
+ * is where the queue is read. Each action names its rule, its evidence and
+ * offers the undo.
+ */
+function AutoTriagePanel({ digest }: { digest: AutoTriageDigest }) {
+  return (
+    <details className="border border-rule-soft bg-paper-2">
+      <summary className="cursor-pointer px-2.5 py-1.5 font-mono text-[12px] text-ink-3 hover:text-accent">
+        Closed by the platform · {digestLine(digest)}
+      </summary>
+      {digest.actions.length ? (
+        <ul className="flex flex-col border-t border-rule-soft">
+          {digest.actions.map((action) => (
+            <li
+              key={action.id}
+              className="flex flex-col gap-0.5 border-b border-rule-soft px-2.5 py-1.5 last:border-b-0"
+            >
+              <span className="flex flex-wrap items-baseline gap-1.5">
+                <SeverityText severity={action.severity as Severity} />
+                <span className="font-mono text-[11px] text-ink-2">{actionHeadline(action)}</span>
+                <span className="font-mono text-[11px] text-ink-3">{action.repo_full_name}</span>
+                <span className="font-mono text-[11px] text-ink-3">
+                  <RelativeTime value={action.applied_at} />
+                </span>
+                {action.undone_at ? (
+                  <Pill tone="muted">undone by {action.undone_by}</Pill>
+                ) : null}
+              </span>
+              <span className="max-w-prose text-[12px] leading-snug text-ink-2">
+                {action.summary}
+              </span>
+              {undoable(action) ? <AutoTriageUndo actionId={action.id} /> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </details>
   );
 }

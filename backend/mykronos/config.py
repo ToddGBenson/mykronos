@@ -217,6 +217,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    auto_triage_interval_seconds: int = Field(
+        default=3_600,
+        ge=1,
+        description=(
+            "Runs the deterministic auto-triage lanes (TheHub #60888). Hourly: "
+            "the evidence they read - verified fixes, VEX statements, a person's "
+            "verdict on a duplicate, the import graph - changes at that pace, "
+            "and each action is undoable whenever it lands."
+        ),
+    )
+
     fix_verification_interval_seconds: int = Field(
         default=1_800,
         ge=1,

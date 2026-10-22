@@ -37,6 +37,7 @@ clear last week".
 | Weekly per-owner digest (§4) | **Built** — off unless `digest_enabled` |
 | Throughput and burn-down (§5) | **Built, API only**: `GET /api/dashboard/triage/throughput`. No panel renders it above the queue |
 | Clusters: one decision for a group (TheHub #60887, D-168) | **Built**: `GET /api/dashboard/triage/clusters`, `POST /api/dashboard/triage/clusters/{cluster_id}/disposition`, and a "group by cluster" toggle on the Triage page |
+| Deterministic auto-triage (TheHub #60888, D-169) | **Built**: four evidence-backed lanes (`fix_verified`, `vex_not_affected`, `exact_duplicate`, `unreachable`) run hourly, each with a kill switch in `oracle-policy-v1.yaml`; every action is audited and undone with `POST /api/dashboard/auto-triage/actions/{id}/undo`; `GET /api/dashboard/auto-triage/digest` and the briefing list the last 24 hours |
 
 ## 1. Ranking
 
