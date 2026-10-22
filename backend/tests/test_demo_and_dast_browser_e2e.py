@@ -186,9 +186,12 @@ def test_a_failed_run_keeps_its_trace_as_an_artifact() -> None:
     keep = [
         s for s in _steps()
         if str(s.get("uses", "")).startswith("actions/upload-artifact@")
-        and s.get("if") == "steps.e2e.outcome == 'failure'"
+        and "steps.e2e.outcome == 'failure'" in str(s.get("if"))
     ]
     assert len(keep) == 1, "a failed browser run's trace is not kept"
+    # A failed browser suite fails the functional upload first, so under the
+    # default success() this step never ran when it mattered (run 39798732398).
+    assert "!cancelled()" in str(keep[0]["if"]), "the trace is skipped after a failed upload"
     assert re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", keep[0]["uses"])
     assert keep[0]["with"]["path"] == _e2e()["env"]["E2E_OUTPUT_DIR"]
     # Reporting after the work, as every upload here is.

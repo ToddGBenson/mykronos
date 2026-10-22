@@ -457,6 +457,17 @@ jobs:
             --data-urlencode "matchString=X-Hub-Token" \
             --data-urlencode "replacement=${DEMO_GATE_TOKEN}" >/dev/null
 
+          # One request per URL *shape*, not per value. The Findings tab's
+          # summary bar and filter pills (#962) are links that each toggle
+          # one value in the current query string, so under ZAP's default
+          # (USE_ALL: every distinct value is a new URL) the crawl walks the
+          # power set of every filter: 1,400-2,200 responses in 600s, never
+          # finishing, every main run since 2026-10-21 (TheHub incident
+          # 36403). IGNORE_VALUE keys a URL on its parameter *names* - the
+          # same key the site tree and the passive scanner already use - so
+          # the crawl is finite and reaches 100% honestly, not by a cap.
+          zap_api "/JSON/spider/action/setOptionHandleParameters/?String=IGNORE_VALUE" >/dev/null
+
           SPIDER_ID=$(zap_api "/JSON/spider/action/scan/?url=${PROXIED_FRONTEND}&recurse=true" \
             | python -c 'import json,sys; print(json.load(sys.stdin)["scan"])')
           SPIDER_OK=1
@@ -753,8 +764,10 @@ jobs:
         # A failed browser test keeps a Playwright trace (DOM, console and
         # network, step by step); `npx playwright show-trace` opens it. After
         # the uploads, like every report here, and never able to fail the job
-        # on its own account.
-        if: steps.e2e.outcome == 'failure'
+        # on its own account. `!cancelled()`: a failed browser suite always
+        # fails the functional upload first, so on the default success() this
+        # step was skipped in exactly the runs it exists for (39798732398).
+        if: ${{ !cancelled() && steps.e2e.outcome == 'failure' }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
