@@ -573,7 +573,8 @@ ACCEPTANCES_SOURCE = "risk_acceptances"
 
 
 def acceptances_section(db: Any, *, now: datetime, asset_id: str | None = None) -> Section:
-    """Acceptances ending within a week, and those whose premise has failed."""
+    """Acceptances ending within a week, those whose premise has failed, and
+    those owing the interim review nothing else would prompt (TheHub #60817)."""
     key, title = "acceptances", "Acceptances"
     from mykronos import risk_acceptance as ra
     from mykronos.db.models import RiskAcceptance
@@ -593,6 +594,7 @@ def acceptances_section(db: Any, *, now: datetime, asset_id: str | None = None) 
                     r.expires_at,
                     len(r.covered_finding_ids or []),
                     str(r.residual_severity or ""),
+                    r.interim_review_by if r.interim_reviewed_at is None else None,
                 )
                 for r in session.execute(query).scalars()
             ]
@@ -603,6 +605,11 @@ def acceptances_section(db: Any, *, now: datetime, asset_id: str | None = None) 
     today: date = now.date()
     horizon = today + timedelta(days=ACCEPTANCE_EXPIRING_DAYS)
     failed = [r for r in records if r[2] == "premise_failed"]
+    # Owing the interim review: its date has come, nobody has recorded it.
+    interim = sorted(
+        (r for r in records if r[2] in ra.LIVE and r[6] is not None and r[6] <= today),
+        key=lambda r: r[6] or today,
+    )
     expiring = sorted(
         (r for r in records if r[2] in ra.LIVE and r[3] is not None and r[3] <= horizon),
         key=lambda r: r[3] or horizon,
@@ -616,9 +623,30 @@ def acceptances_section(db: Any, *, now: datetime, asset_id: str | None = None) 
             repo_full_name=repo,
             ref=f"/api/risk-acceptances/{rid}",
         )
-        for rid, repo, _, _, count, _ in failed
+        for rid, repo, _, _, count, _, _ in failed
     ]
-    for rid, repo, _, expires, count, _ in expiring:
+    for rid, repo, record_status, _, count, _, due in interim:
+        assert due is not None
+        lapsed = record_status == "needs_review"
+        lines.append(
+            Line(
+                what=(
+                    f"An acceptance covering {count} finding(s) in {repo} "
+                    + (
+                        f"needs review: its interim review, due {due.isoformat()}, lapsed."
+                        if lapsed
+                        else f"is due its interim review ({due.isoformat()})."
+                    )
+                ),
+                so_what="Nothing watches the reason it was accepted for, so only a person "
+                "looking again would notice it stopped being true: record the review, "
+                "renew or revoke it.",
+                work=DECISION,
+                repo_full_name=repo,
+                ref=f"/api/risk-acceptances/{rid}",
+            )
+        )
+    for rid, repo, _, expires, count, _, _ in expiring:
         assert expires is not None
         left = (expires - today).days
         when = "today" if left == 0 else ("already" if left < 0 else f"in {left} day(s)")
@@ -650,12 +678,23 @@ def acceptances_section(db: Any, *, now: datetime, asset_id: str | None = None) 
                     "covered_findings": count,
                     "residual_severity": severity,
                 }
-                for rid, repo, _, expires, count, severity in expiring
+                for rid, repo, _, expires, count, severity, _ in expiring
+            ],
+            "review_due": [
+                {
+                    "id": rid,
+                    "repo_full_name": repo,
+                    "interim_review_by": due.isoformat() if due else None,
+                    "needs_review": record_status == "needs_review",
+                    "covered_findings": count,
+                    "residual_severity": severity,
+                }
+                for rid, repo, record_status, _, count, severity, due in interim
             ],
             "premise_failed": [
                 {"id": rid, "repo_full_name": repo, "covered_findings": count,
                  "residual_severity": severity}
-                for rid, repo, _, _, count, severity in failed
+                for rid, repo, _, _, count, severity, _ in failed
             ],
         },
     )

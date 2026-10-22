@@ -13,9 +13,11 @@ import {
   evidenceAgeText,
   expiryIsRed,
   filterHref,
+  interimReviewText,
   premiseLabel,
   premiseTally,
   reasonLabel,
+  reviewDueLabel,
   severityCounts,
   stateLabel,
   stateTone,
@@ -166,5 +168,35 @@ describe("auditActionLabel", () => {
   it("drops the entity prefix", () => {
     expect(auditActionLabel("risk_acceptance.premise_failed")).toBe("premise failed");
     expect(auditActionLabel("finding.reopened_by_premise")).toBe("finding.reopened by premise");
+  });
+});
+
+describe("interim review (TheHub #60817)", () => {
+  it("is a red state once it lapses", () => {
+    // Off the five-state strip; it shows beside it, red, whenever one exists.
+    expect(stateLabel("needs_review")).toBe("Needs review");
+    expect(stateTone("needs_review")).toBe("critical");
+    expect(STRIP_STATES).not.toContain("needs_review");
+  });
+  it("says where the review stands, or nothing when none is owed", () => {
+    expect(interimReviewText({ interim_review: "none" })).toBeNull();
+    expect(
+      interimReviewText({ interim_review: "scheduled", interim_review_by: "2026-11-20" }),
+    ).toBe("due 2026-11-20");
+    expect(
+      interimReviewText({ interim_review: "lapsed", interim_review_by: "2026-11-20" }),
+    ).toContain("lapsed");
+    expect(
+      interimReviewText({
+        interim_review: "done",
+        interim_reviewed_at: "2026-11-22T10:00:00",
+        interim_reviewed_by: "admin",
+      }),
+    ).toBe("recorded 2026-11-22 by admin");
+  });
+  it("names which review the pill means", () => {
+    expect(reviewDueLabel({ interim_review: "due" })).toBe("interim review due");
+    expect(reviewDueLabel({ interim_review: "lapsed" })).toBe("interim review due");
+    expect(reviewDueLabel({ interim_review: "none" })).toBe("review due");
   });
 });

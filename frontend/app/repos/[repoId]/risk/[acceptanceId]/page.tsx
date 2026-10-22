@@ -12,8 +12,10 @@ import { Crumb, ErrorPanel, Label, Pill, RelativeTime } from "@/components/primi
 import {
   auditActionLabel,
   controlText,
+  interimReviewText,
   premiseTally,
   reasonLabel,
+  reviewDueLabel,
   stateLabel,
   stateTone,
 } from "@/lib/risk-acceptances";
@@ -63,7 +65,7 @@ export default async function RiskAcceptancePage({
       <header className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-baseline gap-2">
           <Pill tone={stateTone(a.state)}>{stateLabel(a.state)}</Pill>
-          {a.review_due ? <Pill tone="warn">review due</Pill> : null}
+          {a.review_due ? <Pill tone="warn">{reviewDueLabel(a)}</Pill> : null}
           <SeverityPair severity={a.severity} effective={a.effective_severity} />
           {a.legacy ? <Pill tone="muted">migrated</Pill> : null}
         </div>
@@ -103,6 +105,12 @@ export default async function RiskAcceptancePage({
           </Field>
           <Field label="Effective">{a.effective_at ? a.effective_at.slice(0, 10) : "—"}</Field>
           <Field label="Review by">{a.review_by ?? "—"}</Field>
+          {interimReviewText(a) ? (
+            <Field label="Interim review">
+              {interimReviewText(a)}
+              <span className="text-ink-3"> — nothing watches this reason, so a person looks again</span>
+            </Field>
+          ) : null}
           <Field label="Expires">
             <Expiry row={a} />
           </Field>

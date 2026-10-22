@@ -533,8 +533,8 @@ class RiskAcceptance(Base):
     requested_by: Mapped[str] = mapped_column(String(255), default="")
     approved_by: Mapped[str | None] = mapped_column(String(255), default=None)
     approval_request_id: Mapped[str | None] = mapped_column(String(36), default=None)
-    #: pending_approval | active | review_due | expired | rejected | revoked |
-    #: premise_failed | closed
+    #: pending_approval | active | review_due | needs_review | expired |
+    #: rejected | revoked | premise_failed | closed
     status: Mapped[str] = mapped_column(String(24), index=True, default="pending_approval")
     #: Migrated from row-level acceptances (spec 33 §10): the findings already
     #: carry the old acceptance, and approval confirms rather than creates it.
@@ -546,6 +546,12 @@ class RiskAcceptance(Base):
     first_effective_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     review_by: Mapped[date | None] = mapped_column(Date, default=None)
     expires_at: Mapped[date | None] = mapped_column(Date, default=None)
+    #: The interim review an acceptance nothing watches owes (TheHub #60817,
+    #: approval policy `risk_acceptance.interim_review`). Null when none is
+    #: owed; once a person records it, `interim_reviewed_at` says when.
+    interim_review_by: Mapped[date | None] = mapped_column(Date, default=None)
+    interim_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    interim_reviewed_by: Mapped[str | None] = mapped_column(String(255), default=None)
     tracking_ref: Mapped[str | None] = mapped_column(String(255), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)

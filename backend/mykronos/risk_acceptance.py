@@ -40,7 +40,7 @@ from mykronos.approvals.engine import (
     register_dedicated_route,
     register_on_approved,
 )
-from mykronos.approvals.policy import ApprovalPolicy
+from mykronos.approvals.policy import ApprovalPolicy, InterimReview
 from mykronos.db.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -76,8 +76,10 @@ PREMISE_TYPES = (
     "epss_below",
     "path_unreachable",
 )
-#: Statuses a record can still act in.
-LIVE = ("active", "review_due")
+#: Statuses a record can still act in. `needs_review` is an acceptance whose
+#: interim review lapsed (TheHub #60817): it still holds its findings - it is
+#: never expired quietly - but it reads as needing a decision everywhere.
+LIVE = ("active", "review_due", "needs_review")
 
 
 class RiskAcceptanceError(ValueError):
@@ -135,6 +137,67 @@ def reason_code_for(deviation_type: str, compensating_controls: list[dict[str, A
     if deviation_type == "operational_requirement":
         return "cost_exceeds_risk"
     return "compensating_control" if compensating_controls else "not_exploitable_here"
+
+
+# -- Interim review (TheHub #60817) --------------------------------------------
+
+
+def interim_review_owed(
+    deviation_type: str,
+    compensating_controls: list[dict[str, Any]],
+    premises: list[dict[str, Any]],
+    rule: InterimReview,
+) -> bool:
+    """Whether an acceptance rests on a reason nothing watches.
+
+    The reason code is the one the findings carry. `no_vendor_fix` is watched
+    already - the finding re-opens the day a fix ships - and a record with a
+    premise `premise_monitor` evaluates is re-read every day. The rest would
+    run to their severity cap with nobody looking, so they are reviewed at
+    `rule.days`.
+    """
+    from mykronos.premise_monitor import MONITORED
+
+    if reason_code_for(deviation_type, compensating_controls) not in rule.reason_codes:
+        return False
+    return not (
+        rule.unless_monitored_premise
+        and any(isinstance(p, dict) and p.get("type") in MONITORED for p in premises)
+    )
+
+
+def interim_review_date(
+    record: RiskAcceptance, rule: InterimReview, *, starting: date
+) -> date | None:
+    """The day `record` owes its interim review, or None when it owes none.
+
+    None too when the review before expiry (`review_by`) falls on or before
+    that day: that review asks the same question sooner.
+    """
+    if not interim_review_owed(
+        record.deviation_type,
+        list(record.compensating_controls or []),
+        list(record.premises or []),
+        rule,
+    ):
+        return None
+    due = starting + timedelta(days=rule.days)
+    if record.review_by is not None and record.review_by <= due:
+        return None
+    return due
+
+
+def interim_state(record: RiskAcceptance, today: date, rule: InterimReview) -> str:
+    """none | scheduled | due | lapsed | done - where the interim review stands."""
+    if record.interim_reviewed_at is not None:
+        return "done"
+    if record.interim_review_by is None:
+        return "none"
+    if today < record.interim_review_by:
+        return "scheduled"
+    if today < record.interim_review_by + timedelta(days=rule.grace_days):
+        return "due"
+    return "lapsed"
 
 
 # -- Scope (spec 33 §1.2) ------------------------------------------------------
@@ -658,6 +721,7 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
     until = record.requested_until or cap
     record.expires_at = until if record.legacy else min(until, cap)
     record.review_by = record.expires_at - timedelta(days=_review_lead(request))
+    record.interim_review_by = interim_review_date(record, interim_rule(), starting=now.date())
     record.status = "active"
     record.approved_by = approver
     record.effective_at = now
@@ -689,6 +753,10 @@ def _limits_days(request: ApprovalRequest) -> int:
 
 def _review_lead(request: ApprovalRequest) -> int:
     return _POLICY.risk_acceptance.review_lead_days if _POLICY else 14
+
+
+def interim_rule() -> InterimReview:
+    return _POLICY.risk_acceptance.interim_review if _POLICY else InterimReview()
 
 
 register_adapter("risk_acceptance", _adapter)
@@ -808,6 +876,9 @@ class SweepResult:
     expired: int = 0
     closed: int = 0
     drift: int = 0
+    #: Interim reviews that came due, and ones that lapsed unreviewed (#60817).
+    interim_due: int = 0
+    needs_review: int = 0
 
 
 def sweep(db: Any, catalog: Catalog, *, today: date | None = None) -> SweepResult:
@@ -819,6 +890,7 @@ def sweep(db: Any, catalog: Catalog, *, today: date | None = None) -> SweepResul
     """
     today = today or utcnow().date()
     result = SweepResult()
+    rule = interim_rule()
     with db.session() as session:
         result.not_approved = _close_unapproved(db, session)
         records = list(
@@ -851,6 +923,7 @@ def sweep(db: Any, catalog: Catalog, *, today: date | None = None) -> SweepResul
                 record.status = "review_due"
                 result.review_due += 1
                 _audit_sweep(db, session, record, "risk_acceptance.review_due")
+            _sweep_interim(db, session, record, rule, today, result)
             drift = [
                 m.finding_id
                 for m in match_scope(catalog, record.repo_full_name, record.scope, ("open",))
@@ -864,6 +937,105 @@ def sweep(db: Any, catalog: Catalog, *, today: date | None = None) -> SweepResul
                         db, session, record, "risk_acceptance.scope_drift", count=len(drift)
                     )
     return result
+
+
+def _sweep_interim(
+    db: Any,
+    session: Session,
+    record: RiskAcceptance,
+    rule: InterimReview,
+    today: date,
+    result: SweepResult,
+) -> None:
+    """Move a record through its interim review (TheHub #60817).
+
+    A record approved before the rule existed owes the review too: it is
+    scheduled from when it took effect, but never earlier than today, so it
+    reads `review_due` for the whole grace period before it can lapse - none
+    goes straight to `needs_review` on the day this ships.
+    """
+    if record.interim_reviewed_at is not None:
+        return
+    if record.interim_review_by is None:
+        if record.effective_at is None:
+            return
+        due = interim_review_date(record, rule, starting=record.effective_at.date())
+        if due is None:
+            return
+        record.interim_review_by = max(due, today)
+        _audit_sweep(
+            db,
+            session,
+            record,
+            "risk_acceptance.interim_review_scheduled",
+            interim_review_by=record.interim_review_by.isoformat(),
+        )
+    due_on = record.interim_review_by
+    state = interim_state(record, today, rule)
+    if state == "due" and record.status == "active":
+        record.status = "review_due"
+        result.interim_due += 1
+        _audit_sweep(
+            db,
+            session,
+            record,
+            "risk_acceptance.interim_review_due",
+            interim_review_by=due_on.isoformat(),
+        )
+    elif state == "lapsed" and record.status in ("active", "review_due"):
+        # Not expired: the findings stay accepted and nothing changes quietly.
+        # The record says loudly that nobody has looked at it.
+        record.status = "needs_review"
+        result.needs_review += 1
+        _audit_sweep(
+            db,
+            session,
+            record,
+            "risk_acceptance.needs_review",
+            interim_review_by=due_on.isoformat(),
+            grace_days=rule.grace_days,
+        )
+
+
+def record_interim_review(
+    db: Any, *, record_id: str, reviewed_by: Principal, note: str, today: date | None = None
+) -> RiskAcceptance:
+    """A person has looked again and the acceptance still stands (TheHub #60817).
+
+    The record goes back to `active` - or stays `review_due` when its review
+    before expiry is also due, which only a renewal answers.
+    """
+    if not (reviewed_by.is_human and reviewed_by.may_write):
+        raise RiskAcceptanceError("Only a person may record an interim review.")
+    if not note.strip():
+        raise RiskAcceptanceError("An interim review says what was checked.")
+    today = today or utcnow().date()
+    with db.session() as session:
+        record: RiskAcceptance | None = session.get(RiskAcceptance, record_id)
+        if record is None or record.status not in LIVE:
+            raise RiskAcceptanceError(f"No live risk acceptance {record_id}.")
+        due_on = record.interim_review_by
+        if due_on is None or record.interim_reviewed_at is not None:
+            raise RiskAcceptanceError(
+                f"Risk acceptance {record_id} owes no interim review: renew or revoke it instead."
+            )
+        record.interim_reviewed_at = utcnow()
+        record.interim_reviewed_by = reviewed_by.actor
+        expiry_review_due = record.review_by is not None and today >= record.review_by
+        record.status = "review_due" if expiry_review_due else "active"
+        db.audit(
+            session,
+            actor=reviewed_by.actor,
+            action="risk_acceptance.interim_reviewed",
+            entity_type="risk_acceptance",
+            entity_id=record_id,
+            repo=record.repo_full_name,
+            note=note.strip(),
+            interim_review_by=due_on.isoformat(),
+        )
+        session.flush()
+        session.expunge(record)
+    return record
 
 
 def _close_unapproved(db: Any, session: Session) -> int:
@@ -1137,6 +1309,9 @@ def serialize(record: RiskAcceptance) -> dict[str, Any]:
         "effective_at": iso(record.effective_at),
         "first_effective_at": iso(record.first_effective_at),
         "review_by": iso(record.review_by),
+        "interim_review_by": iso(record.interim_review_by),
+        "interim_reviewed_at": iso(record.interim_reviewed_at),
+        "interim_reviewed_by": record.interim_reviewed_by,
         "expires_at": iso(record.expires_at),
         "closed_at": iso(record.closed_at),
         "closed_reason": record.closed_reason,

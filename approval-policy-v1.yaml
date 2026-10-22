@@ -231,6 +231,20 @@ risk_acceptance:
     medium: 4
     low: 99
   review_lead_days: 14
+  # The caps above are by severity and stay so. An acceptance whose reason is
+  # one nothing watches - no monitor re-reads "not exploitable here", a
+  # compensating control nobody observes, or a cost judgement - is looked at
+  # again partway through, whatever its cap (TheHub #60817). `days` after it
+  # takes effect it reads `review due`; `grace_days` after that, unreviewed,
+  # it lapses to `needs_review` - shown as needing a decision, never expired
+  # quietly. A record with a premise `premise_monitor` evaluates
+  # (port_not_published, firewall_scope, not_internet_facing, epss_below) is
+  # watched, so it is exempt.
+  interim_review:
+    days: 30
+    grace_days: 14
+    reason_codes: [not_exploitable_here, compensating_control, cost_exceeds_risk]
+    unless_monitored_premise: true
   refuse:
     kev_listed: true         # an actively exploited CVE is mitigated, never accepted
     critical_operational_requirement: true

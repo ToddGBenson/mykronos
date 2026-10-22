@@ -52,6 +52,7 @@ EXPIRING_WITHIN_DAYS = 30
 #: the ones that need a decision first.
 STATES = (
     "premise_failed",
+    "needs_review",
     "expired",
     "expiring",
     "active",
@@ -85,6 +86,11 @@ def derive_state(record_status: str, expires_at: date | None, today: date) -> st
         return "expired"
     if record_status == "pending_approval":
         return "pending_approval"
+    if record_status == "needs_review" and not (
+        expires_at is not None and expires_at < today
+    ):
+        # Its interim review lapsed (TheHub #60817): a decision is owed.
+        return "needs_review"
     if record_status in ra.LIVE:
         if expires_at is not None:
             left = (expires_at - today).days
@@ -209,8 +215,15 @@ class RiskAcceptanceRowOut(BaseModel):
     expires_at: date | None
     #: Negative once past. Null for a record with no expiry yet (pending).
     days_left: int | None
-    #: Live, and past its review date.
+    #: Live, and past its review date - the one before expiry, or the
+    #: interim review an acceptance nothing watches owes (TheHub #60817).
     review_due: bool
+    #: The interim review (TheHub #60817): none | scheduled | due | lapsed |
+    #: done, and the day it is owed. `none` when the reason is watched.
+    interim_review: str
+    interim_review_by: date | None
+    interim_reviewed_at: datetime | None
+    interim_reviewed_by: str | None
     #: Needs a reviewer's eye now: expired, past its date, or a premise that
     #: fails (stored as `premise_failed`, or failing on today's evidence).
     alarm: bool
@@ -425,6 +438,7 @@ def _row(
     days_left = (record.expires_at - today).days if record.expires_at is not None else None
     failing = any(p.status == "failed" for p in premises)
     live = record.status in ra.LIVE
+    interim = ra.interim_state(record, today, ra.interim_rule()) if live else "none"
     return RiskAcceptanceRowOut(
         id=record.id,
         repo_full_name=record.repo_full_name,
@@ -454,10 +468,15 @@ def _row(
         days_left=days_left,
         review_due=live
         and (
-            record.status == "review_due"
+            record.status in ("review_due", "needs_review")
             or (record.review_by is not None and record.review_by < today)
+            or interim in ("due", "lapsed")
         ),
-        alarm=state in ("premise_failed", "expired")
+        interim_review=interim,
+        interim_review_by=record.interim_review_by,
+        interim_reviewed_at=record.interim_reviewed_at,
+        interim_reviewed_by=record.interim_reviewed_by,
+        alarm=state in ("premise_failed", "expired", "needs_review")
         or (live and (failing or (days_left is not None and days_left < 0))),
         closed_at=record.closed_at,
         closed_reason=record.closed_reason,
@@ -486,12 +505,27 @@ def _count(values: Iterable[str], keys: Iterable[str]) -> dict[str, int]:
     return out
 
 
-def actions_for(record_id: str, record_status: str) -> list[ActionOut]:
+def actions_for(
+    record_id: str, record_status: str, interim_review: str = "none"
+) -> list[ActionOut]:
     """What the acceptance API will do with this record in its current status -
     the same rules the routes enforce, so a named action is one that would
     not be refused for the record's status."""
     base = f"/api/risk-acceptances/{record_id}"
     out: list[ActionOut] = []
+    if record_status in ra.LIVE and interim_review in ("scheduled", "due", "lapsed"):
+        out.append(
+            ActionOut(
+                label="Record the interim review",
+                method="POST",
+                path=f"{base}/interim-review",
+                effect=(
+                    "Says, with a note, that you looked again and the acceptance still "
+                    "stands. Nothing watches its reason, so a person must (TheHub #60817)."
+                ),
+                who="a person",
+            )
+        )
     if record_status in ra.LIVE:
         out.append(
             ActionOut(
@@ -677,5 +711,5 @@ async def repo_risk_acceptance(
             scores=scores,
             history=history,
             renewed_by=renewed_by,
-            actions=actions_for(record.id, record.status),
+            actions=actions_for(record.id, record.status, row.interim_review),
         )

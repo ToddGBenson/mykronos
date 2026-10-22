@@ -273,6 +273,7 @@ ROUTES: dict[str, str] = {
     "GET /api/risk-acceptances/{record_id}": PRINCIPAL,
     "POST /api/risk-acceptances/{record_id}/renew": PRINCIPAL,
     "POST /api/risk-acceptances/{record_id}/revoke": HUMAN,
+    "POST /api/risk-acceptances/{record_id}/interim-review": HUMAN,
     # -- public ------------------------------------------------------------
     "GET /healthz": PUBLIC_SCHEME,
     "GET /openapi.json": PUBLIC_SCHEME,

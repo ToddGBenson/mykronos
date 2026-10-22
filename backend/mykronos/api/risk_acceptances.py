@@ -67,6 +67,13 @@ class RevokeIn(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class InterimReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: What was checked, and why the acceptance still stands.
+    note: str = Field(min_length=1, max_length=2000)
+
+
 class MigrateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -289,3 +296,19 @@ async def revoke(
     except ra.RiskAcceptanceError as exc:
         raise _refused(exc) from exc
     return {"revoked": record_id, "findings_reopened": reopened}
+
+
+@router.post("/{record_id}/interim-review")
+async def interim_review(
+    request: Request, record_id: str, body: InterimReviewIn, principal: HumanDep
+) -> dict[str, Any]:
+    """A person records the interim review an acceptance nothing watches owes
+    (TheHub #60817): they looked again, and it still stands."""
+    _policy(request)
+    try:
+        record = ra.record_interim_review(
+            request.app.state.db, record_id=record_id, reviewed_by=principal, note=body.note
+        )
+    except ra.RiskAcceptanceError as exc:
+        raise _refused(exc) from exc
+    return {"risk_acceptance": ra.serialize(record)}
