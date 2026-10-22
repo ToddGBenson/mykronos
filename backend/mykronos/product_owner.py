@@ -1174,6 +1174,18 @@ class HubClient:
             ok=False, status=response.status_code, detail=refusal_text(body, response.status_code)
         )
 
+    async def create_story(self, payload: dict[str, Any]) -> HubResult:
+        """A new backlog story (`POST /api/dev/stories`), for the
+        briefing-signal filing job only (TheHub #60862, D-170).
+
+        Refused here, before TheHub is asked, for anything but the backlog:
+        a story created in the sprint would arm autonomous dispatch, which is
+        what `pull_into_sprint`'s ordering exists to prevent.
+        """
+        if payload.get("bucket") != "backlog":
+            raise ValueError("MyKronos files new stories to the backlog only.")
+        return await self._write("/api/dev/stories", payload)
+
     async def disable_autonomy(self, story_id: int) -> HubResult:
         return await self._write(
             f"/api/devops/autonomy/stories/{story_id}/toggle-autonomy",

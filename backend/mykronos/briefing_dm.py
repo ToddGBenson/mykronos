@@ -345,17 +345,16 @@ def products(db: Any) -> list[tuple[str, str]]:
     return [(str(repo_id), str(name)) for repo_id, name in rows]
 
 
-def route_reader(app: FastAPI) -> BriefingReader:
+def route_reader(app: FastAPI, *, actor: str = f"job:{BRIEFING_DM_JOB}") -> BriefingReader:
     """Read the briefing through its own route, so the DM and the page cannot
-    disagree. The request is synthetic: the route reads only `app.state`."""
+    disagree. The request is synthetic: the route reads only `app.state`.
+    The briefing-signal filing job reads through it too, as itself."""
     from fastapi import Request
 
     from mykronos.adminauth import ActorKind, Principal, Role
     from mykronos.api.briefing_daily import daily_briefing_route
 
-    principal = Principal(
-        actor=f"job:{BRIEFING_DM_JOB}", role=Role.VIEWER, kind=ActorKind.AUTOMATION
-    )
+    principal = Principal(actor=actor, role=Role.VIEWER, kind=ActorKind.AUTOMATION)
 
     async def read(repo_id: str | None) -> DailyBriefingOut:
         request = Request(

@@ -24,6 +24,10 @@ carries a `source`, an `as_of` and a `status`:
   sprint health and the board check behind suggested focus and next-sprint
   candidates read TheHub's board and GitHub through `delivery_sources`.
 
+Next-sprint candidates are ranked by `sprint_signal` (TheHub #60862): risk
+removed x exposure / effort, every factor on the line, and the top three
+follow suggested focus.
+
 Every builder here catches its own failure and returns an ``unavailable``
 section: one unreadable store must never take the rest of the page with it.
 """
@@ -1443,9 +1447,16 @@ def focus_section(
     board_error: str = "TheHub's board was not read.",
     key: str = "suggested_focus",
     title: str = "Suggested focus",
+    next_sprint: Section | None = None,
 ) -> Section:
     """The few lines from the rest of the page to start with, leaving out
-    the lake's items that are already a story on TheHub's board."""
+    the lake's items that are already a story on TheHub's board.
+
+    The top `sprint_signal.FOCUS_TOP` ranked next-sprint candidates follow
+    them (TheHub #60862): `next_sprint` has already left out what is a story.
+    """
+    from mykronos.sprint_signal import FOCUS_TOP
+
     source = "this briefing's sections; TheHub board (what is already a story)"
     readable = [s for s in sections if s.status in (OK, PARTIAL)]
     if not readable:
@@ -1467,6 +1478,14 @@ def focus_section(
     unread = [s.title for s in sections if s.status != OK]
     if unread:
         missing.append(f"Ranked without: {', '.join(unread)}.")
+    lines = ranked[:FOCUS_LIMIT]
+    top: list[Line] = []
+    if next_sprint is not None and next_sprint.status in (OK, PARTIAL):
+        shown = {(line.what, line.repo_full_name) for line in lines}
+        top = [
+            line for line in next_sprint.lines
+            if (line.what, line.repo_full_name) not in shown
+        ][:FOCUS_TOP]
     return Section(
         key=key,
         title=title,
@@ -1474,8 +1493,12 @@ def focus_section(
         source=source,
         as_of=now,
         reason=" ".join(missing),
-        lines=ranked[:FOCUS_LIMIT],
-        data={"candidates": len(ranked), "already_on_board": dropped},
+        lines=lines + top,
+        data={
+            "candidates": len(ranked),
+            "already_on_board": dropped,
+            "next_sprint_top": [line.what for line in top],
+        },
     )
 
 
@@ -1587,10 +1610,54 @@ def deploy_and_health(report: briefing_report.Briefing, asset_id: str) -> Sectio
 
 
 CANDIDATES_SOURCE = (
-    "lake findings (guidance fix groups); stalled lanes; TheHub board (what is "
-    "already a story)"
+    "lake findings (guidance fix groups, severity); stalled lanes; deployment and "
+    "public endpoint probes (exposure); TheHub board (what is already a story)"
 )
 CANDIDATE_LIMIT = 5
+#: Ranked candidates the overall section hands the filing job, after the
+#: board check.
+CANDIDATE_POOL = 10
+
+
+def _ranked_lines(
+    candidates: list[Any], board: Any
+) -> tuple[list[Any], list[Line], list[dict[str, Any]]]:
+    """The candidates that are not a story yet, their lines, and the ones
+    that are: by the signal key a filed story carries, or B3's matcher."""
+    from mykronos.sprint_signal import story_key
+
+    stories = board.open_stories() if board is not None else None
+    kept: list[Any] = []
+    lines: list[Line] = []
+    dropped: list[dict[str, Any]] = []
+    for candidate in candidates:
+        line = Line(
+            what=candidate.title,
+            so_what=candidate.explain(),
+            work=STORY,
+            repo_full_name=candidate.repo_full_name,
+            ref=candidate.ref,
+        )
+        story = None
+        if stories is not None:
+            story = next(
+                (s for s in stories if story_key(s) == candidate.signal_key), None
+            ) or on_board(line, stories)
+        if story is not None:
+            dropped.append({"what": line.what, "story": _story_ref(story),
+                            "signal_key": candidate.signal_key})
+            continue
+        kept.append(candidate)
+        lines.append(line)
+    return kept, lines, dropped
+
+
+def _board_gap(board: Any, board_error: str) -> str:
+    if board is None:
+        return f"Candidates already on the board could not be left out. {board_error}"
+    if board.stale:
+        return f"{board.reason} The board is as of {board.as_of.isoformat()}."
+    return ""
 
 
 def next_sprint_candidates(
@@ -1602,58 +1669,27 @@ def next_sprint_candidates(
     board: Any = None,
     board_error: str = "TheHub's board was not read.",
 ) -> Section:
-    """Changes that would close the most of this product's open findings.
+    """This product's changes worth a sprint, ranked by
+    `sprint_signal.FORMULA` with every factor on the line (TheHub #60862).
 
-    Derived from the scanner's own fix text (`guidance.fix_groups`), largest
-    first, after any lane repair: a fix nobody can scan closes nothing.
-    New work only: a candidate that is already a story on TheHub's board (by
-    the fix id it carries, or by title) is left out and listed in `data`.
-    `partial` when the board could not be read to check.
+    Candidates are the scanner's own fix groups (`guidance.fix_groups`) and
+    any lane repair: a fix nobody can scan closes nothing, so a stalled lane
+    removes the risk of every open finding it holds. New work only: one that
+    is already a story on TheHub's board (by its signal key, the fix id it
+    carries, or title) is left out and listed in `data`. `partial` when the
+    board could not be read to check.
     """
-    from mykronos import guidance
+    from mykronos import sprint_signal
 
     key, title = "next_sprint_candidates", "Next-sprint candidates"
     try:
-        groups = guidance.fix_groups(catalog, asset_id=asset_id)
+        candidates = sprint_signal.rank(catalog, report, [asset_id])
     except Exception as exc:  # noqa: BLE001 - reported, never shown as none
-        logger.debug("Could not group fixes")
+        logger.debug("Could not rank next-sprint candidates")
         return unavailable(key, title, CANDIDATES_SOURCE, _error(exc))
 
-    lines: list[Line] = []
-    for lane in report.stalled if report else []:
-        lines.append(
-            Line(
-                what=f"Repair the {lane.capability} lane ({lane.reason}).",
-                so_what=f"Holds {lane.open_findings} open finding(s) that cannot close "
-                "otherwise.",
-                work=STORY,
-                repo_full_name=asset_id,
-            )
-        )
-    for group in sorted(groups, key=lambda g: -g.findings):
-        lines.append(
-            Line(
-                what=group.action,
-                so_what=f"Closes {group.findings} open {group.capability} finding(s) "
-                f"across {len(group.rules)} rule(s); effort: {group.effort}.",
-                work=STORY,
-                repo_full_name=asset_id,
-                ref=group.fix_id,
-            )
-        )
-    stories = board.open_stories() if board is not None else None
-    repairs = len(report.stalled) if report else 0
-    kept_repairs, dropped_repairs = _not_on_board(lines[:repairs], stories)
-    # The cap applies to the fix groups left after the board check, so a
-    # filtered one makes room for the next rather than shortening the list.
-    kept_fixes, dropped_fixes = _not_on_board(lines[repairs:], stories)
-    kept_fixes = kept_fixes[:CANDIDATE_LIMIT]
-    dropped = dropped_repairs + dropped_fixes
-    missing = ""
-    if board is None:
-        missing = f"Candidates already on the board could not be left out. {board_error}"
-    elif board.stale:
-        missing = f"{board.reason} The board is as of {board.as_of.isoformat()}."
+    kept, lines, dropped = _ranked_lines(candidates, board)
+    missing = _board_gap(board, board_error)
     return Section(
         key=key,
         title=title,
@@ -1661,8 +1697,76 @@ def next_sprint_candidates(
         source=CANDIDATES_SOURCE,
         as_of=as_of,
         reason=missing,
-        lines=kept_repairs + kept_fixes,
-        data={"fix_groups": len(groups), "already_on_board": dropped},
+        lines=lines[:CANDIDATE_LIMIT],
+        data={
+            "fix_groups": sum(1 for c in candidates if c.kind == "fix"),
+            "formula": sprint_signal.FORMULA,
+            "candidates": [c.factors() for c in kept[:CANDIDATE_LIMIT]],
+            "already_on_board": dropped,
+        },
+    )
+
+
+NEXT_SPRINT_SOURCE = (
+    CANDIDATES_SOURCE + "; onboarded repositories; TheHub board (weekly briefing-signal "
+    "share of sprint stories)"
+)
+
+
+def next_sprint_section(
+    catalog: Catalog,
+    db: Any,
+    report: briefing_report.Briefing | None,
+    *,
+    now: datetime,
+    as_of: datetime | None,
+    board: Any = None,
+    board_error: str = "TheHub's board was not read.",
+) -> Section:
+    """The estate's next-sprint candidates, ranked, and the weekly measure of
+    whether filing them changed what the sprint holds (TheHub #60862).
+
+    `data.candidates` is what the `briefing-signal-filing` job files from:
+    ranked, every factor of the score with what it was read from, and
+    already filtered against the board.
+    """
+    from mykronos import sprint_signal
+
+    key, title = sprint_signal.NEXT_SPRINT_KEY, "Next-sprint candidates"
+    try:
+        repos = sprint_signal.repos(db)
+        candidates = sprint_signal.rank(catalog, report, repos)
+    except Exception as exc:  # noqa: BLE001 - reported, never shown as none
+        logger.debug("Could not rank next-sprint candidates")
+        return unavailable(key, title, NEXT_SPRINT_SOURCE, _error(exc))
+
+    kept, lines, dropped = _ranked_lines(candidates, board)
+    missing = [gap] if (gap := _board_gap(board, board_error)) else []
+    if report is None:
+        missing.append(
+            "Lane repairs and exposure were not read: the lane analysis could not be built."
+        )
+    metric: dict[str, Any] | None = None
+    if board is not None:
+        metric = sprint_signal.weekly_metric(board, now=now)
+    else:
+        missing.append("The weekly briefing-signal share needs TheHub's board.")
+    return Section(
+        key=key,
+        title=title,
+        status=PARTIAL if missing else OK,
+        source=NEXT_SPRINT_SOURCE,
+        as_of=as_of,
+        reason=" ".join(missing),
+        lines=lines[:CANDIDATE_LIMIT],
+        data={
+            "repositories": len(repos),
+            "formula": sprint_signal.FORMULA,
+            "weights": sprint_signal.weights(),
+            "candidates": [c.factors() for c in kept[:CANDIDATE_POOL]],
+            "already_on_board": dropped,
+            "success_metric": metric,
+        },
     )
 
 
@@ -1734,17 +1838,27 @@ def build_overall(
     acceptances = acceptances_section(db, now=now)
     needs_you = needs_you_section(delivery, now=now)
     sprint = sprint_health_section(delivery, now=now)
+    next_sprint = next_sprint_section(
+        catalog,
+        db,
+        report,
+        now=now,
+        as_of=as_of,
+        board=delivery.board,
+        board_error=delivery.board_error,
+    )
     focus = focus_section(
         [needs_you, production, trust, delta, acceptances, sprint],
         now=now,
         board=delivery.board,
         board_error=delivery.board_error,
+        next_sprint=next_sprint,
     )
     return DailyBriefing(
         generated_at=now,
         scope="overall",
         repo_full_name=None,
-        sections=[needs_you, production, trust, delta, acceptances, sprint, focus],
+        sections=[needs_you, production, trust, delta, acceptances, sprint, next_sprint, focus],
     )
 
 

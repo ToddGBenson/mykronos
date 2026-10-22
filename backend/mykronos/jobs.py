@@ -1633,8 +1633,15 @@ class JobSkipped(Exception):  # noqa: N818 - an outcome, not an error
 #: below needs no import of that module.
 BRIEFING_DM_JOB = "briefing-dm"
 
+#: Next-sprint candidates filed to TheHub's backlog (`mykronos.sprint_signal`,
+#: TheHub #60862). Ticks hourly, acts once a UTC day.
+SIGNAL_FILING_JOB = "briefing-signal-filing"
+
 #: The interval `job_runs` records for a job whose scheduler tick is shorter
 #: than its real cadence. The briefing DM ticks every five minutes and is owed
 #: once a day; platform health judges `late` against what is recorded here,
 #: so recording the tick would call every evening "late".
-RECORDED_INTERVAL_SECONDS: dict[str, int] = {BRIEFING_DM_JOB: 86_400}
+RECORDED_INTERVAL_SECONDS: dict[str, int] = {
+    BRIEFING_DM_JOB: 86_400,
+    SIGNAL_FILING_JOB: 86_400,
+}

@@ -105,7 +105,9 @@ async def daily_briefing_route(
     """What changed, so what, and whether it is work (TheHub #60860).
 
     Overall: Needs you today, Production truth, Can we trust our signals,
-    Risk delta, Acceptances, Sprint health, Suggested focus. Per product
+    Risk delta, Acceptances, Sprint health, Next-sprint candidates (ranked
+    by risk removed x exposure / effort, with the weekly briefing-signal
+    metric; TheHub #60862), Suggested focus. Per product
     (`repo_id`): Deploy and health, Findings delta, Capability lanes,
     Next-sprint candidates.
 

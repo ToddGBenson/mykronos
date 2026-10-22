@@ -51,6 +51,8 @@ const CONSEQUENCE: Record<string, string> = {
   routing: "Findings are never routed to a tracker.",
   "briefing-dm":
     "The 07:00 briefing DM does not arrive. The /briefing page still answers when asked.",
+  "briefing-signal-filing":
+    "Next-sprint candidates are not filed to TheHub's backlog. The briefing still ranks them.",
 };
 
 function JobRow({ job }: { job: Job }) {
