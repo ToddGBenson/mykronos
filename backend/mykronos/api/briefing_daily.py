@@ -84,6 +84,7 @@ def _build_inputs(request: Request) -> dict[str, Any]:
         "toxic_coverage": operational.toxic_coverage,
         "exposure": operational.exposure,
         "production_lag": operational.production_lag,
+        "probe_setup": operational.probe_setup,
     }
 
 

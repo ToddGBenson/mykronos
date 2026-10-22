@@ -6022,6 +6022,13 @@ export interface components {
             /** Probe Url */
             probe_url: string;
             lag?: components["schemas"]["DeployLagOut"] | null;
+            /**
+             * Probe Source
+             * @default
+             */
+            probe_source: string;
+            /** Missing */
+            missing?: string[];
         };
         /**
          * DeploymentProbeUpdate

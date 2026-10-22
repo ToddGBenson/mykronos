@@ -719,6 +719,23 @@ def production_section(
                     repo_full_name=lag.repo_full_name,
                 )
             )
+    # Repositories nothing probes (TheHub #60918). Named, because leaving them
+    # out is how "production is current" and "production is not measured"
+    # read the same; each one's missing settings are in `data.probe_setup`.
+    unprobed = sorted(p["repo_full_name"] for p in report.probe_setup if not p.get("source"))
+    if unprobed:
+        total = len(report.probe_setup)
+        lines.append(
+            Line(
+                what=f"Production truth covers {total - len(unprobed)} of {total} "
+                f"repositories: {', '.join(unprobed)} "
+                f"{'has' if len(unprobed) == 1 else 'have'} no deployment probe.",
+                so_what="Nothing compares what they run with what was scanned. Set a "
+                "probe URL for each that has a deployment; one with none needs nothing.",
+                work=DECISION,
+                ref="/api/dashboard/deployments",
+            )
+        )
     for endpoint in report.exposure:
         serious = [
             o for o in endpoint.get("observations") or []
@@ -772,6 +789,15 @@ def production_section(
                 for lag in report.production_lag
             ],
             "deployments_unknown": unknown_repos,
+            "deployments_not_configured": unprobed,
+            "probe_setup": [
+                {
+                    "repo_full_name": p["repo_full_name"],
+                    "source": p.get("source", ""),
+                    "missing": list(p.get("missing") or []),
+                }
+                for p in report.probe_setup
+            ],
             "public_endpoints": len(report.exposure),
         },
     )

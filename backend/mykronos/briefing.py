@@ -954,6 +954,10 @@ class Briefing:
     #: True when the deployment record could not be read. Not the same as an
     #: empty list, which means no repository has a probe.
     production_lag_unknown: bool = False
+    #: Every active repository's probe setup, `deployments.ProbeSetup.public()`
+    #: - source and what is missing, never a token (TheHub #60918). Empty when
+    #: it was not read, so production truth then names nobody as unprobed.
+    probe_setup: list[dict[str, Any]] = field(default_factory=list)
     stalled: list[StalledLane] = field(default_factory=list)
     #: Scheduled jobs that are failing, late, or have never run (#409). Typed
     #: loosely because the assessment belongs to `platform_health.assess_job`
@@ -1779,6 +1783,7 @@ def build(
     toxic_coverage: dict[str, Any] | None = None,
     exposure: list[dict[str, Any]] | None = None,
     production_lag: list[ProductionLag] | None = None,
+    probe_setup: list[dict[str, Any]] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1857,6 +1862,9 @@ def build(
         # Scoped by `asset_id`: a deployment belongs to one repository.
         production_lag=_only(list(production_lag or []), asset_id),
         production_lag_unknown=production_lag is None,
+        probe_setup=[
+            p for p in probe_setup or [] if asset_id is None or p.get("repo_full_name") == asset_id
+        ],
         stalled=stalled,
         stale=_only(
             stale_lanes(
