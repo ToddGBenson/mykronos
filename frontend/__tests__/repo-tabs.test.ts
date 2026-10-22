@@ -10,7 +10,7 @@ describe("canonicalTab", () => {
   it("leaves a live id alone", () => {
     expect(canonicalTab("remediate")).toBe("remediate");
     expect(canonicalTab("findings")).toBe("findings");
-    expect(canonicalTab("executive")).toBe("executive");
+    expect(canonicalTab("report")).toBe("report");
   });
 
   it("falls back to Dashboard when no tab is given", () => {

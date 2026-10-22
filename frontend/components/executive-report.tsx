@@ -10,7 +10,10 @@
  *
  * Printing is the browser's own: `data-print-report` switches on the print
  * rules in `globals.css`, which hide the navigation, force the light palette
- * and keep each section on one page where it fits.
+ * and keep each section on one page where it fits. Since TheHub #60885 this is
+ * the first half of the Report tab, and the attribute sits on the Report's
+ * wrapper (`components/report.tsx`) so the whole tab prints as one document;
+ * it is not repeated here, because the print rules' zoom would compound.
  */
 
 import type { ReactNode } from "react";
@@ -50,7 +53,15 @@ function Gloss({ children }: { children: ReactNode }) {
   return <p className="max-w-prose text-[13px] text-ink-3">{children}</p>;
 }
 
-export function ExecutiveReport({ data }: { data: ExecutiveSummary }) {
+export function ExecutiveReport({
+  data,
+  gaps = true,
+}: {
+  data: ExecutiveSummary;
+  /** False when the caller lists `data.gaps` itself: the Report tab puts them
+   *  under one "What we can't answer" with the consult's questions. */
+  gaps?: boolean;
+}) {
   const [week, month] = data.trend;
   const serious = (data.open_by_severity.critical ?? 0) + (data.open_by_severity.high ?? 0);
   const doubtful = data.lanes.filter(laneIsDoubtful);
@@ -61,7 +72,7 @@ export function ExecutiveReport({ data }: { data: ExecutiveSummary }) {
   const progress = data.progress;
 
   return (
-    <article data-print-report className="flex flex-col gap-4">
+    <article className="flex flex-col gap-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-ink-3">
@@ -454,7 +465,7 @@ export function ExecutiveReport({ data }: { data: ExecutiveSummary }) {
         </Body>
       </Section>
 
-      {data.gaps.length ? (
+      {gaps && data.gaps.length ? (
         <Section title="What this report cannot tell you">
           <Body>
             <ul className="list-disc pl-5 text-[13px] text-ink-2">

@@ -1,10 +1,10 @@
 import Link from "next/link";
+import { permanentRedirect } from "next/navigation";
 
 import { CapabilityManager } from "@/components/capability-manager";
-import { Consult } from "@/components/consult";
 import { DecisionsTab } from "@/components/decisions";
-import { ExecutiveReport } from "@/components/executive-report";
 import { InsiderRiskTab } from "@/components/insider-risk";
+import { Report } from "@/components/report";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
 import { TestCoverage } from "@/components/test-coverage";
 import { JobLights, PipelineLinks, ReportingGaps } from "@/components/pipelines";
@@ -43,7 +43,7 @@ import {
 } from "@/components/primitives";
 import type { CiPage, ScanHealth, WorkflowsPage } from "@/lib/api";
 import { exportQuery, findingsApiQuery, normalizeQuery } from "@/lib/findings-filters";
-import { canonicalTab } from "@/lib/repo-tabs";
+import { REPO_TABS as TABS, canonicalTab, retiredTabRedirect } from "@/lib/repo-tabs";
 import {
   getCi,
   getDecisions,
@@ -73,58 +73,6 @@ import {
 
 export const dynamic = "force-dynamic";
 
-/**
- * Thirteen tabs, in this order (spec 18 §2; Product Owner is spec 35, and the
- * Executive report the one written for a reader outside the team).
- *
- * `Dashboard` is what spec 18's first pass called "Harness" — enable/disable,
- * scan health, enabled jobs — promoted to the default landing tab rather than
- * duplicated into a second one. It carries no findings; that is what the
- * Findings tab is for. `Harness` is now specifically a test-running tab
- * (`TestHarnessTab`) — unit/functional/QA execution, not general scan health.
- */
-const TABS = [
-  { id: "dashboard", label: "Dashboard" },
-  // Second, because it is the tab somebody opens *instead of* the other nine.
-  // Nine tabs is a filing system; this is the answer, and every line of it
-  // links back to the tab that produced it.
-  { id: "consult", label: "Consult" },
-  // Beside Consult, because it is the same idea for a different reader:
-  // Consult answers the operator's questions, this the executive's, on one
-  // page that prints. Every number on it is one another tab already shows.
-  { id: "executive", label: "Executive report" },
-  { id: "findings", label: "Findings" },
-  // Directly after Findings, because it is the same backlog asked the next
-  // question. Findings says what is outstanding here; this says which of it is
-  // work today — and it is the estate page's reasoning applied to one
-  // repository rather than a second, quietly different, ranking.
-  //
-  // The only remediation tab (#60820). A separate "Remediation" tab showed the
-  // same fix list again beside Patchwork's history; the history is a section
-  // of this one now, and `?tab=remediation` lands here (`lib/repo-tabs.ts`).
-  { id: "remediate", label: "Remediate today" },
-  { id: "harness", label: "Harness" },
-  { id: "threat-model", label: "Threat Model" },
-  { id: "sscs", label: "Supply chain" },
-  { id: "insider", label: "Insider Threat" },
-  { id: "decisions", label: "Risk Decision" },
-  // Beside Risk Decision and not part of it: that tab is Oracle's ship/no-ship
-  // score; this is the register of risks accepted rather than fixed, and
-  // whether what each acceptance rests on still holds.
-  { id: "risk", label: "Risk management" },
-  // Last, because it is the only tab nobody opens to do work: it answers
-  // "what can we show an assessor" rather than "what should I fix". Its own
-  // tab rather than a panel under Insider Threat — that tab is about who
-  // merged what, and adherence is a different question with a different
-  // reader.
-  { id: "adherence", label: "Adherence" },
-  // The one tab about the work rather than the code (spec 35, D-135): this
-  // repository's declared process, its backlog and its sprint, read from its
-  // own `.sdlc/process.yaml` and from TheHub. After Adherence because both
-  // answer "how is this repository run", and this one is the operator's.
-  { id: "product-owner", label: "Product Owner" },
-] as const;
-
 export default async function RepoPage({
   params,
   searchParams,
@@ -134,6 +82,11 @@ export default async function RepoPage({
 }) {
   const { repoId } = await params;
   const query = await searchParams;
+  // A retired id is sent to its heir with a 308 rather than rendered under its
+  // old name, so the address bar, and whatever is copied out of it, is the
+  // current one (TheHub #60885: `consult` and `executive` are `report`).
+  const heir = retiredTabRedirect(repoId, query);
+  if (heir) permanentRedirect(heir);
   const tab = canonicalTab(query.tab);
 
   // An unknown id used to fall through the ternary below and render Dashboard,
@@ -190,7 +143,7 @@ export default async function RepoPage({
   return (
     <div className="flex flex-col gap-4">
       {/* Everything above the tab's own content is navigation, and none of it
-          prints: the Executive report carries its own title (globals.css). */}
+          prints: the Report carries its own title (globals.css). */}
       <div className="flex flex-wrap items-baseline gap-3 print:hidden">
         <Crumb href="/">Portfolio</Crumb>
         <span className="text-ink-3">/</span>
@@ -244,10 +197,8 @@ export default async function RepoPage({
         ))}
       </nav>
 
-      {tab === "consult" ? (
-        <ConsultTab repoId={repoId} />
-      ) : tab === "executive" ? (
-        <ExecutiveTab repoId={repoId} />
+      {tab === "report" ? (
+        <ReportTab repoId={repoId} />
       ) : tab === "decisions" ? (
         <RiskDecisionsTab repoId={repoId} />
       ) : tab === "risk" ? (
@@ -939,20 +890,25 @@ async function AegisTab({ repoId }: { repoId: string }) {
   );
 }
 
-async function ConsultTab({ repoId }: { repoId: string }) {
-  const result = await getConsult(repoId);
-  if (!result.ok) {
-    return <ErrorPanel title="Consult unavailable" detail={result.error} />;
-  }
-  return <Consult repoId={repoId} data={result.data} />;
-}
-
-async function ExecutiveTab({ repoId }: { repoId: string }) {
-  const result = await getExecutiveSummary(repoId);
-  if (!result.ok) {
-    return <ErrorPanel title="Executive report unavailable" detail={result.error} />;
-  }
-  return <ExecutiveReport data={result.data} />;
+/**
+ * One Report (TheHub #60885): the executive summary, then the consult Q&A,
+ * then what neither can answer. Both reads are the endpoints the two tabs
+ * used, fetched together; either failing costs its own half, not the page.
+ */
+async function ReportTab({ repoId }: { repoId: string }) {
+  const [executive, consult] = await Promise.all([
+    getExecutiveSummary(repoId),
+    getConsult(repoId),
+  ]);
+  return (
+    <Report
+      repoId={repoId}
+      executive={executive.ok ? executive.data : null}
+      executiveError={executive.ok ? null : executive.error}
+      consult={consult.ok ? consult.data : null}
+      consultError={consult.ok ? null : consult.error}
+    />
+  );
 }
 
 async function AdherenceTab({ repoId }: { repoId: string }) {
