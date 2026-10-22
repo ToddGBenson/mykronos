@@ -191,3 +191,22 @@ class TestDegraded:
         )
 
         assert not health.degraded
+
+
+class TestSkipped:
+    """Due, and nothing done: neither of the other outcomes (TheHub #60864)."""
+
+    def test_a_skipped_job_reads_skipped_with_its_reason(self) -> None:
+        row = Row(name="briefing-dm", interval_seconds=86_400, last_run_at=NOW)
+        row.skipped_reason = "MYKRONOS_BRIEFING_DM_CHANNEL not set."  # type: ignore[attr-defined]
+
+        health = platform_health.assess_job(row, now=NOW)
+
+        assert health.status == "skipped"
+        assert "MYKRONOS_BRIEFING_DM_CHANNEL" in health.detail
+
+    def test_a_failure_still_outranks_a_stale_skip(self) -> None:
+        row = Row(consecutive_failures=2, last_error="boom")
+        row.skipped_reason = "old"  # type: ignore[attr-defined]
+
+        assert platform_health.assess_job(row, now=NOW).status == "failing"

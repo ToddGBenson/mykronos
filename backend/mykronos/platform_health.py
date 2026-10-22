@@ -37,7 +37,7 @@ from typing import Any, Literal
 #: that cries wolf on ordinary jitter is a health page people stop reading.
 LATENESS_FACTOR = 2
 
-Status = Literal["ok", "failing", "late", "never_ran", "unknown", "disabled"]
+Status = Literal["ok", "failing", "late", "never_ran", "unknown", "disabled", "skipped"]
 
 
 @dataclass
@@ -107,6 +107,19 @@ def assess_job(row: Any, *, now: datetime, started_at: datetime | None = None) -
             ),
             last_succeeded_at=last_success,
             consecutive_failures=failures,
+        )
+
+    skipped = getattr(row, "skipped_reason", "") or ""
+    if skipped:
+        # Due, and did nothing, for a reason somebody has to act on - the
+        # briefing DM with no Slack configured for it (TheHub #60864). Not
+        # `ok`, which would be the silent success this page exists against,
+        # and not `failing`: nothing broke.
+        return JobHealth(
+            name=row.name,
+            status="skipped",
+            detail=f"skipped: {skipped}",
+            last_succeeded_at=last_success,
         )
 
     if last_success is None:

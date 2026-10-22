@@ -688,3 +688,31 @@ class TestNetassess:
         assert len(notified.sent) == 1
         assert notified.sent[0].level == "warning"
         assert "192.168.0.99" in notified.sent[0].detail
+
+
+class TestMultiLineMessages:
+    """`Notification.lines` (TheHub #60864): a message of several lines, each
+    scrubbed on its own, where `detail` would flatten them into one."""
+
+    def test_each_line_is_its_own_line_and_is_scrubbed(self) -> None:
+        rendered = Notification(
+            title="Morning briefing",
+            detail="",
+            repo_full_name="",
+            level="info",
+            lines=("first", "forged\r\n*SYSTEM*", "third"),
+        ).render()
+
+        assert rendered.split("\n") == [
+            ":information_source: *Morning briefing*",
+            "first",
+            "forged\\n*SYSTEM*",
+            "third",
+        ]
+
+    def test_a_long_message_is_still_truncated(self) -> None:
+        rendered = Notification(
+            title="t", detail="", repo_full_name=REPO, lines=tuple("x" * 300 for _ in range(50))
+        ).render()
+        assert len(rendered) <= 2_500
+        assert f"`{REPO}`" in rendered

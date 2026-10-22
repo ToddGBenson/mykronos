@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 #: these is the first two lines.
 MAX_TEXT = 2_500
 
+#: One line of a multi-line message (`Notification.lines`). Long enough for a
+#: Slack link and a finding title; still cut, because each is untrusted.
+LINE_MAX = 400
+
 _ICONS = {
     "critical": ":rotating_light:",
     "warning": ":warning:",
@@ -68,9 +72,21 @@ class Notification:
     #: severity and "how much does this interrupt someone" are different
     #: questions that would drift if one field answered both.
     level: str = "warning"
+    #: A message of several lines, each scrubbed on its own. `detail` goes
+    #: through `scrub` whole, which turns its newlines into a visible `\n`
+    #: and cuts it at 256 characters - right for one untrusted value, and no
+    #: way to send the briefing DM (TheHub #60864). When set, these replace
+    #: `detail`, and an empty `repo_full_name` prints no line of its own.
+    lines: tuple[str, ...] = ()
 
     def render(self) -> str:
         icon = _ICONS.get(self.level, ":warning:")
+        if self.lines:
+            head = f"{icon} *{scrub(self.title)}*\n"
+            if self.repo_full_name:
+                head += f"`{scrub(self.repo_full_name)}`\n"
+            body = "\n".join(scrub(line, max_length=LINE_MAX) for line in self.lines)
+            return (head + body)[:MAX_TEXT]
         text = (
             f"{icon} *{scrub(self.title)}*\n"
             f"`{scrub(self.repo_full_name)}`\n"

@@ -1141,3 +1141,27 @@ export async function getReachability(repoId: string): Promise<Result<Reachabili
     return failure(error);
   }
 }
+
+export type DailyBriefingView =
+  paths["/api/briefing/daily"]["get"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * The morning briefing (TheHub #60864): overall, or one product's when
+ * `repoId` (an onboarding id) is given.
+ */
+export async function getDailyBriefing(
+  repoId?: string | null,
+): Promise<Result<DailyBriefingView>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/briefing/daily", {
+      params: { query: repoId ? { repo_id: repoId } : {} },
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the briefing") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}

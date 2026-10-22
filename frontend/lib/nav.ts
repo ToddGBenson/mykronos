@@ -16,6 +16,10 @@ export const NAV: {
     section: "Views",
     items: [
       { label: "Portfolio", href: "/" },
+      // What changed overnight, so what, and whether it is work (TheHub
+      // #60864). Near the top because it is the page read first, and the one
+      // the 07:00 Slack DM links to.
+      { label: "Briefing", href: "/briefing" },
       { label: "Triage queue", href: "/triage" },
       // Incident lookup lives here too: "what does the outside world think
       // matters" and "is it here" are two views of one question, and a KEV row

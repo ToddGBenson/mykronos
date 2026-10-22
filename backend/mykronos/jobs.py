@@ -1568,3 +1568,33 @@ async def notify_dormant_lanes(
         "Dormant lanes: none across %s pipeline(s)", len(report.pipelines_read)
     )
     return report
+
+
+class JobNotDue(Exception):  # noqa: N818 - an outcome, not an error
+    """Raised by a job that ticks often and acts rarely: nothing is owed yet.
+
+    `main._every` records nothing for it. A tick that only asked "is it time?"
+    is not a run, and recording it as a success would make the row's
+    `last_succeeded_at` a heartbeat - fresh every five minutes whether or not
+    the thing the job exists to do has happened (TheHub #60864).
+    """
+
+
+class JobSkipped(Exception):  # noqa: N818 - an outcome, not an error
+    """Raised by a job that was due and could not act, with the reason.
+
+    `main._every` records it as `skipped` with that reason: not a failure,
+    since nothing broke, and never a success, since nothing was done. The
+    briefing DM raises it when Slack is not configured for it.
+    """
+
+
+#: The briefing DM's job name (`mykronos.briefing_dm`), here so the table
+#: below needs no import of that module.
+BRIEFING_DM_JOB = "briefing-dm"
+
+#: The interval `job_runs` records for a job whose scheduler tick is shorter
+#: than its real cadence. The briefing DM ticks every five minutes and is owed
+#: once a day; platform health judges `late` against what is recorded here,
+#: so recording the tick would call every evening "late".
+RECORDED_INTERVAL_SECONDS: dict[str, int] = {BRIEFING_DM_JOB: 86_400}

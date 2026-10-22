@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request
 
 from mykronos import (
     __version__,
+    briefing_dm,
     environment,
     finding_disposition,
     logsafe,
@@ -78,8 +79,12 @@ from mykronos.github.factory import (
 from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
+    BRIEFING_DM_JOB,
     DORMANT_LANES_JOB,
+    RECORDED_INTERVAL_SECONDS,
     AcceptanceSweepResult,
+    JobNotDue,
+    JobSkipped,
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
@@ -115,12 +120,18 @@ from mykronos.threat_intel import refresh_job as refresh_threat_intel
 logger = logging.getLogger(__name__)
 
 
-def _record_run(db: Any, name: str, interval: int, error: str | None) -> None:
+def _record_run(
+    db: Any, name: str, interval: int, error: str | None, *, skipped: str = ""
+) -> None:
     """Write down that a job ran, and whether it worked.
 
     Best-effort and never raised out of: a health record that could take down
     the job it is recording would be worse than no health record. A failure to
     write it is logged and the job carries on.
+
+    `skipped` is the third outcome (`jobs.JobSkipped`): due, and nothing done,
+    for the reason given. It neither counts as a failure nor moves
+    `last_succeeded_at`.
     """
     try:
         with db.session() as session:
@@ -130,7 +141,11 @@ def _record_run(db: Any, name: str, interval: int, error: str | None) -> None:
                 session.add(row)
             row.last_run_at = utcnow()
             row.interval_seconds = interval
-            if error is None:
+            row.skipped_reason = skipped[:2000]
+            if skipped:
+                row.consecutive_failures = 0
+                row.last_error = ""
+            elif error is None:
                 row.last_succeeded_at = row.last_run_at
                 row.consecutive_failures = 0
                 row.last_error = ""
@@ -191,18 +206,30 @@ async def _every(
     current_principal.set(
         Principal(actor=f"job:{name}", role=Role.VIEWER, kind=ActorKind.AUTOMATION)
     )
+    # What `job_runs` is told the cadence is. Usually the tick; a job that
+    # ticks often and acts daily records the day (TheHub #60864).
+    recorded = RECORDED_INTERVAL_SECONDS.get(name, interval)
     while True:
         try:
             await run()
         except asyncio.CancelledError:
             raise
+        except JobNotDue:
+            # Not a run: nothing is recorded, so the row stays the last time
+            # the job actually did its work.
+            pass
+        except JobSkipped as skip:
+            reason = scrub(str(skip), max_length=2000) or "skipped"
+            logger.warning("Scheduled job %r skipped: %s", name, reason)
+            if db is not None:
+                _record_run(db, name, recorded, None, skipped=reason)
         except Exception as exc:
             logger.exception("Scheduled job %r failed; will retry in %ss", name, interval)
             if db is not None:
-                _record_run(db, name, interval, scrub(str(exc)) or exc.__class__.__name__)
+                _record_run(db, name, recorded, scrub(str(exc)) or exc.__class__.__name__)
         else:
             if db is not None:
-                _record_run(db, name, interval, None)
+                _record_run(db, name, recorded, None)
         await asyncio.sleep(interval)
 
 
@@ -710,6 +737,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 threshold_hours=settings.dormant_lanes_threshold_hours,
             )
 
+        async def _briefing_dm() -> None:
+            # The 07:00 DM (TheHub #60864): due once a local day, read through
+            # the briefing route so it says what the page says. Not due raises
+            # JobNotDue and records nothing; no Slack for it raises JobSkipped.
+            await briefing_dm.send_briefing_dm(
+                settings, db=app.state.db, read=briefing_dm.route_reader(app)
+            )
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -826,6 +861,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 if settings.concourse_url
                 else []
             ),
+            # Always scheduled: with no Slack configured for it, it records
+            # `skipped` with the missing setting, rather than being absent
+            # from platform health and reading as "nothing to say".
+            (BRIEFING_DM_JOB, briefing_dm.TICK_SECONDS, _briefing_dm),
             ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             (
