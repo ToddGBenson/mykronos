@@ -62,3 +62,6 @@ by lane, and the briefing (`GET /api/dashboard/briefing`) carries the same diges
 as updated even when its `only_if_status` guard left the row alone, so its result
 cannot say which rows moved. This module reads statuses before and after its
 writes instead; the existing callers that trust the result are unchanged here.
+*Since fixed (TheHub #60926):* `update_findings` now returns only the rows its
+UPDATE wrote, so this module reads the result instead of re-reading statuses, and
+the reopen route's 409 and the approval audit's `applied` flag are truthful.

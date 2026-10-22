@@ -145,6 +145,13 @@ def update_findings(
     the read and the write — a finding a human marked `false_positive` while
     a reconciliation sweep was deciding to close it, for instance.
 
+    **`UpdateResult.updated` names only the rows the UPDATE wrote** (TheHub
+    #60926). It used to report every id it was handed, so a row the guard
+    skipped - or an id not in the partition at all - read as updated, and a
+    caller's 409 or an audit's `applied` flag could not tell a no-op from a
+    write. A partition in which nothing changed is not rewritten either: there
+    is nothing to save, and a rewrite would only race other writers for it.
+
     Each rewritten partition is consolidated to a single part file, so
     repeated updates cannot fragment the lake.
     """
@@ -178,11 +185,19 @@ def update_findings(
 
             placeholders = ", ".join(["?"] * len(finding_ids))
             guard = " AND status = ?" if only_if_status else ""
-            con.execute(
+            written = con.execute(
                 f"UPDATE part SET {set_clause} "
-                f"WHERE finding_id IN ({placeholders}){guard}",
+                f"WHERE finding_id IN ({placeholders}){guard} "
+                f"RETURNING finding_id",
                 [*params, *finding_ids, *([only_if_status] if only_if_status else [])],
-            )
+            ).fetchall()
+            # Distinct, in the order the caller asked: a finding id is unique
+            # in the lake, but a caller's list need not be.
+            wrote = {str(row[0]) for row in written}
+            changed = [fid for fid in dict.fromkeys(finding_ids) if fid in wrote]
+            if not changed:
+                con.execute("DROP TABLE part")
+                continue
 
             target = catalog.partition_dir("findings", dt) / "part-0000.parquet"
             write_parquet_atomically(
@@ -193,7 +208,7 @@ def update_findings(
                     stale.unlink(missing_ok=True)
             con.execute("DROP TABLE part")
 
-            result.updated.extend(finding_ids)
+            result.updated.extend(changed)
             result.partitions_written += 1
 
         catalog.refresh_views(con)
