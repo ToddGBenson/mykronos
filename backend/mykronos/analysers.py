@@ -25,7 +25,6 @@ of gaps nobody should act on, which is how a real one stops being read.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -155,9 +154,10 @@ _PROCEDURAL_SQL = re.compile(
 )
 
 #: Above this many `.sql` files the split is not attempted and the SQL bytes
-#: stay counted as before. One API call per file, cached for six hours, is
-#: fine for TheHub's 376; a repository with ten times that is a different cost
-#: question, and the safe direction is to keep reporting it.
+#: stay counted as before. The files are read a hundred to a GraphQL request
+#: (`get_files`, TheHub #60908), so TheHub's few hundred cost a handful of
+#: calls; a repository with ten times that is a different cost question, and
+#: the safe direction is to keep reporting it.
 MAX_SQL_FILES = 1_000
 
 
@@ -197,13 +197,15 @@ def classify_sql(
     return split
 
 
-async def read_sql_files(
-    client: GitHubClient, repo_full_name: str, *, concurrency: int = 8
-) -> dict[str, str] | None:
+async def read_sql_files(client: GitHubClient, repo_full_name: str) -> dict[str, str] | None:
     """Every `.sql` file on the default branch, or None if any could not be read.
 
     All or nothing, for the reason `list_tree` gives: a partial read would
     classify the unread files as schema by omission.
+
+    Read in batches (`get_files`), not one contents call per file: TheHub's
+    migrations made that ~426 GitHub calls per `mykronos briefing`, each
+    logged at INFO (TheHub #60908).
     """
     try:
         ref = str((await client.get_repo(repo_full_name)).get("default_branch") or "main")
@@ -213,18 +215,13 @@ async def read_sql_files(
         wanted = [path for path in paths if path.lower().endswith(".sql")]
         if len(wanted) > MAX_SQL_FILES:
             return None
-        gate = asyncio.Semaphore(concurrency)
-
-        async def one(path: str) -> tuple[str, str | None]:
-            async with gate:
-                return path, await client.get_file(repo_full_name, path, ref)
-
-        results = await asyncio.gather(*(one(path) for path in wanted))
+        results = await client.get_files(repo_full_name, wanted, ref)
     except Exception:  # noqa: BLE001 - unknown, never a partial answer
         return None
-    if any(text is None for _, text in results):
+    texts = {path: results.get(path) for path in wanted}
+    if any(text is None for text in texts.values()):
         return None
-    return {path: text for path, text in results if text is not None}
+    return {path: text for path, text in texts.items() if text is not None}
 
 
 async def read_languages(client: GitHubClient, repo_full_name: str) -> dict[str, int] | None:

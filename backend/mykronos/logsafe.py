@@ -146,3 +146,42 @@ def install(logger: logging.Logger | None = None) -> int:
             "is protected only at the call sites that scrub explicitly."
         )
     return attached
+
+
+#: Libraries whose INFO line is one per HTTP request. httpx2 logs
+#: `HTTP Request: GET <url> "HTTP/1.1 200 OK"` for every call, which made one
+#: `mykronos briefing` print several hundred lines, one per TheHub migration
+#: file it read (TheHub #60908).
+HTTP_REQUEST_LOGGERS = ("httpx2", "httpx")
+
+
+class DemoteToDebug(logging.Filter):
+    """Re-level a logger's INFO records to DEBUG.
+
+    A per-request line is diagnostics, not news: at INFO it buries the lines
+    an operator reads after a deploy. It stays available at DEBUG rather than
+    being dropped. Warnings and errors pass untouched.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.INFO:
+            return True
+        record.levelno = logging.DEBUG
+        record.levelname = logging.getLevelName(logging.DEBUG)
+        return logging.getLogger(record.name).isEnabledFor(logging.DEBUG)
+
+
+def demote_http_request_logs() -> int:
+    """Put `DemoteToDebug` on the HTTP client loggers, once each.
+
+    On the loggers, not on handlers: these records are created on exactly
+    these loggers, and a logger filter runs before any handler sees them.
+    Returns how many filters were newly added.
+    """
+    added = 0
+    for name in HTTP_REQUEST_LOGGERS:
+        target = logging.getLogger(name)
+        if not any(isinstance(f, DemoteToDebug) for f in target.filters):
+            target.addFilter(DemoteToDebug())
+            added += 1
+    return added

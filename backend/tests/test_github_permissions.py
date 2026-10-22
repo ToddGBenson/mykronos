@@ -39,7 +39,7 @@ WRITE_VERBS = {"POST", "PUT", "PATCH", "DELETE"}
 
 #: REST methods that send a write verb without writing. GraphQL takes every
 #: query as a POST, and this one only reads a Projects board.
-READS_OVER_POST = {"project_field_values"}
+READS_OVER_POST = {"project_field_values", "get_files"}
 
 
 def _public_methods(cls: type) -> set[str]:

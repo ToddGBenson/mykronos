@@ -63,6 +63,8 @@ REQUIRED_PERMISSIONS = {
 METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "get_repo": (("metadata", "read"),),
     "get_file": (("contents", "read"),),
+    # A GraphQL read: POST, and still only `contents: read` (TheHub #60908).
+    "get_files": (("contents", "read"),),
     "create_branch": (("contents", "write"),),
     # `workflows: write` only when a change touches `.github/workflows/`.
     "commit_files": (("contents", "write"), ("workflows", "write")),
@@ -360,6 +362,12 @@ class ChecksSummary:
     pending: int = 0
 
 
+#: Paths per GraphQL query in `get_files`. A hundred keeps each response a
+#: few hundred KB for migration-sized files and well inside GitHub's node
+#: limits; TheHub's migrations are then a handful of requests, not ~420.
+FILES_PER_QUERY = 100
+
+
 class GitHubClient(Protocol):
     """What the platform needs from GitHub. Nothing more."""
 
@@ -381,6 +389,14 @@ class GitHubClient(Protocol):
         None means "could not look", and a caller must never read it as
         absence (B-058).
         """
+        ...
+
+    async def get_files(
+        self, repo_full_name: str, paths: list[str], ref: str
+    ) -> dict[str, str | None]:
+        """Many files' contents at once, by path; None for a path that does
+        not exist. Raises GitHubError when a batch cannot be read
+        (TheHub #60908)."""
         ...
 
     async def languages(self, repo_full_name: str) -> dict[str, int] | None:
@@ -761,6 +777,20 @@ class FakeGitHubClient:
         self.calls.append(("get_file", f"{repo_full_name}:{path}@{ref}"))
         repo = self._repo(repo_full_name)
         return repo.branches.get(ref, repo.files).get(path)
+
+    async def get_files(
+        self, repo_full_name: str, paths: list[str], ref: str
+    ) -> dict[str, str | None]:
+        """One recorded call per batch, as the live client makes one GraphQL
+        request per `FILES_PER_QUERY` paths."""
+        repo = self._repo(repo_full_name)
+        tree = repo.branches.get(ref, repo.files)
+        out: dict[str, str | None] = {}
+        for start in range(0, len(paths), FILES_PER_QUERY):
+            batch = paths[start : start + FILES_PER_QUERY]
+            self.calls.append(("get_files", f"{repo_full_name}@{ref}:{len(batch)}"))
+            out.update({path: tree.get(path) for path in batch})
+        return out
 
     async def create_branch(self, repo_full_name: str, branch: str, from_ref: str) -> None:
         self.calls.append(("create_branch", f"{repo_full_name}:{branch}"))
@@ -1320,6 +1350,55 @@ class RestGitHubClient:
         if payload.get("encoding") != "base64":
             return str(payload.get("content", ""))
         return base64.b64decode(payload["content"]).decode("utf-8", errors="replace")
+
+    async def get_files(
+        self, repo_full_name: str, paths: list[str], ref: str
+    ) -> dict[str, str | None]:
+        """Many files at `ref`, one GraphQL request per `FILES_PER_QUERY`.
+
+        The contents API is one request per file, and TheHub keeps several
+        hundred migration files: the D-138 schema split cost ~426 calls per
+        `mykronos briefing` (TheHub #60908). GraphQL reads a blob's text by
+        `ref:path` expression, so a batch is one round trip.
+
+        A path whose object is missing is None, as `get_file` answers 404. A
+        blob GraphQL truncated, or whose text it would not give, is read whole
+        through `get_file`, so the answer is never a silent prefix.
+        """
+        owner, _, name = repo_full_name.partition("/")
+        out: dict[str, str | None] = {}
+        for start in range(0, len(paths), FILES_PER_QUERY):
+            batch = paths[start : start + FILES_PER_QUERY]
+            variables: dict[str, str] = {"owner": owner, "name": name}
+            fields = []
+            for n, path in enumerate(batch):
+                variables[f"e{n}"] = f"{ref}:{path}"
+                fields.append(
+                    f"f{n}: object(expression: $e{n}) {{ ... on Blob {{ text isTruncated }} }}"
+                )
+            declared = "".join(f", $e{n}: String!" for n in range(len(batch)))
+            query = (
+                f"query($owner: String!, $name: String!{declared}) "
+                "{ repository(owner: $owner, name: $name) { " + " ".join(fields) + " } }"
+            )
+            payload = await self._json(
+                "POST", "/graphql", json={"query": query, "variables": variables}
+            )
+            repository = (payload.get("data") or {}).get("repository")
+            if repository is None:
+                raise GitHubError(
+                    f"Reading {len(batch)} file(s) of {repo_full_name}@{ref} failed: "
+                    f"{str(payload.get('errors'))[:200]}"
+                )
+            for n, path in enumerate(batch):
+                blob = repository.get(f"f{n}")
+                if blob is None:
+                    out[path] = None
+                elif blob.get("isTruncated") or not isinstance(blob.get("text"), str):
+                    out[path] = await self.get_file(repo_full_name, path, ref)
+                else:
+                    out[path] = str(blob["text"])
+        return out
 
     async def create_branch(self, repo_full_name: str, branch: str, from_ref: str) -> None:
         base = await self._json("GET", f"/repos/{repo_full_name}/git/ref/heads/{from_ref}")
