@@ -290,6 +290,21 @@ GRANDFATHERED = {
     "repo_surfaces.repo_full_name",
     "repo_surfaces.kind",
     "repo_surfaces.name",
+    # A VEX statement's advisory, package and source (TheHub #60888). New
+    # table, so nothing has rows these would be added to; and a default is
+    # the one thing each must not have: an empty advisory or package would
+    # match nothing at best, and a statement with no source is not evidence -
+    # the auto-triage lane that reads it would be closing findings on a claim
+    # nobody can go and read.
+    "vex_statements.vulnerability_id",
+    "vex_statements.package_name",
+    "vex_statements.source",
+    # What an auto-triage action did and to which finding (TheHub #60888).
+    # New table; an action with a defaulted finding, rule or status would be
+    # an undo pointing at nothing, or at the wrong state to restore.
+    "auto_triage_actions.finding_id",
+    "auto_triage_actions.rule",
+    "auto_triage_actions.new_status",
 }
 
 

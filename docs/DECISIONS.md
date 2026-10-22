@@ -37,6 +37,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-166 — The host and LAN collectors run daily from Scheduled Tasks that hold no token](decisions/D-166-host-and-lan-collectors-run-daily-from-scheduled-tasks-that-hold-no-token.md)
 - [D-167 — The independent reviewer runs a pinned model, claude-opus-5-5](decisions/D-167-the-reviewer-model-is-pinned-to-an-exact-id.md)
 - [D-168 — A cluster is the unit of a triage decision, and its rules are deterministic](decisions/D-168-a-cluster-is-the-unit-of-a-triage-decision.md)
+- [D-169 — Deterministic auto-triage applies on recorded evidence, with an audit row and a one-click undo](decisions/D-169-deterministic-auto-triage-applies-with-evidence-audit-and-undo.md)
 
 <!-- decisions-index:end -->
 

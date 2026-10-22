@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { permanentRedirect } from "next/navigation";
 
+import { AutoTriageUndo } from "@/components/auto-triage-undo";
 import { CapabilityManager } from "@/components/capability-manager";
 import { DecisionsTab } from "@/components/decisions";
 import { InsiderRiskTab } from "@/components/insider-risk";
@@ -42,6 +43,7 @@ import {
   Section,
 } from "@/components/primitives";
 import type { CiPage, ScanHealth, WorkflowsPage } from "@/lib/api";
+import { actionHeadline, undoable } from "@/lib/auto-triage";
 import { exportQuery, findingsApiQuery, normalizeQuery } from "@/lib/findings-filters";
 import { REPO_TABS as TABS, canonicalTab, retiredTabRedirect } from "@/lib/repo-tabs";
 import {
@@ -691,6 +693,23 @@ async function FindingDisposition({ findingId }: { findingId: string }) {
           and its age is unreliable.
         </p>
       ) : null}
+      {/* Closed by the platform rather than a person (TheHub #60888): the
+          rule, its evidence and the undo, beside the status it explains. */}
+      {result.data.auto_triage
+        ?.filter((action) => undoable(action))
+        .slice(0, 1)
+        .map((action) => (
+          <div
+            key={action.id}
+            className="flex flex-col gap-1 border-l-2 border-accent-2 bg-paper-3 px-2 py-1"
+          >
+            <span className="font-mono text-[11px] text-ink-2">
+              auto-triaged: {actionHeadline(action)}
+            </span>
+            <span className="text-[12px] leading-snug text-ink-2">{action.summary}</span>
+            <AutoTriageUndo actionId={action.id} />
+          </div>
+        ))}
       <OccurrenceDisposition findingId={findingId} status={result.data.status} />
     </div>
   );
