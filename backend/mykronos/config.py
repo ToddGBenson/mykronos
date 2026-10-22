@@ -674,11 +674,15 @@ class Settings(BaseSettings):
     concourse_external_url: str = Field(
         default="",
         description=(
-            "Where a *browser* reaches Concourse, for the links the dashboard "
-            "renders. Separate from concourse_url because they genuinely "
-            "differ: this process reaches it by container name on a shared "
-            "Docker network, and a person reaches it on localhost. Falls back "
-            "to concourse_url when unset."
+            "Where a *browser* reaches Concourse - a LAN or public URL - for "
+            "the links the dashboard, the briefing and the briefing DM render. "
+            "Separate from concourse_url because they genuinely differ: this "
+            "process reaches it by container name on a shared Docker network. "
+            "A loopback value (localhost, 127.0.0.1) is ignored, because a "
+            "link that opens only on the host is no link from a phone "
+            "(TheHub #60924). Unset, concourse_url is used only if it names a "
+            "real host (not a Docker service name); otherwise no Concourse "
+            "link is printed."
         ),
     )
 

@@ -41,11 +41,13 @@ token against a limit other things need more (see `StatusCache`).
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import httpx2
 import yaml
@@ -684,14 +686,57 @@ class PipelineStatus:
         return [job.name for job in self.jobs if job.status == "failed"]
 
 
+def _host(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
+def _is_loopback(host: str) -> bool:
+    if host in ("localhost", "") or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def browser_url(external_url: str, base_url: str = "") -> str:
+    """The Concourse base a person's browser can open, or "" for none (TheHub #60924).
+
+    `MYKRONOS_CONCOURSE_EXTERNAL_URL` is that setting. A loopback value is
+    refused: compose defaulted it to `http://localhost:8080`, so every link the
+    briefing, the 07:00 DM and the CI views printed worked on one machine -
+    the host - and on no phone or laptop. Without an external URL, the API
+    URL is used only when it names a real host: `http://concourse:8080` is a
+    Docker service name, resolvable on the compose network and nowhere else.
+
+    "" means no link is printed. The read itself always goes through the API
+    URL; only links depend on this.
+    """
+    external = (external_url or "").strip().rstrip("/")
+    if external:
+        return "" if _is_loopback(_host(external)) else external
+    fallback = (base_url or "").strip().rstrip("/")
+    host = _host(fallback)
+    if not fallback or _is_loopback(host):
+        return ""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if "." not in host:
+            return ""
+    return fallback
+
+
 class ConcourseClient:
     """Reads pipeline state from Concourse's API, anonymously (spec 15 §4a)."""
 
     def __init__(self, base_url: str, *, team: str = "main", external_url: str = "") -> None:
         self.base_url = base_url.rstrip("/")
         self.team = team
-        # Where a browser goes, which is not where this process goes.
-        self.external_url = (external_url or base_url).rstrip("/")
+        # Where a browser goes, which is not where this process goes, and ""
+        # when no browser can (TheHub #60924): links are then left out.
+        self.external_url = browser_url(external_url, base_url)
 
     @property
     def configured(self) -> bool:
@@ -737,7 +782,10 @@ class ConcourseClient:
         return [j for j in payload if isinstance(j, dict)]
 
     def pipeline_url(self, pipeline: str) -> str:
-        """Where a browser reaches this pipeline (not where this process does)."""
+        """Where a browser reaches this pipeline (not where this process does),
+        or "" when no browser URL is configured (`browser_url`)."""
+        if not self.external_url:
+            return ""
         return f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
 
     def job_names(self, pipeline: str) -> list[str] | None:
@@ -855,7 +903,7 @@ class ConcourseClient:
                 ),
             )
 
-        url = f"{self.external_url}/teams/{self.team}/pipelines/{wanted}"
+        url = self.pipeline_url(wanted) or None
         payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{wanted}/jobs")
         if not isinstance(payload, list):
             return PipelineStatus(
@@ -869,7 +917,7 @@ class ConcourseClient:
             repo_full_name=repo_full_name,
             pipeline=wanted,
             url=url,
-            jobs=[self._job(raw, url) for raw in payload if isinstance(raw, dict)],
+            jobs=[self._job(raw, url or "") for raw in payload if isinstance(raw, dict)],
         )
 
     def paused_jobs(self) -> list[tuple[str, JobStatus]] | None:
@@ -899,7 +947,7 @@ class ConcourseClient:
             return None
         out: list[tuple[str, JobStatus]] = []
         for pipeline in names:
-            url = f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+            url = self.pipeline_url(pipeline)
             payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
             if not isinstance(payload, list):
                 # One unreadable pipeline does not invalidate the others, but it
@@ -956,7 +1004,7 @@ class ConcourseClient:
             return None
         out: list[tuple[str, JobStatus]] = []
         for pipeline in names:
-            url = f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+            url = self.pipeline_url(pipeline)
             payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
             if not isinstance(payload, list):
                 continue
@@ -986,7 +1034,7 @@ class ConcourseClient:
             return None
         out: list[tuple[str, BlockedJob]] = []
         for pipeline in names:
-            url = f"{self.external_url}/teams/{self.team}/pipelines/{pipeline}"
+            url = self.pipeline_url(pipeline)
             payload = self._get(f"/api/v1/teams/{self.team}/pipelines/{pipeline}/jobs")
             if not isinstance(payload, list):
                 continue
@@ -1048,7 +1096,11 @@ class ConcourseClient:
             name=name,
             status=str(build.get("status")) if build.get("status") else None,
             build_name=build_name or None,
-            build_url=f"{pipeline_url}/jobs/{name}/builds/{build_name}" if build_name else None,
+            build_url=(
+                f"{pipeline_url}/jobs/{name}/builds/{build_name}"
+                if build_name and pipeline_url
+                else None
+            ),
             # Concourse reports epoch seconds.
             finished_at=datetime.fromtimestamp(int(end), tz=UTC)
             if isinstance(end, int | float) and end
