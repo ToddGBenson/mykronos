@@ -1910,8 +1910,11 @@ def build_product(
     now: datetime,
     threshold: int | None = None,
     delivery: Any = None,
+    signals: Any = None,
 ) -> DailyBriefing:
-    """One product: deploy and health, findings delta, lanes, candidates."""
+    """One product: deploy and health, findings delta, lanes, candidates,
+    and its own signals (`product_signals`, TheHub #60863)."""
+    from mykronos import product_signals
     from mykronos.delivery_sources import DeliveryInputs
 
     delivery = delivery if delivery is not None else DeliveryInputs()
@@ -1942,5 +1945,6 @@ def build_product(
                 board=delivery.board,
                 board_error=delivery.board_error,
             ),
+            product_signals.section(catalog, db, asset_id, signals, now=now),
         ],
     )

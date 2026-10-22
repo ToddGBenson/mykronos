@@ -16,6 +16,7 @@ import { BriefingSectionCard, BriefingView } from "@/components/briefing";
 import {
   briefingHref,
   groupByWork,
+  productSignals,
   refLink,
   statusMeta,
   workCounts,
@@ -274,5 +275,35 @@ describe("helpers", () => {
   it("builds the switcher's links", () => {
     expect(briefingHref(null)).toBe("/briefing");
     expect(briefingHref("a b")).toBe("/briefing?repo_id=a%20b");
+  });
+});
+
+describe("product signals (TheHub #60863)", () => {
+  const signals = [
+    { key: "backups", label: "Backups", status: "measured", source: "TheHub GET /api/backup/health",
+      value: "healthy; newest 3h old.", reason: "" },
+    { key: "feature_use", label: "Feature use", status: "not_measurable", source: "TheHub API",
+      value: "", reason: "not measurable yet: no read route." },
+    { key: "odd", label: "Odd", status: "something-new", source: "", value: "", reason: "x" },
+    { label: "no key" },
+  ];
+
+  it("parses every well-formed signal and never upgrades an unknown status", () => {
+    const parsed = productSignals(section({ data: { signals } }));
+    expect(parsed.map((s) => s.key)).toEqual(["backups", "feature_use", "odd"]);
+    expect(parsed[2].status).toBe("unavailable");
+    expect(productSignals(section({ data: {} }))).toEqual([]);
+  });
+
+  it("renders a row per signal, the reason when it is not measured", () => {
+    const html = render(
+      section({ key: "product_signals", status: "partial", reason: "Not measurable yet: Feature use.",
+                data: { signals } }),
+    );
+    expect(html).toContain('data-signal="backups"');
+    expect(html).toContain("healthy; newest 3h old.");
+    expect(html).toContain('data-signal-status="not_measurable"');
+    expect(html).toContain("not measurable yet: no read route.");
+    expect(html).toContain("Not measurable yet");
   });
 });

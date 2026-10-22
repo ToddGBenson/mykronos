@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from mykronos import briefing_sources, daily_briefing, delivery_sources
+from mykronos import briefing_sources, daily_briefing, delivery_sources, product_signals
 from mykronos.adminauth import PrincipalDep
 from mykronos.schemas import utcnow
 
@@ -109,7 +109,8 @@ async def daily_briefing_route(
     by risk removed x exposure / effort, with the weekly briefing-signal
     metric; TheHub #60862), Suggested focus. Per product
     (`repo_id`): Deploy and health, Findings delta, Capability lanes,
-    Next-sprint candidates.
+    Next-sprint candidates, Product signals (TheHub #60863: each product's
+    own listed signals, every one measured or named "not measurable yet").
 
     Every section carries `source`, `as_of` and a `status`. A source that
     could not be read is `unavailable` with its reason. "Needs you", sprint
@@ -122,9 +123,10 @@ async def daily_briefing_route(
 
     asset_id = _resolve_repo(request, repo_id) if repo_id else None
     state = request.app.state
-    inputs, delivery = await asyncio.gather(
+    inputs, delivery, signals = await asyncio.gather(
         asyncio.to_thread(_build_inputs, request),
         delivery_sources.gather(state, want_pull_requests=asset_id is None),
+        product_signals.gather(state, asset_id or ""),
     )
     now = utcnow()
     if asset_id is None:
@@ -145,5 +147,6 @@ async def daily_briefing_route(
             asset_id=asset_id,
             now=now,
             delivery=delivery,
+            signals=signals,
         )
     return DailyBriefingOut.model_validate(dataclasses.asdict(report))

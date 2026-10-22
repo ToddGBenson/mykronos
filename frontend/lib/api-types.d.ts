@@ -2028,7 +2028,8 @@ export interface paths {
          *     by risk removed x exposure / effort, with the weekly briefing-signal
          *     metric; TheHub #60862), Suggested focus. Per product
          *     (`repo_id`): Deploy and health, Findings delta, Capability lanes,
-         *     Next-sprint candidates.
+         *     Next-sprint candidates, Product signals (TheHub #60863: each product's
+         *     own listed signals, every one measured or named "not measurable yet").
          *
          *     Every section carries `source`, `as_of` and a `status`. A source that
          *     could not be read is `unavailable` with its reason. "Needs you", sprint

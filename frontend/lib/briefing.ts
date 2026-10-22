@@ -169,3 +169,47 @@ export function repoHref(
 export function briefingHref(repoId?: string | null): string {
   return repoId ? `/briefing?repo_id=${encodeURIComponent(repoId)}` : "/briefing";
 }
+
+/** One product signal (TheHub #60863): measured, not measurable yet, or unread. */
+export type ProductSignal = {
+  key: string;
+  label: string;
+  status: "measured" | "not_measurable" | "unavailable";
+  source: string;
+  value: string;
+  reason: string;
+};
+
+export const SIGNAL_WORD: Record<ProductSignal["status"], string> = {
+  measured: "Measured",
+  not_measurable: "Not measurable yet",
+  unavailable: "Not read",
+};
+
+/**
+ * A section's `data.signals`, when it carries them (the per-product
+ * "Product signals" block). Anything that is not a well-formed signal is
+ * dropped rather than rendered half-empty; an unknown status reads as
+ * unavailable, never as measured.
+ */
+export function productSignals(section: BriefingSection): ProductSignal[] {
+  const raw = (section.data as Record<string, unknown> | undefined)?.signals;
+  if (!Array.isArray(raw)) return [];
+  const out: ProductSignal[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    if (typeof s.key !== "string" || typeof s.label !== "string") continue;
+    const status =
+      s.status === "measured" || s.status === "not_measurable" ? s.status : "unavailable";
+    out.push({
+      key: s.key,
+      label: s.label,
+      status,
+      source: typeof s.source === "string" ? s.source : "",
+      value: typeof s.value === "string" ? s.value : "",
+      reason: typeof s.reason === "string" ? s.reason : "",
+    });
+  }
+  return out;
+}
