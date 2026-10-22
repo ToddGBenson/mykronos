@@ -114,6 +114,7 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/governance": PRINCIPAL,
     "GET /api/dashboard/incident": PRINCIPAL,
     "GET /api/dashboard/briefing": PRINCIPAL,
+    "GET /api/briefing/daily": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/sscs/packages": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/threat-model": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/guidance": PRINCIPAL,
