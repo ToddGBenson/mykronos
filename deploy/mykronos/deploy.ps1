@@ -811,6 +811,26 @@ try {
     } while (((Get-Date) -lt $deadline) -and (($backend -ne "healthy") -or ($frontend -ne "healthy")))
 
     if ($backend -ne "healthy") { throw "Backend did not become healthy: docker compose logs backend" }
+    # The frontend is checked as well, not only waited for. On 2026-10-22
+    # compose left mykronos-frontend in `created`, never started; the loop
+    # above ran out its three minutes, this script said "Deployed", and the
+    # dashboard answered 502 until someone noticed. A container that was
+    # created and not started is started once here; anything else stops.
+    if ($frontend -ne "healthy") {
+        $state = (docker inspect -f '{{.State.Status}}' mykronos-frontend 2>$null)
+        if ($state -eq "created") {
+            Write-Host "  frontend was created but never started; starting it" -ForegroundColor Yellow
+            docker start mykronos-frontend | Out-Null
+            $deadline = (Get-Date).AddMinutes(2)
+            do {
+                Start-Sleep -Seconds 5
+                $frontend = (docker inspect -f '{{.State.Health.Status}}' mykronos-frontend 2>$null)
+            } while (((Get-Date) -lt $deadline) -and ($frontend -ne "healthy"))
+        }
+        if ($frontend -ne "healthy") {
+            throw "Frontend did not become healthy (state: $state, health: $frontend): docker compose logs frontend"
+        }
+    }
 
     # Healthy is not the same fact as "running what you asked for". A stale
     # image answers /healthz perfectly well, which is how production came to be
