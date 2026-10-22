@@ -485,12 +485,7 @@ def _match(
 
 
 def _statuses(catalog: Catalog, finding_ids: list[str]) -> dict[str, str]:
-    """Each finding's status now.
-
-    Read on both sides of a write because `update_findings` reports every id
-    it was handed as updated, whether or not its `only_if_status` guard let
-    the row change - so its result cannot say which rows actually moved.
-    """
+    """Each finding's status now."""
     if not finding_ids:
         return {}
     placeholders = ", ".join("?" for _ in finding_ids)
@@ -513,15 +508,18 @@ def apply(db: Any, catalog: Catalog, result: SweepResult, now: datetime | None =
         ids = [p.finding_id for p in proposals if before.get(p.finding_id) == "open"]
         if not ids:
             continue
-        update_findings(
-            catalog,
-            locate_findings(catalog, ids),
-            "status = ?, resolved_at = ?, accepted_until = NULL, accepted_reason_code = NULL",
-            [new_status, moment],
-            only_if_status="open",
+        # `updated` names only the rows the `open` guard let through (TheHub
+        # #60926), so a finding closed between the read and the write gets no
+        # action row and no audit entry claiming a change that did not happen.
+        changed = set(
+            update_findings(
+                catalog,
+                locate_findings(catalog, ids),
+                "status = ?, resolved_at = ?, accepted_until = NULL, accepted_reason_code = NULL",
+                [new_status, moment],
+                only_if_status="open",
+            ).updated
         )
-        after = _statuses(catalog, ids)
-        changed = {fid for fid in ids if after.get(fid) == new_status}
         with db.session() as session:
             for proposal in proposals:
                 if proposal.finding_id not in changed:
@@ -616,7 +614,7 @@ def undo(
     accepted_until = _parse_moment(prior.get("accepted_until"))
     if isinstance(accepted_until, datetime):
         accepted_until = accepted_until.date()
-    update_findings(
+    outcome = update_findings(
         catalog,
         locate_findings(catalog, [finding_id]),
         "status = ?, resolved_at = ?, accepted_until = ?, accepted_reason_code = ?",
@@ -628,7 +626,7 @@ def undo(
         ],
         only_if_status=new_status,
     )
-    if _statuses(catalog, [finding_id]).get(finding_id) != restored:
+    if not outcome.count:
         raise AutoTriageError(
             f"Finding {finding_id} changed while it was being restored; nothing was undone."
         )
