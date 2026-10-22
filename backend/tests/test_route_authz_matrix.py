@@ -104,6 +104,8 @@ ROUTES: dict[str, str] = {
     "POST /api/dashboard/triage/{finding_id}/snooze": PRINCIPAL,
     "DELETE /api/dashboard/triage/{finding_id}/snooze": PRINCIPAL,
     "POST /api/dashboard/triage/batch": PRINCIPAL,
+    "GET /api/dashboard/triage/clusters": PRINCIPAL,
+    "POST /api/dashboard/triage/clusters/{cluster_id}/disposition": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/insider-risk": PRINCIPAL,
     "GET /api/dashboard/vulnerability-management": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/ci": PRINCIPAL,

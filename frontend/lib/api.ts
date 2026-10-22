@@ -341,6 +341,13 @@ export type TriageQueue =
   paths["/api/dashboard/triage"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageItem = TriageQueue["items"][number];
 
+/** The queue grouped by cluster (TheHub #60887, D-168). */
+export type ClusterQueue =
+  paths["/api/dashboard/triage/clusters"]["get"]["responses"]["200"]["content"]["application/json"];
+export type TriageCluster = ClusterQueue["clusters"][number];
+export type ClusterDispositionOut =
+  paths["/api/dashboard/triage/clusters/{cluster_id}/disposition"]["post"]["responses"]["200"]["content"]["application/json"];
+
 export type PullRequestsPage =
   paths["/api/dashboard/pull-requests"]["get"]["responses"]["200"]["content"]["application/json"];
 export type PullRequestRow = PullRequestsPage["pull_requests"][number];

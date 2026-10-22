@@ -11,11 +11,19 @@ import {
   Verdict,
 } from "@/components/primitives";
 import { ClassificationReview } from "@/components/classification-review";
+import { ClusterDisposition } from "@/components/cluster-disposition";
 import { WorklistKeys } from "@/components/worklist";
 import { FilterSelect } from "@/components/filter-select";
-import { SEVERITY_ORDER, type Severity, type TriageItem } from "@/lib/api";
+import {
+  SEVERITY_ORDER,
+  type ClusterQueue,
+  type Severity,
+  type TriageCluster,
+  type TriageItem,
+} from "@/lib/api";
+import { CLUSTER_KIND_LABEL, clusterSpread, type ClusterKind } from "@/lib/clusters";
 import { environmentalLine, rankTermLine, rankingCaveat } from "@/lib/rank-terms";
-import { getBriefing, getTriage } from "@/lib/server";
+import { getBriefing, getTriage, getTriageClusters } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -78,6 +86,8 @@ export default async function TriagePage({
     owner?: string;
     order?: string;
     triage?: string;
+    /** `cluster` groups the queue by cluster (TheHub #60887). */
+    group?: string;
     /** Which finding the detail pane is showing. In the URL rather than in
      *  state, so the row somebody is looking at survives a refresh. */
     finding?: string;
@@ -100,6 +110,22 @@ export default async function TriagePage({
   }
 
   const { items, open_by_severity, total_open, truncated, ranking } = result.data;
+
+  // The same filters, one row per cluster (TheHub #60887). Fetched only when
+  // asked for: building clusters reads every open finding, not one page.
+  const grouped = query.group === "cluster";
+  const clusterResult = grouped
+    ? await getTriageClusters({
+        severity: query.severity,
+        capability: query.capability,
+        rule_id: query.rule_id,
+        kev_only: query.kev_only === "1",
+        min_epss: query.min_epss ? Number(query.min_epss) : undefined,
+        owner: query.owner,
+        order: query.order === "rank" ? "rank" : undefined,
+        triage: query.triage,
+      })
+    : null;
 
   // The scanners' own remediation, fetched once for the whole estate rather
   // than per selection: the queue spans repositories, so a per-finding lookup
@@ -284,6 +310,31 @@ export default async function TriagePage({
         </p>
       ) : null}
 
+      {/* One decision for a group (TheHub #60887): the same CVE across images
+          and repositories, or the same weakness at the same place from
+          several scanners, is one row with its members underneath. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Label>Group</Label>
+        {(["finding", "cluster"] as const).map((mode) => (
+          <Link
+            key={mode}
+            href={filterHref({ group: mode === "cluster" ? "cluster" : undefined, finding: undefined })}
+            className={`border px-1.5 py-0.5 font-mono text-[11px] ${
+              (grouped ? "cluster" : "finding") === mode
+                ? "border-accent bg-accent-wash text-accent"
+                : "border-rule text-ink-3 hover:border-accent"
+            }`}
+            title={
+              mode === "cluster"
+                ? "Findings one decision covers, grouped, with the reason shown"
+                : "One row per finding"
+            }
+          >
+            {mode === "cluster" ? "by cluster" : "by finding"}
+          </Link>
+        ))}
+      </div>
+
       <div className="flex flex-wrap items-center gap-1.5">
         <Label>Threat intel</Label>
         <Link
@@ -308,7 +359,13 @@ export default async function TriagePage({
         </Link>
       </div>
 
-      {items.length === 0 ? (
+      {clusterResult ? (
+        clusterResult.ok ? (
+          <ClusterList data={clusterResult.data} />
+        ) : (
+          <ErrorPanel title="Clusters unavailable" detail={clusterResult.error} />
+        )
+      ) : items.length === 0 ? (
         <EmptyState
           title={
             query.severity || query.capability || query.rule_id || query.kev_only || query.min_epss
@@ -391,7 +448,7 @@ export default async function TriagePage({
         </>
       )}
 
-      {truncated ? (
+      {truncated && !grouped ? (
         <p className="border-l-2 border-high bg-high-wash px-3 py-2 text-[13px] text-ink-2">
           <strong className="text-high">Showing the first 100.</strong> There are{" "}
           {total_open} open findings in scope — narrow by severity or capability
@@ -540,5 +597,103 @@ function WorklistDetail({
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * The queue by cluster (TheHub #60887, D-168).
+ *
+ * Each row is one decision: the worst member's severity, what the members
+ * share, and the sentence saying why they belong together. The members are
+ * underneath, all of them - the filters choose which clusters show and never
+ * trim one, because the verdict beside it closes every member.
+ */
+function ClusterList({ data }: { data: ClusterQueue }) {
+  if (data.clusters.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing matches these filters"
+        detail="No cluster has a member matching them. Clear the filters to see every cluster."
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="font-mono text-[12px] text-ink-3">
+        {data.total_clusters} cluster{data.total_clusters === 1 ? "" : "s"} covering{" "}
+        {data.total_findings} open finding{data.total_findings === 1 ? "" : "s"}
+        {data.truncated ? ` - showing the first ${data.clusters.length}` : ""}
+      </p>
+      {data.pool_truncated ? (
+        <p className="border-l-2 border-high bg-high-wash px-3 py-2 text-[13px] text-ink-2">
+          <strong className="text-high">Clustered from a capped pool.</strong> More open
+          findings exist than were grouped, so a cluster here may be missing members.
+        </p>
+      ) : null}
+      <ul className="flex flex-col gap-1.5">
+        {data.clusters.map((cluster) => (
+          <li key={cluster.cluster_id}>
+            <ClusterRow cluster={cluster} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ClusterRow({ cluster }: { cluster: TriageCluster }) {
+  const representative = cluster.representative;
+  return (
+    <details className="border border-rule bg-paper-2">
+      <summary className="flex cursor-pointer flex-col gap-0.5 px-2.5 py-2 hover:bg-paper-3">
+        <span className="flex flex-wrap items-baseline gap-1.5">
+          <SeverityText severity={cluster.max_severity as Severity} />
+          <span className="font-mono text-[11px] text-ink-3">
+            {CLUSTER_KIND_LABEL[cluster.kind as ClusterKind] ?? cluster.kind}
+          </span>
+          <span className="font-mono text-[11px] text-ink-3">· {clusterSpread(cluster)}</span>
+        </span>
+        <span className="text-[13px] leading-snug text-ink">{representative.title}</span>
+        <span className="max-w-prose text-[12px] leading-snug text-ink-2">{cluster.reason}</span>
+      </summary>
+      <div className="flex flex-col gap-2 border-t border-rule-soft px-2.5 py-2">
+        <ClusterDisposition
+          clusterId={cluster.cluster_id}
+          memberIds={cluster.members.map((member) => member.finding_id)}
+        />
+        <ul className="flex flex-col">
+          {cluster.members.map((member) => (
+            <li
+              key={member.finding_id}
+              className="flex flex-wrap items-baseline gap-1.5 border-b border-rule-soft py-1 last:border-b-0"
+            >
+              <SeverityText severity={member.severity as Severity} />
+              <span className="font-mono text-[11px] text-ink-3">{member.capability}</span>
+              <Link
+                href={`/repos/${member.repo_id}?tab=findings`}
+                className="font-mono text-[11px] text-accent hover:underline"
+              >
+                {member.repo_full_name}
+              </Link>
+              <span className="break-all font-mono text-[11px] text-ink-2">
+                {member.file_path
+                  ? `${member.file_path}${member.line_start ? `:${member.line_start}` : ""}`
+                  : member.package_name
+                    ? `${member.package_name}@${member.package_version ?? "?"}`
+                    : member.rule_id}
+              </span>
+              {cluster.folded_ids?.includes(member.finding_id) ? (
+                <Pill tone="muted">folded {member.rule_id}</Pill>
+              ) : null}
+              {member.finding_id === representative.finding_id ? (
+                <span className="font-mono text-[10px] uppercase tracking-wide text-ink-3">
+                  representative
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
   );
 }

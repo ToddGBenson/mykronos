@@ -3537,6 +3537,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/triage/clusters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Triage Clusters
+         * @description The triage queue, one row per cluster (TheHub #60887).
+         *
+         *     Takes the queue's own filters. They choose clusters - one is listed when
+         *     any member matches - and never trim a cluster's members, because the
+         *     disposition beside it covers all of them.
+         */
+        get: operations["triage_clusters_api_dashboard_triage_clusters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/clusters/{cluster_id}/disposition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disposition Cluster
+         * @description One verdict for every open member of a cluster (TheHub #60887).
+         *
+         *     Applied member by member through the status route's own path, each with
+         *     its own audit entry naming the cluster. When the caller is an agent and
+         *     any member is critical or high, nothing is applied: one approval request
+         *     under `finding_disposition` covers the whole cluster, tiered by its worst
+         *     governed member.
+         */
+        post: operations["disposition_cluster_api_dashboard_triage_clusters__cluster_id__disposition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/github": {
         parameters: {
             query?: never;
@@ -4949,6 +4999,121 @@ export interface components {
             runs?: number | null;
             /** Failure Rate */
             failure_rate?: number | null;
+        };
+        /**
+         * ClusterDisposition
+         * @description One verdict for every member of a cluster.
+         */
+        ClusterDisposition: {
+            status: components["schemas"]["FindingStatus"];
+            /**
+             * Reason
+             * @description Required. One reason covering the cluster, recorded on every member.
+             */
+            reason: string;
+            /**
+             * Member Ids
+             * @description The members the caller saw. When given, the disposition is refused (409) unless they are exactly the cluster's open members now - a decision covers what the person looked at, not what arrived since.
+             */
+            member_ids?: string[] | null;
+            /** Accepted Until */
+            accepted_until?: string | null;
+            /**
+             * Indefinite
+             * @default false
+             */
+            indefinite: boolean;
+            /** Accepted Reason Code */
+            accepted_reason_code?: ("no_vendor_fix" | "not_exploitable_here" | "compensating_control" | "cost_exceeds_risk" | "other") | null;
+        };
+        /** ClusterDispositionOut */
+        ClusterDispositionOut: {
+            /** Cluster Id */
+            cluster_id: string;
+            /** Status */
+            status: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "applied" | "pending_approval";
+            /** Applied */
+            applied?: string[];
+            /** Refused */
+            refused?: {
+                [key: string]: string;
+            };
+            /** Approval Request Id */
+            approval_request_id?: string | null;
+            /** Tier */
+            tier?: string | null;
+        };
+        /**
+         * ClusterOut
+         * @description Open findings one decision covers, and why (TheHub #60887).
+         */
+        ClusterOut: {
+            /**
+             * Cluster Id
+             * @description A hash of the rule and its key, never of the members: stable across rescans that add or remove members.
+             */
+            cluster_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "advisory" | "location" | "single";
+            /**
+             * Reason
+             * @description Why these findings are one decision, in a sentence.
+             */
+            reason: string;
+            /** Count */
+            count: number;
+            max_severity: components["schemas"]["Severity"];
+            /** Repos */
+            repos: string[];
+            /**
+             * Images
+             * @description Image repositories a container member was reported in.
+             */
+            images?: string[];
+            representative: components["schemas"]["TriageItem"];
+            /**
+             * Members
+             * @description Every open member, worst first - including ones the filters did not match.
+             */
+            members: components["schemas"]["TriageItem"][];
+            /**
+             * Folded Ids
+             * @description Members that joined as a Debian TEMP- placeholder folded into its CVE.
+             */
+            folded_ids?: string[];
+        };
+        /** ClusterQueue */
+        ClusterQueue: {
+            /** Clusters */
+            clusters: components["schemas"]["ClusterOut"][];
+            /**
+             * Total Clusters
+             * @description Clusters with at least one member matching the filters.
+             */
+            total_clusters: number;
+            /**
+             * Total Findings
+             * @description Open findings in those clusters.
+             */
+            total_findings: number;
+            /**
+             * Truncated
+             * @description Whether `limit` cut the list of clusters short.
+             */
+            truncated: boolean;
+            /**
+             * Pool Truncated
+             * @description Whether the open findings clustered were capped. A capped pool can split a cluster, so it is said rather than hidden.
+             */
+            pool_truncated: boolean;
         };
         /**
          * CommitDecisionOut
@@ -15729,6 +15894,82 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    triage_clusters_api_dashboard_triage_clusters_get: {
+        parameters: {
+            query?: {
+                severity?: components["schemas"]["Severity"] | null;
+                capability?: components["schemas"]["Capability"] | null;
+                rule_id?: string | null;
+                kev_only?: boolean;
+                min_epss?: number | null;
+                owner?: string | null;
+                order?: "severity" | "rank";
+                include_snoozed?: boolean;
+                claimed_by?: string | null;
+                triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment") | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterQueue"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disposition_cluster_api_dashboard_triage_clusters__cluster_id__disposition_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClusterDisposition"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterDispositionOut"];
+                };
             };
             /** @description Validation Error */
             422: {

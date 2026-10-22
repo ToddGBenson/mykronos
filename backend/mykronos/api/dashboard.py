@@ -5073,6 +5073,24 @@ async def set_finding_status(
     is a write, not a view. Viewers can read every finding and change none of
     them.
     """
+    return await apply_finding_status(request, finding_id, body, principal)
+
+
+async def apply_finding_status(
+    request: Request,
+    finding_id: str,
+    body: StatusChange,
+    principal: Any,
+    *,
+    audit_extra: dict[str, Any] | None = None,
+) -> StatusChangeResult:
+    """The status route's whole decision, callable from a route that covers
+    several findings at once (a cluster, TheHub #60887).
+
+    `audit_extra` lands in the per-finding audit entry beside the status and
+    the reason, so a disposition made for a cluster says which cluster, on
+    every member's own history.
+    """
     if not principal.may_write:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -5189,6 +5207,7 @@ async def set_finding_status(
             capability=existing.get("capability"),
             new_status=body.status.value,
             reason=body.reason,
+            **(audit_extra or {}),
         )
 
     # spec 11 §4. Wrapped, because the disposition has already succeeded by

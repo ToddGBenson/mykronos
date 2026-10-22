@@ -77,10 +77,20 @@ def governed(principal: Principal, severity: str | None) -> bool:
     )
 
 
+_FINDING_FIELDS = (
+    "finding_id", "repo_full_name", "capability", "rule_id", "severity",
+    "title", "description", "file_path", "line_start", "package_name",
+    "package_version", "first_seen_at", "last_seen_at",
+)
+
+
 def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
     """Tier from the finding's own severity, evidence from the lake - never
     from what the requester says about either."""
     from mykronos.dashboard import DashboardQueries
+
+    if context.get("finding_ids"):
+        return _cluster_adapter(subject_ref, context)
 
     status = str(context.get("status") or "")
     if status not in DISPOSITIONS:
@@ -103,14 +113,7 @@ def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
             f"Finding {subject_ref} is {severity}; only critical and high dispositions "
             "are governed. Disposition it directly."
         )
-    finding = {
-        key: row.get(key)
-        for key in (
-            "finding_id", "repo_full_name", "capability", "rule_id", "severity",
-            "title", "description", "file_path", "line_start", "package_name",
-            "package_version", "first_seen_at", "last_seen_at",
-        )
-    }
+    finding = {key: row.get(key) for key in _FINDING_FIELDS}
     # Round-tripped through JSON once, so the bundle stored in the request is
     # byte-for-byte the bundle its digest was computed over: the lake hands
     # back datetimes, which a JSON column will not take as they are.
@@ -128,6 +131,63 @@ def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
     return Subject(tier=severity, evidence=evidence)
 
 
+def _cluster_adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
+    """One request for a whole cluster (TheHub #60887).
+
+    A cluster's disposition is one decision, so when any member would need an
+    approval the cluster raises one request rather than one per member. The
+    tier is the worst governed severity among the members - a cluster holding a
+    critical is approved at the critical tier - and the evidence holds every
+    member's row and raw record, so the approver sees all of what they are
+    closing. Every member must still be open: the approval is for the set in
+    the evidence and nothing else.
+    """
+    from mykronos.dashboard import DashboardQueries
+
+    status = str(context.get("status") or "")
+    if status not in DISPOSITIONS:
+        raise ApprovalError(
+            f"A finding disposition is one of {', '.join(DISPOSITIONS)}. Accepting the "
+            "risk is a risk acceptance: POST /api/risk-acceptances."
+        )
+    reason = str(context.get("reason") or "").strip()
+    problem = rationale_problem(reason)
+    if problem:
+        raise ApprovalError(problem)
+    queries = DashboardQueries(_catalog())
+    findings: list[dict[str, Any]] = []
+    raw: dict[str, Any] = {}
+    for finding_id in [str(f) for f in context.get("finding_ids") or []]:
+        row = queries.finding(finding_id, include_raw=True)
+        if row is None:
+            raise ApprovalError(f"No finding {finding_id}.")
+        if row.get("status") != "open":
+            raise ApprovalError(f"Finding {finding_id} is {row.get('status')}, not open.")
+        findings.append({key: row.get(key) for key in _FINDING_FIELDS})
+        raw[finding_id] = row.get("raw_finding_json")
+    severities = {str(f.get("severity") or "").lower() for f in findings}
+    tier = next((s for s in GOVERNED_SEVERITIES if s in severities), None)
+    if tier is None:
+        raise ApprovalError(
+            f"Cluster {subject_ref} holds no critical or high finding; dispositions of "
+            "medium and below are not governed. Disposition it directly."
+        )
+    evidence = json.loads(
+        json.dumps(
+            {
+                "cluster_id": subject_ref,
+                "cluster_reason": str(context.get("cluster_reason") or ""),
+                "findings": findings,
+                "raw_finding_json": raw,
+                "proposed_status": status,
+                "reason": reason,
+            },
+            default=str,
+        )
+    )
+    return Subject(tier=tier, evidence=evidence)
+
+
 def on_approved(session: Session, request: ApprovalRequest) -> None:
     """Apply the disposition the approver saw, and only to a finding still open.
 
@@ -137,6 +197,9 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
     status = str(evidence.get("proposed_status") or "")
     if status not in DISPOSITIONS:
         raise ApprovalError(f"Request {request.id} carries no disposition to apply.")
+    if evidence.get("findings"):
+        _apply_cluster(session, request, evidence, status)
+        return
     catalog = _catalog()
     outcome = update_findings(
         catalog,
@@ -179,6 +242,56 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
             request.id,
             request.subject_ref,
         )
+
+
+def _apply_cluster(
+    session: Session, request: ApprovalRequest, evidence: dict[str, Any], status: str
+) -> None:
+    """Every member the approver saw, each with its own audit entry naming
+    the cluster and the approval - the same `finding.status` action the
+    single-finding path writes, so a member's history reads the same way."""
+    catalog = _catalog()
+    approver = session.execute(
+        select(ApprovalDecision.approver)
+        .where(ApprovalDecision.request_id == request.id, ApprovalDecision.verdict == "approve")
+        .order_by(ApprovalDecision.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    for finding in evidence.get("findings") or []:
+        finding_id = str(finding.get("finding_id") or "")
+        outcome = update_findings(
+            catalog,
+            locate_findings(catalog, [finding_id]),
+            "status = ?, resolved_at = ?, accepted_until = NULL, accepted_reason_code = NULL",
+            [status, utcnow()],
+            only_if_status="open",
+        )
+        session.add(
+            AuditLogEntry(
+                actor=request.requested_by,
+                action="finding.status",
+                entity_type="finding",
+                entity_id=finding_id,
+                detail={
+                    "repo": finding.get("repo_full_name"),
+                    "capability": finding.get("capability"),
+                    "new_status": status,
+                    "reason": evidence.get("reason"),
+                    "cluster_id": evidence.get("cluster_id"),
+                    "approval_request_id": request.id,
+                    "approved_by": approver,
+                    "applied": bool(outcome.count),
+                },
+                actor_kind=request.requester_kind,
+                actor_provenance=dict(request.requester_provenance or {}),
+            )
+        )
+        if not outcome.count:
+            logger.warning(
+                "Cluster disposition %s approved but not applied to %s: no longer open.",
+                request.id,
+                finding_id,
+            )
 
 
 register_adapter(DUTY, _adapter)

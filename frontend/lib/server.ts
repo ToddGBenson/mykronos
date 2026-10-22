@@ -40,6 +40,7 @@ import {
   type TrendReport,
   type TrendSeries,
   type TriageQueue,
+  type ClusterQueue,
   type Briefing,
   type RepoGuidance,
   type ProductOwnerView,
@@ -288,6 +289,42 @@ export async function getTriage(query: {
       cache: "no-store",
     });
     if (!data) return { ok: false, error: describe(response, "Could not load the queue") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** The same queue, one row per cluster (TheHub #60887). Same filters; they
+ *  choose clusters and never trim a cluster's members. */
+export async function getTriageClusters(query: {
+  severity?: string;
+  capability?: string;
+  rule_id?: string;
+  kev_only?: boolean;
+  min_epss?: number;
+  owner?: string;
+  order?: string;
+  triage?: string;
+}): Promise<Result<ClusterQueue>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/triage/clusters", {
+      params: {
+        query: {
+          severity: query.severity as never,
+          capability: query.capability as never,
+          rule_id: query.rule_id as never,
+          kev_only: query.kev_only as never,
+          min_epss: query.min_epss as never,
+          owner: query.owner as never,
+          order: query.order as never,
+          triage: query.triage as never,
+          limit: 100,
+        },
+      },
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load the clusters") };
     return { ok: true, data };
   } catch (error) {
     return failure(error);
