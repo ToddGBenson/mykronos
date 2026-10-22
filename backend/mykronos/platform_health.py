@@ -54,6 +54,9 @@ class DependencyHealth:
     name: str
     reachable: bool
     detail: str
+    #: Whether this deployment has the dependency at all (B-014). One that is
+    #: not configured is not one that failed, and does not degrade the page.
+    configured: bool = True
 
 
 @dataclass
@@ -71,8 +74,55 @@ class PlatformHealth:
         be red.
         """
         return any(job.status in ("failing", "late") for job in self.jobs) or any(
-            not dependency.reachable for dependency in self.dependencies
+            dependency.configured and not dependency.reachable
+            for dependency in self.dependencies
         )
+
+
+def assess_ingestion(
+    result: Any, *, hours_since_actions_upload: float | None
+) -> DependencyHealth:
+    """Is ingestion serving, judged by what it serves (TheHub #60905)?
+
+    The probe asks the public URL from inside this network, and a host here
+    cannot reach its own public hostname: hairpin NAT, measured 2026-09-12
+    (`jobs.reachability_alert`). So on this host the probe fails on every
+    load, and MyKronos Health read "Needs attention" permanently while GitHub
+    runners - which reach this platform only through that URL - kept
+    uploading.
+
+    What ingestion serves is uploads. A scan run carrying a workflow run id
+    came from a GitHub-hosted runner, through the public URL, so one inside
+    `ACTIONS_UPLOAD_GRACE_HOURS` is evidence the in-network probe cannot give,
+    and it outweighs that probe. Without it the probe's failure stands: no
+    upload in the window, or no way to tell, is not permission to reassure.
+    """
+    from mykronos.jobs import ACTIONS_UPLOAD_GRACE_HOURS
+
+    if result.reachable:
+        return DependencyHealth(name="ingestion", reachable=True, detail=result.detail)
+    if (
+        hours_since_actions_upload is not None
+        and hours_since_actions_upload <= ACTIONS_UPLOAD_GRACE_HOURS
+    ):
+        return DependencyHealth(
+            name="ingestion",
+            reachable=True,
+            detail=(
+                "Serving: a GitHub Actions scan run landed "
+                f"{hours_since_actions_upload:.1f}h ago, and a GitHub runner can "
+                "only reach this platform through its public URL. The probe from "
+                "inside this network fails because of hairpin NAT, not an outage."
+            ),
+        )
+    if hours_since_actions_upload is None:
+        why = " No GitHub Actions upload on record, so nothing corroborates either way."
+    else:
+        why = (
+            f" No GitHub Actions upload for {hours_since_actions_upload:.1f}h, "
+            "which is consistent with an outage."
+        )
+    return DependencyHealth(name="ingestion", reachable=False, detail=result.detail + why)
 
 
 def assess_job(row: Any, *, now: datetime, started_at: datetime | None = None) -> JobHealth:

@@ -5728,6 +5728,11 @@ export interface components {
             reachable: boolean;
             /** Detail */
             detail: string;
+            /**
+             * Configured
+             * @default true
+             */
+            configured: boolean;
         };
         /**
          * DeployLagOut

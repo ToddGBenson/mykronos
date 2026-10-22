@@ -34,4 +34,24 @@ describe("MyKronos Health (TheHub #60883)", () => {
     const html = renderToStaticMarkup(await PlatformHealthPage());
     expect(html).toContain("MyKronos Health unavailable");
   });
+
+  it("shows an unconfigured dependency as not configured, not unreachable (TheHub #60905)", async () => {
+    getPlatformHealth.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        degraded: false,
+        jobs: [],
+        dependencies: [
+          { name: "vault", reachable: false, detail: "No Vault", configured: false },
+          { name: "ingestion", reachable: true, detail: "Serving", configured: true },
+        ],
+        note: null,
+      },
+    });
+    const { default: PlatformHealthPage } = await import("../app/platform-health/page");
+    const html = renderToStaticMarkup(await PlatformHealthPage());
+    expect(html).toContain("Not configured");
+    expect(html).not.toContain("Unreachable");
+    expect(html).toContain("Healthy");
+  });
 });

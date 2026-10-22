@@ -83,9 +83,15 @@ function DependencyRow({ dependency }: { dependency: Dependency }) {
       <span className="font-mono text-[13px] font-bold text-ink">{dependency.name}</span>
       <span className="text-[12px] text-ink-3">{dependency.detail}</span>
       <span className="ml-auto">
-        <Pill tone={dependency.reachable ? "pass" : "critical"}>
-          {dependency.reachable ? "Reachable" : "Unreachable"}
-        </Pill>
+        {/* Not configured is not unreachable (B-014): a deployment without
+            the dependency has nothing to fail, and does not degrade the page. */}
+        {dependency.configured === false ? (
+          <Pill tone="muted">Not configured</Pill>
+        ) : (
+          <Pill tone={dependency.reachable ? "pass" : "critical"}>
+            {dependency.reachable ? "Reachable" : "Unreachable"}
+          </Pill>
+        )}
       </span>
     </div>
   );
