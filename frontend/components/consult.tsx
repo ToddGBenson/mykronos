@@ -26,11 +26,21 @@ function AnswerBlock({ repoId, answer }: { repoId: string; answer: Answer }) {
       {answer.tab ? (
         <Link
           href={`/repos/${repoId}?tab=${answer.tab}`}
-          className="mt-1.5 inline-block font-mono text-[12px] text-accent underline decoration-dotted underline-offset-2"
+          className="mt-1.5 inline-block font-mono print:hidden text-[12px] text-accent underline decoration-dotted underline-offset-2"
         >
           check it on {answer.tab} &rarr;
         </Link>
       ) : null}
+    </div>
+  );
+}
+
+/** One of the report's own gaps: a figure it could not produce, said where
+ *  the reader would otherwise assume it. */
+function Gap({ text }: { text: string }) {
+  return (
+    <div className="border-t border-rule-soft px-3 py-2.5">
+      <p className="max-w-prose text-[13px] text-ink-2">{text}</p>
     </div>
   );
 }
@@ -57,23 +67,41 @@ function CannotAnswer({ item }: { item: Unanswerable }) {
  * anyway, and a reader who knows the boundary can trust what is inside it.
  *
  * It cannot act. Everything above is a read.
+ *
+ * On the Report tab (TheHub #60885) it follows the executive summary: the
+ * caller passes only the answers the summary does not already give
+ * (`lib/report.ts`), and the summary's own gaps, which join the questions
+ * this cannot answer under one heading.
  */
-export function Consult({ repoId, data }: { repoId: string; data: Consult }) {
+export function Consult({
+  repoId,
+  data,
+  answers = data.answers,
+  gaps = [],
+}: {
+  repoId: string;
+  data: Consult;
+  answers?: readonly Answer[];
+  gaps?: readonly string[];
+}) {
   return (
     <div className="flex flex-col gap-4">
       <Section
         title="What this platform knows"
         detail="answered from records, with somewhere to check each one"
       >
-        {data.answers.map((answer) => (
+        {answers.map((answer) => (
           <AnswerBlock key={answer.key} repoId={repoId} answer={answer} />
         ))}
       </Section>
 
       <Section
-        title="What it cannot tell you"
+        title="What we can't answer"
         detail="named rather than guessed at"
       >
+        {gaps.map((gap) => (
+          <Gap key={gap} text={gap} />
+        ))}
         {data.cannot_answer.map((item) => (
           <CannotAnswer key={item.question} item={item} />
         ))}
