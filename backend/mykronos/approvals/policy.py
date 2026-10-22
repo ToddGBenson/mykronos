@@ -75,6 +75,28 @@ class DelegationDefaults:
 
 
 @dataclass(frozen=True)
+class InterimReview:
+    """A review partway through an acceptance nothing watches (TheHub #60817).
+
+    The duration caps are severity-based and stay so. But a 365-day acceptance
+    of `not_exploitable_here` rests on a claim no monitor re-reads: nobody
+    would notice the day it stopped being true. Those acceptances - the reason
+    codes listed here, unless a premise `premise_monitor` evaluates covers the
+    record - are looked at again `days` after they take effect. When that date
+    arrives the record reads `review_due`; `grace_days` later it lapses to
+    `needs_review`, loudly, rather than expiring on its own.
+    """
+
+    days: int = 30
+    grace_days: int = 14
+    reason_codes: frozenset[str] = frozenset(
+        {"not_exploitable_here", "compensating_control", "cost_exceeds_risk"}
+    )
+    #: A record with a premise the monitor evaluates is watched, so exempt.
+    unless_monitored_premise: bool = True
+
+
+@dataclass(frozen=True)
 class RiskAcceptanceLimits:
     """What may be accepted at all (spec 33 §2.1), apart from who approves it."""
 
@@ -87,6 +109,7 @@ class RiskAcceptanceLimits:
     review_lead_days: int = 14
     refuse_kev_listed: bool = True
     refuse_critical_operational_requirement: bool = True
+    interim_review: InterimReview = field(default_factory=InterimReview)
 
 
 @dataclass(frozen=True)
@@ -145,6 +168,31 @@ def _tier(name: str, raw: dict[str, Any], duty: str) -> Tier:
     )
 
 
+def _interim_review(raw: Any) -> InterimReview:
+    default = InterimReview()
+    if raw is None:
+        return default
+    if not isinstance(raw, dict):
+        raise PolicyError("risk_acceptance.interim_review must be a mapping.")
+    days = int(raw.get("days", default.days))
+    grace = int(raw.get("grace_days", default.grace_days))
+    if days < 1 or grace < 0:
+        raise PolicyError(
+            "risk_acceptance.interim_review: days is at least 1 and grace_days at least 0."
+        )
+    codes = raw.get("reason_codes")
+    return InterimReview(
+        days=days,
+        grace_days=grace,
+        reason_codes=(
+            frozenset(str(c) for c in codes) if codes is not None else default.reason_codes
+        ),
+        unless_monitored_premise=bool(
+            raw.get("unless_monitored_premise", default.unless_monitored_premise)
+        ),
+    )
+
+
 def parse_policy(document: Any) -> ApprovalPolicy:
     if not isinstance(document, dict):
         raise PolicyError("Approval policy must be a mapping.")
@@ -194,6 +242,7 @@ def parse_policy(document: Any) -> ApprovalPolicy:
         refuse_critical_operational_requirement=bool(
             refuse.get("critical_operational_requirement", True)
         ),
+        interim_review=_interim_review(ra.get("interim_review")),
     )
     d = document.get("delegations") or {}
     return ApprovalPolicy(

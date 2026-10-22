@@ -59,9 +59,21 @@ def _to_premise_failed(client, admin_auth) -> str:
     return record_id
 
 
+def _to_needs_review(client, admin_auth) -> str:
+    """An acceptance nothing watches whose interim review lapsed (TheHub #60817)."""
+    record_id = _accepted(client, admin_auth, [{"type": "path_unreachable"}])
+    with client.app.state.db.session() as session:
+        record = session.get(RiskAcceptance, record_id)
+        assert record is not None and record.interim_review_by is not None
+        lapsed_on = record.interim_review_by + timedelta(days=ra.interim_rule().grace_days)
+    assert ra.sweep(client.app.state.db, client.app.state.catalog, today=lapsed_on).needs_review
+    return record_id
+
+
 DRIVERS = {
     "active": _to_active,
     "review_due": _to_review_due,
+    "needs_review": _to_needs_review,
     "premise_failed": _to_premise_failed,
 }
 

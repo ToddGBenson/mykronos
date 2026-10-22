@@ -206,7 +206,7 @@ async def executive_summary(
         for record in session.execute(
             select(RiskAcceptance).where(
                 RiskAcceptance.repo_full_name == repo_full_name,
-                RiskAcceptance.status == "review_due",
+                RiskAcceptance.status.in_(("review_due", "needs_review")),
             )
         ).scalars():
             decisions.append(

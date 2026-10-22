@@ -4226,6 +4226,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/risk-acceptances/{record_id}/interim-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Interim Review
+         * @description A person records the interim review an acceptance nothing watches owes
+         *     (TheHub #60817): they looked again, and it still stands.
+         */
+        post: operations["interim_review_api_risk_acceptances__record_id__interim_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/risk-acceptances": {
         parameters: {
             query?: never;
@@ -7421,6 +7442,11 @@ export interface components {
              */
             not_run?: components["schemas"]["NotRunCheck"][];
         };
+        /** InterimReviewIn */
+        InterimReviewIn: {
+            /** Note */
+            note: string;
+        };
         /**
          * IssuesSourceOut
          * @description How a `github_issues` backlog was read (spec 35 §9, D-156).
@@ -9950,6 +9976,14 @@ export interface components {
             days_left: number | null;
             /** Review Due */
             review_due: boolean;
+            /** Interim Review */
+            interim_review: string;
+            /** Interim Review By */
+            interim_review_by: string | null;
+            /** Interim Reviewed At */
+            interim_reviewed_at: string | null;
+            /** Interim Reviewed By */
+            interim_reviewed_by: string | null;
             /** Alarm */
             alarm: boolean;
             /** Closed At */
@@ -10049,6 +10083,14 @@ export interface components {
             days_left: number | null;
             /** Review Due */
             review_due: boolean;
+            /** Interim Review */
+            interim_review: string;
+            /** Interim Review By */
+            interim_review_by: string | null;
+            /** Interim Reviewed At */
+            interim_reviewed_at: string | null;
+            /** Interim Reviewed By */
+            interim_reviewed_by: string | null;
             /** Alarm */
             alarm: boolean;
             /** Closed At */
@@ -17479,6 +17521,43 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RevokeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    interim_review_api_risk_acceptances__record_id__interim_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterimReviewIn"];
             };
         };
         responses: {

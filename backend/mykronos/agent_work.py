@@ -519,7 +519,19 @@ def _acceptance_items(acceptances: list[dict[str, Any]], *, today: date) -> list
                 items.append(item)
             continue
         reasons = []
-        if status == "review_due":
+        interim_by = record.get("interim_review_by")
+        interim_owed = (
+            bool(interim_by)
+            and not record.get("interim_reviewed_at")
+            and status in LIVE
+            and date.fromisoformat(str(interim_by)) <= today
+        )
+        if status == "needs_review":
+            # TheHub #60817: the interim review lapsed. Not expired - a decision.
+            reasons.append(f"its interim review, due {interim_by}, lapsed unreviewed")
+        elif interim_owed:
+            reasons.append(f"its interim review was due {interim_by}")
+        elif status == "review_due":
             reasons.append(f"review was due {record.get('review_by')}")
         if record.get("drift"):
             reasons.append(f"{record['drift']} open finding(s) match its scope and are not covered")
@@ -554,7 +566,11 @@ def _acceptance_items(acceptances: list[dict[str, Any]], *, today: date) -> list
                 weight=int(record.get("findings") or 0),
                 title=f"Acceptance {record_id[:8]} needs attention",
                 summary="; ".join(reasons).capitalize() + ".",
-                done_when="Renewed, revoked or closed.",
+                done_when=(
+                    "A person records its interim review, or it is renewed or revoked."
+                    if interim_owed or status == "needs_review"
+                    else "Renewed, revoked or closed."
+                ),
                 evidence=[Evidence(source="risk_acceptances", ref=record_id, detail=status)],
                 actions=actions,
             )

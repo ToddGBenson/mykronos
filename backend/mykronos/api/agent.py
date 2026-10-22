@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 #: Acceptances in these states can need attention; the rest are settled.
-_ACCEPTANCE_STATES = ("active", "review_due", "premise_failed")
+_ACCEPTANCE_STATES = ("active", "review_due", "needs_review", "premise_failed")
 
 
 class WorkEvidenceOut(BaseModel):

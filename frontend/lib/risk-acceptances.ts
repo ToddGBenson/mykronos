@@ -33,6 +33,7 @@ export const STATE_LABEL: Record<string, string> = {
   active: "Active",
   expiring: "Expiring",
   expired: "Expired",
+  needs_review: "Needs review",
   premise_failed: "Premise failed",
   revoked: "Revoked",
   pending_approval: "Awaiting approval",
@@ -47,7 +48,9 @@ export type Tone = "critical" | "warn" | "pass" | "muted" | "accent";
 
 /** A failed premise or a lapsed date is red; an approaching one amber. */
 export function stateTone(state: string): Tone {
-  if (state === "premise_failed" || state === "expired") return "critical";
+  if (state === "premise_failed" || state === "expired" || state === "needs_review") {
+    return "critical";
+  }
   if (state === "expiring" || state === "pending_approval") return "warn";
   if (state === "active") return "pass";
   return "muted";
@@ -82,6 +85,40 @@ export function evidenceAgeText(ageDays: number | null | undefined): string {
   if (ageDays < 1) return "evidence under a day old";
   const days = Math.round(ageDays);
   return `evidence ${days} day${days === 1 ? "" : "s"} old`;
+}
+
+/**
+ * Where the interim review an acceptance nothing watches owes stands
+ * (TheHub #60817), in words; null when it owes none.
+ */
+export function interimReviewText(row: {
+  interim_review: string;
+  interim_review_by?: string | null;
+  interim_reviewed_at?: string | null;
+  interim_reviewed_by?: string | null;
+}): string | null {
+  const by = row.interim_review_by ?? "";
+  switch (row.interim_review) {
+    case "scheduled":
+      return `due ${by}`;
+    case "due":
+      return `due since ${by}`;
+    case "lapsed":
+      return `lapsed — due ${by}, never recorded`;
+    case "done":
+      return `recorded ${(row.interim_reviewed_at ?? "").slice(0, 10)}${
+        row.interim_reviewed_by ? ` by ${row.interim_reviewed_by}` : ""
+      }`;
+    default:
+      return null;
+  }
+}
+
+/** The "review due" pill's words: which review is owed. */
+export function reviewDueLabel(row: { interim_review: string }): string {
+  return row.interim_review === "due" || row.interim_review === "lapsed"
+    ? "interim review due"
+    : "review due";
 }
 
 /** "12 days left", "due today", "3 days past". Null expiry is a pending record. */

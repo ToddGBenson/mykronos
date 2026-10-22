@@ -148,6 +148,14 @@ draft ─► pending_approval ─► active ─► review_due ─► renewed ─
 - `premise_failed` is entered automatically (§4) and reopens every finding in scope immediately. It
   is not a date-driven expiry: the decision was wrong from the moment the monitor failed.
 - **Every transition is an audited event** (§7), including the sweep's. Today's sweep is silent.
+- **An interim review for reasons nothing watches** (TheHub #60817). An acceptance whose reason
+  code is `not_exploitable_here`, `compensating_control` or `cost_exceeds_risk` — unless a premise
+  the monitor evaluates (§4) covers it — owes a person's look `interim_review.days` (30) after it
+  takes effect, whatever its severity cap. That day it reads `review_due`; `grace_days` later,
+  unrecorded, it moves to `needs_review`. `needs_review` is not an expiry: the record still holds
+  its findings and nothing reopens quietly, but it reads as needing a decision on the Risk
+  management tab, in the briefing and in the work queue until a person records the review
+  (`POST /api/risk-acceptances/{id}/interim-review`, with a note), renews or revokes it.
 
 ## 2. Authority and separation of duties (CA-6, PM-9, PM-10, AC-5)
 
@@ -177,6 +185,11 @@ risk_acceptance:
     medium: 4
     low: null
   review_lead_days: 14
+  interim_review:            # §1.4, TheHub #60817: the caps stay; this adds a look partway through
+    days: 30
+    grace_days: 14
+    reason_codes: [not_exploitable_here, compensating_control, cost_exceeds_risk]
+    unless_monitored_premise: true
   refuse:
     kev_listed: true         # an actively exploited CVE is not accepted, only mitigated (§2.2)
     critical_operational_requirement: true

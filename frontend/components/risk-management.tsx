@@ -16,6 +16,7 @@ import {
   filterHref,
   reasonLabel,
   severityCounts,
+  reviewDueLabel,
   stateLabel,
   stateTone,
   type RiskFilters,
@@ -95,7 +96,7 @@ export async function RiskManagementTab({
               key={state}
               href={filterHref(repoId, filters, "state", state)}
               active={filters.state === state}
-              tone="muted"
+              tone={stateTone(state)}
             >
               {count} {stateLabel(state)}
             </StripLink>
@@ -206,7 +207,7 @@ function AcceptanceRow({ repoId, row }: { repoId: string; row: RiskAcceptanceRow
     >
       <div className="flex flex-wrap items-baseline gap-2 border-b border-rule-soft px-3 py-2">
         <Pill tone={stateTone(row.state)}>{stateLabel(row.state)}</Pill>
-        {row.review_due ? <Pill tone="warn">review due</Pill> : null}
+        {row.review_due ? <Pill tone="warn">{reviewDueLabel(row)}</Pill> : null}
         <SeverityPair severity={row.severity} effective={row.effective_severity} />
         <span className="text-ink">{reasonLabel(row.reason_code)}</span>
         <span className="text-[13px] text-ink-3">

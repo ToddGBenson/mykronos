@@ -219,6 +219,7 @@ class TestTheList:
         assert body["total"] == 8
         assert body["counts"]["by_state"] == {
             "premise_failed": 1,
+            "needs_review": 0,
             "expired": 2,
             "expiring": 1,
             "active": 1,

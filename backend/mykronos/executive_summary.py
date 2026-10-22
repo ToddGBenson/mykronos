@@ -571,12 +571,12 @@ def build(
         state = str(record.get("status") or "")
         if state == "active":
             accepted.decisions_active += 1
-        elif state == "review_due":
+        elif state in ("review_due", "needs_review"):
             accepted.decisions_review_due += 1
         elif state == "pending_approval":
             accepted.decisions_pending += 1
         expires = record.get("expires_at")
-        if state in ("active", "review_due") and isinstance(expires, date):
+        if state in ("active", "review_due", "needs_review") and isinstance(expires, date):
             upcoming.append(expires.date() if isinstance(expires, datetime) else expires)
     accepted.nearest_decision_expiry = min(upcoming) if upcoming else None
 
