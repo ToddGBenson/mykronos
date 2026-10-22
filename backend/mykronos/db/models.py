@@ -566,8 +566,8 @@ class RetiredLane(Base):
     __tablename__ = "retired_lanes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
-    capability: Mapped[str] = mapped_column(String(32))
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    capability: Mapped[str] = mapped_column(String(32), default="")
     #: Empty, never null, when the lane has no tool or no job (a run from
     #: before #449 has no job), so the pair matches like a key.
     tool_name: Mapped[str] = mapped_column(String(100), default="")
