@@ -225,6 +225,15 @@ class PullRequest:
     #: The branch it merges into. Read for the comparison the approval
     #: evidence is built from: GitHub's own `base.sha` goes stale (D-152).
     base_branch: str = ""
+    #: GitHub's merge verdict, from the single-PR read only (the list
+    #: endpoint does not carry it). None when GitHub has not computed it yet
+    #: or it was not read -- never guessed as True.
+    mergeable: bool | None = None
+    #: GitHub's `mergeable_state` (clean, dirty, blocked, behind, unstable,
+    #: unknown, ...), passed through. Empty when not read.
+    mergeable_state: str = ""
+    #: The description, for the story ids and "stacks on #N" it names.
+    body: str = ""
 
 
 @dataclass
@@ -1538,6 +1547,11 @@ class RestGitHubClient:
             ),
             head_sha=str((item.get("head") or {}).get("sha", "")),
             base_branch=str((item.get("base") or {}).get("ref", "")),
+            mergeable=(
+                bool(item["mergeable"]) if item.get("mergeable") is not None else None
+            ),
+            mergeable_state=str(item.get("mergeable_state") or ""),
+            body=str(item.get("body") or ""),
         )
 
     async def list_open_pull_requests(
@@ -1580,6 +1594,8 @@ class RestGitHubClient:
                 created_at=_parse_time(item.get("created_at")),
                 changed_files=None,
                 head_sha=str((item.get("head") or {}).get("sha", "")),
+                base_branch=str((item.get("base") or {}).get("ref", "")),
+                body=str(item.get("body") or ""),
             )
             for item in items[:limit]
         ]

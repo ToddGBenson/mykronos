@@ -1,9 +1,11 @@
 """`GET /api/briefing/daily`: the morning briefing, overall and per product
-(TheHub #60860, epic #60858).
+(TheHub #60860 and #60861, epic #60858).
 
 The reasoning lives in `mykronos.daily_briefing`; this module reads the
 inputs from outside the lake the way `GET /api/dashboard/briefing` does
-(`briefing_sources.gather`, the onboarding ledger) and shapes the answer.
+(`briefing_sources.gather`, the onboarding ledger), plus TheHub's board and
+the open pull requests (`delivery_sources.gather`, cached), and shapes the
+answer.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from mykronos import briefing_sources, daily_briefing
+from mykronos import briefing_sources, daily_briefing, delivery_sources
 from mykronos.adminauth import PrincipalDep
 from mykronos.schemas import utcnow
 
@@ -107,19 +109,29 @@ async def daily_briefing_route(
     Next-sprint candidates.
 
     Every section carries `source`, `as_of` and a `status`. A source that
-    could not be read is `unavailable` with its reason. Sprint health and the
-    board/PR side of "needs you" are B3 (TheHub #60861) and are
-    `not_available` until then. A read.
+    could not be read is `unavailable` with its reason. "Needs you", sprint
+    health and the board check behind the focus and candidate lists read
+    TheHub's board and GitHub (TheHub #60861), cached for a few minutes; an
+    earlier answer standing in for a failed read makes its section
+    `partial`. A read.
     """
     from mykronos.api.dashboard import _resolve_repo
 
     asset_id = _resolve_repo(request, repo_id) if repo_id else None
     state = request.app.state
-    inputs = await asyncio.to_thread(_build_inputs, request)
+    inputs, delivery = await asyncio.gather(
+        asyncio.to_thread(_build_inputs, request),
+        delivery_sources.gather(state, want_pull_requests=asset_id is None),
+    )
     now = utcnow()
     if asset_id is None:
         report = await asyncio.to_thread(
-            daily_briefing.build_overall, state.catalog, state.db, inputs, now=now
+            daily_briefing.build_overall,
+            state.catalog,
+            state.db,
+            inputs,
+            now=now,
+            delivery=delivery,
         )
     else:
         report = await asyncio.to_thread(
@@ -129,5 +141,6 @@ async def daily_briefing_route(
             inputs,
             asset_id=asset_id,
             now=now,
+            delivery=delivery,
         )
     return DailyBriefingOut.model_validate(dataclasses.asdict(report))
