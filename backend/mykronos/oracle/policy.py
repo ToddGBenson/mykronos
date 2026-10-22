@@ -332,6 +332,32 @@ class TriageRankPolicy:
         return any(self.severity.values()) or bool(self.in_kev or self.epss_at_1_0)
 
 
+#: The auto-triage lanes (TheHub #60888, D-169), in `mykronos.auto_triage`'s
+#: order. Restated rather than imported: this module is the policy reader and
+#: imports nothing from the code the policy governs.
+AUTO_TRIAGE_RULES: tuple[str, ...] = (
+    "fix_verified",
+    "vex_not_affected",
+    "exact_duplicate",
+    "unreachable",
+)
+
+
+@dataclass(frozen=True)
+class AutoTriagePolicy:
+    """Which deterministic auto-triage lanes may act (TheHub #60888, policy 1.16).
+
+    One kill switch per lane. Off when the block is absent, so a policy file
+    from before 1.16 - or a test that builds a Policy by hand - closes
+    nothing by itself.
+    """
+
+    enabled_rules: frozenset[str] = frozenset()
+
+    def enabled(self) -> dict[str, bool]:
+        return {rule: rule in self.enabled_rules for rule in AUTO_TRIAGE_RULES}
+
+
 @dataclass(frozen=True)
 class OverduePolicy:
     """What a missed deadline costs (spec 24 §2.4).
@@ -426,6 +452,9 @@ class Policy:
     #: have reported on the commit it judges. Defaulted empty so a Policy built
     #: without it (a test, a policy file from before 1.15) judges no lane.
     lanes_required_per_commit: tuple[str, ...] = ()
+
+    #: TheHub #60888 (policy 1.16). Defaulted off for the same reason.
+    auto_triage: AutoTriagePolicy = field(default_factory=AutoTriagePolicy)
 
     def recommendation_for(self, score: float) -> str:
         if score >= self.no_go:
@@ -794,7 +823,30 @@ def parse_policy(document: dict[str, Any]) -> Policy:
         raw=document,
         environmental=EnvironmentalPolicy(mode=environmental_mode),
         lanes_required_per_commit=tuple(str(lane) for lane in lanes_raw),
+        auto_triage=_auto_triage(document.get("auto_triage")),
     )
+
+
+def _auto_triage(raw: Any) -> AutoTriagePolicy:
+    """`auto_triage.<rule>.enabled`, every key checked: a misspelt lane that
+    silently stayed on would be a kill switch that does nothing."""
+    if raw is None:
+        return AutoTriagePolicy()
+    if not isinstance(raw, dict):
+        raise PolicyError("auto_triage must be a mapping of lane -> {enabled: bool}.")
+    unknown = sorted(set(raw) - set(AUTO_TRIAGE_RULES))
+    if unknown:
+        raise PolicyError(
+            f"auto_triage names unknown lanes: {', '.join(unknown)}. "
+            f"Known: {', '.join(AUTO_TRIAGE_RULES)}."
+        )
+    enabled: set[str] = set()
+    for rule, entry in raw.items():
+        if not isinstance(entry, dict) or set(entry) - {"enabled"}:
+            raise PolicyError(f"auto_triage.{rule} must be {{enabled: true|false}}.")
+        if _flag(entry.get("enabled", False), f"auto_triage.{rule}.enabled"):
+            enabled.add(rule)
+    return AutoTriagePolicy(enabled_rules=frozenset(enabled))
 
 
 def load_policy(path: Path) -> Policy:

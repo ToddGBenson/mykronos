@@ -345,6 +345,10 @@ export type TriageItem = TriageQueue["items"][number];
 export type ClusterQueue =
   paths["/api/dashboard/triage/clusters"]["get"]["responses"]["200"]["content"]["application/json"];
 export type TriageCluster = ClusterQueue["clusters"][number];
+/** What auto-triage closed by itself, with its evidence and undo (TheHub #60888). */
+export type AutoTriageDigest =
+  paths["/api/dashboard/auto-triage/digest"]["get"]["responses"]["200"]["content"]["application/json"];
+export type AutoTriageAction = AutoTriageDigest["actions"][number];
 export type ClusterDispositionOut =
   paths["/api/dashboard/triage/clusters/{cluster_id}/disposition"]["post"]["responses"]["200"]["content"]["application/json"];
 
@@ -440,6 +444,8 @@ export type Finding = {
   resolved_at?: string | null;
   code_snippet?: string | null;
   raw_finding_json?: unknown;
+  /** What auto-triage did to this finding, newest first (TheHub #60888). */
+  auto_triage?: AutoTriageAction[];
 };
 
 export type ScanHealth = {

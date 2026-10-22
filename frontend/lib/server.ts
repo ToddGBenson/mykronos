@@ -41,6 +41,7 @@ import {
   type TrendSeries,
   type TriageQueue,
   type ClusterQueue,
+  type AutoTriageDigest,
   type Briefing,
   type RepoGuidance,
   type ProductOwnerView,
@@ -289,6 +290,22 @@ export async function getTriage(query: {
       cache: "no-store",
     });
     if (!data) return { ok: false, error: describe(response, "Could not load the queue") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** What auto-triage closed in the last `hours` (TheHub #60888). */
+export async function getAutoTriageDigest(hours = 24): Promise<Result<AutoTriageDigest>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/dashboard/auto-triage/digest", {
+      params: { query: { hours } },
+      cache: "no-store",
+    });
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the auto-triage digest") };
+    }
     return { ok: true, data };
   } catch (error) {
     return failure(error);

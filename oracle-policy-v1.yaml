@@ -110,7 +110,13 @@
 # that would have been `go` is recorded as `insufficient_evidence` instead.
 # Never a downgrade of review_recommended or no_go, and portfolio decisions
 # are not judged per commit.
-version: "1.15"
+#
+# 1.16 - adds auto_triage (TheHub #60888, D-169): one kill switch per
+# deterministic auto-triage lane. No score changes. The lanes close findings
+# only on recorded evidence - a verified fix, a VEX not_affected statement,
+# an exact duplicate of a person's verdict, an orphaned Python file - and
+# every action is audited and undoable. See the block at the end of this file.
+version: "1.16"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -590,3 +596,32 @@ scope:
 # Not implemented here on purpose.
 environmental:
   mode: shadow
+
+# ---------------------------------------------------------------------------
+# Auto-triage (TheHub #60888, D-169; operator decision 2026-10-22)
+# ---------------------------------------------------------------------------
+#
+# Deterministic verdicts auto-apply with an audit row and a one-click undo;
+# a model's verdict never does. Each lane below closes open findings on one
+# kind of recorded evidence, stores a reference to it and the finding's prior
+# state, and can be undone from the finding or the Triage page
+# (POST /api/dashboard/auto-triage/actions/{id}/undo).
+#
+#   fix_verified      a merged fix whose merge-commit scan no longer reports
+#                     the finding (spec 25 §1) -> fixed
+#   vex_not_affected  a vendor/VEX not_affected statement a person recorded
+#                     (POST /api/dashboard/vex-statements) -> suppressed
+#   exact_duplicate   someone already set false_positive or suppressed on a
+#                     finding with the same cluster key (D-168) and, for a
+#                     package, the same version -> that verdict
+#   unreachable       the repository's import-graph report lists the file as
+#                     orphaned, with every file parsed (spec 19 §2.1) -> suppressed
+#
+# A critical or high finding is closed only by fix_verified or
+# vex_not_affected. Set a lane's `enabled` to false to stop it; it takes
+# effect when this file is deployed. Absent, a lane is off.
+auto_triage:
+  fix_verified: {enabled: true}
+  vex_not_affected: {enabled: true}
+  exact_duplicate: {enabled: true}
+  unreachable: {enabled: true}

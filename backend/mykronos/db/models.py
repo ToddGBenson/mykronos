@@ -822,6 +822,80 @@ class TriageState(Base):
         )
 
 
+class VexStatement(Base):
+    """A vendor's or a VEX document's word that a product is not affected
+    (TheHub #60888, D-169).
+
+    Recorded by a person, with its source, and only then evidence: the
+    `vex_not_affected` auto-triage lane reads `not_affected` statements and
+    nothing else, and never infers one. A statement names an advisory and a
+    package; a version or repository narrows it, and absent they mean every
+    version and every repository - which is how vendors write them.
+
+    Revoked rather than deleted, so an action that cited a statement can
+    still show what it cited.
+    """
+
+    __tablename__ = "vex_statements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: The advisory as findings carry it: a CVE id, or the rule id for an
+    #: advisory with none.
+    vulnerability_id: Mapped[str] = mapped_column(String(128), index=True)
+    package_name: Mapped[str] = mapped_column(String(255))
+    package_version: Mapped[str | None] = mapped_column(String(128), default=None)
+    repo_full_name: Mapped[str | None] = mapped_column(String(255), default=None)
+    #: OpenVEX's four: not_affected | affected | fixed | under_investigation.
+    #: Only `not_affected` is acted on; the others are kept because a vendor
+    #: saying `affected` is worth knowing too.
+    status: Mapped[str] = mapped_column(String(32), default="not_affected")
+    #: OpenVEX's justification for `not_affected`.
+    justification: Mapped[str] = mapped_column(String(64), default="")
+    impact_statement: Mapped[str] = mapped_column(Text, default="")
+    #: vendor | vex: an advisory page, or a VEX document.
+    source_kind: Mapped[str] = mapped_column(String(16), default="vendor")
+    #: Where it was said: a URL or a document reference. Required - a
+    #: statement nobody can go and read is not evidence.
+    source: Mapped[str] = mapped_column(String(1000))
+    recorded_by: Mapped[str] = mapped_column(String(255), default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
+class AutoTriageAction(Base):
+    """One thing the platform closed by itself, and how to put it back
+    (TheHub #60888, D-169).
+
+    `prior_state` is the finding's status, `resolved_at`, `accepted_until`
+    and `accepted_reason_code` as the action found them; an undo writes them
+    back exactly. `evidence` names the record the rule rested on - a
+    remediation event, a VEX statement, a precedent finding, a reachability
+    report - by id.
+
+    Never deleted. An undone action stays, with who undid it and why, and it
+    stops its rule ever being applied to that finding again.
+    """
+
+    __tablename__ = "auto_triage_actions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    capability: Mapped[str] = mapped_column(String(64), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="")
+    #: exact_duplicate | vex_not_affected | fix_verified | unreachable
+    rule: Mapped[str] = mapped_column(String(32), index=True)
+    new_status: Mapped[str] = mapped_column(String(32))
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    prior_state: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    applied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    undone_by: Mapped[str | None] = mapped_column(String(255), default=None)
+    undo_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+
 class PublicEndpoint(Base):
     """A URL the operator says is reachable from the internet (mykronos.exposure).
 

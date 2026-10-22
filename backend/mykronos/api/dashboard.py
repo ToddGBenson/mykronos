@@ -80,6 +80,7 @@ from mykronos.dashboard import (
     with_lanes,
 )
 from mykronos.db.models import (
+    AutoTriageAction,
     CapabilityGrant,
     EnvironmentalScore,
     JobRun,
@@ -533,6 +534,43 @@ class TriageQueue(BaseModel):
     )
 
 
+class AutoTriageActionOut(BaseModel):
+    """Something the platform closed by itself, on what evidence, and how to
+    put it back (TheHub #60888, D-169)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    finding_id: str
+    repo_full_name: str
+    capability: str
+    severity: str
+    rule: Literal["fix_verified", "vex_not_affected", "exact_duplicate", "unreachable"]
+    new_status: str
+    evidence: dict[str, Any] = Field(
+        description="`type` and `ref` name the record the rule rested on; the rest describes it."
+    )
+    summary: str
+    prior_state: dict[str, Any] = Field(
+        description="What an undo writes back: status, resolved_at, accepted_until, reason code."
+    )
+    applied_at: datetime
+    undone_at: datetime | None = None
+    undone_by: str | None = None
+    undo_reason: str | None = None
+
+
+class AutoTriageDigestOut(BaseModel):
+    """What auto-triage closed in a window, by lane (TheHub #60888)."""
+
+    since: datetime
+    hours: int
+    total: int
+    undone: int
+    by_rule: dict[str, int]
+    actions: list[AutoTriageActionOut]
+
+
 class FindingOut(BaseModel):
     """One finding as the dashboard serves it.
 
@@ -601,6 +639,13 @@ class FindingOut(BaseModel):
     resolved_at: datetime | None = None
     code_snippet: str | None = None
     raw_finding_json: Any = None
+    auto_triage: list[AutoTriageActionOut] = Field(
+        default_factory=list,
+        description=(
+            "Every auto-triage action on this finding, newest first, undone ones "
+            "included (TheHub #60888). Filled on the detail route only."
+        ),
+    )
 
 
 class FindingsPage(BaseModel):
@@ -3174,6 +3219,9 @@ class BriefingOut(BaseModel):
     #: means no repository has a probe; an unreadable record is in `unknown`.
     production_lag: list[ProductionLagOut] = Field(default_factory=list)
     unknown: list[BriefingUnknownOut] = Field(default_factory=list)
+    #: What auto-triage closed by itself in the last 24 hours (TheHub #60888),
+    #: scoped to the repository when one is asked for.
+    auto_triage: AutoTriageDigestOut | None = None
 
 
 @router.get("/briefing", response_model=BriefingOut)
@@ -3306,7 +3354,32 @@ async def post_deployment_briefing(
             BriefingUnknownOut(source=source, detail=detail)
             for source, detail in report.unknown_sources()
         ],
+        auto_triage=auto_triage_digest_out(request, hours=24, repo=asset_id),
     )
+
+
+def auto_triage_digest_out(
+    request: Request, *, hours: int, repo: str | None
+) -> AutoTriageDigestOut:
+    """The auto-triage digest (TheHub #60888), optionally for one repository."""
+    from mykronos import auto_triage
+
+    with request.app.state.db.session() as session:
+        report = auto_triage.digest(session, hours=hours)
+        actions = [
+            a for a in report["actions"] if repo is None or a.repo_full_name == repo
+        ]
+        by_rule: dict[str, int] = {}
+        for action in actions:
+            by_rule[action.rule] = by_rule.get(action.rule, 0) + 1
+        return AutoTriageDigestOut(
+            since=report["since"],
+            hours=hours,
+            total=len(actions),
+            undone=sum(1 for a in actions if a.undone_at is not None),
+            by_rule=by_rule,
+            actions=[AutoTriageActionOut.model_validate(a) for a in actions],
+        )
 
 
 class VulnerablePackageOut(BaseModel):
@@ -4659,7 +4732,19 @@ async def finding_detail(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
         )
-    return FindingOut.model_validate(record)
+    out = FindingOut.model_validate(record)
+    # What the platform did to it by itself, so the undo sits beside the
+    # status it explains (TheHub #60888).
+    with request.app.state.db.session() as session:
+        out.auto_triage = [
+            AutoTriageActionOut.model_validate(action)
+            for action in session.execute(
+                select(AutoTriageAction)
+                .where(AutoTriageAction.finding_id == finding_id)
+                .order_by(AutoTriageAction.applied_at.desc())
+            ).scalars()
+        ]
+    return out
 
 
 @router.post(

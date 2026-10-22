@@ -3585,6 +3585,140 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/auto-triage/digest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auto Triage Digest
+         * @description What the platform closed by itself in the last `hours`, by lane, each
+         *     action with its evidence and its undo (TheHub #60888).
+         */
+        get: operations["auto_triage_digest_api_dashboard_auto_triage_digest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/auto-triage/actions/{action_id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo Auto Triage
+         * @description Put the finding back exactly as the action found it (TheHub #60888).
+         *
+         *     Restores the prior status, `resolved_at`, `accepted_until` and reason
+         *     code; refused (409) if the finding no longer holds the status the action
+         *     set, because then something else has decided since. The rule is never
+         *     applied to that finding again.
+         */
+        post: operations["undo_auto_triage_api_dashboard_auto_triage_actions__action_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/auto-triage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Finding Auto Triage
+         * @description Every auto-triage action on one finding, newest first.
+         */
+        get: operations["finding_auto_triage_api_dashboard_findings__finding_id__auto_triage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/auto-triage/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Auto Triage
+         * @description Run the lanes now, rather than waiting for the hourly job.
+         *
+         *     Defaults to a dry run: it closes findings, and the safe default for that
+         *     is to show somebody first. The kill switches apply either way.
+         */
+        post: operations["run_auto_triage_api_dashboard_auto_triage_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/vex-statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Vex Statements */
+        get: operations["list_vex_statements_api_dashboard_vex_statements_get"];
+        put?: never;
+        /**
+         * Record Vex Statement
+         * @description Record a vendor's or a VEX document's statement (TheHub #60888).
+         *
+         *     A person only: a `not_affected` statement is evidence the
+         *     `vex_not_affected` lane closes critical findings on.
+         */
+        post: operations["record_vex_statement_api_dashboard_vex_statements_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/vex-statements/{statement_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Vex Statement
+         * @description Revoke a statement. Kept, so an action that cited it still shows what
+         *     it cited; findings it already closed stay closed until undone.
+         */
+        delete: operations["revoke_vex_statement_api_dashboard_vex_statements__statement_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/github": {
         parameters: {
             query?: never;
@@ -4419,6 +4553,108 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * AutoTriageActionOut
+         * @description Something the platform closed by itself, on what evidence, and how to
+         *     put it back (TheHub #60888, D-169).
+         */
+        AutoTriageActionOut: {
+            /** Id */
+            id: string;
+            /** Finding Id */
+            finding_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Severity */
+            severity: string;
+            /**
+             * Rule
+             * @enum {string}
+             */
+            rule: "fix_verified" | "vex_not_affected" | "exact_duplicate" | "unreachable";
+            /** New Status */
+            new_status: string;
+            /**
+             * Evidence
+             * @description `type` and `ref` name the record the rule rested on; the rest describes it.
+             */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Summary */
+            summary: string;
+            /**
+             * Prior State
+             * @description What an undo writes back: status, resolved_at, accepted_until, reason code.
+             */
+            prior_state: {
+                [key: string]: unknown;
+            };
+            /**
+             * Applied At
+             * Format: date-time
+             */
+            applied_at: string;
+            /** Undone At */
+            undone_at?: string | null;
+            /** Undone By */
+            undone_by?: string | null;
+            /** Undo Reason */
+            undo_reason?: string | null;
+        };
+        /**
+         * AutoTriageDigestOut
+         * @description What auto-triage closed in a window, by lane (TheHub #60888).
+         */
+        AutoTriageDigestOut: {
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            /** Hours */
+            hours: number;
+            /** Total */
+            total: number;
+            /** Undone */
+            undone: number;
+            /** By Rule */
+            by_rule: {
+                [key: string]: number;
+            };
+            /** Actions */
+            actions: components["schemas"]["AutoTriageActionOut"][];
+        };
+        /** AutoTriageRunOut */
+        AutoTriageRunOut: {
+            /** Dry Run */
+            dry_run: boolean;
+            /** Proposed */
+            proposed: components["schemas"]["mykronos__api__auto_triage__ProposalOut"][];
+            /**
+             * Applied
+             * @description Ids of the actions written.
+             */
+            applied: string[];
+            /**
+             * Held Serious
+             * @description Critical or high findings a weak-evidence lane matched and left for a person: only a verified fix or a VEX statement closes those.
+             */
+            held_serious: number;
+            /**
+             * Disabled
+             * @description Lane -> findings it matched while its kill switch is off.
+             */
+            disabled: {
+                [key: string]: number;
+            };
+            /** Enabled */
+            enabled: {
+                [key: string]: boolean;
+            };
+        };
         /** AwaitingClosureOut */
         AwaitingClosureOut: {
             /** Repo Full Name */
@@ -4609,6 +4845,7 @@ export interface components {
             production_lag?: components["schemas"]["ProductionLagOut"][];
             /** Unknown */
             unknown?: components["schemas"]["BriefingUnknownOut"][];
+            auto_triage?: components["schemas"]["AutoTriageDigestOut"] | null;
         };
         /** BriefingSectionOut */
         BriefingSectionOut: {
@@ -6753,6 +6990,11 @@ export interface components {
             code_snippet?: string | null;
             /** Raw Finding Json */
             raw_finding_json?: unknown;
+            /**
+             * Auto Triage
+             * @description Every auto-triage action on this finding, newest first, undone ones included (TheHub #60888). Filled on the detail route only.
+             */
+            auto_triage?: components["schemas"]["AutoTriageActionOut"][];
         };
         /**
          * FindingRecordOut
@@ -8867,7 +9109,7 @@ export interface components {
             /** Already Confirmed */
             already_confirmed: boolean;
             /** Proposals */
-            proposals: components["schemas"]["ProposalOut"][];
+            proposals: components["schemas"]["mykronos__api__dashboard__ProposalOut"][];
             /** Note */
             note: string;
         };
@@ -8897,19 +9139,6 @@ export interface components {
             reasons_withheld: number;
             /** Note */
             note: string;
-        };
-        /** ProposalOut */
-        ProposalOut: {
-            /** Field */
-            field: string;
-            /** Value */
-            value: unknown | null;
-            /** Confidence */
-            confidence: string;
-            /** Evidence */
-            evidence: string;
-            /** What Would Settle It */
-            what_would_settle_it?: string | null;
         };
         /** ProposeIn */
         ProposeIn: {
@@ -11239,6 +11468,14 @@ export interface components {
              */
             commit: string;
         };
+        /** UndoIn */
+        UndoIn: {
+            /**
+             * Reason
+             * @description Why the platform's verdict does not stand. Audited with the undo.
+             */
+            reason: string;
+        };
         /**
          * UnhealthyJobOut
          * @description A scheduled job that is failing, late or has never run (#409):
@@ -11307,6 +11544,82 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VexStatementIn */
+        VexStatementIn: {
+            /** Vulnerability Id */
+            vulnerability_id: string;
+            /** Package Name */
+            package_name: string;
+            /**
+             * Package Version
+             * @description Absent: every version.
+             */
+            package_version?: string | null;
+            /**
+             * Repo Full Name
+             * @description Absent: every repository.
+             */
+            repo_full_name?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_affected" | "affected" | "fixed" | "under_investigation";
+            /**
+             * Justification
+             * @description Required for not_affected, as OpenVEX requires.
+             */
+            justification?: ("component_not_present" | "vulnerable_code_not_present" | "vulnerable_code_not_in_execute_path" | "vulnerable_code_cannot_be_controlled_by_adversary" | "inline_mitigations_already_exist") | null;
+            /**
+             * Impact Statement
+             * @default
+             */
+            impact_statement: string;
+            /**
+             * Source Kind
+             * @enum {string}
+             */
+            source_kind: "vendor" | "vex";
+            /**
+             * Source
+             * @description Where it was said: a URL or a document reference anybody can go and read.
+             */
+            source: string;
+        };
+        /** VexStatementOut */
+        VexStatementOut: {
+            /** Id */
+            id: string;
+            /** Vulnerability Id */
+            vulnerability_id: string;
+            /** Package Name */
+            package_name: string;
+            /** Package Version */
+            package_version: string | null;
+            /** Repo Full Name */
+            repo_full_name: string | null;
+            /** Status */
+            status: string;
+            /** Justification */
+            justification: string;
+            /** Impact Statement */
+            impact_statement: string;
+            /** Source Kind */
+            source_kind: string;
+            /** Source */
+            source: string;
+            /** Recorded By */
+            recorded_by: string;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Revoked At */
+            revoked_at: string | null;
+            /** Revoked By */
+            revoked_by: string | null;
         };
         /** VulnerablePackageOut */
         VulnerablePackageOut: {
@@ -11506,6 +11819,38 @@ export interface components {
             workflows: components["schemas"]["WorkflowState"][];
             /** Unavailable */
             unavailable?: string | null;
+        };
+        /** ProposalOut */
+        mykronos__api__auto_triage__ProposalOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Severity */
+            severity: string;
+            /** Rule */
+            rule: string;
+            /** New Status */
+            new_status: string;
+            /** Summary */
+            summary: string;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+        };
+        /** ProposalOut */
+        mykronos__api__dashboard__ProposalOut: {
+            /** Field */
+            field: string;
+            /** Value */
+            value: unknown | null;
+            /** Confidence */
+            confidence: string;
+            /** Evidence */
+            evidence: string;
+            /** What Would Settle It */
+            what_would_settle_it?: string | null;
         };
         /** TemplateOut */
         mykronos__api__product_owner__TemplateOut: {
@@ -15967,6 +16312,230 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClusterDispositionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    auto_triage_digest_api_dashboard_auto_triage_digest_get: {
+        parameters: {
+            query?: {
+                hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoTriageDigestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_auto_triage_api_dashboard_auto_triage_actions__action_id__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                action_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UndoIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoTriageActionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finding_auto_triage_api_dashboard_findings__finding_id__auto_triage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoTriageActionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_auto_triage_api_dashboard_auto_triage_run_post: {
+        parameters: {
+            query?: {
+                /** @description Report what the lanes would do and write nothing. */
+                dry_run?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoTriageRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_vex_statements_api_dashboard_vex_statements_get: {
+        parameters: {
+            query?: {
+                include_revoked?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VexStatementOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_vex_statement_api_dashboard_vex_statements_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VexStatementIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VexStatementOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_vex_statement_api_dashboard_vex_statements__statement_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                statement_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VexStatementOut"];
                 };
             };
             /** @description Validation Error */

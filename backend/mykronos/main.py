@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request
 
 from mykronos import (
     __version__,
+    auto_triage,
     environment,
     finding_disposition,
     logsafe,
@@ -36,6 +37,7 @@ from mykronos.api import refusals, validation_errors
 from mykronos.api.agent import router as agent_router
 from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
+from mykronos.api.auto_triage import router as auto_triage_router
 from mykronos.api.briefing_daily import router as briefing_daily_router
 from mykronos.api.control_observations import router as control_observations_router
 from mykronos.api.dashboard import router as dashboard_router
@@ -99,7 +101,11 @@ from mykronos.lake import (
     WriteAheadBuffer,
     compact,
 )
-from mykronos.lake.maintenance import carry_forward_exclusively, reconcile_after_linking
+from mykronos.lake.maintenance import (
+    LANE_CLOSURE_LOCK,
+    carry_forward_exclusively,
+    reconcile_after_linking,
+)
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
@@ -502,6 +508,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 purge_orphaned_learnings, app.state.db, app.state.knowledge
             )
 
+        async def _auto_triage() -> None:
+            # In a thread, under the lock every pass that closes findings
+            # holds (`lake/maintenance.py`): `fix_verified` closes as `fixed`,
+            # the same column absence reconciliation writes.
+            enabled = app.state.oracle_policy.auto_triage.enabled()
+
+            def _sweep() -> None:
+                with LANE_CLOSURE_LOCK:
+                    auto_triage.sweep(app.state.db, app.state.catalog, enabled)
+
+            await asyncio.to_thread(_sweep)
+
         async def _verify_fixes() -> None:
             await verify_merged_fixes(
                 app.state.db,
@@ -828,6 +846,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
+            # TheHub #60888. Hourly, and only lanes the policy enables.
+            ("auto-triage", settings.auto_triage_interval_seconds, _auto_triage),
             (
                 "deployment-probe",
                 settings.deployment_probe_interval_seconds,
@@ -916,6 +936,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(triage_clusters_router)
+    app.include_router(auto_triage_router)
     app.include_router(webhooks_router)
     app.include_router(agents_router)
     app.include_router(agent_router)
