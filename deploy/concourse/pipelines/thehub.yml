@@ -4600,10 +4600,27 @@ jobs:
   # 548% CPU and took production down (D-053), a passive baseline adds ordinary
   # crawl traffic and nothing more.
   #
-  # Unauthenticated on purpose: this is the view an anonymous attacker gets.
-  # On demo the gate is off, so that is the whole app; on prod the gate is on,
-  # so it is the perimeter -- and a scan that confirms the perimeter refuses
-  # anonymous callers is a real result, not an empty one.
+  # Unauthenticated to the app: on demo the gate is off, so that is the whole
+  # app; on prod the gate is on, so it is the perimeter -- and a scan that
+  # confirms the perimeter refuses anonymous callers is a real result, not an
+  # empty one.
+  #
+  # **Through Cloudflare Access, with a service token (TheHub #60803, option
+  # A).** demo.toddbenson.net served the demo to anyone (exposure.py,
+  # 2026-10-01), so it goes behind a Cloudflare Access application, and this
+  # lane scans it at ((thehub-demo-public-url)) -- the way the internet
+  # reaches it -- presenting `CF-Access-Client-Id` / `CF-Access-Client-Secret`
+  # from ((cf-access-demo-client-id)) / ((cf-access-demo-client-secret)) on
+  # the probes and, through a ZAP HTTP Sender script, on every request ZAP
+  # sends to the demo's host. The token proves the scanner to Access; it is
+  # not a credential for the app.
+  #
+  # **A crawl of Access's login page is never reported as the demo.** An
+  # empty token fails before anything runs; a token Access does not admit
+  # fails at the first probe; a report with no site on the demo's host fails;
+  # requests that met the login page mid-crawl are dropped from the report
+  # and the run is marked partial (MYKRONOS-INCOMPLETE), so their absence
+  # closes nothing. The token is never printed and never on a command line.
   - name: dast-demo
     public: true
     serial_groups: [worker]
@@ -4655,40 +4672,178 @@ jobs:
           inputs: [{ name: source }]
           params:
             <<: *mykronos_env
-            TARGET_URL: ((thehub-demo-url))
+            # TheHub #60803 (option A): the demo is reached the way the internet
+            # reaches it, through Cloudflare at its public hostname, and
+            # demo.toddbenson.net is behind Cloudflare Access. The lane presents
+            # an Access service token (board #60875) on every request.
+            TARGET_URL: ((thehub-demo-public-url))
+            CF_ACCESS_CLIENT_ID: ((cf-access-demo-client-id))
+            CF_ACCESS_CLIENT_SECRET: ((cf-access-demo-client-secret))
           run:
             path: bash
             args:
               - -ec
               - |
                 set -uo pipefail
+                TARGET_URL="${TARGET_URL%/}"
 
-                # Reachability first. A scan of a host that is not answering
-                # produces a report with no alerts, which on the dashboard is
-                # indistinguishable from a clean scan (L0001). Retried, because
-                # a single curl on a loaded worker fails while the target is up.
-                if ! curl --fail --silent --max-time 30 \
-                     --retry 5 --retry-delay 6 --retry-all-errors \
-                     -o /dev/null "$TARGET_URL"; then
-                  echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                # 0. The service token, or no scan. Without it every request
+                #    meets Access's login page, and a crawl of a login page
+                #    reports a handful of informational alerts that read as a
+                #    clean demo (L0001). An empty var is this; a var missing
+                #    from Vault errors before the task starts, naming it.
+                if [ -z "${CF_ACCESS_CLIENT_ID:-}" ] || [ -z "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+                  echo "::error::cf-access-demo-client-id or cf-access-demo-client-secret is empty."
+                  echo "::error::$TARGET_URL is behind Cloudflare Access (TheHub #60803), so without the service"
+                  echo "::error::token this lane would scan Access's login page and report it clean. Refusing."
+                  echo "::error::Fix: create the Access service token (board #60875), store both halves with"
+                  echo "::error::vault-secret.ps1 set, and re-apply the thehub pipeline."
                   exit 1
                 fi
 
-                # zap-baseline hardcodes its report directory to /zap/wrk when
-                # it runs inside a container, and refuses a file-based report
-                # (-J) unless that directory exists. The warning wording says
-                # "not mounted", but the actual check is os.path.exists -- so
-                # no bind mount is required (a Concourse task cannot provide one
-                # anyway); the directory merely has to be there. The image
-                # ships without it, so create it and let ZAP write there. /zap
-                # is owned by the zap user this image runs as, so mkdir works.
+                # The headers go to curl from a 0600 file and to ZAP from the
+                # environment: never on a command line, never printed. The
+                # directory is private and outside /zap/wrk, which is the
+                # upload's --results-path (every *.json there is parsed).
+                ACCESS_DIR=$(mktemp -d)
+                chmod 700 "$ACCESS_DIR"
+                trap 'rm -rf "$ACCESS_DIR"' EXIT
+                ACCESS_HEADERS="$ACCESS_DIR/access-headers"
+                (umask 077; printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
+                  "$CF_ACCESS_CLIENT_ID" "$CF_ACCESS_CLIENT_SECRET" > "$ACCESS_HEADERS")
+                HDRS="$ACCESS_DIR/response-headers"
+                TARGET_HOST=$(python3 -c 'import os; from urllib.parse import urlsplit; print(urlsplit(os.environ["TARGET_URL"]).hostname or "")')
+                export TARGET_HOST
+
+                # `with` presents the token; `without` is an anonymous visitor.
+                # IPv4, for the reason `dast-edge` gives (#59976). --retry
+                # covers transport errors and 5xx; a 302 or 403 is an answer.
+                probe() {
+                  : > "$HDRS"
+                  if [ "$2" = with ]; then
+                    curl -4 --silent --show-error --max-time 30 --retry 5 --retry-delay 6 \
+                      -H @"$ACCESS_HEADERS" -o /dev/null -D "$HDRS" -w '%{http_code}' "$1"
+                  else
+                    curl -4 --silent --show-error --max-time 30 --retry 5 --retry-delay 6 \
+                      -o /dev/null -D "$HDRS" -w '%{http_code}' "$1"
+                  fi
+                }
+                header() { grep -i "^$1:" "$HDRS" | tail -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
+                # Access answers a request it does not admit with a redirect to
+                # its login, on <team>.cloudflareaccess.com or the zone's own
+                # /cdn-cgi/access/ path, or with a 401/403 of its own.
+                at_access_login() {
+                  case "$(header location)" in
+                    *cloudflareaccess.com*|*/cdn-cgi/access/*) return 0 ;;
+                  esac
+                  case "$1" in 401|403) return 0 ;; esac
+                  return 1
+                }
+
+                # 1. With the token: through Cloudflare, admitted by Access.
+                code=$(probe "$TARGET_URL/" with) || {
+                  echo "::error::$TARGET_URL is not answering after retries (or its certificate does not verify)."
+                  echo "::error::Refusing to report an empty scan as clean."
+                  exit 1
+                }
+                if [ "$(header server)" != "cloudflare" ] || [ -z "$(header cf-ray)" ]; then
+                  echo "::error::$TARGET_URL/ answered $code without Cloudflare's headers (server='$(header server)', cf-ray='$(header cf-ray)')."
+                  echo "::error::thehub-demo-public-url must be the public hostname: this lane authenticates through Access."
+                  exit 1
+                fi
+                if at_access_login "$code"; then
+                  echo "::error::Cloudflare Access did not admit the service token: $TARGET_URL/ answered $code (location '$(header location)')."
+                  echo "::error::Check that the Vault values are the token board #60875 created, and that the Access"
+                  echo "::error::application on $TARGET_HOST has a Service Auth policy that includes it."
+                  echo "::error::Refusing to scan Access's login page and report it as the demo."
+                  exit 1
+                fi
+                case "$code" in
+                  2??|3??) ;;
+                  *)
+                    echo "::error::$TARGET_URL/ answered $code to an admitted request. Refusing to report it as a scan."
+                    exit 1 ;;
+                esac
+                echo "Access admitted the service token: $TARGET_URL/ -> $code via Cloudflare (cf-ray $(header cf-ray))."
+
+                # 2. Without it: Access should refuse. Reported, not gated: the
+                #    scan is authenticated either way, and an Access application
+                #    that is not enforcing is the operator's to fix (#60875).
+                anon=$(probe "$TARGET_URL/" without) || anon="unreachable"
+                if at_access_login "$anon"; then
+                  echo "Access is enforcing: an anonymous request answered $anon."
+                else
+                  echo "::warning::An anonymous request to $TARGET_URL/ answered $anon: Cloudflare Access is not"
+                  echo "::warning::enforcing on $TARGET_HOST. The demo is open to anyone (TheHub #60803)."
+                fi
+
+                # 3. The scan: the same passive baseline as before, with a hook
+                #    that adds the two Access headers to every request ZAP
+                #    sends to the demo's host, and to no other host.
+                export ACCESS_SCRIPT="$ACCESS_DIR/cf-access-headers.js"
+                export ACCESS_STATUS="$ACCESS_DIR/status"
+                cat > "$ACCESS_SCRIPT" <<'JS'
+                // TheHub #60803. A ZAP HTTP Sender script that presents the
+                // Cloudflare Access service token on every request to the demo's
+                // host. The token comes from the environment, never from a file.
+                var System = Java.type('java.lang.System');
+
+                function sendingRequest(msg, initiator, helper) {
+                  var id = System.getenv('CF_ACCESS_CLIENT_ID');
+                  var secret = System.getenv('CF_ACCESS_CLIENT_SECRET');
+                  var host = System.getenv('TARGET_HOST');
+                  if (!id || !secret || !host) { return; }
+                  var uri = msg.getRequestHeader().getURI();
+                  if (String(uri.getHost()).toLowerCase() !== String(host).toLowerCase()) { return; }
+                  msg.getRequestHeader().setHeader('CF-Access-Client-Id', String(id));
+                  msg.getRequestHeader().setHeader('CF-Access-Client-Secret', String(secret));
+                }
+
+                function responseReceived(msg, initiator, helper) {}
+                JS
+                cat > "$ACCESS_DIR/hook.py" <<'PY'
+                # TheHub #60803. Loads and enables the Access header script once ZAP is up.
+                import os
+
+                NAME = "cf-access-headers"
+
+
+                def _status(text):
+                    with open(os.environ["ACCESS_STATUS"], "w") as handle:
+                        handle.write(text)
+
+
+                def zap_started(zap, target):
+                    engines = list(zap.script.list_engines)
+                    wanted = [
+                        e for e in engines
+                        if any(k in e.lower() for k in ("graal", "ecmascript", "javascript"))
+                    ]
+                    for engine in wanted:
+                        for name in (engine.split(" : ")[-1], engine):
+                            try:
+                                result = zap.script.load(
+                                    NAME, "httpsender", name, os.environ["ACCESS_SCRIPT"]
+                                )
+                            except Exception:  # a ZAP API refusal: try the next spelling
+                                continue
+                            if result == "OK":
+                                zap.script.enable(NAME)
+                                _status("presented")
+                                return
+                    _status("failed: no JavaScript engine accepted the script; engines: %s" % engines)
+                    raise RuntimeError("could not load the Cloudflare Access header script")
+                PY
+
+                # zap-baseline hardcodes its report directory to /zap/wrk and
+                # only checks that it exists (see the history of this job).
                 mkdir -p /zap/wrk
 
                 # -I: informational warnings do not fail the run (the severity
                 # decision is Mykronos's, not the scanner's). -m 5: cap the
                 # spider at 5 minutes so the crawl is bounded on any target.
                 rc=0
-                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 --hook="$ACCESS_DIR/hook.py" || rc=$?
 
                 # 0 = nothing to report, 1 = a FAIL, 2 = warnings. All results.
                 # Anything higher is ZAP itself breaking.
@@ -4696,12 +4851,91 @@ jobs:
                   echo "::error::zap-baseline exited $rc - a scan failure, not a result"
                   exit "$rc"
                 fi
-
-                # The report lands in /zap/wrk (base_dir), regardless of cwd.
                 test -s /zap/wrk/zap.json || {
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
+                PRESENTED=$(cat "$ACCESS_STATUS" 2>/dev/null || echo "hook never ran")
+                if [ "$PRESENTED" != "presented" ]; then
+                  echo "::error::ZAP did not present the Access service token ($PRESENTED), so its crawl met the login page."
+                  exit 1
+                fi
+
+                # 4. Did the crawl reach the demo, or Access's login page? The
+                #    token can stop being admitted mid-crawl (rotated, expired,
+                #    policy edited). Sites on Access's hosts, and any URL under
+                #    /cdn-cgi/access/, are the login page, not the demo: they
+                #    are dropped from the report, and the run is marked partial
+                #    so the adapter records PARTIAL_FAILURE and closes nothing
+                #    on their absence. A report with no site on the demo's host
+                #    at all is not a scan of the demo.
+                verdict=$(python3 - /zap/wrk/zap.json <<'PY'
+                import json, os, sys
+                from urllib.parse import urlsplit
+
+                path, host = sys.argv[1], os.environ["TARGET_HOST"].lower()
+                with open(path, encoding="utf-8") as handle:
+                    report = json.load(handle)
+
+                def at_access(url):
+                    parts = urlsplit(url)
+                    return (parts.hostname or "").endswith("cloudflareaccess.com") or "/cdn-cgi/access/" in parts.path
+
+                kept, dropped, demo = [], 0, 0
+                for site in report.get("site") or []:
+                    name = str(site.get("@name") or "")
+                    if at_access(name):
+                        dropped += 1
+                        continue
+                    if (urlsplit(name).hostname or "").lower() == host:
+                        demo += 1
+                    for alert in site.get("alerts") or []:
+                        before = alert.get("instances") or []
+                        after = [i for i in before if not at_access(str(i.get("uri") or ""))]
+                        dropped += len(before) - len(after)
+                        if before:
+                            alert["instances"] = after
+                    site["alerts"] = [a for a in site.get("alerts") or [] if a.get("instances") != []]
+                    kept.append(site)
+                report["site"] = kept
+                with open(path, "w", encoding="utf-8") as handle:
+                    json.dump(report, handle)
+                print(demo, dropped)
+                PY
+                ) || {
+                  echo "::error::Could not read ZAP's report to check it reached the demo."
+                  exit 1
+                }
+                read -r demo_sites access_hits <<< "$verdict"
+                if [ "${demo_sites:-0}" -eq 0 ]; then
+                  echo "::error::ZAP's report has no site on $TARGET_HOST: the crawl never reached the demo"
+                  echo "::error::(Access's login page, at most). Refusing to report it as a scan."
+                  exit 1
+                fi
+
+                # The token is still admitted now, or the crawl cannot be trusted.
+                after=$(probe "$TARGET_URL/" with) || after="unreachable"
+                if at_access_login "$after"; then
+                  echo "::error::After the scan, Access no longer admits the service token ($after, location '$(header location)')."
+                  echo "::error::The crawl may have been the login page part-way. Refusing to upload it."
+                  exit 1
+                fi
+                if [ "${access_hits:-0}" -gt 0 ]; then
+                  echo "::warning::$access_hits request(s) reached Cloudflare Access's login page instead of the demo."
+                  echo "::warning::They are dropped from the report, and the run is recorded as partial."
+                  echo "MYKRONOS-INCOMPLETE: ${access_hits} request(s) met the Cloudflare Access login page instead of the demo; the report covers what Access admitted." > /zap/wrk/zap-incomplete.json
+                fi
+
+                # The login page alone draws informational alerts; a report
+                # with none is what a refused crawl looks like (as `dast-edge`).
+                # `|| true`: grep exits 1 on no match, and under pipefail and
+                # -e that would end the task here, silently, with no reason.
+                alerts=$(grep -o '"alert"' /zap/wrk/zap.json | wc -l || true)
+                if [ "${alerts:-0}" -eq 0 ]; then
+                  echo "::error::ZAP reported no alerts at all against $TARGET_URL. A crawl Access refused"
+                  echo "::error::looks exactly like this. Refusing to report it as clean."
+                  exit 1
+                fi
 
                 # --user because this runs unprivileged; python adds the user
                 # site directory to sys.path, so `python3 -m` finds it.
@@ -4714,10 +4948,6 @@ jobs:
                 # package; the alternative, a venv, needs python3-venv, which
                 # would mean apt-get, which needs the root this task does not
                 # have. The container is discarded when the scan ends either way.
-                #
-                # These are checked explicitly rather than relying on `set -e`,
-                # which is deliberately off above so a ZAP exit code can be
-                # inspected rather than kill the task.
                 pip install --quiet --user --break-system-packages \
                   --no-warn-script-location \
                   "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
@@ -4744,6 +4974,9 @@ jobs:
 
                 # DAST findings have no file and no line -- the request is the
                 # location -- so --workspace buys nothing beyond consistency.
+                # `zap-demo` keys on the route, not the host (D-155), so moving
+                # from the LAN address to the public hostname keeps every
+                # finding's identity.
                 MYKRONOS_JOB=dast-demo python3 -m mykronos.upload \
                   --capability dast --tool zap-demo \
                   --results-path /zap/wrk \
@@ -4755,7 +4988,7 @@ jobs:
                   echo "::error::Uploading the DAST findings to Mykronos failed."
                   exit 1
                 }
-                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against demo"
+                echo "ZAP reported $alerts alert entries against demo through Cloudflare Access"
 
   # -- Unauthenticated baseline DAST: Prod ----------------------------------
   #
@@ -5791,8 +6024,8 @@ jobs:
 
   # -- Unauthenticated baseline DAST: Staging -------------------------------
   #
-  # Staging had never been scanned by anything. `dast-demo` targets
-  # ((thehub-demo-url)) and `dast-prod` targets ((thehub-url)); the standing
+  # Staging had never been scanned by anything. `dast-demo` targets the demo
+  # (now ((thehub-demo-public-url)), #60803) and `dast-prod` targets ((thehub-url)); the standing
   # staging environment on 8081 appears in neither, and a 2026-09-03 baseline
   # run by hand found four rules with no counterpart anywhere in the lake --
   # 10038 (no CSP), 10020 (no anti-clickjacking), 10021 (no
