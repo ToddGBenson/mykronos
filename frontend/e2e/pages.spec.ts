@@ -27,13 +27,17 @@ test("a repository opens from the portfolio and shows its findings", async ({ pa
   await expect(page).toHaveURL(/\/repos\/[^/?]+/);
   await expect(page.getByRole("heading", { name: "acme/checkout-api" })).toBeVisible();
 
-  // The findings tab, then narrowed to critical through its own dropdown:
+  // The findings tab, then narrowed to critical through its Severity pill
+  // (#962 replaced the dropdown with filter pills, each a labelled dialog):
   // the seed gives checkout-api a critical SAST finding (CWE-89).
   const repoUrl = new URL(page.url());
   await page.goto(`${repoUrl.pathname}?tab=findings`);
-  const severity = page.getByRole("combobox", { name: "Severity" });
+  const severity = page.getByRole("button", { name: /^Severity/ });
   await expect(severity).toBeVisible();
-  await severity.selectOption("critical");
+  await severity.click();
+  const dialog = page.getByRole("dialog", { name: "Severity filter" });
+  await dialog.getByRole("checkbox", { name: "critical" }).check();
+  await dialog.getByRole("button", { name: "Apply" }).click();
 
   await expect(page).toHaveURL(/[?&]severity=critical(&|$)/);
   await expect(page.getByText("SQL injection in order lookup").first()).toBeVisible();

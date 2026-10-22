@@ -200,21 +200,25 @@ export async function PullRequestsTab({ selectedNumber }: { selectedNumber?: str
       </>
       )}
 
-      <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
+      {/* A div, not a <p>: an <h2> cannot sit inside a paragraph, so the
+          browser closed the <p> before it and the hydrated tree no longer
+          matched the server's (React #418 on every load of this tab). */}
+      <div className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         <Label as="h2">Why there is no merge button</Label>
-        <br />
-        Every row links out rather than merging here, and that is the design
-        rather than an unfinished edge. A <Pill tone="warn">fix</Pill> changes
-        your application code, and &ldquo;Patchwork never merges anything&rdquo; is
-        structural rather than a policy: there is no merge operation on the
-        GitHub client, in either implementation, and a test fails if one
-        appears. A
-        platform that could merge its own proposals would have to be trusted
-        differently from one that can only show them to you.{" "}
-        <Pill tone="muted">install</Pill> pull requests carry only generated
-        workflow YAML, but they go the same way, because the review that matters
-        happens where the code lives.
-      </p>
+        <p>
+          Every row links out rather than merging here, and that is the design
+          rather than an unfinished edge. A <Pill tone="warn">fix</Pill> changes
+          your application code, and &ldquo;Patchwork never merges anything&rdquo; is
+          structural rather than a policy: there is no merge operation on the
+          GitHub client, in either implementation, and a test fails if one
+          appears. A
+          platform that could merge its own proposals would have to be trusted
+          differently from one that can only show them to you.{" "}
+          <Pill tone="muted">install</Pill> pull requests carry only generated
+          workflow YAML, but they go the same way, because the review that matters
+          happens where the code lives.
+        </p>
+      </div>
 
       <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
         <Label>Freshness</Label>
