@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
-from mykronos import briefing_sources, ci_repeat, grants
+from mykronos import briefing_sources, ci_repeat, grants, logsafe
 from mykronos import host_controls as host_controls_module
 from mykronos.analysers import read_languages
 from mykronos.auth import TokenRegistry
@@ -569,6 +569,9 @@ def _hours_since_an_actions_upload(settings: object) -> float | None:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    # One INFO line per HTTP request buried everything else `mykronos
+    # briefing` printed after a deploy (TheHub #60908). DEBUG still has them.
+    logsafe.demote_http_request_logs()
     settings = get_settings()
 
     parser = _build_parser()

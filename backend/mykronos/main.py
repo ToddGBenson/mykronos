@@ -384,6 +384,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # that handle it, but only the ones somebody remembered; this covers the
     # rest, including uvicorn's own request logging (spec 12 §8).
     logsafe.install()
+    logsafe.demote_http_request_logs()
     app.state.catalog = Catalog(settings.datalake_dir)
     app.state.catalog.initialise()
     app.state.buffer = WriteAheadBuffer(settings.buffer_dir)
