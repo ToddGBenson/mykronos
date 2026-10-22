@@ -28,6 +28,7 @@ OVERALL = [
     "risk_delta",
     "acceptances",
     "sprint_health",
+    "next_sprint",
     "suggested_focus",
 ]
 PRODUCT = ["deploy_and_health", "findings_delta", "capability_lanes", "next_sprint_candidates"]

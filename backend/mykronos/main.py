@@ -26,6 +26,7 @@ from mykronos import (
     platform_health,
     premise_monitor,
     risk_acceptance,
+    sprint_signal,
 )
 from mykronos.adminauth import (
     ActorKind,
@@ -84,6 +85,7 @@ from mykronos.jobs import (
     BRIEFING_DM_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
+    SIGNAL_FILING_JOB,
     AcceptanceSweepResult,
     JobNotDue,
     JobSkipped,
@@ -766,6 +768,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings, db=app.state.db, read=briefing_dm.route_reader(app)
             )
 
+        async def _signal_filing() -> None:
+            # Next-sprint candidates to TheHub's backlog (TheHub #60862),
+            # once a UTC day, read through the briefing route so it files
+            # what the page ranks. Already done today raises JobNotDue; no
+            # TheHub raises JobSkipped, so the row reads `skipped`.
+            await sprint_signal.file_signals(
+                db=app.state.db,
+                hub=getattr(app.state, "hub", None),
+                read=briefing_dm.route_reader(app, actor=f"job:{SIGNAL_FILING_JOB}"),
+            )
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -886,6 +899,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # `skipped` with the missing setting, rather than being absent
             # from platform health and reading as "nothing to say".
             (BRIEFING_DM_JOB, briefing_dm.TICK_SECONDS, _briefing_dm),
+            # Always scheduled, for the same reason: without TheHub it records
+            # `skipped` and says so.
+            (SIGNAL_FILING_JOB, sprint_signal.TICK_SECONDS, _signal_filing),
             ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             # TheHub #60888. Hourly, and only lanes the policy enables.

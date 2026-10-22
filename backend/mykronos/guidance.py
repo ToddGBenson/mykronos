@@ -30,6 +30,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -374,6 +375,10 @@ class FixGroup:
     #: Ordered, and the last one is always closure — a change nobody scans
     #: again does not close anything (D-098).
     steps: list[str] = field(default_factory=list)
+    #: Lower-cased severity -> how many of `findings` carry it, as the
+    #: scanner said. What the next-sprint ranking weighs as risk removed
+    #: (TheHub #60862).
+    severities: dict[str, int] = field(default_factory=dict)
 
     @property
     def collapses_rules(self) -> bool:
@@ -504,14 +509,15 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
     where = "status = 'open'" + (" AND asset_id = ?" if asset_id else "")
     rows = catalog.query(
         f"""
-        SELECT capability, rule_id, title, raw_finding_json, asset_id
+        SELECT capability, rule_id, title, raw_finding_json, asset_id,
+               lower(coalesce(severity, ''))
         FROM findings WHERE {where}
         """,
         [asset_id] if asset_id else None,
     )
 
     grouped: dict[str, dict[str, Any]] = {}
-    for capability, rule_id, title, raw_json, repo in rows:
+    for capability, rule_id, title, raw_json, repo, severity in rows:
         try:
             raw = json.loads(raw_json) if raw_json else {}
         except (ValueError, TypeError):
@@ -541,9 +547,11 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
                 "effort": effort,
                 "kind": fix_id.split(":", 1)[0],
                 "versions": set(),
+                "severities": Counter(),
             },
         )
         entry["findings"] += 1
+        entry["severities"][str(severity or "unknown")] += 1
         if fix_id.startswith("upgrade:"):
             fixed = _FIXED.search(message_text(raw))
             if fixed and not fixed.group(1).startswith("Link"):
@@ -570,6 +578,7 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
             repos=sorted(entry["repos"]),
             effort=str(entry["effort"]),
             steps=_STEPS.get(str(entry["kind"]), []),
+            severities=dict(entry["severities"]),
         )
         for fix_id, entry in grouped.items()
     ]
