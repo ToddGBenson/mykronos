@@ -788,6 +788,49 @@ TRUST_SOURCE = (
 )
 
 
+def _failing_line(failing: briefing_report.FailingLane) -> Line:
+    """One red CI job, worded by its streak (TheHub #60906).
+
+    One failure is not a trend: `ci_repeat` measured that a lane under three
+    consecutive same-class failures usually heals on the next build, so a
+    fresh failure is a decision (retrigger, or wait for the next run) rather
+    than a story. A streak that could not be read keeps the story: unknown is
+    not permission to downgrade.
+    """
+    from mykronos.ci_repeat import REPEAT_THRESHOLD
+
+    name = f"{failing.pipeline}/{failing.job}"
+    ref = failing.build_url or ""
+    if failing.repeated is False:
+        streak = failing.consecutive_failures or 1
+        return Line(
+            what=f"CI job {name} failed its last build"
+            + (f" ({streak} in a row)." if streak > 1 else ", after a pass."),
+            so_what=(
+                "One failure is not a trend: a retrigger often clears it. It becomes "
+                f"a story if it fails {REPEAT_THRESHOLD} builds running."
+            ),
+            work=DECISION,
+            ref=ref,
+        )
+    if failing.repeated:
+        return Line(
+            what=f"CI job {name} has failed {failing.consecutive_failures} builds running "
+            f"({failing.last_status}).",
+            so_what="Its evidence is stale until it passes again, and waiting has not "
+            "fixed it.",
+            work=STORY,
+            ref=ref,
+        )
+    return Line(
+        what=f"CI job {name} is {failing.last_status}.",
+        so_what="Its evidence is stale until it passes again. Its build history could "
+        "not be read, so whether this is a pattern is unknown.",
+        work=STORY,
+        ref=ref,
+    )
+
+
 def trust_section(
     report: briefing_report.Briefing | None,
     risk: RiskDeltaRead | None,
@@ -838,14 +881,7 @@ def trust_section(
             )
         )
     for failing in report.failing:
-        lines.append(
-            Line(
-                what=f"CI job {failing.pipeline}/{failing.job} is {failing.last_status}.",
-                so_what="Its evidence is stale until it passes again.",
-                work=STORY,
-                ref=failing.build_url or "",
-            )
-        )
+        lines.append(_failing_line(failing))
     for held in report.blocked:
         lines.append(
             Line(
@@ -898,6 +934,8 @@ def trust_section(
             "stale_lanes": len(report.stale),
             "paused_jobs": len(report.paused),
             "failing_jobs": len(report.failing),
+            # Of those, the ones past `ci_repeat.REPEAT_THRESHOLD` (#60906).
+            "failing_repeatedly": sum(1 for f in report.failing if f.repeated),
             "held_back_jobs": len(report.blocked),
             "unhealthy_scheduled_jobs": len(report.unhealthy_jobs),
             # Needs no work: fixed, waiting only for scans to confirm.

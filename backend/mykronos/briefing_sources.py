@@ -167,6 +167,59 @@ async def _workflow_blocked(
     return [lane for lanes in read for lane in lanes]
 
 
+#: Builds read per failing lane: enough to see `ci_repeat.REPEAT_THRESHOLD`
+#: and say how many of the recent ones passed. Ten, `ci_repeat.sweep`'s own
+#: default. Only red lanes are read, so a green estate costs nothing.
+FAILING_HISTORY = 10
+
+
+def failing_lanes(
+    ci_client: Any, failing: list[tuple[str, Any]]
+) -> list[briefing_report.FailingLane]:
+    """Each failing job, with how long it has been failing (TheHub #60906).
+
+    The streak is `ci_repeat.trailing_streak` over the lane's own build list,
+    so "failing" can be said as "failed once after a pass" or "nine builds
+    running" rather than as one paragraph for both. A build list that cannot
+    be read leaves the streak `None` - unknown - and the lane is still listed.
+    """
+    from mykronos.ci_repeat import FAILURE_STATUSES, NEUTRAL_STATUSES, trailing_streak
+
+    out: list[briefing_report.FailingLane] = []
+    for pipeline, job in failing:
+        streak: int | None = None
+        recent: int | None = None
+        recent_failed: int | None = None
+        try:
+            builds = ci_client.job_builds(pipeline, job.name, limit=FAILING_HISTORY)
+        except Exception:  # noqa: BLE001 - the lane is still red; its history is unknown
+            builds = None
+        if builds is not None:
+            finished = [
+                b
+                for b in builds
+                if isinstance(b.get("status"), str)
+                and b["status"] not in ("started", "pending", "running", *NEUTRAL_STATUSES)
+            ]
+            run = trailing_streak(builds)
+            streak = len(run[1]) if run else 0
+            recent = len(finished)
+            recent_failed = sum(1 for b in finished if b["status"] in FAILURE_STATUSES)
+        out.append(
+            briefing_report.FailingLane(
+                pipeline=pipeline,
+                job=job.name,
+                last_status=job.status,
+                last_finished_at=job.finished_at,
+                build_url=job.build_url,
+                consecutive_failures=streak,
+                recent_builds=recent,
+                recent_failures=recent_failed,
+            )
+        )
+    return out
+
+
 def gather(
     settings: Any,
     db: Any,
@@ -208,20 +261,7 @@ def gather(
                 ]
             )
             failing = ci_client.failing_jobs()
-            found.failing_jobs = (
-                None
-                if failing is None
-                else [
-                    briefing_report.FailingLane(
-                        pipeline=pipeline,
-                        job=job.name,
-                        last_status=job.status,
-                        last_finished_at=job.finished_at,
-                        build_url=job.build_url,
-                    )
-                    for pipeline, job in failing
-                ]
-            )
+            found.failing_jobs = None if failing is None else failing_lanes(ci_client, failing)
             # Held back by a red or paused upstream (TheHub#349): the state
             # the two lists above cannot hold, because it is neither.
             blocked = ci_client.blocked_jobs()

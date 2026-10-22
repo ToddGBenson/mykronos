@@ -756,6 +756,29 @@ class FailingLane:
     last_status: str | None = None
     last_finished_at: datetime | None = None
     build_url: str | None = None
+    #: How many builds in a row, newest first, failed the way the latest did
+    #: (`ci_repeat.trailing_streak`). None when the build list could not be
+    #: read: unknown, never a defaulted 1 (TheHub #60906).
+    consecutive_failures: int | None = None
+    #: Of the most recent finished builds read, how many there were and how
+    #: many failed. None with `consecutive_failures`.
+    recent_builds: int | None = None
+    recent_failures: int | None = None
+
+    @property
+    def repeated(self) -> bool | None:
+        """Whether this is a pattern rather than one failure (TheHub #60906).
+
+        A pattern is `ci_repeat.REPEAT_THRESHOLD` consecutive same-class
+        failures, the threshold measured over 5,926 builds. Below it a lane
+        is red and probably a flake, and saying "failing" in the voice of a
+        five-week streak is what taught people to skim this section.
+        """
+        from mykronos.ci_repeat import REPEAT_THRESHOLD
+
+        if self.consecutive_failures is None:
+            return None
+        return self.consecutive_failures >= REPEAT_THRESHOLD
 
     @property
     def days_since(self) -> float | None:
@@ -2168,6 +2191,62 @@ def _held_behind(lane: StalledLane, blocked: list[BlockedLane]) -> list[str]:
     )
 
 
+def _failing_streak(lane: FailingLane) -> str:
+    """One lane's history, from its build list (TheHub #60906)."""
+    if lane.consecutive_failures is None:
+        return "build history could not be read, so whether this is a pattern is unknown"
+    streak = lane.consecutive_failures
+    tail = ""
+    if lane.recent_builds and lane.recent_failures is not None:
+        passed = lane.recent_builds - lane.recent_failures
+        tail = f"; {passed} of the last {lane.recent_builds} builds passed"
+    if lane.repeated:
+        return f"{streak} consecutive failed builds{tail}"
+    if streak == 1:
+        return f"first failure after a pass, not yet a pattern{tail}"
+    return f"{streak} consecutive failed builds, not yet a pattern{tail}"
+
+
+def _failing_summary(failing: list[FailingLane]) -> str:
+    """The section's opening sentence, counted from the lanes below it.
+
+    It used to be a paragraph about August's `netassess-ingest` - "one
+    success in ten builds across five weeks" - printed under whatever was red
+    that day, a lane whose single build failed an hour ago included
+    (TheHub #60906). Every number here is about the lanes on the page.
+    """
+    from mykronos.ci_repeat import REPEAT_THRESHOLD
+
+    repeated = sum(1 for lane in failing if lane.repeated)
+    unread = sum(1 for lane in failing if lane.repeated is None)
+    first = sum(1 for lane in failing if lane.consecutive_failures == 1)
+    short = len(failing) - repeated - unread - first
+    parts = []
+    if repeated:
+        parts.append(
+            f"{repeated} {'has' if repeated == 1 else 'have'} failed "
+            f"{REPEAT_THRESHOLD} or more builds running, which is a lane nobody is "
+            "fixing by waiting"
+        )
+    if short:
+        parts.append(
+            f"{short} {'has' if short == 1 else 'have'} failed fewer than "
+            f"{REPEAT_THRESHOLD} running"
+        )
+    if first:
+        parts.append(
+            f"{first} failed for the first time after a pass, which a retrigger "
+            "often clears"
+        )
+    if unread:
+        parts.append(f"{unread} could not be read back")
+    return (
+        "Unpaused, and their last build did not succeed. Of these, "
+        + "; ".join(parts)
+        + "."
+    )
+
+
 def render(briefing: Briefing) -> str:
     """The briefing as a person reads it after a deploy."""
     lines = [
@@ -2294,14 +2373,10 @@ def render(briefing: Briefing) -> str:
         lines.append("")
 
     if briefing.failing:
-        lines += [
-            "LANES THAT ARE FAILING AND NOBODY SWITCHED OFF",
-            "  Running on their schedule and not succeeding. Worse than the",
-            "  section below, not better: a paused lane is a decision somebody",
-            "  made, and this is a lane nobody has looked at. One of these had",
-            "  one success in ten builds across five weeks.",
-            "",
-        ]
+        lines += ["LANES THAT ARE FAILING AND NOBODY SWITCHED OFF"]
+        lines += textwrap.wrap(_failing_summary(briefing.failing), 70, initial_indent="  ",
+                               subsequent_indent="  ")
+        lines.append("")
         for bad in sorted(briefing.failing, key=lambda f: (f.pipeline, f.job)):
             days = bad.days_since
             when = (
@@ -2311,6 +2386,7 @@ def render(briefing: Briefing) -> str:
             )
             lines.append(f"  {bad.pipeline}/{bad.job}")
             lines.append(f"      {bad.last_status} — {when}")
+            lines.append(f"      {_failing_streak(bad)}")
             if bad.build_url:
                 lines.append(f"      {bad.build_url}")
         lines.append("")
