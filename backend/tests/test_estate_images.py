@@ -46,6 +46,15 @@ def _estate() -> tuple[str, ...]:
     return tuple(derive(REPO_ROOT).images())
 
 
+def _repository(reference: str) -> str:
+    """`name[:tag][@digest]` -> `name`, keeping a registry host's port."""
+    name = reference.split("@", 1)[0]
+    head, _, last = name.rpartition("/")
+    if ":" in last:
+        last = last.split(":", 1)[0]
+    return f"{head}/{last}" if head else last
+
+
 class TestInterpolation:
     def test_a_default_is_used_when_the_variable_is_unset(self) -> None:
         resolved, unresolved = interpolate("${MYKRONOS_IMAGE_BACKEND:-mykronos-backend:latest}", {})
@@ -240,21 +249,26 @@ class TestThisEstate:
     """
 
     @pytest.mark.parametrize(
-        "reference",
+        "repository",
         [
-            "hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919",
-            "concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48",
-            "pgsty/silo:RELEASE.2026-10-15T00-00-00Z-distroless@sha256:70cac541c5a928be5cd16d6b8732d85ac06e891a0e3d9956a745381330692fc6",
+            "hashicorp/vault",
+            "concourse/concourse",
+            "pgsty/silo",
             # Adopted 2026-10-19: the registry-src derivative, served by the
             # registry itself. The lane resolves REGISTRY to its LAN address.
-            "localhost:5000/library/registry:3-p20261019",
-            "postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c",
+            "localhost:5000/library/registry",
+            "postgres",
             # Not ZAP: the demo builds it from deploy/zap/Dockerfile now, and
             # the lane builds and scans that (test_zap_image.py).
         ],
     )
-    def test_the_images_427_names_are_now_in_scope(self, reference: str) -> None:
-        assert reference in _estate()
+    def test_the_images_427_names_are_now_in_scope(self, repository: str) -> None:
+        # By repository, not by exact reference: image-refresh moves tags and
+        # digests (mykronos #976 moved the registry snapshot), and a pinned
+        # reference here turned every refresh PR red without anything being
+        # out of scope.
+        assert repository in {_repository(image) for image in _estate()}
+
 
     def test_the_application_images_are_left_to_the_lane_that_builds_them(self) -> None:
         assert not [image for image in _estate() if image.startswith("mykronos-")]
