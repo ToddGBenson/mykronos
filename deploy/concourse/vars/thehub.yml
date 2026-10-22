@@ -39,6 +39,11 @@ thehub-staging-url: http://192.168.65.254:8081
 # mykronos.toddbenson.net to 127.0.0.1 does not reach a task.
 thehub-public-url: https://hub.toddbenson.net
 mykronos-public-url: https://mykronos.toddbenson.net
+# `dast-demo` scans the demo through Cloudflare too (TheHub #60803, option A):
+# demo.toddbenson.net is behind Cloudflare Access, and the lane presents the
+# service token in ((cf-access-demo-client-id)) / ((cf-access-demo-client-secret)),
+# which are secrets and resolve from Vault, never from this file.
+thehub-demo-public-url: https://demo.toddbenson.net
 
 # TheHub's own API, where this pipeline reports its stages back to.
 thehub-url: http://192.168.65.254:8000

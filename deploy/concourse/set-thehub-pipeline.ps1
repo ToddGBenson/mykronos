@@ -124,6 +124,9 @@ param(
     # Names, not addresses: the edge and the tunnel are what is under test.
     [string]$PublicUrl = "https://hub.toddbenson.net",
     [string]$MykronosPublicUrl = "https://mykronos.toddbenson.net",
+    # `dast-demo` scans the demo here, through Cloudflare Access with a service
+    # token (TheHub #60803, option A), rather than at $DemoUrl on the LAN.
+    [string]$DemoPublicUrl = "https://demo.toddbenson.net",
     [string]$ReleaseBucket = "thehub-releases",
 
     # TheHub's own API, for reporting pipeline stages into its DevSecOps and
@@ -431,6 +434,12 @@ Add-Secret -Name "mykronos-gate-token"    -Fallback { Read-EnvValue $backendEnv 
 Add-Secret -Name "hub-deploy-token"       -Fallback { $hubDeployToken }
 Add-Secret -Name "hub-scanner-token"      -Fallback { $hubScannerToken }
 Add-Secret -Name "anthropic-api-key"      -Fallback { $hubAnthropicKey }
+# TheHub #60803: the Cloudflare Access service token `dast-demo` presents at
+# demo.toddbenson.net (board #60875). No .env holds it, so the fallback is
+# empty, and `dast-demo` fails naming the fix rather than scanning Access's
+# login page. Store both halves in Vault with vault-secret.ps1 set.
+Add-Secret -Name "cf-access-demo-client-id"     -Fallback { "" }
+Add-Secret -Name "cf-access-demo-client-secret" -Fallback { "" }
 Add-Secret -Name "minio-access-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_USER' }
 Add-Secret -Name "minio-secret-key" -SecretScope team -Fallback { Read-EnvValue $stackEnv 'MINIO_ROOT_PASSWORD' }
 
@@ -507,6 +516,7 @@ try {
         "thehub-staging-url: $StagingUrl",
         "thehub-public-url: $PublicUrl",
         "mykronos-public-url: $MykronosPublicUrl",
+        "thehub-demo-public-url: $DemoPublicUrl",
         "thehub-release-bucket: $ReleaseBucket",
         "deploy-timeout-minutes: $DeployTimeoutMinutes",
         # Where this pipeline reports its stages back to, so TheHub's own
