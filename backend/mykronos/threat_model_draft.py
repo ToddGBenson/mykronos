@@ -41,7 +41,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 import yaml
@@ -55,6 +55,9 @@ from mykronos.threat_model_manifest import (
     ThreatModelManifest,
     _evidence,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from mykronos.github import GitHubClient
 
 logger = logging.getLogger(__name__)
 
@@ -1026,7 +1029,7 @@ def _read_operational(
 
 
 async def gather(
-    db: Any, catalog: Any, github: Any, repo_full_name: str, branch: str
+    db: Any, catalog: Any, github: GitHubClient, repo_full_name: str, branch: str
 ) -> EvidenceBundle:
     """Read every source `draft` uses. A source that fails is `None`."""
     import asyncio

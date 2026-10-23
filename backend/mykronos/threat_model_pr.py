@@ -49,6 +49,7 @@ from sqlalchemy import select
 
 from mykronos import surface_match
 from mykronos import threat_model_draft as tmd
+from mykronos.github import GitHubClient
 from mykronos.github.client import FileChange, GitHubError, PullRequest
 from mykronos.logsafe import scrub
 from mykronos.schemas import utcnow
@@ -339,7 +340,7 @@ def pr_body(
 
 
 async def propose(
-    github: Any,
+    github: GitHubClient,
     repo_full_name: str,
     default_branch: str,
     draft: tmd.Draft,
@@ -446,7 +447,7 @@ async def propose(
 async def propose_for_repo(
     db: Any,
     catalog: Any,
-    github: Any,
+    github: GitHubClient,
     repo_full_name: str,
     default_branch: str,
     *,
