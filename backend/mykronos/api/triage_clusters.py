@@ -273,9 +273,9 @@ async def disposition_cluster(
             ),
         )
 
-    governed = [
-        m for m in cluster.members if finding_disposition.governed(principal, m.get("severity"))
-    ]
+    # Each member at its governing severity: a member of a high or critical
+    # toxic combination counts as one (review of #1018).
+    governed = finding_disposition.governed_findings(principal, cluster.members)
     if governed:
         if body.status is FindingStatus.ACCEPTED_RISK:
             raise HTTPException(

@@ -5134,8 +5134,9 @@ async def request_finding_disposition(
 
     The finding stays open. The platform freezes the finding row, its raw scanner
     record and the reason into an approval request under the `finding_disposition`
-    duty, tiered by the finding's own severity, and applies the disposition only
-    when an approver the policy admits says yes.
+    duty, tiered by the finding's governing severity - its own, raised to that of
+    any high or critical toxic combination it is a member of - and applies the
+    disposition only when an approver the policy admits says yes.
     """
     if not principal.may_write:
         raise HTTPException(
@@ -5316,17 +5317,27 @@ async def apply_finding_status(
 
     # #713: an agent may not close a critical or high finding on its own word.
     # A false positive or a suppression goes through the governed duty; an
-    # acceptance already has one. A person's direct call is unchanged.
-    if finding_disposition.governed(principal, existing.get("severity")):
+    # acceptance already has one. A person's direct call is unchanged. A
+    # member of a high or critical toxic combination is governed at the
+    # combination's severity: dispositioning it dissolves the combination
+    # (review of #1018).
+    if finding_disposition.governed_finding(principal, {**existing, "finding_id": finding_id}):
         governed_route = (
             "POST /api/risk-acceptances"
             if body.status is FindingStatus.ACCEPTED_RISK
             else f"POST /api/dashboard/findings/{finding_id}/disposition-requests"
         )
+        own = str(existing.get("severity") or "").lower()
+        what = (
+            f"a {own} finding"
+            if own in finding_disposition.GOVERNED_SEVERITIES
+            else f"a {own} finding that is a member of a high or critical toxic "
+            "combination (dispositioning it dissolves the combination)"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"An agent may not set a {existing.get('severity')} finding to "
+                f"An agent may not set {what} to "
                 f"'{body.status.value}' directly: closing a serious finding is a "
                 f"governed decision (#713). Use {governed_route}; someone independent "
                 "approves it, and the finding stays open until they do."

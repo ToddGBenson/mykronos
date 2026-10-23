@@ -243,7 +243,9 @@ class TestMembersOfASeriousCombination:
         ):
             run = str(uuid.uuid4())
             post_scan(client, auth, scan_run_id=run, capability=capability)
-            response = post_findings(client, auth, [finding], scan_run_id=run, capability=capability)
+            response = post_findings(
+                client, auth, [finding], scan_run_id=run, capability=capability
+            )
             assert response.status_code in (200, 201), response.text
         run_compaction()
         catalog = client.app.state.catalog
