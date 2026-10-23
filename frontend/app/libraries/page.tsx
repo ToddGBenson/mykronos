@@ -300,7 +300,7 @@ function RequestsSection({ data }: { data: LibraryRequestList }) {
                 tone={
                   req.state === "approved"
                     ? "pass"
-                    : req.state === "rejected"
+                    : req.state === "rejected" || req.state === "banned"
                       ? "critical"
                       : "muted"
                 }

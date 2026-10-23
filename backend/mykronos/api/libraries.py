@@ -55,7 +55,8 @@ class LibraryRequestOut(BaseModel):
     owner: str
     version_policy: str
     requested_by: str
-    #: pending_approval | approved | rejected | expired
+    #: pending_approval | approved | rejected | expired, or banned: approved,
+    #: but a ban recorded while it was pending stands.
     state: str
     #: `flagged` needs a person to approve; `clean` may also be approved by a
     #: delegated agent.
@@ -404,8 +405,16 @@ async def update_library(
     """Record a library as tolerated or banned, or set its owner or policy.
 
     Approving is refused here: a library is approved through a vetted request.
+    Tolerated is refused for a library no repository's SBOM has. Banning,
+    lifting a ban and loosening an approved library need a person.
     """
     _require_writer(principal, "Changing a library")
+    ecosystem = body.ecosystem.strip().lower()
+    name = libraries.normalise(ecosystem, body.package_name)
+    in_use = any(
+        lib.package_name == name
+        for lib in libraries.in_use(request.app.state.catalog, ecosystem=ecosystem)
+    )
     with request.app.state.db.session() as session:
         try:
             entry = libraries.set_entry(
@@ -413,12 +422,16 @@ async def update_library(
                 ecosystem=body.ecosystem,
                 package_name=body.package_name,
                 actor=principal.actor,
+                in_use=in_use,
+                by_person=principal.is_human,
                 status=body.status,
                 owner=body.owner,
                 version_policy=body.version_policy,
                 version_ref=body.version_ref,
                 note=body.note,
             )
+        except libraries.LibraryPersonError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         except libraries.LibraryError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)

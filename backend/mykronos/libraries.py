@@ -125,6 +125,10 @@ class LibraryError(ValueError):
     """A library request or change the rules refuse. The message says why."""
 
 
+class LibraryPersonError(LibraryError):
+    """A change only a person may make, attempted by an agent."""
+
+
 def normalise(ecosystem: str, name: str) -> str:
     """The name two spellings of one package share.
 
@@ -497,7 +501,9 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
 
     An existing entry is updated rather than duplicated: approving a library
     that was `tolerated` is exactly how it becomes `approved`. A `banned`
-    entry is not overturned here - the route refuses to request one."""
+    entry is never overturned here: the route refuses to request one, and a
+    ban recorded while the request was pending stands - the entry is re-read
+    now, at approval, and the request reads `banned` with the reason."""
     evidence = dict(request.evidence or {})
     ecosystem = str(evidence.get("ecosystem") or "")
     name = str(evidence.get("package_name") or "")
@@ -507,6 +513,28 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
             LibraryEntry.ecosystem == ecosystem, LibraryEntry.package_name == name
         )
     ).scalar_one_or_none()
+    library_request = session.get(LibraryRequest, str(evidence.get("library_request_id") or ""))
+    if entry is not None and entry.status == "banned":
+        approver = decision.approver if decision else "platform"
+        reason = (
+            f"Approved by {approver}, but {ecosystem}:{name} was banned by "
+            f"{entry.updated_by or 'a person'} while the request was pending. The ban "
+            "stands; lifting it is a person's change to the library's entry."
+        )
+        if library_request is not None:
+            library_request.state = "banned"
+            library_request.decided_by = approver
+            library_request.decision_reason = reason
+        session.add(
+            AuditLogEntry(
+                actor=approver,
+                action="library.approval_not_applied",
+                entity_type="library",
+                entity_id=f"{ecosystem}:{name}",
+                detail={"reason": reason, "approval_request_id": request.id},
+            )
+        )
+        return
     if entry is None:
         entry = LibraryEntry(ecosystem=ecosystem, package_name=name)
         session.add(entry)
@@ -517,7 +545,6 @@ def on_approved(session: Session, request: ApprovalRequest) -> None:
     entry.source = "approval"
     entry.approval_request_id = request.id
     entry.updated_by = decision.approver if decision else "platform"
-    library_request = session.get(LibraryRequest, str(evidence.get("library_request_id") or ""))
     if library_request is not None:
         library_request.state = "approved"
         library_request.decided_by = entry.updated_by
@@ -726,6 +753,8 @@ def set_entry(
     ecosystem: str,
     package_name: str,
     actor: str,
+    in_use: bool,
+    by_person: bool,
     status: str | None = None,
     owner: str | None = None,
     version_policy: str | None = None,
@@ -735,7 +764,15 @@ def set_entry(
     """Record a library's status, owner or version policy directly.
 
     `approved` is refused: it is what an approved `library_approval` request
-    writes, and setting it by hand would skip the vetting and the approver."""
+    writes, and setting it by hand would skip the vetting and the approver.
+
+    `tolerated` passes the PR check unvetted, so it is a grant too, and only
+    for what the estate already runs: a library not in the SBOM inventory
+    (`in_use` false) cannot be recorded tolerated, nor given an entry at all
+    except a ban - a new library is requested and vetted. Banning, lifting a
+    ban, and loosening an approved library (its status, version policy or
+    reference) are a person's changes (`by_person`); an agent may record a
+    library in use as tolerated and set owners and notes."""
     ecosystem = ecosystem.strip().lower()
     name = normalise(ecosystem, package_name)
     if status is not None and status not in ("tolerated", "banned"):
@@ -750,6 +787,28 @@ def set_entry(
             LibraryEntry.ecosystem == ecosystem, LibraryEntry.package_name == name
         )
     ).scalar_one_or_none()
+    current = entry.status if entry is not None else None
+    if not in_use and (status == "tolerated" or (entry is None and status != "banned")):
+        raise LibraryError(
+            f"{ecosystem}:{name} is not in the SBOM of any repository, so there is nothing "
+            f"to tolerate: tolerated passes the pull request check unvetted. Request it "
+            f"(POST {ROUTE}) to have it vetted, or record it as banned."
+        )
+    person_only: list[str] = []
+    if status is not None and status != current and "banned" in (status, current):
+        person_only.append("lifting a ban" if current == "banned" else "banning a library")
+    if entry is not None and current == "approved":
+        if status is not None and status != "approved":
+            person_only.append("changing an approved library's status")
+        if (version_policy is not None and version_policy != entry.version_policy) or (
+            version_ref is not None and version_ref.strip() != entry.version_ref
+        ):
+            person_only.append("changing an approved library's version policy")
+    if person_only and not by_person:
+        raise LibraryPersonError(
+            f"{'; '.join(person_only).capitalize()} on {ecosystem}:{name} must be done by a "
+            f"person; the caller is an agent ({actor})."
+        )
     before = (
         {"status": entry.status, "owner": entry.owner, "version_policy": entry.version_policy}
         if entry

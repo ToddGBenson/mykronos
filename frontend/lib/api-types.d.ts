@@ -4466,6 +4466,8 @@ export interface paths {
          * @description Record a library as tolerated or banned, or set its owner or policy.
          *
          *     Approving is refused here: a library is approved through a vetted request.
+         *     Tolerated is refused for a library no repository's SBOM has. Banning,
+         *     lifting a ban and loosening an approved library need a person.
          */
         patch: operations["update_library_api_libraries_managed_patch"];
         trace?: never;

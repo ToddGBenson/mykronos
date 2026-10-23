@@ -564,8 +564,11 @@ class TestPullRequestCheck:
         assert "no longer covers" in github._repo(REPO).check_runs[-1]["summary"]
 
     def test_a_manifest_cannot_write_markdown_into_the_check_summary(
-        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(client.app.state.settings, "dashboard_url",
+                            "https://mykronos.example")
         # The version spec is the pull request author's text. Unescaped, a `|`
         # forges a table cell and `[..](..)` a link beside the real request one.
         onboard(client, admin_auth)

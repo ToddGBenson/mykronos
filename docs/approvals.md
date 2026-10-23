@@ -88,6 +88,22 @@ pull request and only reports, until a person switches a repository with
 `PUT /api/libraries/repo-mode` `{repo, mode: "blocking"}`, which is refused
 while any library in the repository's SBOM has no approved or tolerated entry.
 
+`PATCH /api/libraries/managed` records a status, owner or policy by hand, within
+three limits, because `tolerated` passes the pull request check unvetted:
+
+- `tolerated` is refused for a library no repository's SBOM has. A new library
+  is requested and vetted; it can only be recorded by hand as `banned`.
+- Banning, lifting a ban, and changing an approved library's status or version
+  policy need a person. An agent credential gets 403.
+- A ban recorded while a request is pending stands when that request is
+  approved: the request reads `banned`, with the reason.
+
+The check is re-run on the same head when the entry of a library it names, or
+the repository's mode, changes after it was posted, so an approval turns a
+`neutral` check green without a new push. A post GitHub refuses is retried 5
+times, then left until the next push. Request links in the check need
+`MYKRONOS_DASHBOARD_URL`; without it the check carries no links and says so.
+
 ## Letting an agent approve
 
 1. A person proposes a delegation: `POST /api/approvals/delegations` with the

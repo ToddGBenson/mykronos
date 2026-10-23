@@ -51,6 +51,11 @@ logger = logging.getLogger(__name__)
 CHECK_NAME = "library-allowlist"
 MODES = ("report", "blocking")
 PASSING = ("approved", "tolerated")
+#: Posts tried for one head while GitHub refuses them; past this the sweep
+#: leaves the head alone (a new push, or POST /pr-checks, tries again).
+MAX_ATTEMPTS = 5
+#: GitHub refuses a check-run summary over 65,535 characters.
+SUMMARY_LIMIT = 60_000
 
 _NPM_SECTIONS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
 
@@ -174,7 +179,13 @@ def _md(text: str) -> str:
 
 
 def request_link(dashboard_url: str, change: DependencyChange) -> str:
-    """The one-click request: the dashboard's request form, pre-filled."""
+    """The one-click request: the dashboard's request form, pre-filled.
+
+    Empty when no `dashboard_url` is set: a relative link inside a GitHub
+    check run resolves against github.com and opens nothing."""
+    base = dashboard_url.rstrip("/")
+    if not base:
+        return ""
     query = urlencode(
         {
             "ecosystem": change.ecosystem,
@@ -182,8 +193,7 @@ def request_link(dashboard_url: str, change: DependencyChange) -> str:
             "version": libraries.version_from_spec(change.spec),
         }
     )
-    base = dashboard_url.rstrip("/")
-    return f"{base}/libraries/request?{query}" if base else f"/libraries/request?{query}"
+    return f"{base}/libraries/request?{query}"
 
 
 def verdict(
@@ -356,17 +366,22 @@ def evaluate(
             f"This repository is set to blocking, but its allowlist no longer covers "
             f"its dependencies ({len(lapsed)} unrecorded), so this check only reports."
         )
+    if reported and not dashboard_url.strip():
+        lines.append(
+            "No request links: MYKRONOS_DASHBOARD_URL is not set on the platform, so a "
+            "link here would not open. Request a library from the dashboard's Libraries page."
+        )
+    rows: list[str] = []
     if results:
-        lines += ["", "| Dependency | Manifest | Verdict | |", "|---|---|---|---|"]
+        rows += ["", "| Dependency | Manifest | Verdict | |", "|---|---|---|---|"]
         for r in results:
             link = f"[request it]({r['request_url']})" if r["request_url"] else ""
-            lines.append(
+            rows.append(
                 f"| {_md(r['name'])} {_md(r['spec'])} ({r['change']}) | {_md(r['manifest'])} "
                 f"| {r['verdict']}: {_md(r['why'])} | {link} |"
             )
-    for item in unreadable:
-        lines.append(f"- Could not read {_md(item)}")
-    lines += [
+    rows += [f"- Could not read {_md(item)}" for item in unreadable]
+    footer = [
         "",
         "Reads direct dependencies in package.json, requirements*.txt, pyproject.toml and "
         "go.mod. Lockfiles and transitive dependencies are not checked.",
@@ -375,9 +390,28 @@ def evaluate(
         "mode": mode,
         "conclusion": conclusion,
         "title": title,
-        "summary": "\n".join(lines),
+        "summary": _fit(lines, rows, footer),
         "results": results,
     }
+
+
+def _fit(head: list[str], rows: list[str], footer: list[str]) -> str:
+    """The summary, cut to `SUMMARY_LIMIT` at a row boundary with a note of
+    how many rows were left out. The check record keeps every row."""
+    budget = SUMMARY_LIMIT - len("\n".join(head + footer)) - 200
+    kept: list[str] = []
+    used = 0
+    for row in rows:
+        if used + len(row) + 1 > budget:
+            break
+        kept.append(row)
+        used += len(row) + 1
+    if len(kept) < len(rows):
+        kept.append(
+            f"\n... {len(rows) - len(kept)} more rows not shown (a check run holds 65,535 "
+            "characters); POST /api/libraries/pr-checks returns every row."
+        )
+    return "\n".join(head + kept + footer)
 
 
 async def check_pull_request(
@@ -427,6 +461,8 @@ async def check_pull_request(
             )
         ).scalar_one_or_none()
         if existing is not None:
+            if check.error is not None and existing.error is not None:
+                check.attempts = (existing.attempts or 1) + 1
             session.delete(existing)
             session.flush()
         session.add(check)
@@ -445,10 +481,34 @@ async def check_pull_request(
     return check
 
 
+def _stale(
+    check: LibraryCheck,
+    recorded: dict[tuple[str, str], Any],
+    modes: dict[str, Any],
+) -> bool:
+    """Whether the allowlist or the repository's mode changed after `check`."""
+    posted = check.created_at
+    changed = modes.get(check.repo_full_name)
+    if changed is not None and changed > posted:
+        return True
+    for row in check.results or []:
+        eco = str(row.get("ecosystem") or "")
+        entry = recorded.get((eco, libraries.normalise(eco, str(row.get("name") or ""))))
+        if entry is not None and entry.updated_at is not None and entry.updated_at > posted:
+            return True
+    return False
+
+
 async def sweep(
     db: Any, catalog: Catalog, github_factory: GitHubClientFactory, *, dashboard_url: str = ""
 ) -> list[str]:
-    """The job: every open, non-draft pull request head with no posted check."""
+    """The job: every open, non-draft pull request head with no current check.
+
+    A posted check is current until the allowlist entry of a library it
+    names, or its repository's mode, changes after it was posted: then the
+    same head is checked again, so an approval turns its `neutral` into
+    `success` without a new push. A head whose post keeps failing is tried
+    `MAX_ATTEMPTS` times, then left until its next push."""
     with db.session() as session:
         repos = [
             (r.github_repo_full_name, r.github_installation_id)
@@ -456,11 +516,16 @@ async def sweep(
                 select(RepoOnboarding).where(RepoOnboarding.status != "removed")
             ).scalars()
         ]
+        recorded = libraries.entries(session)
+        modes = {
+            p.repo_full_name: p.updated_at
+            for p in session.execute(select(LibraryRepoPolicy)).scalars()
+        }
         done = {
             (c.repo_full_name, c.head_sha)
-            for c in session.execute(
-                select(LibraryCheck).where(LibraryCheck.error.is_(None))
-            ).scalars()
+            for c in session.execute(select(LibraryCheck)).scalars()
+            if (c.attempts or 1) >= MAX_ATTEMPTS
+            or (c.error is None and not _stale(c, recorded, modes))
         }
     posted: list[str] = []
     for repo, installation in repos:

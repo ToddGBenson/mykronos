@@ -1595,7 +1595,8 @@ class LibraryRequest(Base):
     version_policy: Mapped[str] = mapped_column(String(32), default="minimum")
     requested_by: Mapped[str] = mapped_column(String(255), default="")
     requester_kind: Mapped[str] = mapped_column(String(16), default="")
-    #: pending_approval | approved | rejected | expired
+    #: pending_approval | approved | rejected | expired, or banned: approved,
+    #: but a ban recorded while it was pending stands.
     state: Mapped[str] = mapped_column(String(24), index=True, default="pending_approval")
     #: The vetting report, as frozen into the approval evidence.
     vetting: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -1706,4 +1707,7 @@ class LibraryCheck(Base):
     results: Mapped[list[Any]] = mapped_column(JSON, default=list)
     external_id: Mapped[str] = mapped_column(String(64), default="")
     error: Mapped[str | None] = mapped_column(Text, default=None)
+    #: Posts tried in a row for this head while it errors; the sweep stops
+    #: retrying at `library_check.MAX_ATTEMPTS`.
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
