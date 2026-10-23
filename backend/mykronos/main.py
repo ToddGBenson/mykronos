@@ -689,6 +689,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             logger.info("Threat-model sync: %s", result.summary())
 
+        async def _threat_model_draft() -> None:
+            # Drafts and drift as pull requests (TheHub #60900). Scheduled
+            # only when opted in: it writes to every onboarded repository.
+            from mykronos import threat_model_pr
+
+            result = await threat_model_pr.sweep(
+                app.state.db, app.state.catalog, app.state.github_factory
+            )
+            logger.info("Threat-model draft: %s", result.summary())
+
         async def _environment() -> None:
             # Every repository's environmental CVSS from scratch (TheHub
             # #60827). The event triggers cover writes; only this notices a
@@ -874,6 +884,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         _threat_model_sync,
                     )
                 ]
+            ),
+            *(
+                [
+                    (
+                        "threat-model-draft",
+                        settings.threat_model_draft_interval_seconds,
+                        _threat_model_draft,
+                    )
+                ]
+                if settings.threat_model_draft_prs_enabled
+                and not isinstance(app.state.github_factory, FakeGitHubClientFactory)
+                else []
             ),
             ("pull-request-stamps", 120, _pull_request_stamps),
             ("exposure", settings.exposure_probe_interval_seconds, _exposure),
