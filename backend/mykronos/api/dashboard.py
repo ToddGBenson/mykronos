@@ -13,7 +13,7 @@ import dataclasses
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -88,6 +88,7 @@ from mykronos.db.models import (
     AutoTriageAction,
     CapabilityGrant,
     EnvironmentalScore,
+    GatingLaneState,
     JobRun,
     RepoControl,
     RepoOnboarding,
@@ -2283,6 +2284,29 @@ class StageCoverageOut(BaseModel):
     problem: bool
 
 
+class RedGatingLaneOut(BaseModel):
+    """A gating lane recorded red on main by the red-main poll (TheHub #60973)."""
+
+    job: str
+    status: str | None = Field(
+        default=None, description="Concourse's word for the latest finished build."
+    )
+    build: str | None = None
+    red_since: datetime | None = Field(
+        default=None,
+        description="When the first failing build of this red run finished (UTC).",
+    )
+    first_bad_build: str | None = None
+    first_bad_sha: str | None = Field(
+        default=None,
+        description=(
+            "The commit the first failing build ran. Null when Concourse's "
+            "recent source versions did not include it: unknown, not absent."
+        ),
+    )
+    last_green_sha: str | None = None
+
+
 class CiPage(BaseModel):
     """Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a)."""
 
@@ -2318,6 +2342,14 @@ class CiPage(BaseModel):
             "for this repo' and 'Concourse did not answer' are different "
             "facts, and a panel that conflates them teaches people to ignore "
             "it."
+        ),
+    )
+    red_gating_lanes: list[RedGatingLaneOut] = Field(
+        default_factory=list,
+        description=(
+            "Each configured gating lane the red-main poll last recorded red "
+            "on main, with when it went red and the first failing commit. "
+            "Empty when none is red or none is configured for this repository."
         ),
     )
 
@@ -2420,6 +2452,25 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         enabled = set(row.enabled_capabilities or []) if row else set()
         scanned_by = row.scanned_by if row else "concourse"
         installation_id = row.github_installation_id if row else None
+        red_lanes = [
+            RedGatingLaneOut(
+                job=lane.job,
+                status=lane.status,
+                build=lane.build,
+                red_since=lane.red_since.replace(tzinfo=UTC) if lane.red_since else None,
+                first_bad_build=lane.first_bad_build,
+                first_bad_sha=lane.first_bad_sha,
+                last_green_sha=lane.last_green_sha,
+            )
+            for lane in session.execute(
+                select(GatingLaneState)
+                .where(
+                    GatingLaneState.repo_full_name == repo_full_name,
+                    GatingLaneState.state == "red",
+                )
+                .order_by(GatingLaneState.job)
+            ).scalars()
+        ]
 
         if row and row.scanned_by != "github_actions":
             # `enabled_capabilities` is the installer's ledger: capabilities
@@ -2489,6 +2540,7 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
             for r in reported
         ],
         unavailable=status.unavailable,
+        red_gating_lanes=red_lanes,
     )
 
 
