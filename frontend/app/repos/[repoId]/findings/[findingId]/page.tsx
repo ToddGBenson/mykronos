@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { getFindingRecord } from "@/lib/server";
+import { getFindingDossier, getFindingRecord } from "@/lib/server";
 import {
   Crumb,
   ErrorPanel,
@@ -23,6 +23,11 @@ import {
   splitFacts,
   vectorProvenance,
 } from "@/lib/environmental-severity";
+import {
+  DossierPanel,
+  ExploitabilityPanel,
+  RescoreSteps,
+} from "@/components/finding-workbench";
 import { PinRegressionTest } from "@/components/pin-regression-test";
 import { RemediationAction } from "@/components/remediation-action";
 
@@ -49,7 +54,10 @@ export default async function FindingRecordPage({
   params: Promise<{ repoId: string; findingId: string }>;
 }) {
   const { repoId, findingId } = await params;
-  const result = await getFindingRecord(findingId);
+  const [result, dossierResult] = await Promise.all([
+    getFindingRecord(findingId),
+    getFindingDossier(findingId),
+  ]);
 
   if (!result.ok) {
     return <ErrorPanel title="Finding unavailable" detail={result.error} />;
@@ -122,6 +130,16 @@ export default async function FindingRecordPage({
         <SeverityHere here={here} repoId={repoId} scannerSeverity={finding.severity} />
       ) : (
         <NoVector />
+      )}
+
+      {result.data.exploitability ? (
+        <ExploitabilityPanel data={result.data.exploitability} />
+      ) : null}
+
+      {dossierResult.ok ? (
+        <DossierPanel dossier={dossierResult.data} repoId={repoId} />
+      ) : (
+        <ErrorPanel title="Dossier unavailable" detail={dossierResult.error} />
       )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.3fr_1fr]">
@@ -458,6 +476,8 @@ function SeverityHere({
           </div>
         )}
       </div>
+
+      <RescoreSteps steps={here.steps ?? []} recomputedBecause={here.recomputed_because} />
 
       <p className="border-t border-rule-soft px-3 py-1.5 font-mono text-[11px] text-ink-3">
         {vectorProvenance(here)} · {here.vector}

@@ -40,7 +40,7 @@ from datetime import date, datetime, time
 from typing import Any
 
 import httpx2
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import ThreatIntelMatch
@@ -439,12 +439,21 @@ def refresh_vectors(
     Degrades rather than raises: a failed lookup leaves the row untouched and
     the next sweep tries again.
     """
+    # NVD's exploit-tagged references (TheHub #60890) arrive in the same
+    # response, so a row never read for them is eligible once more too.
+    from mykronos.exploitability import store_nvd_refs
+
     pending = list(
         session.execute(
             select(ThreatIntelMatch)
             .where(
-                ThreatIntelMatch.cvss_vector.is_(None),
-                ThreatIntelMatch.v4_checked_at.is_(None),
+                or_(
+                    and_(
+                        ThreatIntelMatch.cvss_vector.is_(None),
+                        ThreatIntelMatch.v4_checked_at.is_(None),
+                    ),
+                    ThreatIntelMatch.nvd_refs_checked_at.is_(None),
+                )
             )
             .order_by(ThreatIntelMatch.cve_id)
             .limit(limit)
@@ -458,13 +467,15 @@ def refresh_vectors(
         if index:
             sleep(NVD_DELAY_SECONDS)
         try:
-            vectors = parse_nvd_vectors(fetch(row.cve_id))
+            payload = fetch(row.cve_id)
+            vectors = parse_nvd_vectors(payload)
         except Exception as exc:  # noqa: BLE001 - a feed failure degrades
             logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
             continue
         # Stamped even when nothing was found: that is the record of having
         # looked, and it is what stops this retrying for ever.
         checked = now()
+        store_nvd_refs(row, payload, checked)
         row.vector_checked_at = checked
         row.v4_checked_at = checked
         if vectors.v3:
@@ -529,6 +540,22 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
                 from mykronos import environment
 
                 environment.mark_all_dirty("vector refresh")
+    # Public exploit catalogs (TheHub #60890), after the upsert so a CVE that
+    # arrived on this run is matched today. Degrades like the feeds above.
+    from mykronos.exploitability import refresh_exploits
+
+    with db.session() as session:
+        try:
+            exploits = refresh_exploits(session)
+        except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
+            logger.warning("Exploit lookup degraded: %s", scrub(str(exc)))
+        else:
+            if exploits.exploitdb_error or exploits.metasploit_error:
+                logger.warning(
+                    "Exploit feeds partly unavailable: exploit-db=%s metasploit=%s",
+                    exploits.exploitdb_error,
+                    exploits.metasploit_error,
+                )
     return result
 
 

@@ -192,6 +192,25 @@ export async function getOpenFindings(
 export type FindingRecord =
   paths["/api/dashboard/findings/{finding_id}/record"]["get"]["responses"]["200"]["content"]["application/json"];
 
+/** The investigation dossier for one finding (TheHub #60893). */
+export type FindingDossier =
+  paths["/api/dashboard/findings/{finding_id}/dossier"]["get"]["responses"]["200"]["content"]["application/json"];
+
+export async function getFindingDossier(
+  findingId: string,
+): Promise<Result<FindingDossier>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/findings/{finding_id}/dossier",
+      { params: { path: { finding_id: findingId } }, cache: "no-store" },
+    );
+    if (!data) return { ok: false, error: describe(response, "Could not load the dossier") };
+    return { ok: true, data: data as FindingDossier };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 /** Everything the platform knows about one finding, in one call (B-032). */
 export async function getFindingRecord(
   findingId: string,
