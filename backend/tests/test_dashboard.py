@@ -2718,7 +2718,7 @@ class TestTheFindingRecord:
         gaps = {gap["input"] for gap in body["missing_context"]}
         assert {"reachability", "exposure", "business context"} <= gaps
 
-    def test_an_empty_fixed_version_is_not_fixable(self) -> None:
+    def test_an_empty_fixed_version_is_not_fixable(self, monkeypatch) -> None:
         """The scanner writes "" when there is no published fix.
 
         `is not None` reported `fixable: true` with nothing to upgrade to,
@@ -2744,14 +2744,8 @@ class TestTheFindingRecord:
 
         import mykronos.supply_chain as sc
 
-        original = sc.vulnerable_packages
-        sc.vulnerable_packages = lambda *a, **k: analysis  # type: ignore[assignment]
-        try:
-            out = record.package_for(
-                _Catalog(), repo_full_name=REPO, package_name="libsqlite3-0"
-            )
-        finally:
-            sc.vulnerable_packages = original  # type: ignore[assignment]
+        monkeypatch.setattr(sc, "vulnerable_packages", lambda *a, **k: analysis)
+        out = record.package_for(_Catalog(), repo_full_name=REPO, package_name="libsqlite3-0")
 
         assert out is not None
         assert out["fixable"] is False
