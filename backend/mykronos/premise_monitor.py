@@ -73,7 +73,6 @@ from mykronos.db.models import (
     ControlObservation,
     RepoSurface,
     RiskAcceptance,
-    ThreatIntelMatch,
 )
 from mykronos.lake.catalog import Catalog
 from mykronos.notify import Notification, Notifier
@@ -856,17 +855,10 @@ def kev_by_finding(
     ids = {str(f) for f in finding_ids}
     if not ids or not catalog.all_files("findings"):
         return {}
-    listed = sorted(
-        {
-            str(c).upper()
-            for c in session.scalars(
-                select(ThreatIntelMatch.cve_id).where(ThreatIntelMatch.in_kev.is_(True))
-            ).all()
-        }
-    )
+    signals = risk_evidence.kev_signals(session)
+    listed = sorted(signals)
     if not listed:
         return {}
-    signals = risk_evidence.threat_signals(session, listed)
     # Keyed on the KEV list, which is short, rather than on every covered id,
     # which on a migrated estate is tens of thousands.
     rows = catalog.query(

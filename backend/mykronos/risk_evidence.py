@@ -136,6 +136,14 @@ def threat_signals(session: Session, cves: Iterable[str]) -> dict[str, ThreatSig
     return out
 
 
+def kev_signals(session: Session) -> dict[str, ThreatSignal]:
+    """Every KEV-listed CVE the feed holds a row for, with its signal."""
+    listed = session.scalars(
+        select(ThreatIntelMatch.cve_id).where(ThreatIntelMatch.in_kev.is_(True))
+    ).all()
+    return {c: s for c, s in threat_signals(session, listed).items() if s.in_kev}
+
+
 def kev_listed(session: Session, cves: Iterable[str]) -> list[str]:
     """The CVEs among `cves` that are in CISA KEV, sorted."""
     return sorted(c for c, s in threat_signals(session, cves).items() if s.in_kev)
