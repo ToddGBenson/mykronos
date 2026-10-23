@@ -457,6 +457,7 @@ def _snapshot(
     flags: list[dict[str, Any]] | None = None,
     premise_checks: list[dict[str, Any]] | None = None,
     evidence: dict[str, Any] | None = None,
+    control_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The evidence an approver sees, frozen into the request's digest."""
     snapshot = {
@@ -495,7 +496,60 @@ def _snapshot(
     # reads, read the same way, for the findings this decision covers.
     if evidence:
         snapshot["risk_evidence"] = evidence
+    # Each compensating control as the observations read it (TheHub #60902).
+    if control_checks:
+        snapshot["control_checks"] = control_checks
     return snapshot
+
+
+def check_controls(
+    session: Session,
+    repo: str,
+    controls: list[dict[str, Any]],
+    *,
+    fresh_days: int | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Each compensating control: verified | contradicted | unverified, with
+    the observation behind it (TheHub #60902).
+
+    A control names `observation_id` (a `ControlObservation`, read as the
+    newest of its subject and assertion) or `control_id` (a declared
+    `RepoControl`, read against the observations tied to it). One that names
+    neither is free text, and free text is unverified.
+    """
+    when = now or utcnow()
+    days = fresh_days or risk_evidence.FRESH_DAYS
+    out = []
+    for index, control in enumerate(controls):
+        control = control if isinstance(control, dict) else {}
+        if control.get("observation_id"):
+            status = risk_evidence.observation_verification(
+                session, repo, str(control["observation_id"]), now=when, fresh_days=days
+            )
+        elif control.get("control_id"):
+            status = risk_evidence.control_verification(
+                session, repo, str(control["control_id"]), now=when, fresh_days=days
+            )
+        else:
+            status = risk_evidence.ControlStatus(
+                status="unverified",
+                reason="Cites no observation or declared control; free text cannot be checked.",
+            )
+        out.append({"index": index, **status.as_dict()})
+    return out
+
+
+def _refuse_uncited(controls: list[dict[str, Any]], checks: list[dict[str, Any]]) -> None:
+    for control, check in zip(controls, checks, strict=True):
+        if not (control.get("observation_id") or control.get("control_id")):
+            raise RiskAcceptanceError(
+                "A compensating control cites the observation or the declared control that "
+                "shows it (observation_id or control_id); free text cannot be checked "
+                "(TheHub #60902)."
+            )
+        if check["missing"]:
+            raise RiskAcceptanceError(f"Compensating control {check['index']}: {check['reason']}")
 
 
 def _premise_checks(
@@ -544,8 +598,13 @@ def decision_evidence(
     *,
     fresh_days: int | None = None,
     now: datetime | None = None,
+    controls_cited: bool = False,
 ) -> dict[str, Any]:
-    """The `risk_evidence` block for the findings one acceptance covers."""
+    """The `risk_evidence` block for the findings one acceptance covers.
+
+    Verified controls are scored when the acceptance cites compensating
+    controls: only a verified one may lower its tier (TheHub #60902).
+    """
     return risk_evidence.gather(
         session,
         catalog,
@@ -556,7 +615,7 @@ def decision_evidence(
         ],
         as_of=now or utcnow(),
         fresh_days=fresh_days or risk_evidence.FRESH_DAYS,
-        scored=EVIDENCE_SCORED,
+        scored=(*EVIDENCE_SCORED, "verified_controls") if controls_cited else EVIDENCE_SCORED,
         notes=EVIDENCE_NOTES,
     ).as_dict()
 
@@ -607,9 +666,25 @@ def propose(
     if not matched:
         raise RiskAcceptanceError("The scope matches no findings; there is nothing to accept.")
 
+    # TheHub #60902: a compensating control cites what observes it, and only
+    # a verified one may lower the tier.
+    with db.session() as session:
+        control_checks = check_controls(session, repo, controls, fresh_days=fresh_days)
+    if renews is None and not legacy:
+        _refuse_uncited(controls, control_checks)
+    controls = [
+        {**c, "status_at_proposal": check["status"]}
+        for c, check in zip(controls, control_checks, strict=True)
+    ]
+
     residual = residual_severity(residual_likelihood, residual_impact)
+    worst = _worst([m.severity for m in matched])
+    floored_by_unverified = False
     if deviation_type != "risk_adjustment":
-        residual = max(residual, _worst([m.severity for m in matched]), key=SEVERITIES.index)
+        residual = max(residual, worst, key=SEVERITIES.index)
+    elif controls and not any(c["status"] == "verified" for c in control_checks):
+        floored_by_unverified = SEVERITIES.index(residual) < SEVERITIES.index(worst)
+        residual = max(residual, worst, key=SEVERITIES.index)
     renewal_count = (renews.renewal_count + 1) if renews else 0
     _validate(
         policy=policy,
@@ -631,7 +706,9 @@ def propose(
     with db.session() as session:
         kev = _kev_listed(session, {m.rule_id for m in matched})
         checks = _premise_checks(session, catalog, repo, scope, premises, matched, fresh_days)
-        evidence = decision_evidence(session, catalog, repo, matched, fresh_days=fresh_days)
+        evidence = decision_evidence(
+            session, catalog, repo, matched, fresh_days=fresh_days, controls_cited=bool(controls)
+        )
         claimed = covered_by(
             session,
             {m.finding_id for m in matched},
@@ -653,6 +730,18 @@ def propose(
             f"KEV-listed CVEs cannot be accepted, only mitigated: {', '.join(kev[:10])}."
         )
     flags = premise_flags(deviation_type, matched)
+    if floored_by_unverified:
+        flags.append(
+            {
+                "code": "unverified_controls",
+                "controls": [c["index"] for c in control_checks if c["status"] != "verified"],
+                "reason": (
+                    "The residual was rated below the scanner's severity on the strength of "
+                    "compensating controls, and none of them is verified by a fresh "
+                    f"observation. The tier stays at {worst} until one is (TheHub #60902)."
+                ),
+            }
+        )
     for flag in flags:
         logger.warning("risk acceptance on %s flagged: %s", repo, flag["reason"])
 
@@ -686,7 +775,9 @@ def propose(
         subject_ref=record.id,
         requested_by=requested_by,
         statement=justification.strip(),
-        context={"snapshot": _snapshot(record, matched, flags, checks, evidence)},
+        context={
+            "snapshot": _snapshot(record, matched, flags, checks, evidence, control_checks)
+        },
     )
     record.approval_request_id = approval.id
     with db.session() as session:

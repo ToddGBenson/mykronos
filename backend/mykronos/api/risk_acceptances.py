@@ -251,6 +251,14 @@ async def get_acceptance(
             # holds / failed / unverified per premise, with the evidence.
             "premise_checks": [c.as_dict() for c in checks],
             "premise_fresh_days": fresh_days,
+            # Each compensating control as the observations read it today
+            # (TheHub #60902): verified / contradicted / unverified.
+            "control_checks": ra.check_controls(
+                session,
+                record.repo_full_name,
+                list(record.compensating_controls or []),
+                fresh_days=fresh_days,
+            ),
             "scores": environmental_scores(session, list(record.covered_finding_ids or [])),
             # What this decision was approved on (TheHub #60901): the shared
             # evidence model's block, frozen into the approval's evidence.

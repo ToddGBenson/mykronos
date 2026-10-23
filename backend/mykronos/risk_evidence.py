@@ -261,10 +261,13 @@ class ControlStatus:
     assertion: str | None = None
     state: str | None = None
     collected_at: datetime | None = None
+    #: The cited observation or control does not exist for this repository.
+    missing: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
+            "missing": self.missing,
             "reason": self.reason,
             "control_id": self.control_id,
             "observation_id": self.observation_id,
@@ -335,6 +338,7 @@ def observation_verification(
             status="unverified",
             reason=f"No observation {observation_id} for this repository.",
             observation_id=observation_id,
+            missing=True,
         )
     newest = _newest(
         session.scalars(
@@ -367,6 +371,7 @@ def control_verification(
             status="unverified",
             reason=f"No declared control {control_id} for this repository.",
             control_id=control_id,
+            missing=True,
         )
     rows = session.scalars(
         select(ControlObservation).where(
