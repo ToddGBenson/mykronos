@@ -205,6 +205,124 @@ class TestTheGovernedRoute:
         assert response.status_code in (400, 409, 422), response.text
 
 
+class TestMembersOfASeriousCombination:
+    """The #713 guard read the member's own severity (review of #1018).
+
+    Since #1018 a dispositioned member stops counting toward a toxic
+    combination, so the low ZAP-10037 half of a critical
+    vulnerable-image-and-live-service pair closes a critical the moment it is
+    accepted or called a false positive. An agent may not do that on its own
+    word: a member of a high or critical combination is governed at the
+    combination's severity, whatever its own.
+    """
+
+    @staticmethod
+    def _pair(client, auth, run_compaction) -> tuple[str, str]:
+        for capability, finding in (
+            ("atlas", dependency_finding(severity="high")),
+            (
+                "dast",
+                finding_payload(
+                    rule_id="ZAP-10037-CWE-497",
+                    title='Server Leaks Information via "X-Powered-By" at GET /',
+                    severity="low", file_path=None, line_start=None, line_end=None,
+                    symbol=None, code_snippet=None,
+                ),
+            ),
+        ):
+            run = str(uuid.uuid4())
+            post_scan(client, auth, scan_run_id=run, capability=capability)
+            response = post_findings(client, auth, [finding], scan_run_id=run, capability=capability)
+            assert response.status_code in (200, 201), response.text
+        run_compaction()
+        catalog = client.app.state.catalog
+        combos = toxic.detect(catalog, repo=REPO)
+        assert [c.severity for c in combos] == ["critical"], "fixture must form the pair"
+        dast = catalog.query("SELECT finding_id FROM findings WHERE capability = 'dast'")[0][0]
+        cve = catalog.query("SELECT finding_id FROM findings WHERE capability = 'atlas'")[0][0]
+        return str(dast), str(cve)
+
+    def test_an_agent_may_not_accept_the_low_half_directly(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        dast, _ = self._pair(client, auth, run_compaction)
+
+        response = _patch(
+            client, _agent(client, admin_auth), dast, "accepted_risk",
+            accepted_reason_code="not_exploitable_here",
+            accepted_until=(date.today() + timedelta(days=30)).isoformat(),
+        )
+
+        assert response.status_code == 403, response.text
+        assert "/api/risk-acceptances" in response.json()["detail"]
+        assert "combination" in response.json()["detail"]
+        run_compaction()
+        assert _status(client, dast) == "open"
+        assert len(toxic.detect(client.app.state.catalog, repo=REPO)) == 1
+
+    def test_an_agent_may_not_call_the_low_half_a_false_positive_directly(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        dast, _ = self._pair(client, auth, run_compaction)
+
+        response = _patch(client, _agent(client, admin_auth), dast, "false_positive")
+
+        assert response.status_code == 403, response.text
+        assert "disposition-requests" in response.json()["detail"]
+        assert _status(client, dast) == "open"
+
+    def test_the_governed_route_takes_it_at_the_combinations_tier(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        dast, _ = self._pair(client, auth, run_compaction)
+
+        asked = _ask(client, _agent(client, admin_auth), dast)
+
+        assert asked.status_code == 201, asked.text
+        assert asked.json()["tier"] == "critical"
+        evidence = client.get(
+            f"/api/approvals/{asked.json()['approval_request_id']}/evidence", headers=admin_auth
+        ).json()
+        frozen = evidence.get("evidence", evidence)
+        assert [c["rule_id"] for c in frozen["combinations"]] == [
+            "vulnerable-image-and-live-service"
+        ]
+        assert _status(client, dast) == "open"
+
+    def test_the_agent_work_queue_offers_the_governed_route(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        dast, _ = self._pair(client, auth, run_compaction)
+        principal = Principal(
+            actor="agent:test", role=Role.AGENT, kind=ActorKind.AGENT
+        )
+
+        actions = agent_work._finding_actions(
+            {"finding_id": dast, "severity": "low", "capability": "dast"},
+            principal,
+            serious_members={dast: "critical"},
+        )
+
+        assert any(a.governed_by == "finding_disposition" for a in actions)
+        assert not any(a.method == "PATCH" for a in actions)
+
+    def test_a_person_is_unchanged(self, client, auth, admin_auth, run_compaction) -> None:
+        dast, _ = self._pair(client, auth, run_compaction)
+
+        response = _patch(client, admin_auth, dast, "false_positive")
+
+        assert response.status_code == 200, response.text
+
+    def test_a_low_outside_any_combination_is_unchanged(
+        self, client, auth, admin_auth, run_compaction
+    ) -> None:
+        finding = _seed(client, auth, run_compaction, "low")
+
+        response = _patch(client, _agent(client, admin_auth), finding, "false_positive")
+
+        assert response.status_code == 200, response.text
+
+
 class TestReopening:
     """There was no way back from false_positive (#713 follow-up)."""
 
