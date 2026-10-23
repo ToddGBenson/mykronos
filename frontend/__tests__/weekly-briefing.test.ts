@@ -38,9 +38,17 @@ const page: WeeklyPage = {
       status: "ok",
       source: "lake",
       as_of: null,
+      reason: "",
       items: [item({ flash: true, key: "a" }), item({ new_this_week: true, key: "b" })],
     },
-    { key: "standards", title: "Standards", status: "not_available", source: "none", as_of: null },
+    {
+      key: "standards",
+      title: "Standards",
+      status: "not_available",
+      source: "none",
+      as_of: null,
+      reason: "No standards feed is connected.",
+    },
   ],
 };
 
