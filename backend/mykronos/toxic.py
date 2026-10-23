@@ -8,11 +8,15 @@ own way, and the risk decision did not look at all.
 
 Three decisions are made here, and made here only:
 
-**Accepted findings still count.** Detection runs over `open` and
-`accepted_risk` findings (operator decision, 2026-09-28). An acceptance is a
-decision about one finding judged alone; accepting half of a toxic pair must
-not make the pair disappear. A combination with an accepted member is
-reported `partly_accepted`, not dropped.
+**Dispositioned findings stop counting.** Detection runs over `open`
+findings only (TheHub #60965, 2026-10-23, superseding the 2026-09-28 decision
+that accepted members still count). A member a person has dispositioned
+`false_positive` or `accepted_risk` no longer satisfies its half, so the
+combination closes on the next evaluation - or re-forms from another open
+finding that does satisfy it. Two live criticals were a false-positive
+credential and an accepted finding escalated a second time through a
+combination. `partly_accepted` is kept on the record for older readers and is
+now always false.
 
 **A combination is worse than its worst member.** Its severity is the worst
 member's raised by `escalate_steps` bands (default one), and `critical` when
@@ -40,8 +44,8 @@ from mykronos.threat_intel import extract_cve
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 
-#: Statuses detection runs over. `accepted_risk` on purpose: see the module doc.
-STATUSES = ("open", "accepted_risk")
+#: Statuses detection runs over: see the module doc (TheHub #60965).
+STATUSES = ("open",)
 
 _COLUMNS = (
     "finding_id",
@@ -155,6 +159,7 @@ def detect(
         by_id = {str(f["finding_id"]): f for f in pool}
         for combo in correlate.detect(pool):
             members = [by_id[fid] for fid in sorted(combo.finding_ids) if fid in by_id]
+            why = dict(combo.qualifications)
             kev = _kev_ids(session, members)
             member_kev = sorted(
                 c
@@ -187,6 +192,7 @@ def detect(
                             "severity": str(m["severity"]),
                             "status": str(m["status"]),
                             "file_path": m.get("file_path"),
+                            "qualifies": why.get(str(m["finding_id"]), ""),
                         }
                         for m in members
                     ),

@@ -958,9 +958,15 @@ class ToxicCombinationMemberOut(BaseModel):
     rule_id: str
     title: str
     severity: Severity
-    #: `accepted_risk` members count: accepting half a pair must not hide it.
+    #: Always a counting status: `false_positive` and `accepted_risk`
+    #: members no longer count toward a combination (TheHub #60965).
     status: str | None = None
     file_path: str | None = None
+    qualifies: str = Field(
+        default="",
+        description="Which half of the rule this member satisfies, and why: "
+        "the pattern it matched or the listed alert it is, and any severity floor.",
+    )
 
 
 class ToxicCombinationOut(BaseModel):
@@ -1707,7 +1713,8 @@ async def toxic_combinations(
     """Toxic combinations across the estate (spec 08 §5), worst first.
 
     The same detection and severity the Oracle's risk decision uses
-    (`mykronos.toxic`), including combinations with an accepted member.
+    (`mykronos.toxic`). Findings dispositioned `false_positive` or
+    `accepted_risk` do not count toward a combination.
     """
     from mykronos import toxic
     from mykronos.oracle.policy import load_policy

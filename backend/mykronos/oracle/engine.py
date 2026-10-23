@@ -2019,6 +2019,9 @@ class OracleEngine:
                     "kev_cves": list(c.kev_cves),
                     "partly_accepted": c.partly_accepted,
                     "finding_ids": [m["finding_id"] for m in c.members],
+                    # Why each member counts (TheHub #60965), so a reader of
+                    # the decision can judge the combination, not trust it.
+                    "qualifies": {m["finding_id"]: m.get("qualifies", "") for m in c.members},
                 }
                 for c in combos
             ],
@@ -2412,8 +2415,8 @@ class OracleEngine:
             )
 
         # 7a. Toxic combinations (spec 08 §5; operator decision 2026-09-28).
-        #     Findings that together are worse than apart. Accepted members
-        #     count: accepting half a pair must not hide the pair.
+        #     Findings that together are worse than apart. Dispositioned
+        #     members (false positive, accepted risk) do not count (#60965).
         toxic_snapshot, toxic_points, toxic_forces = self._toxic_combinations(repo_full_name)
         if toxic_points:
             named = toxic_snapshot["combinations"]

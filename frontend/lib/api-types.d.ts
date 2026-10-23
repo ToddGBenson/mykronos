@@ -434,7 +434,8 @@ export interface paths {
          * @description Toxic combinations across the estate (spec 08 §5), worst first.
          *
          *     The same detection and severity the Oracle's risk decision uses
-         *     (`mykronos.toxic`), including combinations with an accepted member.
+         *     (`mykronos.toxic`). Findings dispositioned `false_positive` or
+         *     `accepted_risk` do not count toward a combination.
          */
         get: operations["toxic_combinations_api_dashboard_toxic_combinations_get"];
         put?: never;
@@ -11491,6 +11492,12 @@ export interface components {
             status?: string | null;
             /** File Path */
             file_path?: string | null;
+            /**
+             * Qualifies
+             * @description Which half of the rule this member satisfies, and why: the pattern it matched or the listed alert it is, and any severity floor.
+             * @default
+             */
+            qualifies: string;
         };
         /**
          * ToxicCombinationOut

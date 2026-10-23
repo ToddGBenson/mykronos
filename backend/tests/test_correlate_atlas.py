@@ -22,8 +22,10 @@ def finding(finding_id, rule_id, capability, *, title="", severity="high", path=
     }
 
 
+#: A real disclosure-class alert: since TheHub #60965 the DAST half is the
+#: alert number on a configured list, not words in the title.
 REACHABLE = finding(
-    "d1", "ZAP-10202", "dast", title="Server leaks version information via banner"
+    "d1", "ZAP-10036", "dast", title="Server leaks version information via banner"
 )
 
 
