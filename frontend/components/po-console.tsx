@@ -136,14 +136,27 @@ export function DeliveryView({
         ) : (
           "not known"
         )}{" "}
-        <span className="font-mono text-[11px] text-ink-3">
-          (probe {probe.probe_status}
+        <span
+          className="font-mono text-[11px] text-ink-3"
+          title={probe.probe_source ? `Probe: ${probe.probe_source}` : undefined}
+        >
+          (probe{" "}
+          {probe.probe_status === "awaiting_first_answer"
+            ? "configured, no answer yet"
+            : probe.probe_status.replace(/_/g, " ")}
           {probe.observed_at ? `, ${day(probe.observed_at)}` : ""})
         </span>{" "}
         <ProdLag lag={probe.lag} />
         . Only the running revision is recorded, so other commits say &ldquo;deploy not
         recorded&rdquo;, not &ldquo;not deployed&rdquo;.
       </p>
+      {probe.missing && probe.missing.length > 0 ? (
+        <ul className="max-w-prose list-disc pl-5 text-[11px] text-ink-3">
+          {probe.missing.map((gap) => (
+            <li key={gap}>{gap}</li>
+          ))}
+        </ul>
+      ) : null}
       {data.error ? <p className="text-[12px] text-critical">{data.error}</p> : null}
       <Section
         title="Shipped"
