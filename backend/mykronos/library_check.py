@@ -164,6 +164,15 @@ def diff_dependencies(
     return changes
 
 
+_MARKDOWN = re.compile(r"([\\`*_\[\]()<>|!#])")
+
+
+def _md(text: str) -> str:
+    """Manifest text as literal Markdown. Names and specs are the pull request
+    author's, so unescaped they could forge a table cell or a link."""
+    return _MARKDOWN.sub(r"\\\1", " ".join(str(text).split()))
+
+
 def request_link(dashboard_url: str, change: DependencyChange) -> str:
     """The one-click request: the dashboard's request form, pre-filled."""
     query = urlencode(
@@ -352,11 +361,11 @@ def evaluate(
         for r in results:
             link = f"[request it]({r['request_url']})" if r["request_url"] else ""
             lines.append(
-                f"| `{r['name']}` {r['spec']} ({r['change']}) | `{r['manifest']}` "
-                f"| {r['verdict']}: {r['why']} | {link} |"
+                f"| {_md(r['name'])} {_md(r['spec'])} ({r['change']}) | {_md(r['manifest'])} "
+                f"| {r['verdict']}: {_md(r['why'])} | {link} |"
             )
     for item in unreadable:
-        lines.append(f"- Could not read {item}")
+        lines.append(f"- Could not read {_md(item)}")
     lines += [
         "",
         "Reads direct dependencies in package.json, requirements*.txt, pyproject.toml and "
