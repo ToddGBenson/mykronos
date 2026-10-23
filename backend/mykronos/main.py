@@ -110,12 +110,12 @@ from mykronos.lake import (
     WriteAheadBuffer,
     compact,
 )
-from mykronos.libraries import http_fetch as http_library_fetch
 from mykronos.lake.maintenance import (
     LANE_CLOSURE_LOCK,
     carry_forward_exclusively,
     reconcile_after_linking,
 )
+from mykronos.libraries import http_fetch as http_library_fetch
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier

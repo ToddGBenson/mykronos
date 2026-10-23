@@ -440,6 +440,8 @@ def _pull_request(github: FakeGitHubClient, *, base_pkg: dict[str, Any],
                   head_pkg: dict[str, Any], number: int = 7, sha: str = "head123") -> None:
     repo = github._repo(REPO)
     repo.files["package.json"] = json.dumps(base_pkg)
+    if "main" in repo.branches:
+        repo.branches["main"]["package.json"] = json.dumps(base_pkg)
     repo.branches[sha] = {"package.json": json.dumps(head_pkg)}
     repo.pull_requests.append(
         PullRequest(number=number, url="u", head_branch="feature", head_sha=sha,

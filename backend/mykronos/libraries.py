@@ -234,12 +234,12 @@ Fetch = Callable[[str, str, dict[str, Any] | None], Awaitable[tuple[int, Any]]]
 
 
 async def http_fetch(method: str, url: str, body: dict[str, Any] | None) -> tuple[int, Any]:
-    import httpx
+    import httpx2
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx2.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.request(method, url, json=body)
-    except httpx.HTTPError as exc:
+    except httpx2.HTTPError as exc:
         logger.info("Library vetting could not reach %s: %s", url, exc)
         return 0, None
     try:
@@ -381,8 +381,9 @@ async def vet(
     if project_id:
         project_url = f"{DEPS_DEV}/projects/{quote(project_id, safe='')}"
         status, project_body = await fetch("GET", project_url, None)
-        scorecard = (project_body or {}).get("scorecard") if isinstance(project_body, dict) else None
-        if status == 200 and isinstance(scorecard, dict) and scorecard.get("overallScore") is not None:
+        scorecard = project_body.get("scorecard") if isinstance(project_body, dict) else None
+        scored = isinstance(scorecard, dict) and scorecard.get("overallScore") is not None
+        if status == 200 and isinstance(scorecard, dict) and scored:
             score = float(scorecard["overallScore"])
             checks["scorecard"] = _check("ok", project_url, score=score, repository=project_id)
             if score < LOW_SCORECARD:
