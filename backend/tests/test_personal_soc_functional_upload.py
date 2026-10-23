@@ -180,11 +180,12 @@ else { Write-Host 'drift: src/a.ps1' }
 """
 
 
-#: Stand in for personal-soc's own skills/network-assessment/tests/Test-*.ps1
-#: (#359): the harness runs each with `pwsh -File` and reads its exit code.
+#: Stand in for personal-soc's own skills/*/tests/Test-*.ps1 (#359, TheHub
+#: #60939): the harness runs each with `pwsh -File` and reads its exit code.
 REPO_TEST_PASS = "Write-Host '  3 passed, 0 failed'; exit 0\n"
 REPO_TEST_FAIL = "Write-Host '  [FAIL] the stub'; Write-Host '  0 passed, 1 failed'; exit 1\n"
-REPO_TESTS = "source/skills/network-assessment/tests"
+SKILLS = "source/skills"
+REPO_TESTS = f"{SKILLS}/network-assessment/tests"
 
 
 def _run(
@@ -202,8 +203,10 @@ def _run(
         repo_tests = (
             {"Test-Alpha.ps1": REPO_TEST_PASS, "Test-Beta.ps1": REPO_TEST_PASS} if stubs else {}
         )
+    # A bare file name is a network-assessment test; "<skill>/tests/<file>"
+    # puts it under another skill.
     for name, body in repo_tests.items():
-        path = tmp_path / REPO_TESTS / name
+        path = tmp_path / (f"{SKILLS}/{name}" if "/" in name else f"{REPO_TESTS}/{name}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
     (tmp_path / "tests.ps1").write_text(_harness(), encoding="utf-8")
@@ -279,4 +282,80 @@ def test_no_repo_tests_is_a_failure_not_an_empty_pass(tmp_path: Path) -> None:
     rc, _raw, root = _run(tmp_path, stubs=True, repo_tests={})
     assert rc != 0
     failed = [c.get("name") for c in root.iter("testcase") if c.find("failure") is not None]
-    assert failed == ["skills/network-assessment/tests has Test-*.ps1 files"], failed
+    assert failed == ["skills/*/tests has Test-*.ps1 files"], failed
+
+
+@needs_pwsh
+def test_every_skills_tests_run_not_only_network_assessments(tmp_path: Path) -> None:
+    """[TheHub #60939] The glob read skills/network-assessment/tests only, so
+    personal-soc's breach-check and doc-drift tests never ran here. Every
+    skill's tests run, each named after its own skill, and a failure in any of
+    them fails the suite."""
+    rc, raw, root = _run(
+        tmp_path,
+        stubs=True,
+        repo_tests={
+            "Test-Alpha.ps1": REPO_TEST_PASS,
+            "update-docs/tests/Test-DocDrift.ps1": REPO_TEST_PASS,
+            "personal-threat-monitor/tests/Test-BreachCheck.ps1": REPO_TEST_FAIL,
+        },
+    )
+    assert rc != 0, raw
+    assert normalize(raw.encode(), _context()).scan_status is ScanStatus.FAILURE
+    cases = {c.get("name"): c for c in root.iter("testcase")}
+    assert {
+        "skills/network-assessment/tests/Test-Alpha.ps1",
+        "skills/update-docs/tests/Test-DocDrift.ps1",
+        "skills/personal-threat-monitor/tests/Test-BreachCheck.ps1",
+    } <= set(cases), set(cases)
+    failed = {n for n, c in cases.items() if c.find("failure") is not None}
+    assert failed == {"skills/personal-threat-monitor/tests/Test-BreachCheck.ps1"}, failed
+
+
+@needs_pwsh
+def test_a_skill_other_than_network_assessment_is_enough(tmp_path: Path) -> None:
+    """The "has tests" assertion counts every skill, so tests living only
+    outside network-assessment are not reported as missing."""
+    rc, raw, root = _run(
+        tmp_path, stubs=True, repo_tests={"update-docs/tests/Test-DocDrift.ps1": REPO_TEST_PASS}
+    )
+    assert rc == 0, raw
+    assert all(c.find("failure") is None for c in root.iter("testcase"))
+
+
+@needs_pwsh
+def test_breach_check_is_reported_as_uncovered_only_without_its_test(tmp_path: Path) -> None:
+    """[TheHub #60939] With Test-BreachCheck.ps1 in the checkout, the skipped
+    case names only the live lookup; without it, the old "not covered anywhere"
+    case stays, so the report never claims coverage the checkout lacks."""
+    without = tmp_path / "without"
+    with_test = tmp_path / "with"
+    without.mkdir()
+    with_test.mkdir()
+
+    def skipped(root: ET.Element) -> dict[str, str]:
+        out = {}
+        for c in root.iter("testcase"):
+            s = c.find("skipped")
+            if s is not None and "Invoke-BreachCheck" in (c.get("name") or ""):
+                out[c.get("name") or ""] = s.get("message") or ""
+        return out
+
+    rc, raw, root = _run(without, stubs=True)
+    assert rc == 0, raw
+    assert list(skipped(root)) == ["Invoke-BreachCheck.ps1"]
+    assert "not covered anywhere" in skipped(root)["Invoke-BreachCheck.ps1"]
+
+    rc, raw, root = _run(
+        with_test,
+        stubs=True,
+        repo_tests={
+            "Test-Alpha.ps1": REPO_TEST_PASS,
+            "personal-threat-monitor/tests/Test-BreachCheck.ps1": REPO_TEST_PASS,
+        },
+    )
+    assert rc == 0, raw
+    got = skipped(root)
+    assert list(got) == ["Invoke-BreachCheck.ps1 (live lookup)"], got
+    assert "Test-BreachCheck.ps1" in got["Invoke-BreachCheck.ps1 (live lookup)"]
+    assert "not covered anywhere" not in got["Invoke-BreachCheck.ps1 (live lookup)"]
