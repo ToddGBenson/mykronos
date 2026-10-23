@@ -33,8 +33,9 @@ from tests.conftest import REPO
 from tests.test_notify import RecordingNotifier
 from tests.test_premise_monitor import _audits, _record, _run
 from tests.test_risk_acceptance import IMAGE, _agent, _approve, _propose, _statuses, lake
+from tests.test_risk_evidence import TITLE_CVE, title_cve
 
-__all__ = ["lake"]  # the fixture, re-exported so pytest finds it here
+__all__ = ["lake", "title_cve"]  # the fixtures, re-exported so pytest finds them here
 
 NOW = datetime(2026, 10, 22, 12, 0, 0)
 
@@ -233,6 +234,18 @@ class TestKevJoinReopensTheAcceptance:
         _kev(client, "CVE-2026-1", utcnow().date())
         result = _run(client)
         assert result.failed == [] and result.acceptances == 0
+
+    def test_a_cve_named_only_in_the_title_joining_kev_reopens_it(
+        self, client, admin_auth, title_cve
+    ) -> None:
+        """An Atlas finding's rule id is its GHSA id; its CVE is in the title."""
+        record_id = _accepted(client, admin_auth)
+        _kev(client, TITLE_CVE, utcnow().date())
+        result = _run(client)
+        assert [f.record_id for f in result.failed] == [record_id]
+        [check] = result.failed[0].failed
+        assert check.index == pm.IMPLICIT_KEV_INDEX
+        assert TITLE_CVE in check.reason
 
 
 class TestTheDetailShowsTheNewKinds:

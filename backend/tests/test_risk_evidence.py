@@ -59,6 +59,30 @@ def cves(lake):
     return lake
 
 
+#: An OSV-derived Atlas finding's CVE: its rule id is the GHSA id, and the CVE
+#: is only in its title (`threat_intel.extract_cve` reads both).
+TITLE_CVE = "CVE-2026-20002"
+
+
+@pytest.fixture
+def title_cve(lake):
+    """The lake fixture's findings again, plus one in scope whose CVE is only
+    in its title, as an Atlas finding's is."""
+    atlas = _finding("GHSA-7f3q-2m9x-qq4w", "medium", image=IMAGE)
+    atlas["title"] = f"{TITLE_CVE}: heap overflow in libc6"
+    lake(
+        "scan-2",
+        [
+            _finding("CVE-2026-1", "high"),
+            _finding("CVE-2026-2", "medium"),
+            _finding("CVE-2026-3", "low", fixed="2.36-9"),
+            _finding("CVE-2026-1", "high", image=OTHER),
+            atlas,
+        ],
+    )
+    return lake
+
+
 def _oracle(client) -> dict[str, Any]:
     engine = OracleEngine(
         client.app.state.catalog, client.app.state.oracle_policy, db=client.app.state.db
@@ -170,6 +194,38 @@ class TestBothReadTheSameEvidence:
         # The CVE both cover reads the same.
         assert oracle["categories"]["threat_intel"]["epss"][CVE] == 0.31
         assert acceptance["categories"]["threat_intel"]["epss"][CVE] == 0.31
+
+    def test_a_cve_named_only_in_the_title_is_read_by_both(
+        self, client, admin_auth, title_cve
+    ) -> None:
+        """An Atlas finding's CVE is in its title. The Oracle reads it there;
+        the acceptance's block must list the same CVE, not only rule ids."""
+        with client.app.state.db.session() as session:
+            session.add(
+                ThreatIntelMatch(
+                    cve_id=TITLE_CVE, in_kev=False, epss_score=0.42, fetched_at=utcnow()
+                )
+            )
+        oracle = _oracle(client)["risk_evidence"]
+        acceptance = _acceptance_evidence(client, admin_auth)
+        assert oracle["categories"]["threat_intel"]["epss"][TITLE_CVE] == 0.42
+        assert acceptance["categories"]["threat_intel"]["epss"].get(TITLE_CVE) == 0.42
+
+    def test_a_kev_listed_cve_in_the_title_is_refused_as_the_oracle_boosts_it(
+        self, client, admin_auth, title_cve
+    ) -> None:
+        with client.app.state.db.session() as session:
+            session.add(
+                ThreatIntelMatch(
+                    cve_id=TITLE_CVE, in_kev=True, kev_added_at=NOW.date(), fetched_at=utcnow()
+                )
+            )
+        exploitability = _oracle(client)["exploitability"]
+        assert TITLE_CVE in {m["cve_id"] for m in exploitability["kev_listed_findings"]}
+
+        refused = _propose(client, _agent(client, admin_auth))
+        assert refused.status_code == 409, refused.text
+        assert TITLE_CVE in refused.json()["detail"]
 
     def test_every_category_is_present_and_says_whether_it_was_scored(
         self, client, admin_auth, lake
