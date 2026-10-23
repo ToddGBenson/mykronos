@@ -958,13 +958,13 @@ class ModelTriageProposal(Base):
     __tablename__ = "model_triage_proposals"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    finding_id: Mapped[str] = mapped_column(String(64), index=True)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True, default="")
     repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
     #: The cluster the finding was in when proposed (TheHub #60887), if known.
     cluster_id: Mapped[str] = mapped_column(String(64), default="")
     duty: Mapped[str] = mapped_column(String(64), default="finding_disposition")
     #: true_positive | false_positive | suppressed | accepted_risk
-    proposed_status: Mapped[str] = mapped_column(String(32))
+    proposed_status: Mapped[str] = mapped_column(String(32), default="")
     confidence: Mapped[float | None] = mapped_column(Float, default=None)
     rationale: Mapped[str] = mapped_column(Text, default="")
     #: The exact model id that read the code, so grades are per model.

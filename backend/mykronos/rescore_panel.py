@@ -226,11 +226,19 @@ def stale_reason(
     onboarding_id: str | None,
     pending: Mapping[str, float],
     now: datetime,
+    monotonic_now: float | None = None,
 ) -> str | None:
     """Why the stored score cannot be shown as current, or None when it can.
 
     The rescore keeps the store right eventually; this is what keeps the page
     right now. Order matters only for the sentence shown.
+
+    `pending` is `environment.pending()`: key -> the monotonic time it was
+    marked. A mark counts only when it was made *after* the stored score was
+    computed: a rescore run directly (the daily job) does not clear the
+    debounced flags, and evidence it already read is not pending.
+    `monotonic_now` is that clock's reading now; without it every matching
+    mark counts.
     """
     if stored is None:
         return "not_yet_scored"
@@ -245,6 +253,11 @@ def stale_reason(
     keys = {ALL, repo_full_name}
     if onboarding_id:
         keys.add(f"onboarding:{onboarding_id}")
-    if keys.intersection(pending):
-        return "evidence_changed"
+    computed = _naive(stored.computed_at) if stored.computed_at else None
+    for key in keys.intersection(pending):
+        if monotonic_now is None or computed is None:
+            return "evidence_changed"
+        age = max(0.0, monotonic_now - pending[key])
+        if _naive(now) - timedelta(seconds=age) >= computed:
+            return "evidence_changed"
     return None

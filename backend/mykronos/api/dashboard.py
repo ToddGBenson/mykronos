@@ -5944,6 +5944,7 @@ def _severity_here(
         ),
         pending=environment.pending(),
         now=now,
+        monotonic_now=time.monotonic(),
     )
     if stored is not None and stale is None:
         facts = [environment.Fact.from_dict(raw) for raw in stored.facts_json or []]

@@ -235,3 +235,40 @@ class TestThePanelFollowsTheEvidence:
 
         assert "pending" in (here["recomputed_because"] or "")
         assert here["effective_severity"] == "critical"
+
+
+class TestAPendingMarkCountsOnlyWhenNewer:
+    """A rescore run directly (the daily job) leaves the debounced flags set.
+    A mark the stored score already read must not send every page back to
+    recomputing on read until the next drain."""
+
+    def _stored(self, computed_at: datetime) -> Any:
+        return EnvironmentalScore(
+            vector=V31,
+            scanner_severity="critical",
+            facts_json=[],
+            computed_at=computed_at,
+        )
+
+    def _reason(self, computed_at: datetime, marked_seconds_ago: float) -> str | None:
+        now = datetime(2026, 10, 23, 12, 0, 0)
+        return rescore_panel.stale_reason(
+            self._stored(computed_at),
+            vector=V31,
+            scanner_severity="critical",
+            repo_full_name=REPO,
+            onboarding_id=None,
+            pending={REPO: 1000.0 - marked_seconds_ago},
+            now=now,
+            monotonic_now=1000.0,
+        )
+
+    def test_a_mark_older_than_the_score_is_not_pending(self) -> None:
+        # Marked ten minutes ago, scored five minutes ago.
+        computed = datetime(2026, 10, 23, 11, 55, 0)
+        assert self._reason(computed, marked_seconds_ago=600) is None
+
+    def test_a_mark_newer_than_the_score_is_pending(self) -> None:
+        # Scored ten minutes ago, marked five minutes ago.
+        computed = datetime(2026, 10, 23, 11, 50, 0)
+        assert self._reason(computed, marked_seconds_ago=300) == "evidence_changed"
