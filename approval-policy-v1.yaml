@@ -110,6 +110,7 @@ duties:
         - "environment-map-v1.yaml"   # what a statement may do to a CVSS metric, reviewed as policy (TheHub #60827, as D-164)
         - "cwe-vector-templates-v1.yaml"  # the CWE-class vectors that pre-fill a rule-vector proposal (TheHub #60832, as D-164)
         - ".gitleaksignore"
+        - ".gitleaks.toml"            # gitleaks allowlists: silencing a scanner is policy
         - ".github/**"                # CI definitions and CODEOWNERS
         - "deploy/concourse/**"       # the pipelines themselves
         - "backend/mykronos/approvals/**"   # the engine that enforces all of this
