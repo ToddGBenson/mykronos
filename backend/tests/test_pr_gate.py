@@ -178,6 +178,14 @@ class TestTheRequest:
             "pr_number": PR,
         }
 
+    def test_it_does_not_send_urllibs_default_user_agent(self, gate: ModuleType) -> None:
+        """The edge in front of the platform 403s `Python-urllib/3.x` before the
+        application sees it. That was this workflow's first run (PR #1001)."""
+        request = gate.build_request("https://h.test/api/oracle/evaluate", "t", {})
+        agent = request.get_header("User-agent")
+        assert agent and "urllib" not in agent.lower()
+        assert request.get_header("Authorization") == "Bearer t"
+
     def test_the_platform_accepts_it_and_keeps_it_a_pr_gate(self, gate: ModuleType) -> None:
         """The endpoint forbids extra fields, so a stray `repo_full_name` would
         be a 422 on every pull request."""

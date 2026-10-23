@@ -44,16 +44,39 @@ def request_body(head_sha: str, pr_number: int) -> dict[str, Any]:
     return {"decision_type": "pr_gate", "commit_sha": head_sha, "pr_number": pr_number}
 
 
-def http_post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-    request = urllib.request.Request(
+#: Sent on purpose. The platform sits behind an edge proxy that refuses
+#: urllib's default `Python-urllib/3.x` with a 403 before the request reaches
+#: the application: the first run of this workflow (PR #1001) got exactly that,
+#: and the backend's access log shows no request at all. curl, which the
+#: deleted workflow used, was never refused.
+USER_AGENT = "mykronos-pr-gate/1 (+https://github.com/ToddGBenson/mykronos)"
+
+
+def build_request(url: str, token: str, body: dict[str, Any]) -> urllib.request.Request:
+    return urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
-        loaded: dict[str, Any] = json.loads(response.read().decode("utf-8"))
-        return loaded
+
+
+def http_post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    request = build_request(url, token, body)
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
+            loaded: dict[str, Any] = json.loads(response.read().decode("utf-8"))
+            return loaded
+    except urllib.error.HTTPError as exc:
+        # Say who refused. A platform refusal is JSON with a `detail`; an edge
+        # refusal is not, and telling them apart is the whole diagnosis.
+        excerpt = exc.read(400).decode("utf-8", "replace").replace("\n", " ").strip()
+        raise OSError(f"HTTP {exc.code} from {url}: {excerpt or 'no body'}") from None
 
 
 def verdict(decision: Mapping[str, Any]) -> tuple[bool, list[str]]:
