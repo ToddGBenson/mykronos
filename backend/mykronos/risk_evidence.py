@@ -557,9 +557,15 @@ def gather(
     escalate_steps: int = 1,
     scored: tuple[str, ...] = (),
     notes: dict[str, str] | None = None,
+    combinations: list[Any] | None = None,
 ) -> RiskEvidence:
     """The evidence about `findings` (dicts with `finding_id`, `rule_id`, and
-    optionally `title` and `location`/`file_path`), read through this module."""
+    optionally `title` and `location`/`file_path`), read through this module.
+
+    `combinations` passes the repository's `toxic_combinations` when the
+    caller has just read them, so a decision shows the combinations it
+    scored rather than a second read of them.
+    """
     items = list(findings)
     ids = {str(f["finding_id"]) for f in items}
     cves = {
@@ -572,11 +578,9 @@ def gather(
     in_dead = sum(
         1 for f in items if str(f.get("file_path") or f.get("location") or "") in orphaned
     )
-    combos = [
-        c
-        for c in toxic_combinations(catalog, session, repo, escalate_steps=escalate_steps)
-        if ids & {str(m["finding_id"]) for m in c.members}
-    ]
+    if combinations is None:
+        combinations = toxic_combinations(catalog, session, repo, escalate_steps=escalate_steps)
+    combos = [c for c in combinations if ids & {str(m["finding_id"]) for m in c.members}]
     return RiskEvidence(
         repo=repo,
         as_of=as_of,

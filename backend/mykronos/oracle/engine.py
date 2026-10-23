@@ -1993,6 +1993,9 @@ class OracleEngine:
             combos = risk_evidence.toxic_combinations(
                 self.catalog, None, repo_full_name, escalate_steps=pol.escalate_steps
             )
+        # Kept for the `risk_evidence` block, so it lists the combinations
+        # this decision scored rather than a second read of them.
+        self._toxic_scored = list(combos)
         forces = pol.critical_forces_no_go and any(c.severity == "critical" for c in combos)
         points = sum(
             pol.points.get(c.severity, 0.0)
@@ -2796,6 +2799,7 @@ class OracleEngine:
                     escalate_steps=self.policy.toxic_combinations.escalate_steps,
                     scored=self.RISK_EVIDENCE_SCORED,
                     notes=self.RISK_EVIDENCE_NOTES,
+                    combinations=getattr(self, "_toxic_scored", None),
                 )
             return {"available": True, **gathered.as_dict()}
         except Exception as exc:  # noqa: BLE001 - the live decision must survive

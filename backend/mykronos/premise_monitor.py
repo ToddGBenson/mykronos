@@ -853,30 +853,32 @@ def kev_by_finding(
     """Finding id -> the KEV signal of its CVE, for findings whose rule is a
     KEV-listed CVE. One threat-intel read and one lake query for every live
     acceptance, not one per record."""
-    ids = sorted({str(f) for f in finding_ids})
+    ids = {str(f) for f in finding_ids}
     if not ids or not catalog.all_files("findings"):
         return {}
-    listed = {
-        str(c).upper()
-        for c in session.scalars(
-            select(ThreatIntelMatch.cve_id).where(ThreatIntelMatch.in_kev.is_(True))
-        ).all()
-    }
+    listed = sorted(
+        {
+            str(c).upper()
+            for c in session.scalars(
+                select(ThreatIntelMatch.cve_id).where(ThreatIntelMatch.in_kev.is_(True))
+            ).all()
+        }
+    )
     if not listed:
         return {}
     signals = risk_evidence.threat_signals(session, listed)
+    # Keyed on the KEV list, which is short, rather than on every covered id,
+    # which on a migrated estate is tens of thousands.
+    rows = catalog.query(
+        "SELECT finding_id, upper(rule_id) FROM findings "
+        f"WHERE upper(rule_id) IN ({', '.join('?' for _ in listed)})",
+        listed,
+    )
     out: dict[str, risk_evidence.ThreatSignal] = {}
-    for start in range(0, len(ids), 500):
-        chunk = ids[start : start + 500]
-        rows = catalog.query(
-            "SELECT finding_id, upper(rule_id) FROM findings "
-            f"WHERE finding_id IN ({', '.join('?' for _ in chunk)})",
-            chunk,
-        )
-        for fid, rule in rows:
-            signal = signals.get(str(rule))
-            if signal is not None and signal.in_kev:
-                out[str(fid)] = signal
+    for fid, rule in rows:
+        signal = signals.get(str(rule))
+        if str(fid) in ids and signal is not None and signal.in_kev:
+            out[str(fid)] = signal
     return out
 
 
