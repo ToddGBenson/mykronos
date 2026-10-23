@@ -722,6 +722,18 @@ class ThreatIntelMatch(Base):
     #: v3-only lookup, which may have dropped a v4 vector: those are eligible
     #: for exactly one more lookup, then a miss is a miss.
     v4_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Public exploit references for this CVE (TheHub #60890): Exploit-DB
+    #: entries, Metasploit modules and NVD references tagged `Exploit` (which
+    #: is where GitHub proof-of-concept links appear). Each is
+    #: {source, ref, url, title}. Null until a lookup has run; an empty list
+    #: once one has and found nothing, which is a different statement.
+    exploit_refs_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=None)
+    #: When the Exploit-DB / Metasploit feeds last answered for this CVE.
+    exploits_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: When NVD's references were last read for exploit links. Separate from
+    #: `vector_checked_at` because rows looked up before #60890 were read for
+    #: vectors only, and are eligible for exactly one more lookup.
+    nvd_refs_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

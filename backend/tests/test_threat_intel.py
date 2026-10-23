@@ -366,7 +366,14 @@ class TestVectorLookup:
             assert threat_intel.parse_nvd_vector(payload) is None
 
     def test_only_rows_without_a_vector_are_looked_up(self, session) -> None:
-        session.add(ThreatIntelMatch(cve_id="CVE-2021-44228", cvss_vector=V31))
+        # Its references were read too (TheHub #60890): nothing left to ask.
+        session.add(
+            ThreatIntelMatch(
+                cve_id="CVE-2021-44228",
+                cvss_vector=V31,
+                nvd_refs_checked_at=datetime(2026, 10, 1),
+            )
+        )
         session.add(ThreatIntelMatch(cve_id="CVE-2014-0160"))
         session.flush()
 

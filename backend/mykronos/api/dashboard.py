@@ -31,6 +31,7 @@ from mykronos import (
     controls,
     cvss,
     environment,
+    exploitability,
     finding_disposition,
     finding_record,
     findings_export,
@@ -427,6 +428,17 @@ class RankTermOut(BaseModel):
     detail: str
 
 
+ExploitVerdict = Literal[
+    "exploited",
+    "weaponized",
+    "public_poc",
+    "elevated_epss",
+    "no_known_exploit",
+    "not_checked",
+    "no_cve",
+]
+
+
 class TriageItem(BaseModel):
     """One row of the cross-portfolio work queue."""
 
@@ -494,6 +506,14 @@ class TriageItem(BaseModel):
         description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    exploit_verdict: ExploitVerdict | None = Field(
+        default=None,
+        description=(
+            "The exploitability ladder (TheHub #60890): exploited (KEV), weaponized "
+            "(Metasploit), public_poc, elevated_epss, no_known_exploit, not_checked, "
+            "or no_cve. The finding record lists the sources behind it."
+        ),
+    )
     owner: str | None = Field(
         default=None, description="From CODEOWNERS or the risk profile (spec 24 §1)."
     )
@@ -5798,6 +5818,35 @@ class SeverityHereOut(BaseModel):
     recomputed_because: str | None = None
 
 
+class ExploitSourceOut(BaseModel):
+    """One source behind an exploitability verdict, with where to check it."""
+
+    source: str
+    label: str
+    detail: str
+    url: str
+    observed_at: datetime | None = None
+
+
+class ExploitFixOut(BaseModel):
+    state: Literal["fix_available", "no_fix_published", "not_a_package"]
+    fixed_version: str | None = None
+    detail: str
+
+
+class ExploitabilityOut(BaseModel):
+    """Can somebody exploit this today, and on whose word (TheHub #60890)."""
+
+    cve_id: str | None = None
+    verdict: ExploitVerdict
+    summary: str
+    #: Every source that spoke, whatever the verdict.
+    sources: list[ExploitSourceOut] = []
+    #: When the exploit catalogs last answered for this CVE; null if never.
+    checked_at: datetime | None = None
+    fix: ExploitFixOut
+
+
 class FindingRecordOut(BaseModel):
     """One finding, with everything the platform knows about it (B-032).
 
@@ -5821,6 +5870,10 @@ class FindingRecordOut(BaseModel):
     #: See PriorDispositionOut. Null when this finding re-asks nothing.
     prior_disposition: PriorDispositionOut | None = None
     missing_context: list[RecordGap]
+    #: KEV, EPSS, public exploits and fix availability, with a verdict and
+    #: its sources (TheHub #60890). Present on every finding: one with no CVE
+    #: says so rather than leaving the block out.
+    exploitability: ExploitabilityOut | None = None
 
 
 def _severity_here(
@@ -6035,6 +6088,21 @@ async def whole_finding_record(
     ) if catalog.all_files("reachability") else []
     analysed = bool(reach_rows and reach_rows[0][0])
 
+    pkg_found = finding_record.package_for(
+        catalog,
+        repo_full_name=repo_full_name,
+        package_name=row.get("package_name"),
+    )
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
+    with request.app.state.db.session() as session:
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        exploit = exploitability.assess(
+            cve_id,
+            intel,
+            package_name=row.get("package_name"),
+            fixed_version=(pkg_found or {}).get("fixed_version"),
+        )
+
     return FindingRecordOut(
         finding=FindingOut.model_validate(row),
         repo_full_name=repo_full_name,
@@ -6064,17 +6132,8 @@ async def whole_finding_record(
             )
             else None
         ),
-        package=(
-            PackageOut(**pkg)
-            if (
-                pkg := finding_record.package_for(
-                    catalog,
-                    repo_full_name=repo_full_name,
-                    package_name=row.get("package_name"),
-                )
-            )
-            else None
-        ),
+        package=PackageOut(**pkg_found) if pkg_found else None,
+        exploitability=ExploitabilityOut.model_validate(exploit),
         missing_context=[
             RecordGap(**gap)
             for gap in finding_record.missing_context(
