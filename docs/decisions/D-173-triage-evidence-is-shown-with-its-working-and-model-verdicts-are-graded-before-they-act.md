@@ -1,4 +1,4 @@
-## D-172 — Triage evidence is shown with its working, and model verdicts are graded before they act
+## D-173 — Triage evidence is shown with its working, and model verdicts are graded before they act
 
 **2026-10-22.** **Status:** Decided, implemented
 **Stories:** TheHub #60889 (T2), #60890 (T3), #60893 (T6) of epic #60879 · Refs D-168, D-169, #60748, #713, [spec 17 §4](../../specs/17-harness-threat-intel-and-i2i.md), [spec 27 §1](../../specs/27-the-worklist.md)
