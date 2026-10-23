@@ -1585,6 +1585,23 @@ same trust boundary as the capability config the repo already carries, but it
 is worth stating rather than discovering. A reviewer reads the pragma; the
 platform counts it.
 
+**Addendum, 2026-10-23 (TheHub #60963, decision 60815 option B): the
+suppressions are kept and listed.** A count in a warning left nobody able to
+see *what* was silenced, why, or for how long. The SARIF adapter now also
+returns each suppressed result as a `SuppressionSubmission` (rule, file, line,
+justification, expiry), the uploader posts the set to
+`/api/ingest/suppressions` after the findings, and the
+`scanner_suppressions` table holds it, replaced whole per (repository,
+capability, tool, branch) on each clean scan. It is still not a finding and
+still never touches a status, so everything above stands. The repository
+page's Findings tab lists them; one with no declared expiry is flagged
+`no expiry`, and one whose expiry has passed is a lane-health fact (at the
+front of the scan's warnings, and on the page). SARIF has no expiry field, so
+it is read from the suppression's property bag (`expires`, `expiry`, ...) or
+an `expires YYYY-MM-DD` in the justification. Allowlists a tool applies
+without reporting the result at all (a `.gitleaks.toml` allowlist, for one)
+never reach SARIF and are not covered by this.
+
 ---
 
 ## D-049 — TheHub's delivery pipeline shipped without supply-chain evidence
