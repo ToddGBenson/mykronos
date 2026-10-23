@@ -32,7 +32,7 @@ from mykronos.db.models import LibraryEntry, LibraryRequest, new_id
 router = APIRouter(prefix="/api/libraries", tags=["libraries"])
 
 
-class RequestIn(BaseModel):
+class LibraryRequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: The purl ecosystem: npm, pypi, golang, maven, cargo, nuget.
@@ -73,7 +73,7 @@ class LibraryRequestList(BaseModel):
     requests: list[LibraryRequestOut]
 
 
-class FlagsOut(BaseModel):
+class LibraryFlagsOut(BaseModel):
     """`null` means the platform holds no data to decide, never "fine"."""
 
     divergent: bool
@@ -96,11 +96,11 @@ class ManagedLibraryOut(BaseModel):
     owner: str
     version_policy: str
     version_ref: str
-    flags: FlagsOut
+    flags: LibraryFlagsOut
     facts_read_at: datetime | None
 
 
-class ManagedOut(BaseModel):
+class ManagedLibrariesOut(BaseModel):
     libraries: list[ManagedLibraryOut]
     by_status: dict[str, int]
     #: Libraries whose status is the default rather than a recorded one.
@@ -110,7 +110,7 @@ class ManagedOut(BaseModel):
     without_owner: int
 
 
-class EntryIn(BaseModel):
+class LibraryEntryIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ecosystem: str = Field(min_length=1, max_length=32, pattern=r"^[a-z0-9-]+$")
@@ -123,7 +123,7 @@ class EntryIn(BaseModel):
     note: str | None = Field(default=None, max_length=2_000)
 
 
-class EntryOut(BaseModel):
+class LibraryEntryOut(BaseModel):
     ecosystem: str
     package_name: str
     status: str
@@ -137,18 +137,18 @@ class EntryOut(BaseModel):
     updated_at: datetime
 
 
-class BaselineOut(BaseModel):
+class LibraryBaselineOut(BaseModel):
     recorded: int
     libraries: list[str]
 
 
-class FactsOut(BaseModel):
+class LibraryFactsOut(BaseModel):
     read: int
     failed: int
     libraries: int
 
 
-class CoverageOut(BaseModel):
+class LibraryCoverageOut(BaseModel):
     repo: str
     mode: str
     libraries: int
@@ -158,21 +158,21 @@ class CoverageOut(BaseModel):
     covered: bool
 
 
-class ModeIn(BaseModel):
+class LibraryModeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repo: str = Field(min_length=3, max_length=255)
     mode: str = Field(max_length=16)
 
 
-class PrCheckIn(BaseModel):
+class LibraryPrCheckIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repo: str = Field(min_length=3, max_length=255)
     number: int = Field(ge=1)
 
 
-class PrCheckOut(BaseModel):
+class LibraryPrCheckOut(BaseModel):
     repo: str
     number: int
     head_sha: str
@@ -211,8 +211,8 @@ def _request_out(row: LibraryRequest) -> LibraryRequestOut:
     )
 
 
-def _entry_out(row: LibraryEntry) -> EntryOut:
-    return EntryOut(
+def _entry_out(row: LibraryEntry) -> LibraryEntryOut:
+    return LibraryEntryOut(
         ecosystem=row.ecosystem,
         package_name=row.package_name,
         status=row.status,
@@ -234,7 +234,7 @@ def _fetch(request: Request) -> libraries.Fetch:
 
 @router.post("/requests", response_model=LibraryRequestOut, status_code=201)
 async def request_library(
-    request: Request, body: RequestIn, principal: PrincipalDep
+    request: Request, body: LibraryRequestIn, principal: PrincipalDep
 ) -> LibraryRequestOut:
     """Request a library: the platform vets it and opens its approval.
 
@@ -371,12 +371,12 @@ async def get_request(
         return _request_out(row)
 
 
-@router.get("/managed", response_model=ManagedOut)
+@router.get("/managed", response_model=ManagedLibrariesOut)
 async def managed_libraries(
     request: Request,
     principal: PrincipalDep,
     ecosystem: Annotated[str | None, Query(max_length=32)] = None,
-) -> ManagedOut:
+) -> ManagedLibrariesOut:
     """Every library in use, with its status, owner, version policy and flags.
 
     A library nobody has recorded reads `tolerated` with `status_source:
@@ -388,7 +388,7 @@ async def managed_libraries(
     by_status: dict[str, int] = {s: 0 for s in libraries.STATUSES}
     for row in rows:
         by_status[row["status"]] = by_status.get(row["status"], 0) + 1
-    return ManagedOut(
+    return ManagedLibrariesOut(
         libraries=[ManagedLibraryOut.model_validate(r) for r in rows],
         by_status=by_status,
         unrecorded=sum(1 for r in rows if r["status_source"] == "default"),
@@ -397,10 +397,10 @@ async def managed_libraries(
     )
 
 
-@router.patch("/managed", response_model=EntryOut)
+@router.patch("/managed", response_model=LibraryEntryOut)
 async def update_library(
-    request: Request, body: EntryIn, principal: PrincipalDep
-) -> EntryOut:
+    request: Request, body: LibraryEntryIn, principal: PrincipalDep
+) -> LibraryEntryOut:
     """Record a library as tolerated or banned, or set its owner or policy.
 
     Approving is refused here: a library is approved through a vetted request.
@@ -426,47 +426,47 @@ async def update_library(
         return _entry_out(entry)
 
 
-@router.post("/baseline", response_model=BaselineOut)
-async def baseline(request: Request, principal: PrincipalDep) -> BaselineOut:
+@router.post("/baseline", response_model=LibraryBaselineOut)
+async def baseline(request: Request, principal: PrincipalDep) -> LibraryBaselineOut:
     """Record every in-use library with no entry as tolerated."""
     _require_writer(principal, "Recording the library baseline")
     with request.app.state.db.session() as session:
         added = libraries.baseline(session, request.app.state.catalog, actor=principal.actor)
-    return BaselineOut(recorded=len(added), libraries=added)
+    return LibraryBaselineOut(recorded=len(added), libraries=added)
 
 
-@router.post("/facts/refresh", response_model=FactsOut)
+@router.post("/facts/refresh", response_model=LibraryFactsOut)
 async def refresh_facts(
     request: Request,
     principal: PrincipalDep,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
-) -> FactsOut:
+) -> LibraryFactsOut:
     """Read registry facts (latest release, licenses, deprecations) for the
     libraries in use, least recently read first."""
     _require_writer(principal, "Refreshing library facts")
     result = await libraries.refresh_facts(
         request.app.state.db, request.app.state.catalog, fetch=_fetch(request), limit=limit
     )
-    return FactsOut(**result)
+    return LibraryFactsOut(**result)
 
 
-@router.get("/coverage", response_model=CoverageOut)
+@router.get("/coverage", response_model=LibraryCoverageOut)
 async def repo_coverage(
     request: Request,
     principal: PrincipalDep,
     repo: Annotated[str, Query(min_length=3, max_length=255)],
-) -> CoverageOut:
+) -> LibraryCoverageOut:
     """Whether the allowlist covers a repository's current dependencies."""
     with request.app.state.db.session() as session:
         total, missing = library_check.coverage(session, request.app.state.catalog, repo)
         mode = library_check.repo_mode(session, repo)
-    return CoverageOut(
+    return LibraryCoverageOut(
         repo=repo, mode=mode, libraries=total, missing=missing, covered=total > 0 and not missing
     )
 
 
-@router.put("/repo-mode", response_model=CoverageOut)
-async def set_repo_mode(request: Request, body: ModeIn, principal: HumanDep) -> CoverageOut:
+@router.put("/repo-mode", response_model=LibraryCoverageOut)
+async def set_repo_mode(request: Request, body: LibraryModeIn, principal: HumanDep) -> LibraryCoverageOut:
     """Switch a repository's library check between report and blocking.
 
     A person's decision. Blocking is refused until every library in the
@@ -482,7 +482,7 @@ async def set_repo_mode(request: Request, body: ModeIn, principal: HumanDep) -> 
         session.flush()
         total, missing = library_check.coverage(session, request.app.state.catalog, body.repo)
         mode = library_check.repo_mode(session, body.repo)
-    return CoverageOut(
+    return LibraryCoverageOut(
         repo=body.repo,
         mode=mode,
         libraries=total,
@@ -491,8 +491,8 @@ async def set_repo_mode(request: Request, body: ModeIn, principal: HumanDep) -> 
     )
 
 
-@router.post("/pr-checks", response_model=PrCheckOut)
-async def run_pr_check(request: Request, body: PrCheckIn, principal: PrincipalDep) -> PrCheckOut:
+@router.post("/pr-checks", response_model=LibraryPrCheckOut)
+async def run_pr_check(request: Request, body: LibraryPrCheckIn, principal: PrincipalDep) -> LibraryPrCheckOut:
     """Run the library-allowlist check on one pull request's head now.
 
     The `library-checks` job does this for every open pull request; this is
@@ -515,7 +515,7 @@ async def run_pr_check(request: Request, body: PrCheckIn, principal: PrincipalDe
         )
     except libraries.LibraryError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return PrCheckOut(
+    return LibraryPrCheckOut(
         repo=check.repo_full_name,
         number=check.number,
         head_sha=check.head_sha,

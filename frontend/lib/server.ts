@@ -49,6 +49,8 @@ import {
   type RepoSurfaces,
   type RiskAcceptanceDetail,
   type RuleVectorsPage,
+  type ManagedLibraries,
+  type LibraryRequestList,
   type SupplyChainPackages,
   type VulnerabilityManagement,
   type WorkflowsPage,
@@ -203,6 +205,35 @@ export async function getFindingRecord(
     );
     if (!data) return { ok: false, error: describe(response, "Could not load the record") };
     return { ok: true, data: data as FindingRecord };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Every library in use with a status, owner, policy and flags (TheHub #60897). */
+export async function getManagedLibraries(
+  ecosystem?: string,
+): Promise<Result<ManagedLibraries>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/libraries/managed", {
+      cache: "no-store",
+      ...(ecosystem ? { params: { query: { ecosystem } } } : {}),
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load managed libraries") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Library requests, newest first, with decisions copied back (TheHub #60896). */
+export async function getLibraryRequests(): Promise<Result<LibraryRequestList>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/libraries/requests", {
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load library requests") };
+    return { ok: true, data };
   } catch (error) {
     return failure(error);
   }
