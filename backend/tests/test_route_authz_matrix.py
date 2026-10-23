@@ -140,6 +140,18 @@ ROUTES: dict[str, str] = {
     "PATCH /api/dashboard/rule-vectors/{rule_vector_id}": PRINCIPAL,
     "POST /api/dashboard/rule-vectors/{rule_vector_id}/confirm": HUMAN,
     "POST /api/dashboard/rule-vectors/{rule_vector_id}/retire": PRINCIPAL,
+    # Libraries (TheHub #60880): writes check `may_write` in the handler;
+    # switching a repository to blocking is a person's decision.
+    "POST /api/libraries/requests": PRINCIPAL,
+    "GET /api/libraries/requests": PRINCIPAL,
+    "GET /api/libraries/requests/{request_id}": PRINCIPAL,
+    "GET /api/libraries/managed": PRINCIPAL,
+    "PATCH /api/libraries/managed": PRINCIPAL,
+    "POST /api/libraries/baseline": PRINCIPAL,
+    "POST /api/libraries/facts/refresh": PRINCIPAL,
+    "GET /api/libraries/coverage": PRINCIPAL,
+    "PUT /api/libraries/repo-mode": HUMAN,
+    "POST /api/libraries/pr-checks": PRINCIPAL,
     "POST /api/dashboard/repos/{repo_id}/checks/{capability}/lanes/retire": HUMAN,
     "POST /api/dashboard/repos/{repo_id}/checks/{capability}/lanes/restore": HUMAN,
     "POST /api/dashboard/repos/{repo_id}/surfaces": PRINCIPAL,
