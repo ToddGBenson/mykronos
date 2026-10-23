@@ -41,7 +41,7 @@ from mykronos import risk_acceptance as ra
 from mykronos.adminauth import PrincipalDep
 from mykronos.api.risk_acceptances import environmental_scores
 from mykronos.db.models import AuditLogEntry, EnvironmentalScore, RiskAcceptance
-from mykronos.schemas import utcnow
+from mykronos.schemas import asset_label, utcnow
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -153,6 +153,9 @@ class CoveredFindingOut(BaseModel):
     rule_id: str
     capability: str
     package_name: str
+    #: The host a network finding is about (`192.168.0.5:445`), else empty
+    #: (TheHub #60813). Accepting "SMBv1 on the NAS" has to say which NAS.
+    asset: str = ""
     #: The scanner's word.
     severity: str
     #: Re-read for this environment (`EnvironmentalScore`), else the scanner's.
@@ -316,7 +319,7 @@ class RiskAcceptanceDetailOut(RiskAcceptanceRowOut):
 
 def _covered_rows(catalog: Any, repo: str, finding_ids: list[str]) -> dict[str, tuple[Any, ...]]:
     """finding_id -> (title, rule_id, capability, package, severity, status,
-    fixed_version), for this repository's rows only."""
+    fixed_version, asset), for this repository's rows only."""
     if not finding_ids or catalog is None or not catalog.all_files("findings"):
         return {}
     out: dict[str, tuple[Any, ...]] = {}
@@ -328,12 +331,13 @@ def _covered_rows(catalog: Any, repo: str, finding_ids: list[str]) -> dict[str, 
             "SELECT finding_id, coalesce(title, ''), coalesce(rule_id, ''), "
             "       coalesce(capability, ''), coalesce(package_name, ''), "
             "       lower(coalesce(severity, '')), coalesce(status, ''), "
-            "       coalesce(json_extract_string(raw_finding_json, '$.fixed_version'), '') "
+            "       coalesce(json_extract_string(raw_finding_json, '$.fixed_version'), ''), "
+            "       address, port "
             f"FROM findings WHERE repo_full_name = ? AND finding_id IN ({placeholders})",
             [repo, *chunk],
         )
         for row in rows:
-            out[str(row[0])] = tuple(row[1:])
+            out[str(row[0])] = (*row[1:8], asset_label(row[8], row[9]) or "")
     return out
 
 
@@ -409,7 +413,7 @@ def _row(
                 )
             )
             continue
-        title, rule, capability, package, severity, fstatus, fixed = (str(v) for v in row)
+        title, rule, capability, package, severity, fstatus, fixed, asset = (str(v) for v in row)
         findings.append(
             CoveredFindingOut(
                 finding_id=fid,
@@ -417,6 +421,7 @@ def _row(
                 rule_id=rule,
                 capability=capability,
                 package_name=package,
+                asset=asset,
                 severity=severity,
                 effective_severity=effective.get(fid, severity),
                 effective_source="environmental" if fid in effective else "scanner",

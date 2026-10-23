@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from mykronos.ci import ACKNOWLEDGED_UNMAPPED_JOBS, PERSONAL_SOC
+from mykronos.ci import ACKNOWLEDGED_UNMAPPED_JOBS, CAPABILITY_BY_JOB, PERSONAL_SOC
 
 PIPELINE = (
     Path(__file__).resolve().parents[2] / "deploy" / "concourse" / "pipelines" / "personal-soc.yml"
@@ -44,38 +44,65 @@ class TestDocDrift:
         assert "doc-drift is REPORT ONLY" in pipeline
 
 
+class TestTheNetworkLanesFile:
+    """TheHub #60813 (option A). The three exposure lanes were acknowledged as
+    uploading nothing, and #60852's sentences said what each failed on. They
+    still fail on exactly that, and now file `network` to Mykronos against
+    personal-soc - so they are mapped, not acknowledged, and what they judge is
+    held to the pipeline here and to the adapters in test_network_lanes.py."""
+
+    @pytest.mark.parametrize(
+        "job", ["external-exposure", "netassess-ingest", "netassess-freshness"]
+    )
+    def test_each_is_a_network_lane_not_an_unmapped_one(self, job: str) -> None:
+        assert CAPABILITY_BY_JOB[(PERSONAL_SOC, job)] == "network"
+        assert (PERSONAL_SOC, job) not in ACKNOWLEDGED_UNMAPPED_JOBS
+
+    @pytest.mark.parametrize(
+        ("job", "tool", "results_file"),
+        [
+            ("external-exposure", "shodan-internetdb", "external-exposure.json"),
+            ("netassess-ingest", "netassess", "netassess-run.json"),
+            ("netassess-freshness", "netassess-freshness", "netassess-freshness.json"),
+        ],
+    )
+    def test_each_uploads_its_own_tool_against_personal_soc(
+        self, pipeline: str, job: str, tool: str, results_file: str
+    ) -> None:
+        body = pipeline.split(f"MYKRONOS_JOB={job} python -m mykronos.upload", 1)[1][:600]
+        assert f"--capability network --tool {tool}" in body
+        assert f"--results-path results/{results_file}" in body
+        assert "--repo ToddGBenson/personal-soc" in body
+
+
 class TestExternalExposure:
-    def test_it_is_described_as_failing_on_an_unallowlisted_port(self) -> None:
-        text = reason("external-exposure")
-
-        assert "allowlist" in text
-        assert "fails" in text
-        assert "alerts; uploads nothing" not in text
-
     def test_the_pipeline_judges_against_the_allowlist(self, pipeline: str) -> None:
         assert "exposure-allowlist.yml" in pipeline
         assert "a visible port is NOT allowlisted" in pipeline
 
+    def test_an_unanswered_lookup_is_filed_as_unknown(self, pipeline: str) -> None:
+        assert '{"check": "unknown", "reason": "no public IP resolved"}' in pipeline
+        assert '{"indexed": false}' in pipeline
+
 
 class TestNetassessIngest:
     @pytest.mark.parametrize(
-        ("described", "pipeline_line"),
+        "pipeline_line",
         [
-            ("NFS exports", "EXPORTS PRESENT"),
-            ("SMBv1", "SMBv1 ENABLED"),
-            ("open Wi-Fi access point", "broadcasting"),
-            ("anonymous shares", "NAS lists shares without credentials"),
-            ("did not run", "it did not run, so it is not a pass"),
+            "EXPORTS PRESENT",
+            "SMBv1 ENABLED",
+            "broadcasting",
+            "NAS lists shares without credentials",
+            "it did not run, so it is not a pass",
         ],
     )
-    def test_each_failing_posture_is_named_and_real(
-        self, pipeline: str, described: str, pipeline_line: str
-    ) -> None:
-        assert described in reason("netassess-ingest")
+    def test_each_failing_posture_is_still_judged(self, pipeline: str, pipeline_line: str) -> None:
         assert pipeline_line in pipeline
 
     def test_host_changes_are_posted_not_failed(self, pipeline: str) -> None:
-        text = reason("netassess-ingest")
-
-        assert "posts host" in text
         assert "reported, not a failure" in pipeline
+
+    def test_the_run_is_written_before_any_check_can_stop_the_task(self, pipeline: str) -> None:
+        written = pipeline.index("results/netassess-run.json")
+        first_check = pipeline.index("# -- 1. is this a real scan?")
+        assert written < first_check

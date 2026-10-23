@@ -142,6 +142,29 @@ def _to_naive_utc(value: datetime) -> datetime:
     return value
 
 
+def asset_label(address: Any, port: Any) -> str | None:
+    """The host a network finding is about, as one string (TheHub #60813).
+
+    `192.168.0.5:445`, `192.168.0.5`, `[fe80::1]:22`, `wifi:Guest`. None for a
+    finding with no address - everything with a file or a package - so a
+    surface that shows this beside the file path shows nothing extra for
+    them.
+
+    A network finding is filed against the repository that scanned for it
+    (option A, decided 2026-10-21): personal-soc's lanes find the NAS, the
+    WAN edge and the Wi-Fi, and none of those is a repository. `address` and
+    `port` are what say which host; this is how every surface spells them.
+    """
+    host = str(address or "").strip()
+    if not host:
+        return None
+    if port is None or port == "":
+        return host
+    if host.count(":") >= 2 and not host.startswith("["):  # an IPv6 literal
+        host = f"[{host}]"
+    return f"{host}:{int(port)}"
+
+
 # --------------------------------------------------------------------------
 # ScanRun — spec 05 §3
 # --------------------------------------------------------------------------

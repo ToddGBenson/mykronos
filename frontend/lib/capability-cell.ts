@@ -14,7 +14,7 @@
 
 import { asUtc } from "./checks";
 
-export type CellState = "failed" | "reporting" | "silent" | "pending" | "off";
+export type CellState = "failed" | "refused" | "reporting" | "silent" | "pending" | "off";
 
 /** The fields of a backend `CapabilityStateOut` this cell reads. */
 export type CapabilityRun = {
@@ -29,15 +29,24 @@ export type CapabilityRun = {
   lane_status?: string | null;
   lane_build_name?: string | null;
   lane_finished_at?: string | null;
+  /** Uploads turned away for want of a grant (TheHub #60813). */
+  refused?: boolean;
+  last_refused_at?: string | null;
 };
 
 /**
- * Which of the five states a cell is in.
+ * Which of the six states a cell is in.
  *
  * `failed` applies only to an enabled capability — "not enabled" stays not
  * enabled whatever a stray lane does — but does apply to an enabled one that
  * has never written a scan: a lane failing before its first upload is
  * exactly the job that broke, and drawing it as merely silent hides that.
+ *
+ * `refused` is the exception that proves it (TheHub #60813): a lane is
+ * running and uploading, and Mykronos turns it away because the capability
+ * is not granted. That is never "enabled", by definition, so it would read as
+ * "not enabled" or "silent" — the same absence as a lane that never sent
+ * anything. It wins over both, because only it has findings being discarded.
  */
 export function cellState({
   enabled,
@@ -48,6 +57,7 @@ export function cellState({
   pending: boolean;
   run?: CapabilityRun;
 }): CellState {
+  if (run?.refused) return "refused";
   if (enabled && run?.last_run_failed) return "failed";
   if (enabled && run?.has_scanned) return "reporting";
   if (enabled) return "silent";
@@ -63,6 +73,7 @@ export function cellState({
  */
 export const CELL_SKIN: Record<CellState, string> = {
   failed: "border-critical bg-critical",
+  refused: "border-critical bg-transparent",
   reporting: "border-pass bg-pass",
   silent: "border-dashed border-accent bg-transparent",
   pending: "border-dotted border-accent bg-accent-wash",
@@ -73,12 +84,20 @@ export const CELL_SKIN: Record<CellState, string> = {
 export const CELL_MEANING: Record<CellState, string> = {
   reporting: "last run succeeded",
   failed: "last run failed",
+  refused: "uploads refused: not granted",
   silent: "enabled, not yet reporting",
   pending: "pending install PR",
   off: "not enabled",
 };
 
-export const LEGEND_ORDER: CellState[] = ["reporting", "failed", "silent", "pending", "off"];
+export const LEGEND_ORDER: CellState[] = [
+  "reporting",
+  "failed",
+  "refused",
+  "silent",
+  "pending",
+  "off",
+];
 
 /** `2026-10-20 14:03 UTC`, to the minute: what a hover needs, not a log line. */
 export function minuteTime(timestamp: string | null | undefined): string | null {
@@ -129,6 +148,10 @@ export function failureReason(run: CapabilityRun): string {
 /** The state in words, as the cell's hover and accessible name say it. */
 export function cellStateText(state: CellState, run?: CapabilityRun): string {
   if (state === "failed") return run ? failureReason(run) : "last run failed";
+  if (state === "refused") {
+    const when = minuteTime(run?.last_refused_at);
+    return `uploads refused${when ? ` ${when}` : ""}: the lane is sending and the capability is not granted`;
+  }
   if (state === "reporting") return "reporting, last run succeeded";
   return CELL_MEANING[state];
 }

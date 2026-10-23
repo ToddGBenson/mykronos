@@ -316,6 +316,16 @@ _CAPABILITY_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str | tuple[str, ...
     # both real uploads were reported as an unrecognised job.
     ((KEEL,), "iac", "iac"),
     ((KEEL,), "lint", "sast"),
+    # personal-soc's network lanes (TheHub #60813, option A). Each still fails
+    # its build on what it judges - a port not on exposure-allowlist.yml, NFS
+    # exports, SMBv1, an open access point, anonymous shares, a check that did
+    # not run, a stale scan - and now also files `network` to Mykronos against
+    # personal-soc, from an `ensure:` hook, each finding naming its host. They
+    # were acknowledged here as uploading nothing until then. Clock-triggered,
+    # so this cross-check is the only thing that can notice one going quiet.
+    ((PERSONAL_SOC,), "external-exposure", "network"),
+    ((PERSONAL_SOC,), "netassess-ingest", "network"),
+    ((PERSONAL_SOC,), "netassess-freshness", "network"),
 )
 
 
@@ -2395,34 +2405,16 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "skill-integrity",
         "checks SKILL.md references before delivery; fails the build, files nothing",
     ),
-    # TheHub #60852 changed what the next three do; each sentence is held to
-    # personal-soc.yml by test_personal_soc_job_wording.
+    # TheHub #60852 changed what this one does; its sentence is held to
+    # personal-soc.yml by test_personal_soc_job_wording. Its two siblings on
+    # that story, `external-exposure` and `netassess-ingest`, file `network`
+    # since TheHub #60813 and are mapped in `_CAPABILITY_DECLARATIONS`.
     (
         (PERSONAL_SOC,),
         "doc-drift",
         "lists docs that may have drifted from the tree, report-only: drift "
         "does not fail the build, only a check that could not run does; files "
         "nothing",
-    ),
-    (
-        (PERSONAL_SOC,),
-        "external-exposure",
-        "reads the Shodan view of the household IP and fails when a port not "
-        "on exposure-allowlist.yml is reachable from the internet, or when the "
-        "lookup could not be made; uploads nothing",
-    ),
-    (
-        (PERSONAL_SOC,),
-        "netassess-ingest",
-        "verifies the network scan published to MinIO and fails on NFS "
-        "exports, SMBv1, an open Wi-Fi access point, anonymous shares, or a "
-        "check that did not run; posts host adds and removes to Slack without "
-        "failing; it writes no scan run of its own",
-    ),
-    (
-        (PERSONAL_SOC,),
-        "netassess-freshness",
-        "ages the newest network scan and alerts when it is stale; files nothing",
     ),
 )
 

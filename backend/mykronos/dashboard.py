@@ -41,14 +41,19 @@ from mykronos import blast_radius, environment_view, prior_disposition, toxic, w
 from mykronos.ci import LaneResult
 from mykronos.config import get_settings
 from mykronos.controls import category_states
-from mykronos.db.models import CapabilityGrant, RepoOnboarding, ThreatIntelMatch
+from mykronos.db.models import (
+    CapabilityGrant,
+    IngestRefusal,
+    RepoOnboarding,
+    ThreatIntelMatch,
+)
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.catalog import Catalog
 from mykronos.oracle import NOT_ASSESSED
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
 from mykronos.patchwork.triage import classify
-from mykronos.schemas import Capability, Severity, utcnow
+from mykronos.schemas import Capability, Severity, asset_label, utcnow
 from mykronos.surface_match import surface_for
 from mykronos.threat_intel import extract_cve
 
@@ -559,6 +564,15 @@ class CapabilityState:
     #: this red rather than green — a capability that has *ever* scanned is
     #: not one whose last run worked.
     last_run_failed: bool = False
+    #: The last time an upload of this capability was turned away because it
+    #: is not granted (`IngestRefusal`, TheHub #60813). None: never refused.
+    last_refused_at: datetime | None = None
+    #: Refused more recently than anything was accepted - a lane is running and
+    #: being turned away at the door. Distinct from "never sent": both leave
+    #: no scan run, and only this one has a lane producing findings that are
+    #: being discarded. Not folded into `last_run_failed`, which describes a
+    #: capability that is enabled; a refused one, by construction, is not.
+    refused: bool = False
 
 
 #: Scan statuses that are a working run. `no_applicable_targets` is a scanner
@@ -568,6 +582,13 @@ class CapabilityState:
 #: not a success, and "green only when the latest run succeeded" means an
 #: unknown status must not be drawn green.
 SCAN_STATUSES_OK = frozenset({"success", "no_applicable_targets", "reported"})
+
+
+def _refused_since(refused: datetime | None, last_scan: datetime | None) -> bool:
+    """A refusal newer than the last accepted scan, or with no scan at all."""
+    if refused is None:
+        return False
+    return last_scan is None or refused >= last_scan
 
 
 def scan_failed(status: str | None) -> bool:
@@ -712,6 +733,12 @@ class DashboardQueries:
         ):
             grants_by_repo.setdefault(repo_name, set()).add(capability)
 
+        # Lane health: uploads refused at the door (TheHub #60813).
+        refused_at: dict[tuple[str, str], datetime] = {
+            (r.repo_full_name, r.capability): r.last_refused_at
+            for r in session.execute(select(IngestRefusal)).scalars()
+        }
+
         rows: list[PortfolioRow] = []
         for onboarding in onboardings:
             repo = onboarding.github_repo_full_name
@@ -739,8 +766,18 @@ class DashboardQueries:
                     last_scan_status=scan_state.get(capability, {}).get("status"),
                     open_findings=scan_state.get(capability, {}).get("open_findings", 0),
                     last_run_failed=scan_failed(scan_state.get(capability, {}).get("status")),
+                    last_refused_at=refused_at.get((repo, capability)),
+                    refused=_refused_since(
+                        refused_at.get((repo, capability)),
+                        scan_state.get(capability, {}).get("last_scan_at"),
+                    ),
                 )
-                for capability in sorted({c.value for c in Capability} | enabled | set(scan_state))
+                for capability in sorted(
+                    {c.value for c in Capability}
+                    | enabled
+                    | set(scan_state)
+                    | {cap for (name, cap) in refused_at if name == repo}
+                )
             ]
 
             # Rolls up SCANS. The `REPORTS_ELSEWHERE` capabilities are
@@ -1055,6 +1092,9 @@ class DashboardQueries:
             "first_seen_at",
             "last_seen_at",
             "resolved_at",
+            # The host a network finding is about (spec 14 §5, TheHub #60813).
+            "address",
+            "port",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
@@ -1077,6 +1117,7 @@ class DashboardQueries:
                 # the bytes rather than nothing.
                 with suppress(TypeError, json.JSONDecodeError):
                     record["raw_finding_json"] = json.loads(record["raw_finding_json"])
+            record["asset"] = asset_label(record.get("address"), record.get("port"))
             findings.append(record)
         return findings, total
 
@@ -1174,6 +1215,9 @@ class DashboardQueries:
             "due_at",
             "due_source",
             "owner",
+            # A network finding's host (TheHub #60813), shown as its location.
+            "address",
+            "port",
         ]
         statuses = _many(finding_status) or ("open",)
         triages = set(_many(triage))
@@ -1936,6 +1980,7 @@ class DashboardQueries:
                     "package_version": finding.get("package_version"),
                     "version_basis": finding.get("version_basis"),
                     "first_seen_at": finding.get("first_seen_at"),
+                    "asset": asset_label(finding.get("address"), finding.get("port")),
                 }
             )
 
@@ -2177,6 +2222,10 @@ class DashboardQueries:
             "symbol",
             "cwe_ids_json",
             "image",
+            # The host, for a network finding (TheHub #60813): the triage row's
+            # location when there is no file and no package.
+            "address",
+            "port",
         ]
         selected = {
             "image": "json_extract_string(raw_finding_json, '$.image') AS image",
@@ -2216,6 +2265,7 @@ class DashboardQueries:
             # in a repo Oracle already calls no_go.
             decision = decisions.get(repo)
             record["repo_recommendation"] = str(decision[1]) if decision else None
+            record["asset"] = asset_label(record.get("address"), record.get("port"))
             queue.append(record)
 
         # cve_id/in_kev/epss_score stamped onto every row (spec 17 §4.4, #20) —
@@ -3166,6 +3216,11 @@ class DashboardQueries:
             # indistinguishable from a permanent suppression (#378).
             "accepted_reason_code",
             "accepted_until",
+            # Which host a network finding is about (TheHub #60813). A NAS
+            # finding filed against personal-soc names no file; without these
+            # the detail page could not say which machine to go and look at.
+            "address",
+            "port",
         ]
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
@@ -3175,6 +3230,7 @@ class DashboardQueries:
         if not rows:
             return None
         record = dict(zip(columns, rows[0], strict=True))
+        record["asset"] = asset_label(record.get("address"), record.get("port"))
         if include_raw and record.get("raw_finding_json"):
             # Parsed here as well as in `findings()`, so one finding served two
             # ways is the same shape both times. Unparseable output is returned

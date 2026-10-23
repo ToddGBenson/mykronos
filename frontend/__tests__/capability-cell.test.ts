@@ -153,7 +153,38 @@ describe("the most recent build across a capability's jobs decides", () => {
 
 describe("legend", () => {
   it("lists the red state beside the green one", () => {
-    expect(LEGEND_ORDER).toEqual(["reporting", "failed", "silent", "pending", "off"]);
+    expect(LEGEND_ORDER).toEqual(["reporting", "failed", "refused", "silent", "pending", "off"]);
     expect(CELL_MEANING.failed).toBe("last run failed");
+  });
+});
+
+/**
+ * TheHub #60813: an upload refused for want of a grant is not "never sent".
+ * A refused capability is never enabled, so without its own state it would
+ * draw as "not enabled" - the same absence as a lane that sent nothing.
+ */
+describe("a refused lane", () => {
+  const refused: CapabilityRun = {
+    capability: "network",
+    has_scanned: false,
+    refused: true,
+    last_refused_at: "2026-10-21T03:05:00",
+  };
+
+  it("is refused, not off, though the capability is not enabled", () => {
+    expect(cellState({ enabled: false, pending: false, run: refused })).toBe("refused");
+  });
+
+  it("is told apart from a lane that never sent anything", () => {
+    const neverSent: CapabilityRun = { capability: "network", has_scanned: false };
+    expect(cellState({ enabled: false, pending: false, run: neverSent })).toBe("off");
+    expect(cellState({ enabled: true, pending: false, run: neverSent })).toBe("silent");
+  });
+
+  it("says when, and why", () => {
+    expect(cellStateText("refused", refused)).toBe(
+      "uploads refused 2026-10-21 03:05 UTC: the lane is sending and the capability is not granted",
+    );
+    expect(CELL_SKIN.refused).toContain("border-critical");
   });
 });

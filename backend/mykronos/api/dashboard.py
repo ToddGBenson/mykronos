@@ -180,6 +180,21 @@ class CapabilityStateOut(BaseModel):
             "portfolio draws this red, never green."
         ),
     )
+    last_refused_at: datetime | None = Field(
+        default=None,
+        description=(
+            "The last upload of this capability turned away because it is not "
+            "granted (TheHub #60813). Null: never refused."
+        ),
+    )
+    refused: bool = Field(
+        default=False,
+        description=(
+            "Refused more recently than any scan was accepted: a lane is running "
+            "and being turned away at the door. Told apart from 'never sent', "
+            "which leaves the same absence of scan runs behind."
+        ),
+    )
 
 
 class DeployLagOut(BaseModel):
@@ -428,6 +443,20 @@ class TriageItem(BaseModel):
     #: not the version running -- reading one as the other reported four HIGH
     #: advisories against a package no container had installed for months.
     version_basis: str | None = None
+    address: str | None = Field(
+        default=None,
+        description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",
+    )
+    port: int | None = None
+    asset: str | None = Field(
+        default=None,
+        description=(
+            "`address` and `port` as one string (`192.168.0.5:445`), the host a "
+            "network finding is about. Network lanes file against the repository "
+            "that scanned (TheHub #60813, option A), so this - not the repository - "
+            "says which machine. Null for findings with a file or package."
+        ),
+    )
     triage: str = Field(
         default="needs_human_judgment",
         description=(
@@ -615,6 +644,20 @@ class FindingOut(BaseModel):
     #: not the version running -- reading one as the other reported four HIGH
     #: advisories against a package no container had installed for months.
     version_basis: str | None = None
+    address: str | None = Field(
+        default=None,
+        description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",
+    )
+    port: int | None = None
+    asset: str | None = Field(
+        default=None,
+        description=(
+            "`address` and `port` as one string (`192.168.0.5:445`), the host a "
+            "network finding is about. Network lanes file against the repository "
+            "that scanned (TheHub #60813, option A), so this - not the repository - "
+            "says which machine. Null for findings with a file or package."
+        ),
+    )
     status: str
     #: Who this is addressed to, and where that answer came from (spec 24 §1).
     #: `owner_source` is codeowners | profile | manual | unresolved — the four
@@ -688,6 +731,10 @@ class FindingLocationOut(BaseModel):
     #: repository permits rather than what it runs, and the two were the same
     #: row until this told them apart.
     version_basis: str | None = None
+    asset: str | None = Field(
+        default=None,
+        description="The host, for a network finding (`address:port`); null otherwise.",
+    )
     first_seen_at: datetime | None = None
     effective_severity: Severity | None = Field(
         default=None,

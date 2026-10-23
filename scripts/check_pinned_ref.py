@@ -123,6 +123,11 @@ REQUIRED_ADAPTERS: tuple[tuple[str, str], ...] = (
     ("dast", "zap-edge"),
     ("functional", "junit"),
     ("iac", "checkov"),
+    # personal-soc's network lanes (TheHub #60813). Red here until a tag
+    # carries them and `mykronos-ref` moves to it.
+    ("network", "netassess"),
+    ("network", "netassess-freshness"),
+    ("network", "shodan-internetdb"),
     ("qa", "junit"),
     ("sast", "semgrep"),
     ("secrets", "gitleaks"),

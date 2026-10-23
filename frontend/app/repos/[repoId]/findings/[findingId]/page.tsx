@@ -93,6 +93,10 @@ export default async function FindingRecordPage({
           {pkg ? ` · ${pkg.package_name} ${pkg.installed_version ?? ""}` : ""}
           {finding.file_path ? ` · ${finding.file_path}` : ""}
           {finding.line_start ? `:${finding.line_start}` : ""}
+          {/* The host a network finding is about (TheHub #60813): filed
+              against the repository that scanned, so the repository does not
+              say which machine — this does. */}
+          {finding.asset ? ` · host ${finding.asset}` : ""}
         </div>
       </header>
 
