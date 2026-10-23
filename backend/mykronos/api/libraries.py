@@ -466,7 +466,9 @@ async def repo_coverage(
 
 
 @router.put("/repo-mode", response_model=LibraryCoverageOut)
-async def set_repo_mode(request: Request, body: LibraryModeIn, principal: HumanDep) -> LibraryCoverageOut:
+async def set_repo_mode(
+    request: Request, body: LibraryModeIn, principal: HumanDep
+) -> LibraryCoverageOut:
     """Switch a repository's library check between report and blocking.
 
     A person's decision. Blocking is refused until every library in the
@@ -493,7 +495,9 @@ async def set_repo_mode(request: Request, body: LibraryModeIn, principal: HumanD
 
 
 @router.post("/pr-checks", response_model=LibraryPrCheckOut)
-async def run_pr_check(request: Request, body: LibraryPrCheckIn, principal: PrincipalDep) -> LibraryPrCheckOut:
+async def run_pr_check(
+    request: Request, body: LibraryPrCheckIn, principal: PrincipalDep
+) -> LibraryPrCheckOut:
     """Run the library-allowlist check on one pull request's head now.
 
     The `library-checks` job does this for every open pull request; this is
