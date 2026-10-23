@@ -65,7 +65,8 @@ MAX_LANES = 3
 
 
 def _doc() -> dict[str, Any]:
-    return yaml.safe_load(PIPELINE.read_text(encoding="utf-8"))
+    doc: dict[str, Any] = yaml.safe_load(PIPELINE.read_text(encoding="utf-8"))
+    return doc
 
 
 def _jobs() -> dict[str, dict[str, Any]]:
@@ -79,7 +80,8 @@ def _groups() -> dict[str, list[str]]:
 def _source_get(job: dict[str, Any]) -> dict[str, Any] | None:
     for step in job.get("plan", []):
         if step.get("get") == "source" and step.get("trigger"):
-            return step
+            found: dict[str, Any] = step
+            return found
     return None
 
 
