@@ -458,8 +458,11 @@ def _check(client: TestClient, admin_auth: dict[str, str], number: int = 7) -> A
 
 class TestPullRequestCheck:
     def test_an_unapproved_dependency_is_reported_with_a_request_link(
-        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(client.app.state.settings, "dashboard_url",
+                            "https://mykronos.example")
         onboard(client, admin_auth)
         _pull_request(github, base_pkg={"dependencies": {"react": "^18.0.0"}},
                       head_pkg={"dependencies": {"react": "^18.0.0", "left-pad": "^1.3.0"}})
@@ -473,8 +476,8 @@ class TestPullRequestCheck:
         assert [(r["name"], r["verdict"]) for r in body["results"]] == [
             ("left-pad", "unapproved")
         ]
-        assert body["results"][0]["request_url"].endswith(
-            "/libraries/request?ecosystem=npm&name=left-pad&version=1.3.0"
+        assert body["results"][0]["request_url"] == (
+            "https://mykronos.example/libraries/request?ecosystem=npm&name=left-pad&version=1.3.0"
         )
         posted = github._repo(REPO).check_runs[-1]
         assert posted["name"] == "library-allowlist"
@@ -619,3 +622,193 @@ class TestManifests:
         assert libraries.version_allowed("minimum", "1.2.0", "latest") is False
         assert libraries.version_allowed("same_major", "1.2.0", "2.0.0") is False
         assert libraries.version_allowed("any", "", "latest") is True
+
+
+
+# -- Rework after review (PR #1010) --------------------------------------------
+
+
+def _agent(client: TestClient, admin_auth: dict[str, str]) -> dict[str, str]:
+    minted = client.post("/api/agents/credentials", json={"family": "claude-opus-5.5"},
+                         headers=admin_auth)
+    assert minted.status_code == 201, minted.text
+    return {"Authorization": f"Bearer {minted.json()['token']}"}
+
+
+def _patch(client: TestClient, headers: dict[str, str], **body: Any) -> Any:
+    return client.patch("/api/libraries/managed", json=body, headers=headers)
+
+
+class TestTheAllowlistCannotBeWidenedByHand:
+    """`tolerated` passes the PR check unvetted, so recording it is a grant."""
+
+    def test_nobody_can_tolerate_a_library_the_estate_does_not_use(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction: Any
+    ) -> None:
+        _components(client, [("a/one", "npm", "react", "18.2.0")])
+        run_compaction()
+        agent = _agent(client, admin_auth)
+
+        for headers in (agent, admin_auth):
+            refused = _patch(client, headers, ecosystem="npm", package_name="left-pad",
+                             status="tolerated")
+            assert refused.status_code == 422, refused.text
+            assert "/api/libraries/requests" in refused.json()["detail"]
+        # An owner-only change would create the entry, and its default is tolerated.
+        implicit = _patch(client, agent, ecosystem="npm", package_name="left-pad",
+                          owner="web-team")
+        assert implicit.status_code == 422, implicit.text
+        with client.app.state.db.session() as session:
+            assert session.execute(select(LibraryEntry)).first() is None
+
+        in_use = _patch(client, agent, ecosystem="npm", package_name="react",
+                        status="tolerated", owner="web-team")
+        assert in_use.status_code == 200, in_use.text
+
+    def test_only_a_person_bans_or_lifts_a_ban(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction: Any
+    ) -> None:
+        _components(client, [("a/one", "npm", "react", "18.2.0")])
+        run_compaction()
+        agent = _agent(client, admin_auth)
+
+        assert _patch(client, agent, ecosystem="npm", package_name="react",
+                      status="banned").status_code == 403
+        assert _patch(client, admin_auth, ecosystem="npm", package_name="react",
+                      status="banned").status_code == 200
+
+        lifted = _patch(client, agent, ecosystem="npm", package_name="react",
+                        status="tolerated")
+        assert lifted.status_code == 403, lifted.text
+        assert "person" in lifted.json()["detail"]
+        with client.app.state.db.session() as session:
+            assert session.execute(select(LibraryEntry)).scalar_one().status == "banned"
+
+        assert _patch(client, admin_auth, ecosystem="npm", package_name="react",
+                      status="tolerated").status_code == 200
+
+    def test_an_agent_cannot_loosen_an_approved_library(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry,
+        run_compaction: Any,
+    ) -> None:
+        _components(client, [("a/one", "pypi", "httpx", "0.27.0")])
+        run_compaction()
+        registry.package("PYPI", "httpx", versions=[("0.27.0", 400)])
+        asked = _request(client, admin_auth, version_policy="exact").json()
+        _decide(client, admin_auth, asked["approval_request_id"], "approve",
+                "Vetting is clean and the reason names why urllib3 will not do.")
+        agent = _agent(client, admin_auth)
+
+        assert _patch(client, agent, ecosystem="pypi", package_name="httpx",
+                      version_policy="any").status_code == 403
+        assert _patch(client, agent, ecosystem="pypi", package_name="httpx",
+                      status="tolerated").status_code == 403
+        assert _patch(client, agent, ecosystem="pypi", package_name="httpx",
+                      owner="platform-team").status_code == 200
+        with client.app.state.db.session() as session:
+            entry = session.execute(select(LibraryEntry)).scalar_one()
+            assert (entry.status, entry.version_policy) == ("approved", "exact")
+
+    def test_a_ban_made_while_a_request_is_pending_survives_its_approval(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry,
+        run_compaction: Any,
+    ) -> None:
+        _components(client, [("a/one", "pypi", "httpx", "0.26.0")])
+        run_compaction()
+        registry.package("PYPI", "httpx", versions=[("0.27.0", 400)])
+        asked = _request(client, admin_auth).json()
+        assert _patch(client, admin_auth, ecosystem="pypi", package_name="httpx",
+                      status="banned").status_code == 200
+
+        _decide(client, admin_auth, asked["approval_request_id"], "approve",
+                "Vetting is clean and the reason names why urllib3 will not do.")
+
+        with client.app.state.db.session() as session:
+            assert session.execute(select(LibraryEntry)).scalar_one().status == "banned"
+        again = client.get(f"/api/libraries/requests/{asked['id']}", headers=admin_auth).json()
+        assert again["state"] == "banned"
+        assert "banned" in again["decision_reason"]
+
+
+class TestTheCheckReadsTrue:
+    def test_without_a_dashboard_url_the_check_has_no_broken_link(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(client.app.state.settings, "dashboard_url", "")
+        onboard(client, admin_auth)
+        _pull_request(github, base_pkg={}, head_pkg={"dependencies": {"left-pad": "1.3.0"}})
+
+        body = _check(client, admin_auth).json()
+
+        assert body["results"][0]["request_url"] == ""
+        summary = github._repo(REPO).check_runs[-1]["summary"]
+        assert "](/libraries" not in summary, "a relative link is dead inside a check run"
+        assert "MYKRONOS_DASHBOARD_URL" in summary
+
+    def test_an_approval_rechecks_the_head_it_reported(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient,
+        registry: Registry,
+    ) -> None:
+        import asyncio
+
+        onboard(client, admin_auth)
+        _pull_request(github, base_pkg={}, head_pkg={"dependencies": {"left-pad": "1.3.0"}})
+        state = client.app.state
+        first = asyncio.run(library_check.sweep(state.db, state.catalog, state.github_factory))
+        assert first == [f"{REPO}#7"]
+        assert github._repo(REPO).check_runs[-1]["conclusion"] == "neutral"
+
+        registry.package("NPM", "left-pad", versions=[("1.3.0", 900)], osv_ecosystem="npm")
+        asked = _request(client, admin_auth, ecosystem="npm", package_name="left-pad",
+                         version="1.3.0").json()
+        _decide(client, admin_auth, asked["approval_request_id"], "approve",
+                "Vetting is clean and the owner is named for this package.")
+
+        second = asyncio.run(library_check.sweep(state.db, state.catalog, state.github_factory))
+        third = asyncio.run(library_check.sweep(state.db, state.catalog, state.github_factory))
+
+        assert second == [f"{REPO}#7"], "the same head, re-read after the allowlist changed"
+        assert github._repo(REPO).check_runs[-1]["conclusion"] == "success"
+        assert third == [], "and only once"
+
+    def test_a_check_that_cannot_be_posted_stops_retrying(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+
+        onboard(client, admin_auth)
+        _pull_request(github, base_pkg={}, head_pkg={"dependencies": {"left-pad": "1.3.0"}})
+        calls: list[str] = []
+
+        async def refused(*args: Any, **kwargs: Any) -> str:
+            calls.append(kwargs["head_sha"])
+            raise RuntimeError("403 Resource not accessible by integration")
+
+        monkeypatch.setattr(github, "create_check_run", refused)
+        state = client.app.state
+        for _ in range(getattr(library_check, "MAX_ATTEMPTS", 5) + 3):
+            asyncio.run(library_check.sweep(state.db, state.catalog, state.github_factory))
+
+        assert len(calls) == library_check.MAX_ATTEMPTS
+
+    def test_the_summary_fits_in_a_check_run(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        changes = [
+            library_check.DependencyChange(
+                ecosystem="npm", name=f"package-{i:05d}-" + "x" * 60, spec="^1.0.0",
+                manifest="packages/some/deeply/nested/workspace/package.json", change="added",
+            )
+            for i in range(2_000)
+        ]
+        with client.app.state.db.session() as session:
+            outcome = library_check.evaluate(
+                session, client.app.state.catalog, REPO, changes, [],
+                dashboard_url="https://mykronos.example",
+            )
+
+        assert len(outcome["summary"]) <= library_check.SUMMARY_LIMIT < 65_535
+        assert "not shown" in outcome["summary"]
+        assert len(outcome["results"]) == 2_000, "the record keeps every row"
