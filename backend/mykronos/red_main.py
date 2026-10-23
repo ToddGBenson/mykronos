@@ -201,8 +201,10 @@ def _resolve(
         versions = fetch(f"{base}/resources/{SOURCE_RESOURCE}/versions?limit={VERSION_WINDOW}")
         if not isinstance(versions, list):
             raise ValueError("not a version list")
-    except Exception as exc:  # noqa: BLE001 - reported as unknown, never raised
-        return _Resolved(problem=f"{SOURCE_RESOURCE} versions unreadable: {exc}")
+    except Exception:  # noqa: BLE001 - reported as unknown, never raised
+        # The error text is left out: it carries the internal API address,
+        # and the message goes to Slack.
+        return _Resolved(problem=f"{SOURCE_RESOURCE} versions unreadable")
 
     found = _Resolved()
     for entry in versions:
@@ -214,8 +216,8 @@ def _resolve(
             continue
         try:
             builds = fetch(f"{base}/resources/{SOURCE_RESOURCE}/versions/{entry['id']}/input_to")
-        except Exception as exc:  # noqa: BLE001 - reported as unknown, never raised
-            return replace(found, problem=f"builds of {ref[:12]} unreadable: {exc}")
+        except Exception:  # noqa: BLE001 - reported as unknown, never raised
+            return replace(found, problem=f"builds of {ref[:12]} unreadable")
         mine = [
             b for b in builds or []
             if isinstance(b, dict) and b.get("job_name") == job
