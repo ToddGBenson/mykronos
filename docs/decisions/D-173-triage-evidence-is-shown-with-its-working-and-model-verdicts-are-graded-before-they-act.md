@@ -12,7 +12,8 @@ shows the environmental rescore as three ordered steps - base, environmental
 scanner's word moved by the band shift, plus the KEV floor Oracle applies). It
 reads the stored `EnvironmentalScore` only while that row still describes the
 evidence: same vector, same scanner severity, no applied lowering fact
-lapsed, and no rescore pending for the repository. Otherwise it computes on
+lapsed, and no evidence marked for the repository since that row was
+computed (a mark the stored score already read does not count). Otherwise it computes on
 read and says why (`recomputed_because`). The panel explains
 `environment.score_vector` and `environment.effective_severity`; it never
 computes a number of its own, so it cannot disagree with the store.
