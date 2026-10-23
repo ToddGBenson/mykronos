@@ -749,6 +749,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    ci_stall_interval_seconds: int = Field(
+        default=600,
+        ge=60,
+        description=(
+            "How often the ci-stall job (mykronos.ci_stall) reads Concourse's "
+            "job summaries for many lanes erroring together, the shape of a "
+            "dead worker after a restart (TheHub #60975). It notifies once per "
+            "stall. Scheduled only when concourse_url is set."
+        ),
+    )
+
     dormant_lanes_threshold_hours: float = Field(
         default=72.0,
         gt=0,

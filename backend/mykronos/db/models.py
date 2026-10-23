@@ -1491,6 +1491,30 @@ class JobRun(Base):
         return f"<JobRun {self.name} failures={self.consecutive_failures}>"
 
 
+class CiStallEpisode(Base):
+    """One Concourse stall, from its first red evaluation to its first green
+    one (`mykronos.ci_stall`, TheHub #60975).
+
+    Persisted so a restart - the very event that causes a stall - does not
+    forget that the stall was already announced and announce it again.
+    `notified_at` is set only once the notifier reports delivery.
+    """
+
+    __tablename__ = "ci_stall_episodes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: When the episode's window of errored starts opened, ISO 8601.
+    key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Null while the stall lasts. The open episode is the one with no clear.
+    cleared_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, index=True
+    )
+    #: `pipeline/job` of each lane in the window at the latest red read.
+    jobs: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
 class ControlDrift(Base):
     """One control changing state, recorded when it happens (spec 30).
 

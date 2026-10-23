@@ -87,6 +87,7 @@ from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     BRIEFING_DM_JOB,
     BRIEFING_FLASH_JOB,
+    CI_STALL_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
     SIGNAL_FILING_JOB,
@@ -96,6 +97,7 @@ from mykronos.jobs import (
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
+    notify_ci_stall,
     notify_dormant_lanes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
@@ -764,6 +766,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 threshold_hours=settings.dormant_lanes_threshold_hours,
             )
 
+        async def _ci_stall() -> None:
+            # Many lanes erroring together - a dead worker after a restart
+            # (TheHub #60975). Once per stall episode; an undelivered notice
+            # raises, so the next tick retries it.
+            await notify_ci_stall(
+                ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                ),
+                db=app.state.db,
+                notifier=app.state.notifier,
+            )
+
         async def _briefing_dm() -> None:
             # The 07:00 DM (TheHub #60864): due once a local day, read through
             # the briefing route so it says what the page says. Not due raises
@@ -904,6 +920,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             *(
                 [(DORMANT_LANES_JOB, settings.dormant_lanes_interval_seconds, _dormant_lanes)]
+                if settings.concourse_url
+                else []
+            ),
+            *(
+                [(CI_STALL_JOB, settings.ci_stall_interval_seconds, _ci_stall)]
                 if settings.concourse_url
                 else []
             ),
