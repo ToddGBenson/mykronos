@@ -1433,17 +1433,17 @@ jobs:
   #
   # WHAT IS TESTED AND WHAT IS NOT
   #
-  # First, personal-soc's own tests: every
-  # skills/network-assessment/tests/Test-*.ps1, run with `pwsh -File` (#359).
-  # They cover Compare-Assessment and the NFS and open-AP verdicts against
-  # recorded tool output.
+  # First, personal-soc's own tests: every skills/*/tests/Test-*.ps1, run
+  # with `pwsh -File` (#359). They cover Compare-Assessment and the NFS and
+  # open-AP verdicts against recorded tool output, and (TheHub #60939)
+  # Invoke-BreachCheck against a fake HIBP and Find-DocDrift's own cases.
   #
   # Then the assertions that have no equivalent in that repository, against
   # fixtures built here: Compare-Assessment's band and severity_changed
   # bucket, and Find-DocDrift (git history only).
   #
   # The rest are not skipped quietly, because that is how coverage gets
-  # overstated: Invoke-BreachCheck needs a paid HIBP key and a live endpoint,
+  # overstated: Invoke-BreachCheck's live lookup needs a paid HIBP key,
   # Get-ExternalExposure is exercised for real by the external-exposure job
   # every week, and the discovery scripts need Windows. Each is named below
   # with the reason, so this job's green says what it actually covers.
@@ -1599,22 +1599,31 @@ jobs:
                 # personal-soc's own tests (#359)
                 # ============================================================
                 # The repository keeps hermetic tests beside the scripts they
-                # test (skills/network-assessment/tests/Test-*.ps1: recorded
-                # nmap and netsh text, fixture engagements, no network). This
+                # test (skills/<skill>/tests/Test-*.ps1: recorded nmap and
+                # netsh text, fixture engagements, a fake HIBP, throwaway git
+                # repositories, no network). This
                 # job used to restate some of them inline instead, so a test
                 # added there never ran here and an inline copy could drift
                 # from the original. Each file is run as its author runs it,
                 # `pwsh -NoProfile -File`, and is one case named after the
-                # file; its exit code is the verdict. Globbed, so a new
-                # Test-*.ps1 is picked up without editing this pipeline - and
-                # finding none is a failure, not an empty pass.
+                # file; its exit code is the verdict. Globbed across every
+                # skill (TheHub #60939: it used to read network-assessment
+                # only, so the breach-check and doc-drift tests never ran
+                # here), so a new Test-*.ps1 or a new skill's tests directory
+                # is picked up without editing this pipeline - and finding
+                # none is a failure, not an empty pass. The case name keeps
+                # the skill, so network-assessment's cases are named as before.
+                # The wildcard goes in -Path with the file pattern: with
+                # 'skills/*/tests' as -Path and -Filter 'Test-*.ps1', PowerShell
+                # filters the matched tests directories themselves and finds
+                # nothing.
                 Write-Host ""
-                Write-Host "== skills/network-assessment/tests =="
+                Write-Host "== skills/*/tests =="
                 $group = 'repo-tests'
-                $repoTests = @(Get-ChildItem -Path 'source/skills/network-assessment/tests' -Filter 'Test-*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
-                Assert-True ($repoTests.Count -gt 0) 'skills/network-assessment/tests has Test-*.ps1 files'
+                $repoTests = @(Get-ChildItem -Path 'source/skills/*/tests/Test-*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object FullName)
+                Assert-True ($repoTests.Count -gt 0) 'skills/*/tests has Test-*.ps1 files'
                 foreach ($t in $repoTests) {
-                  $name = "skills/network-assessment/tests/$($t.Name)"
+                  $name = "skills/$($t.Directory.Parent.Name)/tests/$($t.Name)"
                   Write-Host "-- $name"
                   $out = @(& pwsh -NoProfile -NonInteractive -File $t.FullName *>&1 | ForEach-Object { "$_" })
                   $code = $LASTEXITCODE
@@ -1764,9 +1773,21 @@ jobs:
                 # what it covered, and the lake can see what it did not.
                 Write-Host ""
                 Write-Host "== not covered here, and why =="
-                Write-Host "  Invoke-BreachCheck.ps1   NOT COVERED ANYWHERE: needs a paid HIBP key and a"
-                Write-Host "                           live endpoint, and breach-check, the job that ran it,"
-                Write-Host "                           was retired 2026-09-23 (#60004)."
+                # TheHub #60939: Test-BreachCheck.ps1 runs the script against a
+                # fake HIBP, so only the live lookup is uncovered once it
+                # exists. Decided by the file, not assumed, so this line cannot
+                # claim coverage that the checkout does not have.
+                $breachTested = Test-Path 'source/skills/personal-threat-monitor/tests/Test-BreachCheck.ps1'
+                if ($breachTested) {
+                  Write-Host "  Invoke-BreachCheck.ps1   its HTTP handling and breaches.json run offline in"
+                  Write-Host "                           repo-tests (Test-BreachCheck.ps1); the live lookup"
+                  Write-Host "                           needs a paid HIBP key and runs nowhere, since"
+                  Write-Host "                           breach-check was retired 2026-09-23 (#60004)."
+                } else {
+                  Write-Host "  Invoke-BreachCheck.ps1   NOT COVERED ANYWHERE: needs a paid HIBP key and a"
+                  Write-Host "                           live endpoint, and breach-check, the job that ran it,"
+                  Write-Host "                           was retired 2026-09-23 (#60004)."
+                }
                 Write-Host "  Get-ExternalExposure.ps1 its allowlist verdict and exit codes run offline in"
                 Write-Host "                           repo-tests (Test-ExposureVerdict.ps1); the live lookup"
                 Write-Host "                           runs weekly in external-exposure."
@@ -1777,7 +1798,11 @@ jobs:
                 $group = 'not-covered'
                 # TheHub #60852: this used to say "exercised weekly by
                 # breach-check" for four weeks after breach-check was retired.
-                Add-Case 'Invoke-BreachCheck.ps1' $true 'not covered anywhere (breach-check retired 2026-09-23); needs a paid HIBP key and a live endpoint' -Skipped
+                if ($breachTested) {
+                  Add-Case 'Invoke-BreachCheck.ps1 (live lookup)' $true 'the HIBP handling is in repo-tests (Test-BreachCheck.ps1); the live lookup needs a paid HIBP key and runs nowhere (breach-check retired 2026-09-23)' -Skipped
+                } else {
+                  Add-Case 'Invoke-BreachCheck.ps1' $true 'not covered anywhere (breach-check retired 2026-09-23); needs a paid HIBP key and a live endpoint' -Skipped
+                }
                 Add-Case 'Get-ExternalExposure.ps1 (live lookup)' $true 'the live InternetDB call runs weekly in external-exposure; the allowlist verdict is in repo-tests' -Skipped
                 Add-Case 'Windows-only discovery scripts' $true 'Invoke-NetDiscovery, ServiceScan, ShareEnum, VulnScan, WifiPosture and Invoke-WeeklyNetworkScan need the Windows ARP table and netsh; see netassess-ingest' -Skipped
 
