@@ -1203,7 +1203,7 @@ jobs:
   # pipeline failed" to find an owner on its own.
   - name: cicd-drift
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     # [#60073] Reports to TheHub, not only to Slack. The first version of this
     # job carried `notify-slack` and nothing else, and
     # `test_no_job_is_silent` caught it: a Slack message scrolls away and
@@ -1444,7 +1444,7 @@ jobs:
   # anywhere.
   - name: post-merge
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     # Reports to TheHub on all four terminal states, per
     # `test_every_job_reports_all_four_terminal_states_per_stage`. This stage
     # is the LANE's own health: a stage that can only ever report success is a
@@ -1901,24 +1901,40 @@ jobs:
 
                 exit "$CODE"
 
-  # Every build and scan job below shares one `serial_groups: [worker]`, so at
-  # most one of them runs at a time.
+  # Every build and scan job below is in exactly one of three serial lanes, so
+  # at most three of them run at a time (TheHub #60928, D-172):
   #
-  # This is not tidiness. Seven jobs trigger on the same commit and each one
-  # apt-gets and pip-installs before it does any work; run together on a single
-  # worker that also hosts TheHub's live stack, they took the box to 1.1 GB
-  # free and the kernel killed the Concourse container itself - `Exited (137)`,
-  # which is an OOM kill, not a crash. The scheduler dying is a worse outcome
-  # than any scan being slow, and it takes every other pipeline with it.
+  #   unit-chain  unit -> build -> containers. The commit's critical path:
+  #               `build` is `passed: [unit]` and `containers` is
+  #               `passed: [build]`, so nothing else may queue in front of it.
+  #   scanners    qa, secrets, sast, dependencies, iac, prompt-evals,
+  #               ai-models, remediate. ~21m of median work, run while the
+  #               unit tier does.
+  #   dast        every DAST lane plus the jobs off the commit's clock:
+  #               post-merge (half-hourly), image-refresh (daily) and
+  #               cicd-drift (quarterly). Idle for a commit's first ~35m,
+  #               until deploy-demo has passed.
   #
-  # The cost is wall-clock: the fan-out is now a queue, and a full run is the
-  # sum of its lanes rather than the longest one. On one worker that was always
-  # closer to the truth than the diagram suggested.
+  # This was one `serial_groups: [worker]` for every job, and it was not
+  # tidiness. Seven jobs trigger on the same commit and each one apt-gets and
+  # pip-installs before it does any work; run together on a single worker that
+  # was ALSO the web node (quickstart), they took the box to 1.1 GB free and
+  # the kernel killed the Concourse container itself - `Exited (137)`.
+  #
+  # Two things changed since. The web node is its own container, and there are
+  # two workers, each capped at 6 CPUs and 6g (docker-compose.yml, D-055): an
+  # OOM now kills a build inside one worker's cgroup, not the scheduler. And a
+  # single lane made a commit's scans the SUM of their lanes - 62-81 minutes
+  # from commit to last scan (525152ee +81m, 3f392e89 +78m). Three lanes is the
+  # bound, not seven: `backend/tests/test_thehub_serial_lanes.py` replays a
+  # commit through these groups with Concourse's own measured durations and
+  # fails if the last scan lands later than 30 minutes, or if a fourth lane
+  # appears. Rolling back is setting all three names back to `worker`.
   # == Stage 1: quality =====================================================
 
   - name: unit
     public: true
-    serial_groups: [worker]
+    serial_groups: [unit-chain]
     on_success:
       do:
         - <<: *hub_report
@@ -2676,7 +2692,7 @@ jobs:
   # could dominate.
   - name: qa
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -2767,7 +2783,7 @@ jobs:
                 fi
   - name: build
     public: true
-    serial_groups: [worker]
+    serial_groups: [unit-chain]
     on_success:
       do:
         - <<: *hub_report
@@ -2906,7 +2922,7 @@ jobs:
   # identity derives from the path, change every time the checkout moves.
   - name: secrets
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -3044,7 +3060,7 @@ jobs:
                 fi
   - name: sast
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -3242,7 +3258,7 @@ jobs:
                       --severity-threshold low --blocking false
   - name: dependencies
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -3632,7 +3648,7 @@ jobs:
         params: { file: sbom-out/sbom-*.cdx.json }
   - name: containers
     public: true
-    serial_groups: [worker]
+    serial_groups: [unit-chain]
     on_success:
       do:
         - <<: *hub_report
@@ -4385,7 +4401,7 @@ jobs:
   # removed working DAST and API-surface coverage on the next apply.
   - name: api-inventory
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     on_success:
       do:
         - <<: *hub_report
@@ -4512,7 +4528,7 @@ jobs:
   # lanes (TheHub#349): it reads a running demo, and the gate reads none.
   - name: functional-demo
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     on_failure:
       do:
         - <<: *slack_alert
@@ -4623,7 +4639,7 @@ jobs:
   # closes nothing. The token is never printed and never on a command line.
   - name: dast-demo
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     on_success:
       do:
         - <<: *hub_report
@@ -5004,7 +5020,7 @@ jobs:
   # anonymous callers is a real result, not an empty one.
   - name: iac
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -5134,7 +5150,7 @@ jobs:
                     --severity-threshold low --blocking false
   - name: prompt-evals
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -5349,7 +5365,7 @@ jobs:
   # unauthenticated build-sha endpoint staging needs; one endpoint closes both.
   - name: dast-prod
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     on_success:
       do:
         - <<: *hub_report
@@ -5607,7 +5623,7 @@ jobs:
   #
   # **The same profile as `dast-prod`, and no more.** zap-baseline.py, spider
   # capped at 5 minutes, passive rules only, on the same `daily` clock and in
-  # the same `worker` serial group. Production is not hammered through
+  # the same `dast` serial group. Production is not hammered through
   # Cloudflare: this adds one bounded crawl a day, and the checks below are a
   # dozen single requests.
   #
@@ -5687,7 +5703,7 @@ jobs:
   # ((thehub-branch)) at scan time, not what production runs.
   - name: dast-edge
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     on_success:
       do:
         - <<: *hub_report
@@ -6069,7 +6085,7 @@ jobs:
   # making this job inconsistent with its two siblings. Tracked in B-055.
   - name: dast-staging
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     on_success:
       do:
         - <<: *hub_report
@@ -6497,7 +6513,7 @@ jobs:
   # verdict this job prints is the evidence for that change.
   - name: image-refresh
     public: true
-    serial_groups: [worker]
+    serial_groups: [dast]
     # Every terminal state reports to TheHub, as every job here does
     # (TheHub's test_no_job_is_silent). `demo` because demo is the only
     # environment this job can change.
@@ -6761,7 +6777,7 @@ jobs:
   # holds exposes no merge operation at all (spec 08 §7).
   - name: remediate
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
@@ -6892,7 +6908,7 @@ jobs:
   # claiming a check that did not happen.
   - name: ai-models
     public: true
-    serial_groups: [worker]
+    serial_groups: [scanners]
     on_success:
       do:
         - <<: *hub_report
