@@ -2047,6 +2047,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/briefing/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Weekly Briefing Route
+         * @description The Monday intelligence page per application (TheHub #60865).
+         *
+         *     Sections: advisories matched to what ships (KEV, EPSS, severity here,
+         *     reachability), threats fitted to the declared threat model, end-of-life
+         *     images, malicious packages, external exposure, vendor changes and
+         *     standards. Every item carries so-what, action, confidence and source; a
+         *     section that could not be read, or has no feed, says so. An item is
+         *     `flash` only when it is known exploited or critical and shipped. A read.
+         */
+        get: operations["weekly_briefing_route_api_briefing_weekly_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/control-observations": {
         parameters: {
             query?: never;
@@ -11832,6 +11859,108 @@ export interface components {
             /** Cves */
             cves: string[];
         };
+        /** WeeklyBriefingOut */
+        WeeklyBriefingOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /**
+             * Week Of
+             * Format: date
+             */
+            week_of: string;
+            /** Pages */
+            pages: components["schemas"]["WeeklyPageOut"][];
+        };
+        /** WeeklyItemOut */
+        WeeklyItemOut: {
+            /** What */
+            what: string;
+            /**
+             * So What
+             * @description Why it matters to this application.
+             */
+            so_what: string;
+            /** Action */
+            action: string;
+            /**
+             * Confidence
+             * @enum {string}
+             */
+            confidence: "observed" | "inferred";
+            /**
+             * Confidence Reason
+             * @description What the confidence rests on.
+             */
+            confidence_reason: string;
+            /**
+             * Source
+             * @description The advisory's public page or the MyKronos page.
+             */
+            source: string;
+            /** Severity */
+            severity: string;
+            /** New This Week */
+            new_this_week: boolean;
+            /**
+             * Flash
+             * @description Known exploited or critical, and shipped: DMed the same day.
+             */
+            flash: boolean;
+            /** Flash Reason */
+            flash_reason: string;
+            /** Key */
+            key: string;
+        };
+        /** WeeklyPageOut */
+        WeeklyPageOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Repo Id */
+            repo_id: string;
+            /**
+             * Week Of
+             * Format: date
+             * @description The Monday the week starts on, local time.
+             */
+            week_of: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Sections */
+            sections: components["schemas"]["WeeklySectionOut"][];
+        };
+        /** WeeklySectionOut */
+        WeeklySectionOut: {
+            /** Key */
+            key: string;
+            /** Title */
+            title: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "unavailable" | "not_available";
+            /** Source */
+            source: string;
+            /** As Of */
+            as_of: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Items */
+            items?: components["schemas"]["WeeklyItemOut"][];
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
+        };
         /** WhoAmI */
         WhoAmI: {
             /** Actor */
@@ -14371,6 +14500,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DailyBriefingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    weekly_briefing_route_api_briefing_weekly_get: {
+        parameters: {
+            query?: {
+                /** @description One application's page, by onboarding id. Omit for every one. */
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WeeklyBriefingOut"];
                 };
             };
             /** @description Validation Error */

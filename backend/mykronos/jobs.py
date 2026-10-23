@@ -1633,6 +1633,9 @@ class JobSkipped(Exception):  # noqa: N818 - an outcome, not an error
 #: below needs no import of that module.
 BRIEFING_DM_JOB = "briefing-dm"
 
+#: The same-day flash DM (`mykronos.briefing_flash`, TheHub #60865).
+BRIEFING_FLASH_JOB = "briefing-flash"
+
 #: Next-sprint candidates filed to TheHub's backlog (`mykronos.sprint_signal`,
 #: TheHub #60862). Ticks hourly, acts once a UTC day.
 SIGNAL_FILING_JOB = "briefing-signal-filing"
