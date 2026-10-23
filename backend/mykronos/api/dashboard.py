@@ -792,6 +792,22 @@ def _split_commas(value: Any) -> Any:
 CommaList = BeforeValidator(_split_commas)
 
 
+def _blank_is_unset(value: Any) -> Any:
+    """`?min_epss=` means the same as leaving `min_epss` out (TheHub #60964).
+
+    A form, a bookmark or a scanner sends every filter with nothing in it;
+    that is no filter, not a value to parse and refuse."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+#: Marks a single-valued query parameter as unset when it is blank. The
+#: parameter's own bounds go on its inner type (`Annotated[int, Field(ge=1)]
+#: | None`), where they apply to a value and never to the unset `None`.
+BlankIsUnset = BeforeValidator(_blank_is_unset)
+
+
 class PriorDispositionOut(BaseModel):
     """A decision recorded under an identifier that has since been replaced (#280).
 
@@ -4340,44 +4356,57 @@ async def repo_open_findings(
     capability: Annotated[list[Capability] | None, CommaList, Query()] = None,
     severity: Annotated[list[Severity] | None, CommaList, Query()] = None,
     finding_status: Annotated[list[FindingStatus] | None, CommaList, Query()] = None,
-    rule_id: Annotated[str | None, Query(max_length=200)] = None,
-    kev_only: Annotated[bool, Query()] = False,
-    min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    rule_id: Annotated[
+        Annotated[str, Field(max_length=200)] | None, BlankIsUnset, Query()
+    ] = None,
+    kev_only: Annotated[bool | None, BlankIsUnset, Query()] = False,
+    min_epss: Annotated[
+        Annotated[float, Field(ge=0.0, le=1.0)] | None, BlankIsUnset, Query()
+    ] = None,
     triage: Annotated[list[TriageFilter] | None, CommaList, Query()] = None,
-    fixable: Annotated[bool | None, Query()] = None,
+    fixable: Annotated[bool | None, BlankIsUnset, Query()] = None,
     due: Annotated[list[DueFilter] | None, CommaList, Query()] = None,
+    # The list bounds sit on the list, not on Query(): a blank value is
+    # `None`, and a bound applied to `None` raised a 500 (TheHub #60964).
     owner: Annotated[
-        list[Annotated[str, Field(max_length=255)]] | None,
+        Annotated[list[Annotated[str, Field(max_length=255)]], Field(max_length=20)]
+        | None,
         CommaList,
-        Query(max_length=20),
+        Query(),
     ] = None,
     effective: Annotated[list[Severity] | None, CommaList, Query()] = None,
     rescored: Annotated[list[RescoredFilter] | None, CommaList, Query()] = None,
     component: Annotated[
-        list[Annotated[str, Field(max_length=64)]] | None,
+        Annotated[list[Annotated[str, Field(max_length=64)]], Field(max_length=50)]
+        | None,
         CommaList,
         Query(
-            max_length=50,
             description="`none` (no declared surface places the finding) or a "
             "surface id from `by_component`.",
         ),
     ] = None,
     exposure: Annotated[list[ExposureFilter] | None, CommaList, Query()] = None,
     path: Annotated[
-        str | None,
+        Annotated[str, Field(max_length=255)] | None,
+        BlankIsUnset,
         Query(
-            max_length=255,
             description="File path or package name: a glob when it has `*` or "
             "`?` (`web/**`, `*.tf`), otherwise a case-insensitive substring.",
         ),
     ] = None,
     older_than_days: Annotated[
-        int | None, Query(ge=0, le=3650, description="First seen at least N days ago.")
+        Annotated[int, Field(ge=0, le=3650)] | None,
+        BlankIsUnset,
+        Query(description="First seen at least N days ago."),
     ] = None,
     newer_than_days: Annotated[
-        int | None, Query(ge=0, le=3650, description="First seen within the last N days.")
+        Annotated[int, Field(ge=0, le=3650)] | None,
+        BlankIsUnset,
+        Query(description="First seen within the last N days."),
     ] = None,
-    limit: Annotated[int, Query(ge=1, le=2000)] = 400,
+    limit: Annotated[
+        Annotated[int, Field(ge=1, le=2000)] | None, BlankIsUnset, Query()
+    ] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
 
@@ -4394,6 +4423,9 @@ async def repo_open_findings(
 
     Every category filter takes several values, comma-separated or repeated
     (`severity=critical,high`); one value means what it always did.
+
+    A filter sent blank (`?min_epss=&severity=`) is the same as one left
+    out. A value that is present and invalid is a 422 naming the field.
     """
     repo_full_name = _resolve_repo(request, repo_id)
     with request.app.state.db.session() as session:
@@ -4404,9 +4436,9 @@ async def repo_open_findings(
             severity=[s.value for s in severity or []],
             rule_id=rule_id,
             finding_status=[s.value for s in finding_status or []] or "open",
-            limit=limit,
+            limit=400 if limit is None else limit,
             session=session,
-            kev_only=kev_only,
+            kev_only=bool(kev_only),
             min_epss=min_epss,
             triage=triage,
             fixable=fixable,

@@ -1284,6 +1284,9 @@ export interface paths {
          *
          *     Every category filter takes several values, comma-separated or repeated
          *     (`severity=critical,high`); one value means what it always did.
+         *
+         *     A filter sent blank (`?min_epss=&severity=`) is the same as one left
+         *     out. A value that is present and invalid is a 422 naming the field.
          */
         get: operations["repo_open_findings_api_dashboard_repos__repo_id__open_findings_get"];
         put?: never;
@@ -13741,7 +13744,7 @@ export interface operations {
                 severity?: components["schemas"]["Severity"][] | null;
                 finding_status?: components["schemas"]["FindingStatus"][] | null;
                 rule_id?: string | null;
-                kev_only?: boolean;
+                kev_only?: boolean | null;
                 min_epss?: number | null;
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination")[] | null;
                 fixable?: boolean | null;
@@ -13758,7 +13761,7 @@ export interface operations {
                 older_than_days?: number | null;
                 /** @description First seen within the last N days. */
                 newer_than_days?: number | null;
-                limit?: number;
+                limit?: number | null;
             };
             header?: never;
             path: {
