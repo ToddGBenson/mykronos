@@ -35,6 +35,18 @@ class BriefingLineOut(BaseModel):
     repo_full_name: str = ""
     #: A route or id to act on, when one exists.
     ref: str = ""
+    #: On an operator action only (TheHub #60972): what its probe read from
+    #: GitHub. Empty on every other line.
+    verification: Literal[
+        "", "observed_done", "observed_not_done", "unprobed", "probe_error"
+    ] = Field(
+        default="",
+        description=(
+            "On an operator action: observed_done, observed_not_done, unprobed "
+            "(no probe registered) or probe_error (the probe could not read GitHub; "
+            "never counted as done). Empty on every other line."
+        ),
+    )
 
 
 class BriefingSectionOut(BaseModel):
@@ -118,6 +130,11 @@ async def daily_briefing_route(
     TheHub's board and GitHub (TheHub #60861), cached for a few minutes; an
     earlier answer standing in for a failed read makes its section
     `partial`. A read.
+
+    Each operator action in "Needs you" carries a `verification` from a
+    read-only GitHub probe where one is registered (TheHub #60972); one
+    observed done is listed in `data.board.operator_actions` only, not as a
+    line, so it is not counted as needing you.
     """
     from mykronos.api.dashboard import _resolve_repo
 

@@ -2040,6 +2040,11 @@ export interface paths {
          *     TheHub's board and GitHub (TheHub #60861), cached for a few minutes; an
          *     earlier answer standing in for a failed read makes its section
          *     `partial`. A read.
+         *
+         *     Each operator action in "Needs you" carries a `verification` from a
+         *     read-only GitHub probe where one is registered (TheHub #60972); one
+         *     observed done is listed in `data.board.operator_actions` only, not as a
+         *     line, so it is not counted as needing you.
          */
         get: operations["daily_briefing_route_api_briefing_daily_get"];
         put?: never;
@@ -4885,6 +4890,13 @@ export interface components {
              * @default
              */
             ref: string;
+            /**
+             * Verification
+             * @description On an operator action: observed_done, observed_not_done, unprobed (no probe registered) or probe_error (the probe could not read GitHub; never counted as done). Empty on every other line.
+             * @default
+             * @enum {string}
+             */
+            verification: "" | "observed_done" | "observed_not_done" | "unprobed" | "probe_error";
         };
         /** BriefingOut */
         BriefingOut: {
