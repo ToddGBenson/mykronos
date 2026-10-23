@@ -686,7 +686,7 @@ class TestCrossCapabilityCombinations:
                     # Any one of them satisfies the half, so the first is
                     # enough to prove the rule can fire.
                     next(iter(requirement.capabilities), "sast"),
-                    self._sample_for(requirement.pattern),
+                    self._sample_for(requirement),
                     severity="critical",
                 )
                 for i, requirement in enumerate(rule.requires)
@@ -699,9 +699,12 @@ class TestCrossCapabilityCombinations:
             assert len(combos) == 1, f"{rule.rule_id} cannot fire"
 
     @staticmethod
-    def _sample_for(pattern: str) -> str:
-        """A literal that satisfies the first alternative of a rule pattern."""
-        first = pattern.split("|")[0]
+    def _sample_for(requirement: correlate.Requirement) -> str:
+        """A literal that satisfies the first alternative of a rule pattern,
+        or the first listed alert when the half is a rule list (#60965)."""
+        if requirement.rule_ids:
+            return f"ZAP-{requirement.rule_ids[0]}"
+        first = requirement.pattern.split("|")[0]
         return first.replace(".?", "-").replace(r"\.", ".").lstrip("^")
 
     def test_a_reachable_endpoint_plus_injectable_code(self) -> None:
@@ -737,11 +740,11 @@ class TestCrossCapabilityCombinations:
         )
         low = [
             self._f("c1", "containers", "CVE-2023-45853", severity="low"),
-            self._f("d1", "dast", "ZAP-10096", title="Server version disclosure"),
+            self._f("d1", "dast", "ZAP-10036", title="Server version disclosure"),
         ]
         high = [
             self._f("c1", "containers", "CVE-2023-45853", severity="critical"),
-            self._f("d1", "dast", "ZAP-10096", title="Server version disclosure"),
+            self._f("d1", "dast", "ZAP-10036", title="Server version disclosure"),
         ]
 
         assert correlate.detect(low, rules=(rule,)) == []

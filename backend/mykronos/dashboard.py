@@ -1271,15 +1271,12 @@ class DashboardQueries:
         # another scanner, so a view filtered to `critical` would report no
         # combinations at exactly the moment somebody is looking at the worst
         # row.
-        # Accepted findings join the open view's pool (operator decision
-        # 2026-09-28, `mykronos.toxic`): accepting half of a toxic pair is a
-        # decision about that half alone, and must not hide the pair here
-        # while the risk decision still counts it.
-        pool_statuses = statuses
-        if "open" in statuses and "accepted_risk" not in statuses:
-            pool_statuses = (*statuses, "accepted_risk")
+        # Dispositioned findings (`false_positive`, `accepted_risk`) never
+        # count toward a combination, whichever status this view shows:
+        # `correlate.detect` drops them, as the risk decision does (TheHub
+        # #60965, superseding the 2026-09-28 decision).
         pool = self._finding_rows(
-            repo_full_name, columns, pool_statuses, capabilities=CORRELATION_CAPABILITIES
+            repo_full_name, columns, statuses, capabilities=CORRELATION_CAPABILITIES
         )
         combinations = correlate.detect(pool)
         by_id = {str(f["finding_id"]): f for f in pool}
@@ -2103,6 +2100,7 @@ class DashboardQueries:
         severity = toxic.combination_severity(
             [str(m["severity"]) for m in members], kev=bool(member_kev), escalate_steps=1
         )
+        why = dict(combination.qualifications)
         return {
             "combination_id": combination.combination_id,
             "rule_id": combination.rule_id,
@@ -2119,6 +2117,7 @@ class DashboardQueries:
                     "severity": str(member["severity"]),
                     "status": str(member.get("status") or ""),
                     "file_path": member.get("file_path"),
+                    "qualifies": why.get(str(member["finding_id"]), ""),
                 }
                 for member in members
             ],

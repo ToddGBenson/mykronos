@@ -958,9 +958,15 @@ class ToxicCombinationMemberOut(BaseModel):
     rule_id: str
     title: str
     severity: Severity
-    #: `accepted_risk` members count: accepting half a pair must not hide it.
+    #: Always a counting status: `false_positive` and `accepted_risk`
+    #: members no longer count toward a combination (TheHub #60965).
     status: str | None = None
     file_path: str | None = None
+    qualifies: str = Field(
+        default="",
+        description="Which half of the rule this member satisfies, and why: "
+        "the pattern it matched or the listed alert it is, and any severity floor.",
+    )
 
 
 class ToxicCombinationOut(BaseModel):
@@ -1707,7 +1713,8 @@ async def toxic_combinations(
     """Toxic combinations across the estate (spec 08 §5), worst first.
 
     The same detection and severity the Oracle's risk decision uses
-    (`mykronos.toxic`), including combinations with an accepted member.
+    (`mykronos.toxic`). Findings dispositioned `false_positive` or
+    `accepted_risk` do not count toward a combination.
     """
     from mykronos import toxic
     from mykronos.oracle.policy import load_policy
@@ -5127,8 +5134,9 @@ async def request_finding_disposition(
 
     The finding stays open. The platform freezes the finding row, its raw scanner
     record and the reason into an approval request under the `finding_disposition`
-    duty, tiered by the finding's own severity, and applies the disposition only
-    when an approver the policy admits says yes.
+    duty, tiered by the finding's governing severity - its own, raised to that of
+    any high or critical toxic combination it is a member of - and applies the
+    disposition only when an approver the policy admits says yes.
     """
     if not principal.may_write:
         raise HTTPException(
@@ -5309,17 +5317,27 @@ async def apply_finding_status(
 
     # #713: an agent may not close a critical or high finding on its own word.
     # A false positive or a suppression goes through the governed duty; an
-    # acceptance already has one. A person's direct call is unchanged.
-    if finding_disposition.governed(principal, existing.get("severity")):
+    # acceptance already has one. A person's direct call is unchanged. A
+    # member of a high or critical toxic combination is governed at the
+    # combination's severity: dispositioning it dissolves the combination
+    # (review of #1018).
+    if finding_disposition.governed_finding(principal, {**existing, "finding_id": finding_id}):
         governed_route = (
             "POST /api/risk-acceptances"
             if body.status is FindingStatus.ACCEPTED_RISK
             else f"POST /api/dashboard/findings/{finding_id}/disposition-requests"
         )
+        own = str(existing.get("severity") or "").lower()
+        what = (
+            f"a {own} finding"
+            if own in finding_disposition.GOVERNED_SEVERITIES
+            else f"a {own} finding that is a member of a high or critical toxic "
+            "combination (dispositioning it dissolves the combination)"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"An agent may not set a {existing.get('severity')} finding to "
+                f"An agent may not set {what} to "
                 f"'{body.status.value}' directly: closing a serious finding is a "
                 f"governed decision (#713). Use {governed_route}; someone independent "
                 "approves it, and the finding stays open until they do."

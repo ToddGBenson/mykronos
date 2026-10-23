@@ -398,7 +398,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Spec 33: the risk-acceptance duty stamps findings in the lake when an
     # approval lands, and reads its limits from the approval policy.
     risk_acceptance.bind(app.state.catalog)
-    finding_disposition.bind(app.state.catalog)
+    # The guard reads toxic combinations as the risk decision does: KEV from
+    # the database, escalation from the Oracle policy (review of #1018).
+    finding_disposition.bind(
+        app.state.catalog,
+        db=app.state.db,
+        oracle_policy_path=settings.oracle_policy_path,
+    )
     try:
         risk_acceptance.bind_policy(cached_approval_policy(settings.approval_policy_path))
     except ApprovalPolicyError as exc:

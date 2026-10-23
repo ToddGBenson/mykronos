@@ -22,6 +22,17 @@ A person's direct disposition keeps working (one operator runs this estate,
 and `single_operator` already flags that), and so does an agent's on medium
 and below. Those are the next step if the governed tiers prove their worth;
 the dangerous case is the one closed here.
+
+**A member of a serious toxic combination is governed at the combination's
+severity** (review of #1018). Since TheHub #60965 a member dispositioned
+`false_positive` or `accepted_risk` stops counting, so the low ZAP-10037 half
+of a critical vulnerable-image-and-live-service pair closes a critical - and
+lifts the Oracle's `no_go` - the moment it is dispositioned. Read by its own
+severity, that member was an agent's to close alone. `governing_severity`
+raises a finding to the worst open combination it belongs to, detected the
+way the risk decision detects it (`toxic.detect`, KEV and the policy's
+escalation included), and every enforcement point reads that instead.
+Detection that cannot run fails closed for an agent.
 """
 
 from __future__ import annotations
@@ -57,11 +68,18 @@ GOVERNED_SEVERITIES = ("critical", "high")
 DISPOSITIONS = ("false_positive", "suppressed")
 
 _CATALOG: Catalog | None = None
+#: For KEV, which can make any combination critical. Optional: without it
+#: KEV is not consulted and the escalation alone decides.
+_DB: Any = None
+#: Where the Oracle policy's `toxic_combinations.escalate_steps` is read.
+_ORACLE_POLICY_PATH: Any = None
 
 
-def bind(catalog: Catalog) -> None:
-    global _CATALOG
+def bind(catalog: Catalog, *, db: Any = None, oracle_policy_path: Any = None) -> None:
+    global _CATALOG, _DB, _ORACLE_POLICY_PATH
     _CATALOG = catalog
+    _DB = db
+    _ORACLE_POLICY_PATH = oracle_policy_path
 
 
 def _catalog() -> Catalog:
@@ -75,6 +93,116 @@ def governed(principal: Principal, severity: str | None) -> bool:
     return principal.kind is ActorKind.AGENT and str(severity or "").lower() in (
         GOVERNED_SEVERITIES
     )
+
+
+def _rank(severity: str | None) -> int:
+    from mykronos.toxic import SEVERITIES
+
+    value = str(severity or "").lower()
+    return SEVERITIES.index(value) if value in SEVERITIES else -1
+
+
+def worse(a: str | None, b: str | None) -> str:
+    """The worse of two severities, lower-cased."""
+    return str((a if _rank(a) >= _rank(b) else b) or "").lower()
+
+
+def _escalate_steps() -> int:
+    if _ORACLE_POLICY_PATH is None:
+        return 1
+    from mykronos.oracle.policy import load_policy
+
+    try:
+        return int(load_policy(_ORACLE_POLICY_PATH).toxic_combinations.escalate_steps)
+    except Exception:  # noqa: BLE001 - the same fallback the estate listing uses
+        return 1
+
+
+def _repo_combinations(repo: str) -> list[dict[str, Any]]:
+    """Every open toxic combination in `repo`, as the risk decision sees it.
+    Raises when detection cannot run."""
+    from mykronos import toxic
+
+    catalog = _catalog()
+    steps = _escalate_steps()
+    if _DB is not None:
+        with _DB.session() as session:
+            combos = toxic.detect(catalog, repo=repo, session=session, escalate_steps=steps)
+    else:
+        combos = toxic.detect(catalog, repo=repo, escalate_steps=steps)
+    return [
+        {
+            "combination_id": c.combination_id,
+            "rule_id": c.rule_id,
+            "name": c.name,
+            "severity": c.severity,
+            "member_ids": {str(m.get("finding_id")) for m in c.members},
+        }
+        for c in combos
+    ]
+
+
+def governing_severities(
+    rows: list[dict[str, Any]],
+) -> dict[str, tuple[str, list[dict[str, str]]]]:
+    """finding id -> (governing severity, the combinations that raised it).
+
+    The governing severity is the finding's own, raised to the worst open
+    combination it is a member of; detection runs once per repository.
+    Detection that cannot run answers `critical`, so an agent is sent to the
+    governed route rather than let through on a guess."""
+    out: dict[str, tuple[str, list[dict[str, str]]]] = {}
+    by_repo: dict[str, list[dict[str, Any]] | None] = {}
+    for row in rows:
+        finding_id = str(row.get("finding_id") or "")
+        own = str(row.get("severity") or "").lower()
+        repo = str(row.get("repo_full_name") or "")
+        if repo and repo not in by_repo:
+            try:
+                by_repo[repo] = _repo_combinations(repo)
+            except Exception:  # noqa: BLE001 - fail closed; logged for the operator
+                logger.exception("Toxic detection failed for %s; governing as critical.", repo)
+                by_repo[repo] = None
+        combos = by_repo.get(repo, []) if repo else []
+        if combos is None:
+            out[finding_id] = ("critical", [])
+            continue
+        mine = [
+            {k: c[k] for k in ("combination_id", "rule_id", "name", "severity")}
+            for c in combos
+            if finding_id in c["member_ids"]
+        ]
+        severity = own
+        for combo in mine:
+            severity = worse(severity, combo["severity"])
+        out[finding_id] = (severity, mine)
+    return out
+
+
+def governing_severity(row: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    """`governing_severities` for one finding."""
+    return governing_severities([row])[str(row.get("finding_id") or "")]
+
+
+def governed_findings(principal: Principal, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows whose direct disposition by `principal` is refused, each at its
+    governing severity. Detection runs only for an agent, and only when some
+    row is below the governed tiers on its own."""
+    if principal.kind is not ActorKind.AGENT:
+        return []
+    lesser = [r for r in rows if not governed(principal, r.get("severity"))]
+    raised = governing_severities(lesser) if lesser else {}
+    return [
+        r
+        for r in rows
+        if governed(principal, r.get("severity"))
+        or governed(principal, raised[str(r.get("finding_id") or "")][0])
+    ]
+
+
+def governed_finding(principal: Principal, row: dict[str, Any]) -> bool:
+    """`governed`, at the finding's governing severity."""
+    return bool(governed_findings(principal, [row]))
 
 
 _FINDING_FIELDS = (
@@ -107,11 +235,13 @@ def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
         raise ApprovalError(f"No finding {subject_ref}.")
     if row.get("status") != "open":
         raise ApprovalError(f"Finding {subject_ref} is {row.get('status')}, not open.")
-    severity = str(row.get("severity") or "").lower()
+    row = {**row, "finding_id": row.get("finding_id") or subject_ref}
+    severity, combinations = governing_severity(row)
     if severity not in GOVERNED_SEVERITIES:
         raise ApprovalError(
-            f"Finding {subject_ref} is {severity}; only critical and high dispositions "
-            "are governed. Disposition it directly."
+            f"Finding {subject_ref} is {severity} and in no high or critical toxic "
+            "combination; only critical and high dispositions are governed. "
+            "Disposition it directly."
         )
     finding = {key: row.get(key) for key in _FINDING_FIELDS}
     # Round-tripped through JSON once, so the bundle stored in the request is
@@ -122,6 +252,9 @@ def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
             {
                 "finding": finding,
                 "raw_finding_json": row.get("raw_finding_json"),
+                # What closing it would dissolve: why a lesser finding is
+                # approved at this tier.
+                "combinations": combinations,
                 "proposed_status": status,
                 "reason": reason,
             },
@@ -165,11 +298,16 @@ def _cluster_adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
             raise ApprovalError(f"Finding {finding_id} is {row.get('status')}, not open.")
         findings.append({key: row.get(key) for key in _FINDING_FIELDS})
         raw[finding_id] = row.get("raw_finding_json")
-    severities = {str(f.get("severity") or "").lower() for f in findings}
+    severities: set[str] = set()
+    combinations: dict[str, dict[str, str]] = {}
+    for severity, combos in governing_severities(findings).values():
+        severities.add(severity)
+        combinations.update({c["combination_id"]: c for c in combos})
     tier = next((s for s in GOVERNED_SEVERITIES if s in severities), None)
     if tier is None:
         raise ApprovalError(
-            f"Cluster {subject_ref} holds no critical or high finding; dispositions of "
+            f"Cluster {subject_ref} holds no critical or high finding and no member of a "
+            "high or critical toxic combination; dispositions of "
             "medium and below are not governed. Disposition it directly."
         )
     evidence = json.loads(
@@ -179,6 +317,7 @@ def _cluster_adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
                 "cluster_reason": str(context.get("cluster_reason") or ""),
                 "findings": findings,
                 "raw_finding_json": raw,
+                "combinations": list(combinations.values()),
                 "proposed_status": status,
                 "reason": reason,
             },

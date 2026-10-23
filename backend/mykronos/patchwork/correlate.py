@@ -58,6 +58,20 @@ class Requirement:
     #: CVE in a reachable service is not a different kind of problem from a
     #: low-severity CVE anywhere else.
     min_severity: str | None = None
+    #: When set, the finding's own scanner rule must be on this list and
+    #: `pattern` is not consulted. Written as the number ZAP reports
+    #: (`alertRef`, so `10037` or `10055-6`), matched exactly against the
+    #: rule id the adapter builds from it (`ZAP-10037`, `ZAP-10037-CWE-497`).
+    #:
+    #: Exists because a pattern over `rule_id` and `title` cannot say "this
+    #: kind of alert": a ZAP title ends with the route it was seen on, so a
+    #: missing-header alert on a route containing `version` matched the
+    #: pattern and was reported as the service disclosing what it runs
+    #: (TheHub #60965).
+    rule_ids: tuple[str, ...] = ()
+    #: What this half stands for, in the words a reader of the combination
+    #: needs - used when the evidence says why a member qualifies.
+    describes: str = ""
 
     @property
     def capabilities(self) -> tuple[str, ...]:
@@ -106,6 +120,28 @@ class CombinationRule:
     safe_partial_fix: str | None = None
 
 
+#: ZAP alerts in which the service discloses what it runs: the server and
+#: version, the framework, the backend host, or an error page naming the
+#: stack. The disclosure half of `vulnerable-image-and-live-service` is drawn
+#: from this list only (TheHub #60965). Hardening gaps - missing CORP, CSP,
+#: anti-clickjacking headers - and "Suspicious Comments" are deliberately not
+#: on it: they say nothing about which component is reachable.
+DISCLOSURE_CLASS_DAST_RULES: tuple[str, ...] = (
+    "10036",  # Server Leaks Version Information via "Server" header
+    "10037",  # Server Leaks Information via "X-Powered-By"
+    "10039",  # X-Backend-Server Header Information Leak
+    "10061",  # X-AspNet-Version Response Header
+    "90022",  # Application Error Disclosure
+)
+
+#: Human dispositions under which a finding no longer counts toward any
+#: combination (TheHub #60965, superseding the 2026-09-28 decision that
+#: accepted members still count). A false positive is not risk; an accepted
+#: finding was judged at its own severity, and escalating it again through a
+#: combination is what overstated a live critical.
+DISCOUNTED_STATUSES: tuple[str, ...] = ("false_positive", "accepted_risk")
+
+
 @dataclass(frozen=True)
 class Combination:
     combination_id: str
@@ -117,6 +153,10 @@ class Combination:
     #: `detect` is what knows which finding satisfied which requirement —
     #: the pipeline sees only a set of ids.
     partial_fix_finding_id: str | None = None
+    #: (finding_id, why it satisfies its half), one per member in rule order:
+    #: the evidence a reader needs to judge the combination rather than
+    #: trust it (TheHub #60965).
+    qualifications: tuple[tuple[str, str], ...] = ()
 
 
 #: Small on purpose. Every rule here is one where the composite risk is
@@ -340,30 +380,21 @@ BUILT_IN_RULES: tuple[CombinationRule, ...] = (
                 r"CVE-|GHSA-",
                 capability=("containers", "atlas"),
                 min_severity="high",
+                describes="a known-vulnerable component",
             ),
-            # The vocabulary has to be the scanner's, not the spec author's.
-            # ZAP is the only DAST scanner this platform runs, and it says
-            # "Server Leaks Information via X-Powered-By" where this pattern
-            # said `banner|version|fingerprint` -- so the rule could not fire
-            # on a single finding in the estate it was written for. Measured:
-            # zero of 147 open DAST findings matched.
-            #
-            # Deliberately narrow even so, and narrowed once already. The
-            # missing-header findings that make up most of ZAP's output --
-            # anti-clickjacking, CSP, X-Content-Type-Options -- are hardening
-            # gaps rather than the service disclosing what it runs, and
-            # matching them would fire this rule on every repository serving
-            # HTTP.
-            #
-            # A first attempt also matched "information disclosure", which
-            # pulled in ZAP's "Information Disclosure - Suspicious Comments":
-            # leaked developer comments say nothing about which component is
-            # running, so pairing one with a high CVE would be a combination
-            # in name only. "Leaks Information" and "X-Powered-By" name the
-            # technology, which is the half this rule actually needs.
+            # The service disclosing what it runs, from a configured list of
+            # ZAP alerts rather than a pattern (TheHub #60965). The history:
+            # the first pattern used the spec author's vocabulary and matched
+            # zero of 147 real findings; the second used ZAP's phrasing and
+            # also matched the *route* every ZAP title ends with, so a missing
+            # CORP header on a route containing "version" became a critical
+            # combination. Only the alert itself says whether the service
+            # disclosed anything. Hardening gaps (CSP, CORP,
+            # anti-clickjacking) and "Suspicious Comments" stay off the list.
             Requirement(
-                r"auth|exposed|version|banner|outdated|fingerprint"
-                r"|leaks information|x-powered-by",
+                "",
+                rule_ids=DISCLOSURE_CLASS_DAST_RULES,
+                describes="the service disclosing what it runs",
                 capability="dast",
             ),
         ),
@@ -391,16 +422,57 @@ def _at_least(severity: str, floor: str) -> bool:
         return False
 
 
-def _matches(requirement: Requirement, finding: dict[str, Any]) -> bool:
+_ZAP_RULE = re.compile(r"^ZAP-(\d+(?:-\d+)?)(?:-CWE-\d+)?$")
+
+
+def _alert_ref(rule_id: str) -> str | None:
+    """The ZAP alert number in an adapter-built rule id, or None."""
+    match = _ZAP_RULE.match(rule_id.strip())
+    return match.group(1) if match else None
+
+
+def _qualifies(requirement: Requirement, finding: dict[str, Any]) -> str | None:
+    """Why `finding` satisfies `requirement`, or None when it does not."""
+    capability = str(finding.get("capability", ""))
     allowed = requirement.capabilities
-    if allowed and str(finding.get("capability", "")) not in allowed:
-        return False
+    if allowed and capability not in allowed:
+        return None
+    severity = str(finding.get("severity", ""))
     if requirement.min_severity is not None and not _at_least(
-        str(finding.get("severity", "")), requirement.min_severity
+        severity, requirement.min_severity
     ):
-        return False
-    haystack = f"{finding.get('rule_id', '')} {finding.get('title', '')}"
-    return re.search(requirement.pattern, haystack, re.IGNORECASE) is not None
+        return None
+    rule_id = str(finding.get("rule_id", ""))
+    if requirement.rule_ids:
+        ref = _alert_ref(rule_id)
+        if ref is None or ref not in requirement.rule_ids:
+            return None
+        how = f"alert {ref} is on the configured disclosure-class list"
+    else:
+        haystack = f"{rule_id} {finding.get('title', '')}"
+        hit = re.search(requirement.pattern, haystack, re.IGNORECASE)
+        if hit is None:
+            return None
+        how = f"matched `{hit.group(0)}`"
+    floor = (
+        f", severity {severity} meets the {requirement.min_severity} floor"
+        if requirement.min_severity is not None
+        else ""
+    )
+    half = f"{requirement.describes}: " if requirement.describes else ""
+    return f"{half}{capability} `{rule_id}` - {how}{floor}"
+
+
+def _matches(requirement: Requirement, finding: dict[str, Any]) -> bool:
+    return _qualifies(requirement, finding) is not None
+
+
+def _counts(finding: dict[str, Any]) -> bool:
+    """False for a finding a person has dispositioned out of the risk.
+
+    A finding with no `status` counts: Patchwork's candidate pool is open
+    findings and does not carry the column."""
+    return str(finding.get("status") or "open") not in DISCOUNTED_STATUSES
 
 
 def combination_id(rule_id: str, finding_ids: frozenset[str]) -> str:
@@ -426,7 +498,7 @@ def detect(
     for rule in rules:
         groups: dict[str, list[dict[str, Any]]] = {}
         for finding in findings:
-            if str(finding["finding_id"]) in claimed:
+            if str(finding["finding_id"]) in claimed or not _counts(finding):
                 continue
             key = str(finding.get("file_path") or "") if rule.scope == "file" else "*"
             groups.setdefault(key, []).append(finding)
@@ -435,14 +507,22 @@ def detect(
             if rule.scope == "file" and not key:
                 continue
             members: set[str] = set()
+            reasons: list[tuple[str, str]] = []
             partial: str | None = None
             for requirement in rule.requires:
-                hit = next((f for f in group if _matches(requirement, f)), None)
+                hit: dict[str, Any] | None = None
+                why = ""
+                for candidate in group:
+                    reason = _qualifies(requirement, candidate)
+                    if reason is not None:
+                        hit, why = candidate, reason
+                        break
                 if hit is None:
                     members.clear()
                     partial = None
                     break
                 members.add(str(hit["finding_id"]))
+                reasons.append((str(hit["finding_id"]), why))
                 if (
                     rule.safe_partial_fix
                     and rule.safe_partial_fix in requirement.capabilities
@@ -473,8 +553,12 @@ def detect(
                             "correct to fix regardless of the other — see "
                             "the fix event for that finding."
                         )
+                        + " Members: "
+                        + "; ".join(f"{fid} ({why})" for fid, why in reasons)
+                        + "."
                     ),
                     partial_fix_finding_id=partial,
+                    qualifications=tuple(reasons),
                 )
             )
 
