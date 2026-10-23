@@ -46,6 +46,7 @@ import {
   type RepoGuidance,
   type ProductOwnerView,
   type RepoRiskAcceptances,
+  type RepoSuppressions,
   type RepoSurfaces,
   type RiskAcceptanceDetail,
   type RuleVectorsPage,
@@ -576,6 +577,22 @@ export async function getRepoRiskAcceptance(
     );
     if (!data) {
       return { ok: false, error: describe(response, "Could not load the risk acceptance") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** In-repo scanner suppressions for the repository page (TheHub #60963). */
+export async function getSuppressions(repoId: string): Promise<Result<RepoSuppressions>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/suppressions",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the suppressions") };
     }
     return { ok: true, data };
   } catch (error) {

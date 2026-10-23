@@ -63,6 +63,11 @@ export type RuleVectorsPage =
   paths["/api/dashboard/repos/{repo_id}/rule-vectors"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RuleVectorRule = RuleVectorsPage["rules"][number];
 export type RuleVectorTemplate = RuleVectorsPage["templates"][number];
+/** Results the repository silenced at the source, with justification and
+ *  expiry (TheHub #60963). Not findings, never scored. */
+export type RepoSuppressions =
+  paths["/api/dashboard/repos/{repo_id}/suppressions"]["get"]["responses"]["200"]["content"]["application/json"];
+export type SuppressionRow = RepoSuppressions["suppressions"][number];
 /** One repository's risk acceptances, each with what it rests on (Risk management tab). */
 export type RepoRiskAcceptances =
   paths["/api/dashboard/repos/{repo_id}/risk-acceptances"]["get"]["responses"]["200"]["content"]["application/json"];

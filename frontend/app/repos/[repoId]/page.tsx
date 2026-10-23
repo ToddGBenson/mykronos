@@ -30,6 +30,7 @@ import { ReleaseEvidence, SscsTab } from "@/components/sscs";
 import { VulnerablePackages } from "@/components/vulnerable-packages";
 import { Surfaces } from "@/components/surfaces";
 import { RuleVectors } from "@/components/rule-vectors";
+import { ScannerSuppressions } from "@/components/scanner-suppressions";
 import { SsdfTab } from "@/components/ssdf";
 import { TestEstate } from "@/components/test-estate";
 import { ComponentCoverage, ThreatModelTab } from "@/components/threat-model";
@@ -68,6 +69,7 @@ import {
   getSscs,
   getSurfaces,
   getRuleVectors,
+  getSuppressions,
   getVulnerablePackages,
   getThreatModel,
   getWorkflows,
@@ -590,9 +592,10 @@ async function FindingsTab({
   // Guidance alongside the findings. The detail pane said what was wrong and
   // never what to do about it, while the scanners had been carrying the answer
   // in every report all along (B-032).
-  const [findings, guidance] = await Promise.all([
+  const [findings, guidance, suppressions] = await Promise.all([
     getOpenFindings(repoId, findingsApiQuery(normalizeQuery(query))),
     getRepoGuidance(repoId),
+    getSuppressions(repoId),
   ]);
 
   if (!findings.ok) {
@@ -627,6 +630,14 @@ async function FindingsTab({
           query.finding ? <FindingDisposition findingId={query.finding} /> : undefined
         }
       />
+      {/* Not findings (spec 05 §7): what the repository silenced at the
+          source, listed so the answer and its expiry are visible (TheHub
+          #60963). A failed fetch costs this block, never the findings. */}
+      {suppressions.ok ? (
+        <ScannerSuppressions data={suppressions.data} />
+      ) : (
+        <ErrorPanel title="Suppressions unavailable" detail={suppressions.error} />
+      )}
     </div>
   );
 }

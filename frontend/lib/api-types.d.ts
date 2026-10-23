@@ -350,6 +350,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/suppressions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Suppressions
+         * @description Results the scanned repository silenced at the source (TheHub #60963).
+         *
+         *     Recorded in their own list, never as findings (spec 05 §7), and listed on
+         *     the repository page with their justification and expiry. The batch is the
+         *     whole set one tool reported on one branch, and replaces the set last
+         *     recorded for it. The repository comes from the token; the capability
+         *     must be granted and the scan run must be this repository's.
+         *
+         *     Registered before the `/{capability}` catch-all, which would otherwise
+         *     answer this path with a 422.
+         */
+        post: operations["ingest_suppressions_api_ingest_suppressions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/{capability}": {
         parameters: {
             query?: never;
@@ -2238,6 +2267,30 @@ export interface paths {
          *     its findings go back to unscored).
          */
         post: operations["retire_rule_vector_api_dashboard_rule_vectors__rule_vector_id__retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/suppressions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Suppressions
+         * @description Results this repository silenced at the source, with their expiry.
+         *
+         *     Not findings and never scored. Each row is what the scanner reported on
+         *     the most recent clean scan of its tool and branch; a suppression whose
+         *     declared expiry has passed is also stated in `lane_health`.
+         */
+        get: operations["repo_suppressions_api_dashboard_repos__repo_id__suppressions_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -11094,6 +11147,123 @@ export interface components {
             packages: components["schemas"]["VulnerablePackageOut"][];
         };
         /**
+         * SuppressionBatch
+         * @description Every suppression one tool reported in one scan run.
+         *
+         *     The whole set, not a delta: it replaces the set last recorded for the
+         *     same (repository, capability, tool, branch), so a pragma the repository
+         *     removed stops being listed. `repo_full_name` comes from the token.
+         */
+        SuppressionBatch: {
+            /** Scan Run Id */
+            scan_run_id: string;
+            capability: components["schemas"]["Capability"];
+            /** Tool Name */
+            tool_name: string;
+            /** Branch */
+            branch: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /** Suppressions */
+            suppressions?: components["schemas"]["SuppressionSubmission"][];
+        };
+        /** SuppressionOut */
+        SuppressionOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** Tool */
+            tool: string;
+            /** Branch */
+            branch: string;
+            /** Rule Id */
+            rule_id: string;
+            /** File Path */
+            file_path: string | null;
+            /** Line */
+            line: number | null;
+            /** Justification */
+            justification: string;
+            /** Expires At */
+            expires_at: string | null;
+            /** Expiry State */
+            expiry_state: string;
+            /** Kind */
+            kind: string;
+            /** Status */
+            status: string;
+            /** Scan Run Id */
+            scan_run_id: string;
+            /** Commit Sha */
+            commit_sha: string;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+        };
+        /**
+         * SuppressionSubmission
+         * @description One result the scanned repository silenced at the source.
+         *
+         *     A `# nosemgrep`, a `# checkov:skip=`, a SARIF `suppressions` entry: the
+         *     author answering a result, which spec 05 §7 keeps out of the findings
+         *     table because it is not the platform accepting the risk. It is recorded
+         *     in a list of its own, so the answer is visible and its expiry can lapse
+         *     where somebody sees it.
+         */
+        SuppressionSubmission: {
+            /** Rule Id */
+            rule_id: string;
+            /** File Path */
+            file_path?: string | null;
+            /** Line */
+            line?: number | null;
+            /**
+             * Justification
+             * @default
+             */
+            justification: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
+            /**
+             * Status
+             * @default accepted
+             */
+            status: string;
+        };
+        /** SuppressionsAccepted */
+        SuppressionsAccepted: {
+            /** Accepted */
+            accepted: number;
+            /** Expired */
+            expired: number;
+            /** No Expiry */
+            no_expiry: number;
+        };
+        /** SuppressionsPage */
+        SuppressionsPage: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Suppressions */
+            suppressions: components["schemas"]["SuppressionOut"][];
+            /** Lane Health */
+            lane_health: string[];
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+        };
+        /**
          * SurfaceContradictionOut
          * @description A fresh observation saying this surface's exposure claim is wrong
          *     (`surfaces.CONTRADICTED_BY`, TheHub #60826).
@@ -12542,6 +12712,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CheckRunAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_suppressions_api_ingest_suppressions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuppressionBatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuppressionsAccepted"];
                 };
             };
             /** @description Validation Error */
@@ -14797,6 +15000,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RuleVectorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_suppressions_api_dashboard_repos__repo_id__suppressions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuppressionsPage"];
                 };
             };
             /** @description Validation Error */

@@ -475,7 +475,8 @@ def _suppression_of(raw: dict[str, Any], finding: FindingSubmission) -> Suppress
         {},
     )
     justification = str(entry.get("justification") or "").strip()
-    properties = entry.get("properties") if isinstance(entry.get("properties"), dict) else {}
+    bag = entry.get("properties")
+    properties: dict[str, Any] = bag if isinstance(bag, dict) else {}
     expires_at = next(
         (
             day
