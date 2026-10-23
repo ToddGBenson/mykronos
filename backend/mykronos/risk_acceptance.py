@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import risk_evidence
 from mykronos.adminauth import Principal
 from mykronos.approvals.engine import (
     ApprovalError,
@@ -46,7 +47,6 @@ from mykronos.db.models import (
     ApprovalRequest,
     AuditLogEntry,
     RiskAcceptance,
-    ThreatIntelMatch,
     new_id,
 )
 from mykronos.fingerprint import image_repository
@@ -378,15 +378,8 @@ def premise_flags(deviation_type: str, matched: list[MatchedFinding]) -> list[di
 
 
 def _kev_listed(session: Session, rule_ids: set[str]) -> list[str]:
-    cves = [r for r in rule_ids if r.upper().startswith("CVE-")]
-    if not cves:
-        return []
-    rows = session.execute(
-        select(ThreatIntelMatch.cve_id).where(
-            ThreatIntelMatch.cve_id.in_(cves), ThreatIntelMatch.in_kev.is_(True)
-        )
-    ).scalars()
-    return sorted(rows)
+    # The one KEV read every risk decision shares (TheHub #60901).
+    return risk_evidence.kev_listed(session, [r for r in rule_ids if r.upper().startswith("CVE-")])
 
 
 def _validate(
@@ -463,6 +456,7 @@ def _snapshot(
     matched: list[MatchedFinding],
     flags: list[dict[str, Any]] | None = None,
     premise_checks: list[dict[str, Any]] | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The evidence an approver sees, frozen into the request's digest."""
     snapshot = {
@@ -497,6 +491,10 @@ def _snapshot(
     # there are premises, for the same reason as the flags.
     if premise_checks:
         snapshot["premise_checks"] = premise_checks
+    # The shared evidence model (TheHub #60901): the categories the Oracle
+    # reads, read the same way, for the findings this decision covers.
+    if evidence:
+        snapshot["risk_evidence"] = evidence
     return snapshot
 
 
@@ -525,6 +523,42 @@ def _premise_checks(
             fresh_days=fresh_days or premise_monitor.FRESH_DAYS,
         )
     ]
+
+
+#: The categories an acceptance's tier reads (`risk_evidence.CATEGORIES`):
+#: a KEV-listed CVE is refused. The rest are shown to the approver.
+EVIDENCE_SCORED: tuple[str, ...] = ("threat_intel",)
+EVIDENCE_NOTES = {
+    "environmental": (
+        "Shown to the approver. The tier is residual likelihood x impact, floored at "
+        "the scanner's severity for every deviation type but risk_adjustment."
+    ),
+}
+
+
+def decision_evidence(
+    session: Session,
+    catalog: Catalog,
+    repo: str,
+    matched: list[MatchedFinding],
+    *,
+    fresh_days: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The `risk_evidence` block for the findings one acceptance covers."""
+    return risk_evidence.gather(
+        session,
+        catalog,
+        repo=repo,
+        findings=[
+            {"finding_id": m.finding_id, "rule_id": m.rule_id, "file_path": m.location}
+            for m in matched
+        ],
+        as_of=now or utcnow(),
+        fresh_days=fresh_days or risk_evidence.FRESH_DAYS,
+        scored=EVIDENCE_SCORED,
+        notes=EVIDENCE_NOTES,
+    ).as_dict()
 
 
 def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
@@ -597,6 +631,7 @@ def propose(
     with db.session() as session:
         kev = _kev_listed(session, {m.rule_id for m in matched})
         checks = _premise_checks(session, catalog, repo, scope, premises, matched, fresh_days)
+        evidence = decision_evidence(session, catalog, repo, matched, fresh_days=fresh_days)
         claimed = covered_by(
             session,
             {m.finding_id for m in matched},
@@ -651,7 +686,7 @@ def propose(
         subject_ref=record.id,
         requested_by=requested_by,
         statement=justification.strip(),
-        context={"snapshot": _snapshot(record, matched, flags, checks)},
+        context={"snapshot": _snapshot(record, matched, flags, checks, evidence)},
     )
     record.approval_request_id = approval.id
     with db.session() as session:

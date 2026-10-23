@@ -27,10 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
-
-from mykronos import blast_radius, governance, regression, toxic
-from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskProfile, ThreatIntelMatch
+from mykronos import blast_radius, governance, regression, risk_evidence
 from mykronos.db.session import Database
 from mykronos.knowledge.dampening import dampened_rules
 from mykronos.knowledge.store import KnowledgeStore
@@ -1854,29 +1851,11 @@ class OracleEngine:
         if self.db is None:
             return (None, 0)
         with self.db.session() as session:
-            row = (
-                session.execute(
-                    select(ReachabilityReport)
-                    .join(
-                        RepoOnboarding,
-                        RepoOnboarding.id == ReachabilityReport.repo_onboarding_id,
-                    )
-                    .where(RepoOnboarding.github_repo_full_name == repo_full_name)
-                )
-                .scalars()
-                .first()
-            )
-        if row is None:
+            report = risk_evidence.reachability_report(session, repo_full_name)
+        if report is None:
             return (None, 0)
 
-        paths: list[str] = [str(p) for p in (row.orphaned_paths or [])]
-        report: dict[str, Any] = {
-            "language": row.language,
-            "commit_sha": row.commit_sha,
-            "orphaned_paths": paths,
-            "files_analysed": row.files_analysed,
-            "files_unparseable": row.files_unparseable,
-        }
+        paths: list[str] = list(report["orphaned_paths"])
         if not paths:
             return (report, 0)
 
@@ -2007,13 +1986,12 @@ class OracleEngine:
         pol = self.policy.toxic_combinations
         if self.db is not None:
             with self.db.session() as session:
-                combos = toxic.detect(
-                    self.catalog, repo=repo_full_name, session=session,
-                    escalate_steps=pol.escalate_steps,
+                combos = risk_evidence.toxic_combinations(
+                    self.catalog, session, repo_full_name, escalate_steps=pol.escalate_steps
                 )
         else:
-            combos = toxic.detect(
-                self.catalog, repo=repo_full_name, escalate_steps=pol.escalate_steps
+            combos = risk_evidence.toxic_combinations(
+                self.catalog, None, repo_full_name, escalate_steps=pol.escalate_steps
             )
         forces = pol.critical_forces_no_go and any(c.severity == "critical" for c in combos)
         points = sum(
@@ -2071,27 +2049,7 @@ class OracleEngine:
         if self.db is None:
             return None
         with self.db.session() as session:
-            row = (
-                session.execute(
-                    select(RiskProfile)
-                    .join(
-                        RepoOnboarding,
-                        RepoOnboarding.id == RiskProfile.repo_onboarding_id,
-                    )
-                    .where(RepoOnboarding.github_repo_full_name == repo_full_name)
-                )
-                .scalars()
-                .first()
-            )
-            if row is None:
-                return None
-            return {
-                "internet_facing": row.internet_facing,
-                "data_classification": row.data_classification,
-                "business_criticality": row.business_criticality,
-                "compliance_scope": list(row.compliance_scope or []),
-                "updated_by": row.updated_by,
-            }
+            return risk_evidence.asset_context(session, repo_full_name)
 
     def _exploitable_findings(
         self, repo_full_name: str, *, for_gate: bool
@@ -2135,12 +2093,7 @@ class OracleEngine:
             return []
 
         with self.db.session() as session:
-            matches = {
-                row.cve_id: row
-                for row in session.execute(
-                    select(ThreatIntelMatch).where(ThreatIntelMatch.cve_id.in_(by_cve))
-                ).scalars()
-            }
+            matches = risk_evidence.threat_signals(session, by_cve)
 
         weights = self.policy.severity_weights
         matched: list[dict[str, Any]] = []
@@ -2686,6 +2639,12 @@ class OracleEngine:
             evidence_available=bool(evidence["available"]),
         )
 
+        # 12. The shared evidence model (TheHub #60901): every category this
+        #     decision read, through the same functions a risk acceptance
+        #     reads, and which of them the score above used. Written after
+        #     the verdict is final; it changes nothing above.
+        snapshot["risk_evidence"] = self._risk_evidence(repo_full_name, for_gate=for_gate)
+
         decision = Decision(
             decision_id=decision_id or str(uuid.uuid4()),
             repo_full_name=repo_full_name,
@@ -2771,6 +2730,84 @@ class OracleEngine:
                 f"The shadow could not be computed ({type(exc).__name__}). The live "
                 "decision is unaffected.",
             )
+
+    #: The categories the live score reads (`risk_evidence.CATEGORIES`).
+    #: Environmental scoring and verified controls go live per repository
+    #: after the shadow comparison (TheHub #60904); until then they are shown.
+    RISK_EVIDENCE_SCORED = (
+        "threat_intel",
+        "reachability",
+        "toxic_combinations",
+        "asset_sensitivity",
+    )
+    RISK_EVIDENCE_NOTES = {
+        "environmental": (
+            "Shadow only: the `environmental` block says what it would change. Not scored "
+            "until the per-repository go-live (TheHub #60904)."
+        ),
+        "verified_controls": (
+            "Shown, not scored, until the per-repository go-live (TheHub #60904)."
+        ),
+        "exposure": (
+            "Declared surfaces, shown. The risk profile's internet_facing is what is scored, "
+            "under asset_sensitivity."
+        ),
+    }
+
+    def _risk_evidence(self, repo_full_name: str, *, for_gate: bool) -> dict[str, Any]:
+        """The `risk_evidence` block (TheHub #60901). Never costs the decision:
+        a failure is recorded as the block being unavailable."""
+        if self.db is None:
+            return {
+                "model": "risk_evidence/1",
+                "available": False,
+                "reason": "No operational database is configured for this evaluation.",
+            }
+        try:
+            statuses = ", ".join(f"'{s}'" for s in self.policy.statuses_considered)
+            severities = ", ".join(f"'{s}'" for s in self.policy.severities_in_scope())
+            rows = (
+                self.catalog.query(
+                    f"""
+                    SELECT finding_id, rule_id, title, file_path
+                    FROM findings
+                    WHERE asset_id = ?
+                      AND status IN ({statuses})
+                      AND severity IN ({severities})
+                      {self._excluded(for_gate)}
+                    """,
+                    [repo_full_name],
+                )
+                if self.catalog.all_files("findings")
+                else []
+            )
+            findings = [
+                {"finding_id": str(f), "rule_id": str(r), "title": str(t or ""),
+                 "file_path": str(p or "")}
+                for f, r, t, p in rows
+            ]
+            with self.db.session() as session:
+                gathered = risk_evidence.gather(
+                    session,
+                    self.catalog,
+                    repo=repo_full_name,
+                    findings=findings,
+                    as_of=self._as_of,
+                    escalate_steps=self.policy.toxic_combinations.escalate_steps,
+                    scored=self.RISK_EVIDENCE_SCORED,
+                    notes=self.RISK_EVIDENCE_NOTES,
+                )
+            return {"available": True, **gathered.as_dict()}
+        except Exception as exc:  # noqa: BLE001 - the live decision must survive
+            logger.exception(
+                "Risk evidence block failed for %s; the decision is unaffected",
+                scrub(repo_full_name),
+            )
+            return {
+                "model": "risk_evidence/1",
+                "available": False,
+                "reason": f"Could not be read ({type(exc).__name__}); the decision is unaffected.",
+            }
 
     def _build_snapshot(
         self,

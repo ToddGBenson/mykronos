@@ -66,14 +66,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import control_observations
+from mykronos import control_observations, risk_evidence
 from mykronos import risk_acceptance as ra
 from mykronos.db.models import (
     AuditLogEntry,
     ControlObservation,
     RepoSurface,
     RiskAcceptance,
-    ThreatIntelMatch,
 )
 from mykronos.lake.catalog import Catalog
 from mykronos.notify import Notification, Notifier
@@ -482,13 +481,12 @@ def load_facts(
         for s in surfaces
         if isinstance(s.selectors, dict)
     }
-    wanted = sorted({c.upper() for c in cves})
-    epss: dict[str, tuple[float | None, datetime]] = {}
-    if wanted:
-        for row in session.scalars(
-            select(ThreatIntelMatch).where(ThreatIntelMatch.cve_id.in_(wanted))
-        ).all():
-            epss[row.cve_id.upper()] = (row.epss_score, row.fetched_at)
+    # The shared evidence model (TheHub #60901): the same threat-intel read
+    # the Oracle makes.
+    signals = risk_evidence.threat_signals(session, cves)
+    epss: dict[str, tuple[float | None, datetime]] = {
+        cve: (s.epss, s.fetched_at) for cve, s in signals.items() if s.fetched_at is not None
+    }
     return Facts(
         observations=control_observations.latest(session, repo),
         surface_hostnames=hostnames,
