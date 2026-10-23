@@ -560,6 +560,23 @@ class TestPullRequestCheck:
         assert (body["mode"], body["conclusion"]) == ("report", "neutral")
         assert "no longer covers" in github._repo(REPO).check_runs[-1]["summary"]
 
+    def test_a_manifest_cannot_write_markdown_into_the_check_summary(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        # The version spec is the pull request author's text. Unescaped, a `|`
+        # forges a table cell and `[..](..)` a link beside the real request one.
+        onboard(client, admin_auth)
+        spec = "1.0.0 | approved: fine | [request it](https://evil.example/x) `"
+        _pull_request(github, base_pkg={}, head_pkg={"dependencies": {"left-pad": spec}})
+
+        _check(client, admin_auth)
+
+        summary = github._repo(REPO).check_runs[-1]["summary"]
+        row = next(line for line in summary.splitlines() if "left-pad" in line)
+        assert row.count(" | ") == 3, row
+        assert "](https://evil.example" not in summary
+        assert summary.count("[request it](") == 1
+
     def test_the_job_checks_every_open_pull_request_once_per_head(
         self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
     ) -> None:
