@@ -62,9 +62,9 @@ DEVIATION_TYPES = ("vendor_dependency", "risk_adjustment", "operational_requirem
 RESPONSES = ("accept", "transfer")
 #: spec 33 §4.1. Phase 1 requires that a `risk_adjustment` names at least one,
 #: so the premise is checkable the day its monitor ships rather than prose that
-#: can never be re-evaluated. `premise_monitor` evaluates port_not_published,
-#: firewall_scope, not_internet_facing and epss_below (TheHub #60831); the rest
-#: read as `unverified` until theirs ship.
+#: can never be re-evaluated. `premise_monitor.MONITORED` lists the types it
+#: evaluates and `premise_monitor.UNMONITORED` every other one, with the reason
+#: (TheHub #60831, #60903).
 PREMISE_TYPES = (
     "no_fixed_version",
     "port_not_published",
@@ -156,13 +156,13 @@ def interim_review_owed(
     run to their severity cap with nobody looking, so they are reviewed at
     `rule.days`.
     """
-    from mykronos.premise_monitor import MONITORED
+    from mykronos.premise_monitor import REOPENS
 
     if reason_code_for(deviation_type, compensating_controls) not in rule.reason_codes:
         return False
     return not (
         rule.unless_monitored_premise
-        and any(isinstance(p, dict) and p.get("type") in MONITORED for p in premises)
+        and any(isinstance(p, dict) and p.get("type") in REOPENS for p in premises)
     )
 
 

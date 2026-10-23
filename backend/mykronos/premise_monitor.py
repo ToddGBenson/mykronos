@@ -73,6 +73,7 @@ from mykronos.db.models import (
     ControlObservation,
     RepoSurface,
     RiskAcceptance,
+    ThreatIntelMatch,
 )
 from mykronos.lake.catalog import Catalog
 from mykronos.notify import Notification, Notifier
@@ -83,25 +84,53 @@ logger = logging.getLogger(__name__)
 #: Who the audit log names. Automation, and it says so (spec 34 §1).
 ACTOR = "job:premise-monitor"
 
-#: The premise types a monitor here evaluates. The rest of
-#: `risk_acceptance.PREMISE_TYPES` are reported `unverified`.
-MONITORED = ("port_not_published", "firewall_scope", "not_internet_facing", "epss_below")
+#: The premise types a monitor here evaluates (TheHub #60831, #60903).
+MONITORED = (
+    "port_not_published",
+    "firewall_scope",
+    "not_internet_facing",
+    "epss_below",
+    "not_kev_listed",
+    "path_unreachable",
+)
+
+#: Monitored types whose evidence can affirm the premise and never contradict
+#: it. The import analysis proves a file dead; a file it does not prove dead
+#: is not thereby proven reachable. Such a premise is re-read daily but cannot
+#: reopen anything, so it does not exempt an acceptance from interim review.
+AFFIRM_ONLY = ("path_unreachable",)
+
+#: Monitored types whose failure reopens the acceptance.
+REOPENS = tuple(t for t in MONITORED if t not in AFFIRM_ONLY)
+
+#: Every other premise type, and why this monitor does not evaluate it
+#: (TheHub #60903: each kind is monitored or explicitly unmonitorable). Each
+#: reads `unverified` with this reason, never `holds`.
+UNMONITORED = {
+    "no_fixed_version": (
+        "Monitored elsewhere: the acceptance sweep reopens any finding a fix appears "
+        "for. It is not evaluated here, which is not the same as holding."
+    ),
+    "image_role": (
+        "Unmonitorable today: the containers lane stamps an image's declared role on "
+        "its findings only when it is `tool`, so a missing stamp cannot tell a service "
+        "from a finding scanned before the stamp existed. It is not evaluated, which is "
+        "not the same as holding."
+    ),
+    "container_command": (
+        "Unmonitorable today: no collector records a running container's command. "
+        "It is not evaluated, which is not the same as holding."
+    ),
+}
 
 STATUSES = ("holds", "failed", "unverified")
 
 FRESH_DAYS = control_observations.FRESH_DAYS
 
-#: Why an unmonitored type is unverified, where there is more to say.
-_UNMONITORED_REASON = {
-    "no_fixed_version": (
-        "Checked per finding by the acceptance sweep, which reopens any finding a "
-        "fix appears for; not evaluated here, which is not the same as holding."
-    ),
-    "not_kev_listed": (
-        "KEV-listed CVEs are refused at proposal; a CVE joining KEV later is not "
-        "evaluated here, which is not the same as holding."
-    ),
-}
+#: The implicit premise every acceptance rests on (spec 33 §13): an accepted
+#: CVE that joins KEV reopens it, whether or not the record names
+#: `not_kev_listed`. Reported with this index.
+IMPLICIT_KEV_INDEX = -1
 
 _EXPOSED_VANTAGES = ("internet", "lan")
 
@@ -118,6 +147,10 @@ class Facts:
     epss: dict[str, tuple[float | None, datetime]]
     now: datetime
     fresh_days: int = FRESH_DAYS
+    #: CVE -> its threat-intel signal (`risk_evidence.threat_signals`).
+    threat: dict[str, risk_evidence.ThreatSignal] = field(default_factory=dict)
+    #: The stored import analysis (`risk_evidence.reachability_report`).
+    reachability: dict[str, Any] | None = None
 
     def fresh(self, when: datetime) -> bool:
         return when >= self.now - timedelta(days=self.fresh_days)
@@ -436,8 +469,116 @@ def _epss_below(
     )
 
 
+def _named_cves(premise: dict[str, Any], cves_in_scope: list[str]) -> list[str]:
+    named = premise.get("cves")
+    return sorted(
+        {str(c).upper() for c in (named if isinstance(named, list) and named else cves_in_scope)}
+    )
+
+
+def _kev_evidence(signal: risk_evidence.ThreatSignal) -> dict[str, Any]:
+    return {"source": "threat_intel", **signal.as_dict()}
+
+
+def _added(signal: risk_evidence.ThreatSignal) -> str:
+    return signal.kev_added_at.isoformat() if signal.kev_added_at else "date unknown"
+
+
+def _not_kev_listed(
+    index: int, premise: dict[str, Any], facts: Facts, cves_in_scope: list[str]
+) -> PremiseCheck:
+    cves = _named_cves(premise, cves_in_scope)
+    if not cves:
+        return PremiseCheck(
+            index, "not_kev_listed", "unverified", "No CVE is in scope to look up in KEV."
+        )
+    listed = [facts.threat[c] for c in cves if c in facts.threat and facts.threat[c].in_kev]
+    if listed:
+        return PremiseCheck(
+            index,
+            "not_kev_listed",
+            "failed",
+            "In CISA KEV: " + ", ".join(f"{s.cve} (added {_added(s)})" for s in listed),
+            [_kev_evidence(s) for s in listed],
+        )
+    fresh = {
+        c
+        for c in cves
+        if c in facts.threat
+        and (fetched := facts.threat[c].fetched_at) is not None
+        and facts.fresh(fetched)
+    }
+    unknown = [c for c in cves if c not in fresh]
+    checked = [_kev_evidence(facts.threat[c]) for c in cves if c in fresh]
+    if unknown:
+        return PremiseCheck(
+            index,
+            "not_kev_listed",
+            "unverified",
+            f"No fresh threat-intel row for {', '.join(unknown[:10])}"
+            + (f" and {len(unknown) - 10} more" if len(unknown) > 10 else "")
+            + "; not evaluated is not holding.",
+            checked,
+        )
+    return PremiseCheck(
+        index, "not_kev_listed", "holds", "No CVE in scope is in CISA KEV.", checked
+    )
+
+
+def _path_unreachable(
+    index: int, premise: dict[str, Any], facts: Facts, paths_in_scope: list[str]
+) -> PremiseCheck:
+    report = facts.reachability
+    if report is None:
+        return PremiseCheck(
+            index,
+            "path_unreachable",
+            "unverified",
+            "No import analysis has run for this repository; not evaluated is not holding.",
+        )
+    named = premise.get("paths")
+    paths = sorted(
+        {str(p) for p in (named if isinstance(named, list) and named else paths_in_scope) if p}
+    )
+    if not paths:
+        return PremiseCheck(
+            index, "path_unreachable", "unverified", "The premise names no file path to check."
+        )
+    orphaned = set(report.get("orphaned_paths") or [])
+    evidence = [
+        {
+            "source": "reachability",
+            "language": report.get("language"),
+            "commit_sha": report.get("commit_sha"),
+            "orphaned": sorted(p for p in paths if p in orphaned)[:25],
+        }
+    ]
+    alive = [p for p in paths if p not in orphaned]
+    if not alive:
+        return PremiseCheck(
+            index,
+            "path_unreachable",
+            "holds",
+            f"Nothing in the repository imports {', '.join(paths[:10])}.",
+            evidence,
+        )
+    return PremiseCheck(
+        index,
+        "path_unreachable",
+        "unverified",
+        f"The import analysis does not prove {', '.join(alive[:10])} dead. It can affirm "
+        "this premise, never contradict it: not proven dead is not proven reachable.",
+        evidence,
+    )
+
+
 def evaluate(
-    premise: dict[str, Any], facts: Facts, *, cves_in_scope: list[str], index: int = 0
+    premise: dict[str, Any],
+    facts: Facts,
+    *,
+    cves_in_scope: list[str],
+    index: int = 0,
+    paths_in_scope: list[str] | None = None,
 ) -> PremiseCheck:
     """One premise against the facts. Never raises on a malformed premise:
     a premise the monitor cannot read is unverified, and says why."""
@@ -450,13 +591,17 @@ def evaluate(
         return _not_internet_facing(index, premise, facts)
     if kind == "epss_below":
         return _epss_below(index, premise, facts, cves_in_scope)
+    if kind == "not_kev_listed":
+        return _not_kev_listed(index, premise, facts, cves_in_scope)
+    if kind == "path_unreachable":
+        return _path_unreachable(index, premise, facts, list(paths_in_scope or []))
     return PremiseCheck(
         index,
         kind,
         "unverified",
-        _UNMONITORED_REASON.get(
+        UNMONITORED.get(
             kind,
-            f"No monitor checks a {kind or 'typeless'} premise yet; it is not evaluated, "
+            f"No monitor checks a {kind or 'typeless'} premise; it is not evaluated, "
             "which is not the same as holding.",
         ),
     )
@@ -474,6 +619,7 @@ def load_facts(
     cves: Iterable[str] = (),
     now: datetime | None = None,
     fresh_days: int = FRESH_DAYS,
+    reachability: bool = False,
 ) -> Facts:
     surfaces = session.scalars(select(RepoSurface).where(RepoSurface.repo_full_name == repo)).all()
     hostnames = {
@@ -493,7 +639,21 @@ def load_facts(
         epss=epss,
         now=now or utcnow(),
         fresh_days=fresh_days,
+        threat=signals,
+        reachability=risk_evidence.reachability_report(session, repo) if reachability else None,
     )
+
+
+def scope_paths(covered_finding_ids: list[str], catalog: Catalog | None) -> list[str]:
+    """The file paths of the findings an acceptance covers."""
+    if catalog is None or not covered_finding_ids or not catalog.all_files("findings"):
+        return []
+    placeholders = ", ".join("?" for _ in covered_finding_ids)
+    rows = catalog.query(
+        f"SELECT DISTINCT file_path FROM findings WHERE finding_id IN ({placeholders})",
+        list(covered_finding_ids),
+    )
+    return sorted({str(r[0]) for r in rows if r[0]})
 
 
 def scope_cves(
@@ -535,16 +695,29 @@ def check_premises(
         # `no_fixed_version` records need no query each.
         facts = Facts([], {}, {}, now or utcnow(), fresh_days)
         return [evaluate(p, facts, cves_in_scope=[], index=i) for i, p in enumerate(premises)]
-    needs_cves = any(p.get("type") == "epss_below" for p in premises)
+    cve_kinds = ("epss_below", "not_kev_listed")
+    needs_cves = any(p.get("type") in cve_kinds for p in premises)
     cves = scope_cves(scope, covered_finding_ids, catalog) if needs_cves else []
     named = [
         str(c)
         for p in premises
-        if p.get("type") == "epss_below" and isinstance(p.get("cves"), list)
+        if p.get("type") in cve_kinds and isinstance(p.get("cves"), list)
         for c in p["cves"]
     ]
-    facts = load_facts(session, repo, cves=[*cves, *named], now=now, fresh_days=fresh_days)
-    return [evaluate(p, facts, cves_in_scope=cves, index=i) for i, p in enumerate(premises)]
+    needs_paths = any(p.get("type") == "path_unreachable" for p in premises)
+    paths = scope_paths(covered_finding_ids, catalog) if needs_paths else []
+    facts = load_facts(
+        session,
+        repo,
+        cves=[*cves, *named],
+        now=now,
+        fresh_days=fresh_days,
+        reachability=needs_paths,
+    )
+    return [
+        evaluate(p, facts, cves_in_scope=cves, index=i, paths_in_scope=paths)
+        for i, p in enumerate(premises)
+    ]
 
 
 def check_record(
@@ -674,6 +847,75 @@ def run(
         current_principal.reset(token)
 
 
+def kev_by_finding(
+    session: Session, catalog: Catalog, finding_ids: Iterable[str]
+) -> dict[str, risk_evidence.ThreatSignal]:
+    """Finding id -> the KEV signal of its CVE, for findings whose rule is a
+    KEV-listed CVE. One threat-intel read and one lake query for every live
+    acceptance, not one per record."""
+    ids = sorted({str(f) for f in finding_ids})
+    if not ids or not catalog.all_files("findings"):
+        return {}
+    listed = {
+        str(c).upper()
+        for c in session.scalars(
+            select(ThreatIntelMatch.cve_id).where(ThreatIntelMatch.in_kev.is_(True))
+        ).all()
+    }
+    if not listed:
+        return {}
+    signals = risk_evidence.threat_signals(session, listed)
+    out: dict[str, risk_evidence.ThreatSignal] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        rows = catalog.query(
+            "SELECT finding_id, upper(rule_id) FROM findings "
+            f"WHERE finding_id IN ({', '.join('?' for _ in chunk)})",
+            chunk,
+        )
+        for fid, rule in rows:
+            signal = signals.get(str(rule))
+            if signal is not None and signal.in_kev:
+                out[str(fid)] = signal
+    return out
+
+
+def kev_join(
+    record: RiskAcceptance, kev: dict[str, risk_evidence.ThreatSignal]
+) -> PremiseCheck | None:
+    """The implicit premise (spec 33 §13): a covered CVE that joined KEV
+    after this acceptance was proposed fails it, named or not.
+
+    "Joined after" is a KEV date on or after the day it was proposed - the
+    day the platform last checked KEV for it. A CVE already listed then was
+    accepted knowingly (where policy allows that), and is not news. A KEV row
+    with no date counts as joined: reopening is the safe direction.
+    """
+    proposed = (record.created_at or record.effective_at or utcnow()).date()
+    joined: dict[str, tuple[risk_evidence.ThreatSignal, list[str]]] = {}
+    for fid in record.covered_finding_ids or []:
+        signal = kev.get(str(fid))
+        if signal is None:
+            continue
+        if signal.kev_added_at is not None and signal.kev_added_at < proposed:
+            continue
+        joined.setdefault(signal.cve, (signal, []))[1].append(str(fid))
+    if not joined:
+        return None
+    return PremiseCheck(
+        IMPLICIT_KEV_INDEX,
+        "not_kev_listed",
+        "failed",
+        "Joined CISA KEV after this acceptance was proposed: "
+        + ", ".join(f"{s.cve} (added {_added(s)})" for s, _ in joined.values())
+        + ". A known-exploited CVE cannot stay accepted, only mitigated.",
+        [
+            {**_kev_evidence(s), "implicit": True, "finding_ids": sorted(ids)}
+            for s, ids in joined.values()
+        ],
+    )
+
+
 def _run(
     db: Any, catalog: Catalog, *, repo: str | None, now: datetime, fresh_days: int
 ) -> MonitorResult:
@@ -683,10 +925,23 @@ def _run(
         query = select(RiskAcceptance).where(RiskAcceptance.status.in_(ra.LIVE))
         if repo:
             query = query.where(RiskAcceptance.repo_full_name == repo)
-        for record in session.scalars(query).all():
-            if not record.premises:
+        records = session.scalars(query).all()
+        kev = kev_by_finding(
+            session, catalog, (f for r in records for f in (r.covered_finding_ids or []))
+        )
+        for record in records:
+            implicit = kev_join(record, kev)
+            if not record.premises and implicit is None:
                 continue
-            checks = check_record(session, record, catalog, now=now, fresh_days=fresh_days)
+            checks = (
+                check_record(session, record, catalog, now=now, fresh_days=fresh_days)
+                if record.premises
+                else []
+            )
+            if implicit is not None and not any(
+                c.type == "not_kev_listed" and c.status == "failed" for c in checks
+            ):
+                checks.append(implicit)
             result.acceptances += 1
             result.premises += len(checks)
             result.holds += sum(1 for c in checks if c.status == "holds")
