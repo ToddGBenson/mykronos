@@ -149,7 +149,7 @@ class TestConcourse:
         assert "could not be reached" in result.detail
 
     @pytest.mark.asyncio
-    async def test_it_asks_for_info_not_the_pipeline_list(self, respond) -> None:
+    async def test_it_asks_for_info_not_the_pipeline_list(self, monkeypatch) -> None:
         """`/api/v1/info` needs no team, no auth and no pipeline to exist, so
         it separates "Concourse is down" from "Concourse covers nothing" —
         which `ci.py` spends a docstring insisting are different facts."""
@@ -160,9 +160,11 @@ class TestConcourse:
                 seen.append(url)
                 return FakeResponse(200, {})
 
-        import mykronos.jobs as j
-
-        j.httpx2.AsyncClient = lambda **kw: Recording()  # type: ignore[assignment]
+        # monkeypatch, never a plain assignment: `httpx2` is one module shared
+        # by the whole worker, so an assignment outlives this test and every
+        # later `httpx2.AsyncClient` (product_owner's Hub client among them)
+        # gets a Recording with no `.request`.
+        monkeypatch.setattr(jobs.httpx2, "AsyncClient", lambda **kw: Recording())
         await jobs.check_concourse("http://concourse:8080")
 
         assert seen == ["http://concourse:8080/api/v1/info"]

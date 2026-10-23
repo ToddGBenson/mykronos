@@ -528,7 +528,7 @@ class TestTheAuditIsWrittenBeforeTheLake:
         )
 
     def test_the_entries_exist_before_the_lake_is_touched(
-        self, client, admin_auth, run_compaction, db
+        self, client, admin_auth, run_compaction, db, monkeypatch
     ) -> None:
         """Not just 'both end up written' — the audit has to be durable at the
         moment the lake changes, which is what ordering buys."""
@@ -554,11 +554,9 @@ class TestTheAuditIsWrittenBeforeTheLake:
 
         import mykronos.backfill_superseded_source as mod
 
-        mod.update_findings = _spy  # type: ignore[assignment]
-        try:
+        with monkeypatch.context() as patch:
+            patch.setattr(mod, "update_findings", _spy)
             backfill_superseded_source(catalog, db)
-        finally:
-            mod.update_findings = real  # type: ignore[assignment]
 
         assert seen, "the lake update never ran, so this proves nothing"
         assert min(seen) == len(ids), (
@@ -567,7 +565,7 @@ class TestTheAuditIsWrittenBeforeTheLake:
         )
 
     def test_a_rerun_repairs_a_half_applied_backfill_without_duplicating(
-        self, client, admin_auth, run_compaction, db
+        self, client, admin_auth, run_compaction, db, monkeypatch
     ) -> None:
         """The property the `already_sourced` guard destroyed last time. A run
         whose lake write failed leaves findings unsourced, so a second run
@@ -577,17 +575,15 @@ class TestTheAuditIsWrittenBeforeTheLake:
 
         import mykronos.backfill_superseded_source as mod
 
-        real = update_findings
-
         def _fail(*_a: Any, **_k: Any) -> None:
             raise RuntimeError("lake write failed after the audit committed")
 
-        mod.update_findings = _fail  # type: ignore[assignment]
-        try:
+        # The second run below must see the real function again, so the patch
+        # is scoped to the first run rather than to the whole test.
+        with monkeypatch.context() as patch:
+            patch.setattr(mod, "update_findings", _fail)
             with pytest.raises(RuntimeError):
                 backfill_superseded_source(catalog, db)
-        finally:
-            mod.update_findings = real  # type: ignore[assignment]
 
         with db.session() as session:
             after_first = (
