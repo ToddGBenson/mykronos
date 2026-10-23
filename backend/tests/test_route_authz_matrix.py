@@ -120,6 +120,7 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/sscs/sbom": PRINCIPAL,
     "POST /api/dashboard/findings/{finding_id}/regression-test": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/regression-coverage": PRINCIPAL,
+    "GET /api/dashboard/repos/{repo_id}/coverage": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/governance": PRINCIPAL,
     "GET /api/dashboard/incident": PRINCIPAL,
     "GET /api/dashboard/briefing": PRINCIPAL,

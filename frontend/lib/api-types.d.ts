@@ -838,6 +838,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Coverage
+         * @description What the scanners cannot read in one repository (TheHub #60795, #318).
+         *
+         *     Two halves: the share of application source no SAST analyser implements
+         *     (B-051), and how many fixed findings have a test pinned (spec 31 §3). A
+         *     half that could not be read is listed in `unknown` with the reason.
+         *
+         *     Any authenticated principal may read it; it is never public. It is a map
+         *     of what is not looked at, so it is not registered as a public endpoint and
+         *     no anonymous probe asks for it.
+         */
+        get: operations["repo_coverage_api_dashboard_repos__repo_id__coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/governance": {
         parameters: {
             query?: never;
@@ -2677,6 +2705,12 @@ export interface paths {
         /**
          * Decisions For Repo
          * @description Decision history for one repo, newest first (spec 09 §7).
+         *
+         *     `confidence_note` qualifies the newest verdict with how much of the code
+         *     the analysers read (TheHub #60962, decision 60814 option 2): "go - read
+         *     31% of the code" under the configured threshold, "go - read coverage
+         *     unknown" when it could not be measured, null otherwise. It is computed
+         *     when the history is read and never changes a recorded verdict.
          */
         get: operations["decisions_for_repo_api_oracle_decisions__repo_id__get"];
         put?: never;
@@ -4599,6 +4633,47 @@ export interface components {
             /** Active */
             active: boolean;
         };
+        /**
+         * AnalyserCoverageOut
+         * @description How much of the application source the SAST analysers read (B-051).
+         */
+        AnalyserCoverageOut: {
+            /**
+             * Available
+             * @description Whether the share was measured. False when GitHub's language breakdown could not be read or reports no source; `reason` says which. Never read an unavailable share as fully read.
+             */
+            available: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Tools
+             * @description The analysers that have reported SAST here, or the configured one.
+             */
+            tools?: string[];
+            /**
+             * Source Bytes
+             * @default 0
+             */
+            source_bytes: number;
+            /**
+             * Share Read
+             * @description 0.0 to 1.0, or null.
+             */
+            share_read?: number | null;
+            /**
+             * Share Unread
+             * @description 0.0 to 1.0, or null.
+             */
+            share_unread?: number | null;
+            /**
+             * Unread Languages
+             * @description Up to five languages nothing reads, largest first.
+             */
+            unread_languages?: components["schemas"]["UnreadLanguageOut"][];
+        };
         /** AtlasAccepted */
         AtlasAccepted: {
             /** Accepted */
@@ -5909,6 +5984,19 @@ export interface components {
              * @description `controls.CONTROL_KINDS`, in order.
              */
             kinds: string[];
+        };
+        /**
+         * CoverageUnknownOut
+         * @description A source the coverage route could not read, and why.
+         */
+        CoverageUnknownOut: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "analysers" | "regression";
+            /** Detail */
+            detail: string;
         };
         /** CoveredFindingOut */
         CoveredFindingOut: {
@@ -9845,6 +9933,29 @@ export interface components {
             /** Dry Run */
             dry_run: boolean;
         };
+        /**
+         * RepoCoverageOut
+         * @description What the scanners cannot read in one repository (TheHub #60795).
+         */
+        RepoCoverageOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            analysers: components["schemas"]["AnalyserCoverageOut"] | null;
+            /**
+             * Regression
+             * @description Regression coverage (spec 31 §3); null when it could not be read.
+             */
+            regression: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Unknown
+             * @description Sources that could not be read. An entry here means could not ask, not none.
+             */
+            unknown?: components["schemas"]["CoverageUnknownOut"][];
+        };
         /** RepoDetail */
         RepoDetail: {
             /** Id */
@@ -11750,6 +11861,16 @@ export interface components {
             path_refusal: string;
             action?: components["schemas"]["BriefingActionOut"] | null;
         };
+        /**
+         * UnreadLanguageOut
+         * @description One language no analyser here reads, with its size.
+         */
+        UnreadLanguageOut: {
+            /** Language */
+            language: string;
+            /** Bytes */
+            bytes: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -13195,6 +13316,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_coverage_api_dashboard_repos__repo_id__coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoCoverageOut"];
                 };
             };
             /** @description Validation Error */
