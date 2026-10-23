@@ -791,6 +791,27 @@ class ConcourseClient:
             return None
         return [j for j in payload if isinstance(j, dict)]
 
+    def all_jobs(self) -> list[dict[str, object]] | None:
+        """Every visible job in every pipeline, in one anonymous request, or
+        None if unreachable.
+
+        `/api/v1/jobs` carries each job's `paused` flag and its latest
+        `finished_build` (status and start time) - the summaries the stall
+        detector reads (`ci_stall`). No logs, no resolved variables.
+        """
+        payload = self._get("/api/v1/jobs")
+        if not isinstance(payload, list):
+            return None
+        return [j for j in payload if isinstance(j, dict)]
+
+    def build_url(self, team: str, pipeline: str, job: str, build: str) -> str | None:
+        """A browser link to one build, or None when no browser URL is
+        configured or the job belongs to another team than this client's."""
+        if team and team != self.team:
+            return None
+        base = self.pipeline_url(pipeline)
+        return f"{base}/jobs/{job}/builds/{build}" if base else None
+
     def pipeline_url(self, pipeline: str) -> str:
         """Where a browser reaches this pipeline (not where this process does),
         or "" when no browser URL is configured (`browser_url`)."""
