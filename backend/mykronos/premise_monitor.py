@@ -133,6 +133,9 @@ IMPLICIT_KEV_INDEX = -1
 
 _EXPOSED_VANTAGES = ("internet", "lan")
 
+#: `threat_intel._CVE_PATTERN`, for DuckDB: the CVE a finding's title names.
+_TITLE_CVE = r"CVE-[0-9]{4}-[0-9]{4,}"
+
 
 @dataclass
 class Facts:
@@ -860,15 +863,21 @@ def kev_by_finding(
     if not listed:
         return {}
     # Keyed on the KEV list, which is short, rather than on every covered id,
-    # which on a migrated estate is tens of thousands.
+    # which on a migrated estate is tens of thousands. A finding's CVE is its
+    # rule id, or - an OSV-derived Atlas finding, whose rule id is the GHSA
+    # id - the one its title names, as the Oracle reads it (`extract_cve`).
+    marks = ", ".join("?" for _ in listed)
     rows = catalog.query(
-        "SELECT finding_id, upper(rule_id) FROM findings "
-        f"WHERE upper(rule_id) IN ({', '.join('?' for _ in listed)})",
-        listed,
+        "SELECT finding_id, upper(rule_id), "
+        f"       regexp_extract(upper(coalesce(title, '')), '{_TITLE_CVE}') "
+        "FROM findings "
+        f"WHERE upper(rule_id) IN ({marks}) "
+        f"   OR regexp_extract(upper(coalesce(title, '')), '{_TITLE_CVE}') IN ({marks})",
+        [*listed, *listed],
     )
     out: dict[str, risk_evidence.ThreatSignal] = {}
-    for fid, rule in rows:
-        signal = signals.get(str(rule))
+    for fid, rule, titled in rows:
+        signal = signals.get(str(rule)) or signals.get(str(titled or ""))
         if str(fid) in ids and signal is not None and signal.in_kev:
             out[str(fid)] = signal
     return out

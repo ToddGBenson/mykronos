@@ -53,6 +53,7 @@ from mykronos.fingerprint import image_repository
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.schemas import utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,16 @@ class MatchedFinding:
     #: `"debian 10.13"` where the containers adapter tagged the finding
     #: `base_os_eol` (#712), else empty.
     base_os_eol: str = ""
+    #: Where an OSV-derived Atlas finding carries its CVE: its rule id is the
+    #: GHSA id (`threat_intel.extract_cve` reads both, as the Oracle does).
+    title: str = ""
+
+    @property
+    def cve(self) -> str | None:
+        """The rule id when it is a CVE, as before; else the CVE the title names."""
+        if self.rule_id.upper().startswith("CVE-"):
+            return self.rule_id.upper()
+        return extract_cve(None, self.title)
 
 
 def validate_scope(scope: dict[str, Any]) -> None:
@@ -279,7 +290,8 @@ def match_scope(
         "       status, "
         "       CASE WHEN json_extract_string(raw_finding_json, '$.base_os_eol') = 'true' "
         "            THEN coalesce(json_extract_string(raw_finding_json, '$.base_os'), "
-        "                          'an end-of-life OS') ELSE '' END "
+        "                          'an end-of-life OS') ELSE '' END, "
+        "       coalesce(title, '') "
         "FROM findings WHERE repo_full_name = ? AND capability = ? "
         f"AND status IN ({placeholders})",
         [repo, scope["capability"], *statuses],
@@ -291,7 +303,7 @@ def match_scope(
     paths = tuple(scope.get("file_paths") or [])
     fixed = scope.get("fixed_version", "any")
     out: list[MatchedFinding] = []
-    for fid, rule, pkg, sev, path, image, fixed_version, status, eol in rows:
+    for fid, rule, pkg, sev, path, image, fixed_version, status, eol, title in rows:
         if want_images is not None and (not image or image_repository(image) not in want_images):
             continue
         if "*" not in rules and rule not in rules:
@@ -316,6 +328,7 @@ def match_scope(
                 fixed_version=str(fixed_version),
                 status=str(status),
                 base_os_eol=str(eol or ""),
+                title=str(title or ""),
             )
         )
     return out
@@ -377,9 +390,10 @@ def premise_flags(deviation_type: str, matched: list[MatchedFinding]) -> list[di
 # -- Validation ----------------------------------------------------------------
 
 
-def _kev_listed(session: Session, rule_ids: set[str]) -> list[str]:
-    # The one KEV read every risk decision shares (TheHub #60901).
-    return risk_evidence.kev_listed(session, [r for r in rule_ids if r.upper().startswith("CVE-")])
+def _kev_listed(session: Session, matched: list[MatchedFinding]) -> list[str]:
+    # The one KEV read every risk decision shares, over the CVEs the Oracle
+    # reads: the rule id's, else the title's (TheHub #60901).
+    return risk_evidence.kev_listed(session, {c for m in matched if (c := m.cve)})
 
 
 def _validate(
@@ -610,7 +624,12 @@ def decision_evidence(
         catalog,
         repo=repo,
         findings=[
-            {"finding_id": m.finding_id, "rule_id": m.rule_id, "file_path": m.location}
+            {
+                "finding_id": m.finding_id,
+                "rule_id": m.rule_id,
+                "title": m.title,
+                "file_path": m.location,
+            }
             for m in matched
         ],
         as_of=now or utcnow(),
@@ -704,7 +723,7 @@ def propose(
             "Narrow the scope with fixed_version: absent, or choose another response."
         )
     with db.session() as session:
-        kev = _kev_listed(session, {m.rule_id for m in matched})
+        kev = _kev_listed(session, matched)
         checks = _premise_checks(session, catalog, repo, scope, premises, matched, fresh_days)
         evidence = decision_evidence(
             session, catalog, repo, matched, fresh_days=fresh_days, controls_cited=bool(controls)
