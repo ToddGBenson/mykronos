@@ -282,6 +282,8 @@ def normalize_results(
         outcome.findings.extend(parsed.findings)
         outcome.warnings.extend(parsed.warnings)
         outcome.skipped += parsed.skipped
+        if parsed.suppressions is not None:
+            outcome.suppressions = [*(outcome.suppressions or []), *parsed.suppressions]
         if parsed.scan_status is not ScanStatus.SUCCESS:
             outcome.scan_status = parsed.scan_status
         # The highest of whatever the files reported (spec 31 §4). Sharded

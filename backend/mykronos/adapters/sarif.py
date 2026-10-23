@@ -15,12 +15,19 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.snippet import best_snippet, v2_identity
-from mykronos.schemas import FindingSubmission, ScanStatus, Severity
+from mykronos.schemas import (
+    FindingSubmission,
+    ScanStatus,
+    Severity,
+    SuppressionSubmission,
+    utcnow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +332,11 @@ def sarif_to_findings(
         outcome.scan_status = ScanStatus.PARTIAL_FAILURE
         return outcome
 
+    # From here the document is SARIF, and SARIF can say "suppressed": an
+    # empty set is an answer (none), where `None` would mean "not asked".
+    if outcome.suppressions is None:
+        outcome.suppressions = []
+
     runs = document.get("runs") or []
     if not runs:
         # A genuinely empty SARIF is a real result: scanned, found nothing.
@@ -352,6 +364,7 @@ def sarif_to_findings(
     # on every subsequent one.
     produced: list[FindingSubmission] = []
     suppressed_rules: list[str] = []
+    recorded: list[SuppressionSubmission] = []
 
     for run in runs:
         if not isinstance(run, dict):
@@ -376,9 +389,12 @@ def sarif_to_findings(
             # platform decision either -- see the warning below.
             if _is_suppressed(raw_result):
                 suppressed_rules.append(str(raw_result.get("ruleId") or "?"))
+                recorded.append(_suppression_of(raw_result, finding))
                 continue
             produced.append(finding)
             outcome.findings.append(finding)
+
+    outcome.suppressions.extend(recorded)
 
     if suppressed_rules:
         # Reported rather than ingested. A pragma in the scanned repository is
@@ -391,11 +407,25 @@ def sarif_to_findings(
         # is worse than either: documenting a skip made the finding count go
         # UP, because the pragma shifts line numbers and positional identity
         # then reads the same finding as a new one.
+        #
+        # Since TheHub #60963 they are also kept, as suppressions rather than
+        # findings: `outcome.suppressions` is posted beside the findings and
+        # listed on the repository page with its justification and expiry.
         counted = ", ".join(sorted(set(suppressed_rules)))
         outcome.warn(
             f"{len(suppressed_rules)} result(s) suppressed in the scanned "
             f"repository and not ingested: {counted}"
         )
+
+    # A lapsed suppression still silences its result -- the pragma does not
+    # remove itself -- so the date passing is a fact about the lane, raised
+    # where a person reads it. Front-loaded like `atlas_osv`'s constraint
+    # facts: only the first warning reaches the ScanRun's `detail`.
+    expired = expired_suppression_facts(recorded, context.tool_name, utcnow().date())
+    if expired:
+        for fact in expired:
+            logger.warning("adapter: %s", fact)
+        outcome.warnings[0:0] = expired
 
     if warn_degraded:
         warn_if_identity_degrades(outcome, produced, context)
@@ -404,6 +434,112 @@ def sarif_to_findings(
         outcome.scan_status = ScanStatus.PARTIAL_FAILURE
 
     return outcome
+
+
+#: Property-bag keys a tool or a wrapper may use for a suppression's expiry.
+#: SARIF 2.1.0 has no field for it, so this is convention, read generously.
+_EXPIRY_KEYS = ("expiry", "expires", "expires_at", "expiresAt", "expiration", "until")
+
+#: "expires 2026-12-31", "until: 2026-12-31", "exp=2026-12-31" inside a
+#: justification -- where a pragma's author writes the date when the tool
+#: offers no field for it.
+_EXPIRY_IN_TEXT = re.compile(
+    r"\b(?:expires?|expiry|expiration|until|exp)\b\s*[:=]?\s*(\d{4}-\d{2}-\d{2})\b",
+    re.IGNORECASE,
+)
+
+#: How many lapsed suppressions a scan names one by one; the rest are counted.
+_EXPIRED_FACTS_NAMED = 5
+
+
+def _parse_day(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str) or len(value.strip()) < 10:
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        return None
+
+
+def _suppression_of(raw: dict[str, Any], finding: FindingSubmission) -> SuppressionSubmission:
+    """The suppression a result carries, as one row (TheHub #60963).
+
+    The first entry that is not `rejected` (the one that silenced it). The
+    location is the finding's, already cleaned of the CI workspace prefix.
+    """
+    entries = [s for s in raw.get("suppressions") or [] if isinstance(s, dict)]
+    entry = next(
+        (s for s in entries if str(s.get("status") or "accepted").strip() != "rejected"),
+        {},
+    )
+    justification = str(entry.get("justification") or "").strip()
+    properties = entry.get("properties") if isinstance(entry.get("properties"), dict) else {}
+    expires_at = next(
+        (
+            day
+            for day in (_parse_day(properties.get(key)) for key in _EXPIRY_KEYS)
+            if day is not None
+        ),
+        None,
+    )
+    if expires_at is None and justification:
+        match = _EXPIRY_IN_TEXT.search(justification)
+        if match:
+            expires_at = _parse_day(match.group(1))
+    return SuppressionSubmission(
+        rule_id=finding.rule_id,
+        file_path=finding.file_path[:1024] if finding.file_path else None,
+        line=finding.line_start if finding.line_start and finding.line_start >= 0 else None,
+        justification=justification[:2000],
+        expires_at=expires_at,
+        kind=str(entry.get("kind") or "")[:32],
+        status=str(entry.get("status") or "accepted")[:32],
+    )
+
+
+def expiry_state(expires_at: date | None, today: date) -> str:
+    """`expired`, `no_expiry` or `active`. A suppression expiring today still holds."""
+    if expires_at is None:
+        return "no_expiry"
+    return "expired" if expires_at < today else "active"
+
+
+def suppression_location(file_path: str | None, line: int | None) -> str:
+    if not file_path:
+        return "(no file)"
+    return f"{file_path}:{line}" if line is not None else file_path
+
+
+def expired_suppression_facts(suppressions: Any, tool: str, today: date) -> list[str]:
+    """One lane-health fact per suppression whose declared expiry has passed.
+
+    Takes anything with `rule_id`, `file_path`, `line` and `expires_at` -- the
+    adapter's submissions and the stored rows alike, so the scan and the
+    repository page say the same sentence. The first few are named; the rest
+    are counted in one more fact, so a repository full of lapsed pragmas does
+    not push every other warning off the run.
+    """
+    lapsed = sorted(
+        (s for s in suppressions if expiry_state(s.expires_at, today) == "expired"),
+        key=lambda s: (s.expires_at, s.rule_id, s.file_path or "", s.line or 0),
+    )
+    facts = [
+        f"Suppression expired: {s.rule_id} at {suppression_location(s.file_path, s.line)} "
+        f"({tool}) passed its expiry {s.expires_at.isoformat()} and still silences "
+        "the result in the repository. Renew or remove it."
+        for s in lapsed[:_EXPIRED_FACTS_NAMED]
+    ]
+    rest = lapsed[_EXPIRED_FACTS_NAMED:]
+    if rest:
+        facts.append(
+            f"{len(rest)} more expired suppression(s) ({tool}): "
+            + ", ".join(
+                f"{s.rule_id} at {suppression_location(s.file_path, s.line)}" for s in rest
+            )
+        )
+    return facts
 
 
 def _is_suppressed(raw: dict[str, Any]) -> bool:

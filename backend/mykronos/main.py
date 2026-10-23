@@ -61,6 +61,7 @@ from mykronos.api.repo_risk_acceptances import router as repo_risk_acceptances_r
 from mykronos.api.repos import router as repos_router
 from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.rule_vectors import router as rule_vectors_router
+from mykronos.api.suppressions import router as suppressions_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.triage_clusters import router as triage_clusters_router
 from mykronos.api.webhooks import router as webhooks_router
@@ -997,6 +998,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(control_observations_router)
     app.include_router(executive_router)
     app.include_router(rule_vectors_router)
+    app.include_router(suppressions_router)
     app.include_router(exposure_router)
     app.include_router(knowledge_router)
     app.include_router(oracle_router)

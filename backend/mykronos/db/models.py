@@ -1319,6 +1319,50 @@ class IngestRefusal(Base):
         return f"<IngestRefusal {self.repo_full_name} {self.capability} x{self.refusals}>"
 
 
+class ScannerSuppression(Base):
+    """A result the scanned repository silenced at the source (TheHub #60963).
+
+    Decision 60815, option B. A `# nosemgrep`, a `# checkov:skip=`, any SARIF
+    `suppressions` entry is the author answering a result. Spec 05 §7 keeps it
+    out of `findings`, because it is not the platform accepting a risk and a
+    rescan must not rewrite a platform disposition; until this table the
+    answer was only a line in a scan warning, so a repository could silence a
+    check indefinitely and nothing listed it.
+
+    Not a finding and never read by scoring, the Oracle or the absence
+    reconciler. The set is replaced whole per (repository, capability, tool,
+    branch) on each clean scan, so a pragma the repository removed stops being
+    listed. `expires_at` is the author's declared expiry; null is "no expiry",
+    which the repository page flags, and a passed one is a lane-health fact.
+    """
+
+    __tablename__ = "scanner_suppressions"
+    __table_args__ = (
+        Index("ix_scanner_suppressions_set", "repo_full_name", "capability", "tool", "branch"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True)
+    capability: Mapped[str] = mapped_column(String(64))
+    tool: Mapped[str] = mapped_column(String(100))
+    branch: Mapped[str] = mapped_column(String(255))
+    rule_id: Mapped[str] = mapped_column(String(255))
+    file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    justification: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: SARIF `kind` (`inSource`, `external`) and `status` (`accepted`,
+    #: `underReview`), as the tool reported them.
+    kind: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(32), default="accepted")
+    scan_run_id: Mapped[str] = mapped_column(String(64), default="")
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ScannerSuppression {self.repo_full_name} {self.tool} {self.rule_id}>"
+
+
 class ControlObservation(Base):
     """One machine-collected fact about whether a control holds (TheHub #60826).
 

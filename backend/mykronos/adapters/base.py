@@ -23,7 +23,7 @@ from mykronos.fingerprint import (
     identity_rule_of,
     image_of,
 )
-from mykronos.schemas import FindingSubmission, ScanStatus, TriggeredBy
+from mykronos.schemas import FindingSubmission, ScanStatus, SuppressionSubmission, TriggeredBy
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,11 @@ class AdapterResult:
     #: here.
     line_coverage: float | None = None
     branch_coverage: float | None = None
+    #: Results the scanned repository silenced at the source (TheHub #60963).
+    #: `None` means this adapter has no notion of a suppression, so nothing is
+    #: posted; an empty list means it does and there are none, which is what
+    #: clears a set the repository has since removed.
+    suppressions: list[SuppressionSubmission] | None = None
 
     @property
     def degraded(self) -> bool:

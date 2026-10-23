@@ -8,7 +8,7 @@ client must not control: `finding_id`, `fingerprint_version`, `first_seen_*`,
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -326,6 +326,64 @@ class FindingBatch(BaseModel):
     scan_run_id: str = Field(min_length=1, max_length=64)
     capability: Capability
     findings: list[FindingSubmission] = Field(default_factory=list, max_length=10_000)
+
+
+# --------------------------------------------------------------------------
+# Scanner suppressions — TheHub #60963, decision 60815 option B
+# --------------------------------------------------------------------------
+
+
+class SuppressionSubmission(BaseModel):
+    """One result the scanned repository silenced at the source.
+
+    A `# nosemgrep`, a `# checkov:skip=`, a SARIF `suppressions` entry: the
+    author answering a result, which spec 05 §7 keeps out of the findings
+    table because it is not the platform accepting the risk. It is recorded
+    in a list of its own, so the answer is visible and its expiry can lapse
+    where somebody sees it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str = Field(min_length=1, max_length=255)
+    file_path: str | None = Field(default=None, max_length=1024)
+    line: int | None = Field(default=None, ge=0, le=LAKE_INT_MAX)
+    #: The author's reason, as the tool reported it. Empty when none was given.
+    justification: str = Field(default="", max_length=2000)
+    #: When the suppression stops applying, where the author said. Null means
+    #: no expiry was declared, which the repository page flags as such.
+    expires_at: date | None = None
+    #: SARIF `kind`: `inSource` (a pragma) or `external` (an ignore file).
+    kind: str = Field(default="", max_length=32)
+    #: SARIF `status`: `accepted` or `underReview`. A `rejected` suppression
+    #: silences nothing, so it is a finding and never one of these.
+    status: str = Field(default="accepted", max_length=32)
+
+
+class SuppressionBatch(BaseModel):
+    """Every suppression one tool reported in one scan run.
+
+    The whole set, not a delta: it replaces the set last recorded for the
+    same (repository, capability, tool, branch), so a pragma the repository
+    removed stops being listed. `repo_full_name` comes from the token.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scan_run_id: str = Field(min_length=1, max_length=64)
+    capability: Capability
+    tool_name: str = Field(min_length=1, max_length=100)
+    branch: str = Field(min_length=1, max_length=255)
+    commit_sha: str = Field(default="", max_length=64)
+    suppressions: list[SuppressionSubmission] = Field(default_factory=list, max_length=5000)
+
+
+class SuppressionsAccepted(BaseModel):
+    accepted: int
+    #: Of those, how many have passed their declared expiry.
+    expired: int
+    #: Of those, how many declare no expiry at all.
+    no_expiry: int
 
 
 # --------------------------------------------------------------------------

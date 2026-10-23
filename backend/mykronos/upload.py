@@ -378,6 +378,44 @@ def _report_unreported(
         logger.warning("Could not report the failure either: %s", exc)
 
 
+def post_suppressions(
+    client: IngestionClient,
+    args: argparse.Namespace,
+    scan_run_id: str,
+    result: AdapterResult,
+) -> None:
+    """Send the set of results the repository silenced (TheHub #60963).
+
+    Only from an adapter that reports suppressions (`None` means it has no
+    notion of one), and only from a clean parse: the set *replaces* what was
+    recorded for this tool and branch, so a partial parse would erase rows it
+    merely failed to read.
+
+    Best-effort, like `_report_unreported`. The uploader and the platform are
+    versioned independently, and a backend older than this endpoint answers
+    it with a 404 or with its `/{capability}` catch-all's 422. Either way the
+    findings are already delivered, and a list of pragmas must never cost the
+    scan run -- so a refusal is logged, never raised, and never becomes the
+    run's `detail`.
+    """
+    if result.suppressions is None or result.scan_status is not ScanStatus.SUCCESS:
+        return
+    try:
+        client.post(
+            "/api/ingest/suppressions",
+            json_body={
+                "scan_run_id": scan_run_id,
+                "capability": args.capability,
+                "tool_name": args.tool,
+                "branch": args.branch,
+                "commit_sha": args.commit_sha or "",
+                "suppressions": [s.model_dump(mode="json") for s in result.suppressions],
+            },
+        )
+    except UploadError as exc:
+        logger.warning("Suppressions were not recorded (the scan run is unaffected): %s", exc)
+
+
 def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> UploadOutcome:
     client = client or IngestionClient(args.ingestion_url, args.token)
     results_path = Path(args.results_path)
@@ -535,6 +573,8 @@ def upload(args: argparse.Namespace, client: IngestionClient | None = None) -> U
             )
             outcome.findings_accepted += int(response.get("accepted", 0))
         delivered = True
+
+        post_suppressions(client, args, scan_run_id, result)
 
         outcome.raw_output_ref = archive_raw(
             client, results_path, scan_run_id, args.capability, args.tool

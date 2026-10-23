@@ -40,7 +40,14 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import control_observations, environment, inventory, netassess, premise_monitor
+from mykronos import (
+    control_observations,
+    environment,
+    inventory,
+    netassess,
+    premise_monitor,
+    scanner_suppressions,
+)
 from mykronos.adminauth import ActorKind, Principal, Role, current_principal
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
@@ -92,6 +99,8 @@ from mykronos.schemas import (
     ScanRunSubmission,
     ScanStatus,
     SscsEvidenceSubmission,
+    SuppressionBatch,
+    SuppressionsAccepted,
     utcnow,
 )
 
@@ -1237,6 +1246,60 @@ async def ingest_check_run(
         conclusion=posted.conclusion,
         outcome=posted.outcome,
     )
+
+
+@router.post("/suppressions", response_model=SuppressionsAccepted)
+async def ingest_suppressions(
+    request: Request,
+    batch: SuppressionBatch,
+    token: TokenDep,
+) -> SuppressionsAccepted:
+    """Results the scanned repository silenced at the source (TheHub #60963).
+
+    Recorded in their own list, never as findings (spec 05 §7), and listed on
+    the repository page with their justification and expiry. The batch is the
+    whole set one tool reported on one branch, and replaces the set last
+    recorded for it. The repository comes from the token; the capability
+    must be granted and the scan run must be this repository's.
+
+    Registered before the `/{capability}` catch-all, which would otherwise
+    answer this path with a 422.
+    """
+    capability = batch.capability.value
+    _require_capability(token, capability)
+    _require_own_scan_run(request, token, batch.scan_run_id)
+
+    db = request.app.state.db
+    today = utcnow().date()
+    with db.session() as session:
+        rows = scanner_suppressions.record(
+            session,
+            repo_full_name=token.repo_full_name,
+            capability=capability,
+            tool=batch.tool_name,
+            branch=batch.branch,
+            scan_run_id=batch.scan_run_id,
+            commit_sha=batch.commit_sha,
+            suppressions=batch.suppressions,
+        )
+        expired = sum(1 for r in rows if r.expires_at is not None and r.expires_at < today)
+        no_expiry = sum(1 for r in rows if r.expires_at is None)
+        db.audit(
+            session,
+            actor=f"ingest:{token.repo_full_name}",
+            action="scanner_suppression.ingested",
+            entity_type="scanner_suppression_set",
+            entity_id=batch.scan_run_id,
+            capability=capability,
+            tool=batch.tool_name,
+            branch=batch.branch,
+            accepted=len(rows),
+            expired=expired,
+            no_expiry=no_expiry,
+        )
+        session.commit()
+
+    return SuppressionsAccepted(accepted=len(rows), expired=expired, no_expiry=no_expiry)
 
 
 @router.post("/{capability}", response_model=IngestAccepted)
