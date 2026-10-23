@@ -25,6 +25,8 @@ uses its own `mka_` credential (`POST /api/agents/credentials`).
 | `incident_action` | irreversible | a person |
 | | reversible | a person, or a delegated agent (break-glass) |
 | `deploy_override` | any | a person |
+| `library_approval` | flagged | a person |
+| | clean | a person, or a delegated agent |
 | `delegation_grant` | any | a person, requested by a person |
 
 The requester never approves their own request. An agent's sub-agents are in
@@ -68,6 +70,23 @@ that commit only; a new push needs a new request.
 The check's summary names the requesting and approving principals. That is
 the record an audit cites, because every GitHub action reads as one shared
 account.
+
+## Libraries
+
+`POST /api/libraries/requests` with `{ecosystem, package_name, version, reason,
+owner, version_policy}` vets the package (OSV, deps.dev, OpenSSF Scorecard,
+typosquat and new-package checks) and opens a `library_approval` request. The
+tier is computed from the report: `flagged` when any check found something or
+could not be read, `clean` otherwise. Approving puts the library on its
+ecosystem's allowlist; a rejection is copied back onto the request with the
+approver's rationale (`GET /api/libraries/requests/{id}`).
+
+`GET /api/libraries/managed` lists every library in use with its status, owner,
+version policy and flags; `POST /api/libraries/baseline` records every
+unrecorded one as `tolerated`. The `library-allowlist` check runs on every open
+pull request and only reports, until a person switches a repository with
+`PUT /api/libraries/repo-mode` `{repo, mode: "blocking"}`, which is refused
+while any library in the repository's SBOM has no approved or tolerated entry.
 
 ## Letting an agent approve
 

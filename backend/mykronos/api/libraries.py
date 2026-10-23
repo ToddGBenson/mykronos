@@ -36,7 +36,7 @@ class LibraryRequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: The purl ecosystem: npm, pypi, golang, maven, cargo, nuget.
-    ecosystem: str = Field(min_length=1, max_length=32, pattern=r"^[a-z0-9-]+$")
+    ecosystem: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
     package_name: str = Field(min_length=1, max_length=214)
     version: str = Field(min_length=1, max_length=128)
     #: Why the library is needed. The approver reads it beside the report.
@@ -113,7 +113,7 @@ class ManagedLibrariesOut(BaseModel):
 class LibraryEntryIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ecosystem: str = Field(min_length=1, max_length=32, pattern=r"^[a-z0-9-]+$")
+    ecosystem: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
     package_name: str = Field(min_length=1, max_length=214)
     #: tolerated | banned. `approved` comes only from an approved request.
     status: str | None = Field(default=None, max_length=16)
@@ -472,6 +472,7 @@ async def set_repo_mode(request: Request, body: LibraryModeIn, principal: HumanD
     A person's decision. Blocking is refused until every library in the
     repository's SBOM has an approved or tolerated entry.
     """
+    _require_writer(principal, "Changing a repository's library check")
     with request.app.state.db.session() as session:
         try:
             library_check.set_mode(

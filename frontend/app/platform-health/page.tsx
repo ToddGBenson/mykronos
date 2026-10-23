@@ -35,6 +35,10 @@ const CONSEQUENCE: Record<string, string> = {
   "premise-monitor":
     "A risk acceptance stays in force after the evidence it rests on has changed: a published port or a rising EPSS reopens nothing.",
   governance: "A control coming off goes unnoticed until somebody opens the panel.",
+  "library-checks":
+    "Pull requests get no library-allowlist check, so a new dependency is added without anyone seeing it is unapproved.",
+  "library-facts":
+    "EOL, abandoned and license-change flags on Libraries stop updating and read as unknown or out of date.",
   "threat-model-sync":
     "A change to a repository's .sdlc/threat-model.yaml never reaches the register, so scoring reads last month's threat model.",
   environment:
