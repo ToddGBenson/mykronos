@@ -461,9 +461,12 @@ anchors:
     # pipeline and team are static per file; each hook passes JOB.
     PIPELINE: thehub
     TEAM: main
-    # Concourse is bound to 127.0.0.1:8080 on this host and has no public
-    # hostname, so the link opens on this machine only.
-    CONCOURSE_URL: http://localhost:8080
+    # The browser URL an alert links to. Concourse is published on 127.0.0.1
+    # only, so the http://localhost:8080 this used to carry opened on this
+    # host and nowhere a phone reads Slack (TheHub #60941; #988 refused the
+    # same links in the briefing). Empty sends no link, and the notify script
+    # refuses a loopback one. A LAN or public URL here brings the link back.
+    CONCOURSE_URL: ""
 
   # Reporting credentials. Deliberately does *not* include the deploy keys or
   # the Azure principal: spec 15 section 6 asks for deploy credentials scoped
@@ -978,7 +981,16 @@ anchors:
             # The JOB page, not a build page: no task-visible mechanism carries the
             # build number (BUILD_NAME is resource-only), and the failing build
             # is the newest one listed there.
-            BUILD_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-thehub}/jobs/${JOB:-}"
+            #
+            # TheHub #60941: no link unless CONCOURSE_URL names a real host. A
+            # loopback URL opens only on the Concourse host itself, never on
+            # the phone the alert is read on, so it is left out rather than
+            # sent as a link that cannot open.
+            BUILD_URL=""
+            case "${CONCOURSE_URL:-}" in
+              ""|*://localhost|*://localhost[:/]*|*://127.*|*://\[::1\]*|*://0.0.0.0*) ;;
+              *) BUILD_URL="${CONCOURSE_URL%/}/teams/${TEAM:-main}/pipelines/${PIPELINE:-thehub}/jobs/${JOB:-}" ;;
+            esac
             JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
 
             # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
@@ -1018,8 +1030,9 @@ anchors:
             # version wrote to the same place - so no alert from this anchor
             # has ever been delivered. It failed inside an on_failure hook,
             # where the only symptom is a red job that was already red.
-            printf '{"channel":"%s","text":"%s\\n%s"}' \
-              "$SLACK_CHANNEL" "$ESCAPED" "$BUILD_URL" > /tmp/payload.json
+            # The link is its own line when there is one, and absent when not.
+            printf '{"channel":"%s","text":"%s%s"}' \
+              "$SLACK_CHANNEL" "$ESCAPED" "${BUILD_URL:+\\n$BUILD_URL}" > /tmp/payload.json
 
             RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
@@ -3778,13 +3791,26 @@ jobs:
                 # refuses to upload an empty report, so contention here does
                 # not become a clean container scan - it becomes a red lane,
                 # which is correct and also blocks everything behind it.
+                #
+                # JSON first, then converted to the SARIF the uploader reads
+                # (TheHub #60929, #382 in this lane). One scan, two renderings:
+                # the JSON carries the image config, where the image records
+                # the commit it was built from (HUB_BUILD_SHA), and the upload
+                # step's `mykronos.image_provenance --annotate` copies that onto
+                # the SARIF for the adapter to check against the tag. Before
+                # this, only the mykronos lane asked, so a thehub image that
+                # could not name its commit raised nothing. The estate images
+                # below get no JSON twin: they record no commit of ours, so
+                # they are never asked and never reported absent.
                 trivy image "${REGISTRY}/thehub:${SHA}" \
                   --insecure \
                   --scanners vuln \
-                  --format sarif --output results/trivy.sarif \
+                  --format json --output results/trivy.json \
                   --exit-code 0 --quiet \
                   --parallel 1 \
                   --timeout 30m
+                trivy convert --format sarif \
+                  --output results/trivy.sarif results/trivy.json
 
                 # An absent or empty report is a failed scan, and the uploader
                 # already treats it as one. Saying so here names the step that
@@ -3884,6 +3910,16 @@ jobs:
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
                   pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  # TheHub #60929: stamp the thehub image's report with the
+                  # build SHA it records, so the adapter reports an image that
+                  # records none apart from one that records the wrong one.
+                  # Never fatal: this step exists to upload whatever the scan
+                  # left, a failed scan included (PS-3), and a stamp that cannot
+                  # run must not turn that into no upload at all.
+                  if [ -d results ]; then
+                    python -m mykronos.image_provenance --annotate results \
+                      || echo "::warning::Could not stamp the build SHA (#382); uploading the scan unchecked."
+                  fi
                   MYKRONOS_JOB=containers python -m mykronos.upload \
                     --capability containers --tool trivy \
                     --results-path results \

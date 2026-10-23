@@ -8285,6 +8285,13 @@ export interface components {
             /** Observed At */
             observed_at: string | null;
             lag?: components["schemas"]["DeployLagOut"] | null;
+            /**
+             * Probe Source
+             * @default
+             */
+            probe_source: string;
+            /** Missing */
+            missing?: string[];
         };
         /** PoEnforcedTierOut */
         PoEnforcedTierOut: {

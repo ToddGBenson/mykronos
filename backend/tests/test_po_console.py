@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from mykronos import deployments
 from mykronos.approvals.engine import canonical_digest
 from mykronos.db.models import ApprovalDecision, ApprovalRequest, Delegation
 from mykronos.schemas import utcnow
@@ -112,6 +113,50 @@ class TestDelivery:
         assert shipped[older]["scans"][0]["run_url"].endswith("/actions/runs/9900123")
         assert [row["sha"] for row in body["not_shipped"]] == [review]
         assert body["deployment"]["running_revision"] == running[:12]
+
+    def test_a_derived_probe_reads_configured_not_not_configured(
+        self,
+        client: TestClient,
+        viewer_auth: dict[str, str],
+    ) -> None:
+        """TheHub #60942: the deployments endpoint and the briefing knew TheHub's
+        and this platform's probes are derived (#60918); the console did not."""
+        settings = client.app.state.settings  # type: ignore[attr-defined]
+        settings.hub_api_url = "http://hub.invalid:8000"
+        settings.hub_api_token = "t"
+        settings.build_sha = "d" * 40
+        hub_id = onboard(client, repo="example-org/TheHub")
+        self_id = onboard(client, repo="example-org/mykronos")
+        lib_id = onboard(client, repo="example-org/a-library")
+
+        hub = client.get(f"{base(hub_id)}/delivery", headers=viewer_auth).json()["deployment"]
+        own = client.get(f"{base(self_id)}/delivery", headers=viewer_auth).json()["deployment"]
+        lib = client.get(f"{base(lib_id)}/delivery", headers=viewer_auth).json()["deployment"]
+
+        assert hub["probe_source"] == deployments.SOURCE_HUB
+        assert own["probe_source"] == deployments.SOURCE_SELF
+        # Configured, and the sweep has not answered yet: not "not_configured".
+        assert hub["probe_status"] == own["probe_status"] == "awaiting_first_answer"
+        assert hub["missing"] == [] and own["missing"] == []
+        # The lag is the one a configured probe gets, not omitted as for a library.
+        assert hub["lag"] is not None and hub["lag"]["status"] == "unknown"
+        # A repository with nothing to probe still says so, and says what it needs.
+        assert lib["probe_source"] == ""
+        assert lib["probe_status"] == "not_configured"
+        assert lib["lag"] is None
+        assert lib["missing"] and "deployment probe URL" in lib["missing"][0]
+
+    def test_an_answered_derived_probe_keeps_its_stored_status(
+        self,
+        client: TestClient,
+        viewer_auth: dict[str, str],
+    ) -> None:
+        settings = client.app.state.settings  # type: ignore[attr-defined]
+        settings.build_sha = "e" * 40
+        repo_id = onboard(client, repo="example-org/mykronos", deployed_revision="e" * 12)
+        body = client.get(f"{base(repo_id)}/delivery", headers=viewer_auth).json()
+        assert body["deployment"]["probe_status"] == "ok"
+        assert body["deployment"]["probe_source"] == deployments.SOURCE_SELF
 
     def test_an_empty_lake_is_empty_and_says_nothing_failed(
         self,
