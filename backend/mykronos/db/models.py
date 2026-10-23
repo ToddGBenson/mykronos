@@ -941,6 +941,41 @@ class AutoTriageAction(Base):
     undo_reason: Mapped[str | None] = mapped_column(Text, default=None)
 
 
+class ModelTriageProposal(Base):
+    """A model's proposed verdict on one finding, in shadow (TheHub #60893,
+    absorbing #60748).
+
+    Recorded under the `finding_disposition` duty and **never applied**:
+    nothing reads this table to change a finding. It exists to be graded -
+    `shadow_proposals.grade` compares each proposal with the verdict a person
+    later recorded - so the decision to let a model act is made on a measured
+    agreement rate rather than on how convincing its prose was.
+
+    Append-only like the audit log: a model that changes its mind writes a
+    new row, and the grade reads the latest per finding and model.
+    """
+
+    __tablename__ = "model_triage_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: The cluster the finding was in when proposed (TheHub #60887), if known.
+    cluster_id: Mapped[str] = mapped_column(String(64), default="")
+    duty: Mapped[str] = mapped_column(String(64), default="finding_disposition")
+    #: true_positive | false_positive | suppressed | accepted_risk
+    proposed_status: Mapped[str] = mapped_column(String(32))
+    confidence: Mapped[float | None] = mapped_column(Float, default=None)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    #: The exact model id that read the code, so grades are per model.
+    model: Mapped[str] = mapped_column(String(128), default="")
+    #: What it read: files and lines, as the proposer reported them.
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    proposed_by: Mapped[str] = mapped_column(String(255), default="")
+    actor_kind: Mapped[str] = mapped_column(String(16), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class PublicEndpoint(Base):
     """A URL the operator says is reachable from the internet (mykronos.exposure).
 
