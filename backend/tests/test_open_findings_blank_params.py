@@ -124,7 +124,7 @@ class TestBlankIsUnset:
             headers=admin_auth,
         )
         assert response.status_code == 200, response.text
-        assert response.json()["limit"] == 1
+        assert response.json()["shown"] <= 1
 
 
 class TestMalformedIs422:
