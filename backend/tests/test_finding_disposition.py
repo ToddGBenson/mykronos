@@ -10,13 +10,23 @@ an agent's on medium and below, are unchanged.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import select
 
+from mykronos import agent_work, toxic
+from mykronos.adminauth import ActorKind, Principal, Role
 from mykronos.db.models import AuditLogEntry
-from tests.conftest import finding_payload, post_findings, post_scan
+from tests.conftest import (
+    REPO,
+    dependency_finding,
+    finding_payload,
+    issue_token,
+    post_findings,
+    post_scan,
+)
 
 REASON = (
     "Reflected value is HTML-entity encoded in markup and \\u003c-escaped inside the "
@@ -218,6 +228,7 @@ class TestMembersOfASeriousCombination:
 
     @staticmethod
     def _pair(client, auth, run_compaction) -> tuple[str, str]:
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'atlas', 'dast')}"}
         for capability, finding in (
             ("atlas", dependency_finding(severity="high")),
             (
