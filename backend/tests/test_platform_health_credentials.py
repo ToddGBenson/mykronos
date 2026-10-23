@@ -189,4 +189,4 @@ class TestTheWindow:
     """The 14-day boundary, decided without a clock race."""
 
     def test_the_window_is_fourteen_days(self) -> None:
-        assert platform_health.AGENT_EXPIRY_WINDOW == timedelta(days=14)
+        assert timedelta(days=14) == platform_health.AGENT_EXPIRY_WINDOW
