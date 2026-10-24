@@ -322,16 +322,24 @@ set --
 if [ -n '$First' ] && [ -e '$First' ]; then set -- '$First'; fi
 for f in `$(ls -A); do [ "`$f" = '$First' ] || set -- "`$@" "`$f"; done
 [ `$# -gt 0 ] || { echo 'RESULT empty-source'; exit 4; }
-tar -czf '/out/$archive' $excl "`$@" 2>/tmp/err
+# -v lists each member as it is written, so the archive is never re-read.
+tar -czvf '/out/$archive' $excl "`$@" >/tmp/list 2>/tmp/err
 rc=`$?
 head -n 10 /tmp/err | sed 's/^/TARMSG /'
 echo "TAR_RC `$rc"
-tar -tzf '/out/$archive' > /tmp/list 2>/dev/null
 echo "ENTRIES `$(wc -l < /tmp/list)"
 echo "COUNT `$($countCmd)"
 "@
+    # The archive is written into a scratch volume and brought out with docker cp,
+    # never through the Windows bind mount: on 2026-10-22/23, with the host short
+    # of memory, tar through ${staging}:/out failed ("gzip: stdout: Cannot allocate
+    # memory") and tar -tzf off it was silently cut short (6,917 of 20,174
+    # entries). docker cp streams over the Docker API, as operational-db does.
+    $stageVol = "mykronos-backup-stage-$Name"
+    $cid = $null
     try {
-        $r = Invoke-Docker -Arguments @('run', '--rm', '-i', '--network', 'none', '--user', '0:0', '-v', "${Volume}:/src:ro", '-v', "${staging}:/out", $ToolImage, 'sh', '-s') -InputText $sh
+        $null = Invoke-Docker -Arguments @('volume', 'create', $stageVol)
+        $r = Invoke-Docker -Arguments @('run', '--rm', '-i', '--network', 'none', '--user', '0:0', '-v', "${Volume}:/src:ro", '-v', "${stageVol}:/out", $ToolImage, 'sh', '-s') -InputText $sh
         $result = $r.Lines | Where-Object { $_.StartsWith('RESULT ') } | Select-Object -Last 1
         if ($result) { throw "source $($result.Substring(7)) ($src in $Volume)" }
         $rcLine = $r.Lines | Where-Object { $_.StartsWith('TAR_RC ') } | Select-Object -Last 1
@@ -345,11 +353,18 @@ echo "COUNT `$($countCmd)"
         if ($entries -le 0) { throw 'the archive lists no entries' }
         $rec.detail = [ordered]@{ entries = $entries; $CountLabel = $count }
         $plain = Join-Path $staging $archive
+        $c = Invoke-Docker -Arguments @('create', '-v', "${stageVol}:/out", $ToolImage)
+        if ($c.ExitCode -ne 0) { throw "docker create for the copy-out failed: $(($c.Lines | Select-Object -Last 1))" }
+        $cid = ($c.Lines | Select-Object -Last 1).Trim()
+        $cp = Invoke-Docker -Arguments @('cp', "${cid}:/out/$archive", $plain)
+        if ($cp.ExitCode -ne 0) { throw "docker cp of $archive failed: $(($cp.Lines | Select-Object -Last 1))" }
         Add-EncryptedComponent -Record $rec -PlainPath $plain -FileName $archive
         $rec.status = 'ok'
     } catch {
         $rec.error = "$($_.Exception.Message)"
     } finally {
+        if ($cid) { $null = Invoke-Docker -Arguments @('rm', '-f', $cid) }
+        $null = Invoke-Docker -Arguments @('volume', 'rm', '-f', $stageVol)
         $rec.seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
     }
     return $rec

@@ -30,9 +30,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import risk_evidence
 from mykronos.lake import Catalog
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
@@ -124,22 +124,13 @@ def _pool(catalog: Catalog, repo: str | None) -> list[dict[str, Any]]:
 def _kev_ids(session: Session | None, findings: list[dict[str, Any]]) -> set[str]:
     if session is None:
         return set()
-    from mykronos.db.models import ThreatIntelMatch
-
     cves = {
-        extract_cve(str(f.get("rule_id") or ""), str(f.get("title") or "")) for f in findings
+        cve
+        for f in findings
+        if (cve := extract_cve(str(f.get("rule_id") or ""), str(f.get("title") or "")))
     }
-    cves.discard(None)
-    if not cves:
-        return set()
-    return {
-        str(c)
-        for c in session.execute(
-            select(ThreatIntelMatch.cve_id).where(
-                ThreatIntelMatch.cve_id.in_(cves), ThreatIntelMatch.in_kev.is_(True)
-            )
-        ).scalars()
-    }
+    # The one KEV read every risk decision shares (TheHub #60901).
+    return set(risk_evidence.kev_listed(session, cves))
 
 
 def detect(

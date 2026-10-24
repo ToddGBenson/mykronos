@@ -20,6 +20,7 @@ from mykronos import (
     __version__,
     auto_triage,
     briefing_dm,
+    briefing_flash,
     environment,
     finding_disposition,
     logsafe,
@@ -41,6 +42,7 @@ from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
 from mykronos.api.auto_triage import router as auto_triage_router
 from mykronos.api.briefing_daily import router as briefing_daily_router
+from mykronos.api.briefing_weekly import router as briefing_weekly_router
 from mykronos.api.control_observations import router as control_observations_router
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.executive import router as executive_router
@@ -85,6 +87,7 @@ from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     BRIEFING_DM_JOB,
+    BRIEFING_FLASH_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
     SIGNAL_FILING_JOB,
@@ -770,6 +773,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings, db=app.state.db, read=briefing_dm.route_reader(app)
             )
 
+        async def _briefing_flash() -> None:
+            # Same-day flash DM (TheHub #60865): only an exploited or critical
+            # match to something shipped, each item once. Read through the
+            # weekly route so the DM says what the Monday page says.
+            await briefing_flash.send_flashes(
+                settings, db=app.state.db, read=briefing_flash.route_reader(app)
+            )
+
         async def _signal_filing() -> None:
             # Next-sprint candidates to TheHub's backlog (TheHub #60862),
             # once a UTC day, read through the briefing route so it files
@@ -901,6 +912,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # `skipped` with the missing setting, rather than being absent
             # from platform health and reading as "nothing to say".
             (BRIEFING_DM_JOB, briefing_dm.TICK_SECONDS, _briefing_dm),
+            (BRIEFING_FLASH_JOB, briefing_flash.TICK_SECONDS, _briefing_flash),
             # Always scheduled, for the same reason: without TheHub it records
             # `skipped` and says so.
             (SIGNAL_FILING_JOB, sprint_signal.TICK_SECONDS, _signal_filing),
@@ -982,6 +994,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
     app.include_router(briefing_daily_router)
+    app.include_router(briefing_weekly_router)
     app.include_router(control_observations_router)
     app.include_router(executive_router)
     app.include_router(rule_vectors_router)

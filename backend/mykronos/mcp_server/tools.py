@@ -684,7 +684,16 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
             Field(min_length=1, description="The way out. One must set ends_weakness."),
         ],
         premises: list[Premise] | None = None,
-        compensating_controls: list[dict[str, Any]] | None = None,
+        compensating_controls: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description=(
+                    "Each cites what observes it: observation_id (a control observation) "
+                    "or control_id (a declared control). Free text is refused, and only a "
+                    "verified control lowers the tier."
+                )
+            ),
+        ] = None,
         response: AcceptanceResponse = "accept",
         dry_run: DryRun = False,
     ) -> dict[str, Any]:

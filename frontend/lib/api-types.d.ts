@@ -1284,6 +1284,9 @@ export interface paths {
          *
          *     Every category filter takes several values, comma-separated or repeated
          *     (`severity=critical,high`); one value means what it always did.
+         *
+         *     A filter sent blank (`?min_epss=&severity=`) is the same as one left
+         *     out. A value that is present and invalid is a 422 naming the field.
          */
         get: operations["repo_open_findings_api_dashboard_repos__repo_id__open_findings_get"];
         put?: never;
@@ -2039,6 +2042,33 @@ export interface paths {
          *     `partial`. A read.
          */
         get: operations["daily_briefing_route_api_briefing_daily_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/briefing/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Weekly Briefing Route
+         * @description The Monday intelligence page per application (TheHub #60865).
+         *
+         *     Sections: advisories matched to what ships (KEV, EPSS, severity here,
+         *     reachability), threats fitted to the declared threat model, end-of-life
+         *     images, malicious packages, external exposure, vendor changes and
+         *     standards. Every item carries so-what, action, confidence and source; a
+         *     section that could not be read, or has no feed, says so. An item is
+         *     `flash` only when it is known exploited or critical and shipped. A read.
+         */
+        get: operations["weekly_briefing_route_api_briefing_weekly_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8541,6 +8571,13 @@ export interface components {
             /** Observed At */
             observed_at: string | null;
             lag?: components["schemas"]["DeployLagOut"] | null;
+            /**
+             * Probe Source
+             * @default
+             */
+            probe_source: string;
+            /** Missing */
+            missing?: string[];
         };
         /** PoEnforcedTierOut */
         PoEnforcedTierOut: {
@@ -12205,6 +12242,108 @@ export interface components {
             /** Cves */
             cves: string[];
         };
+        /** WeeklyBriefingOut */
+        WeeklyBriefingOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /**
+             * Week Of
+             * Format: date
+             */
+            week_of: string;
+            /** Pages */
+            pages: components["schemas"]["WeeklyPageOut"][];
+        };
+        /** WeeklyItemOut */
+        WeeklyItemOut: {
+            /** What */
+            what: string;
+            /**
+             * So What
+             * @description Why it matters to this application.
+             */
+            so_what: string;
+            /** Action */
+            action: string;
+            /**
+             * Confidence
+             * @enum {string}
+             */
+            confidence: "observed" | "inferred";
+            /**
+             * Confidence Reason
+             * @description What the confidence rests on.
+             */
+            confidence_reason: string;
+            /**
+             * Source
+             * @description The advisory's public page or the MyKronos page.
+             */
+            source: string;
+            /** Severity */
+            severity: string;
+            /** New This Week */
+            new_this_week: boolean;
+            /**
+             * Flash
+             * @description Known exploited or critical, and shipped: DMed the same day.
+             */
+            flash: boolean;
+            /** Flash Reason */
+            flash_reason: string;
+            /** Key */
+            key: string;
+        };
+        /** WeeklyPageOut */
+        WeeklyPageOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Repo Id */
+            repo_id: string;
+            /**
+             * Week Of
+             * Format: date
+             * @description The Monday the week starts on, local time.
+             */
+            week_of: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Sections */
+            sections: components["schemas"]["WeeklySectionOut"][];
+        };
+        /** WeeklySectionOut */
+        WeeklySectionOut: {
+            /** Key */
+            key: string;
+            /** Title */
+            title: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "unavailable" | "not_available";
+            /** Source */
+            source: string;
+            /** As Of */
+            as_of: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Items */
+            items?: components["schemas"]["WeeklyItemOut"][];
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
+        };
         /** WhoAmI */
         WhoAmI: {
             /** Actor */
@@ -14035,7 +14174,7 @@ export interface operations {
                 severity?: components["schemas"]["Severity"][] | null;
                 finding_status?: components["schemas"]["FindingStatus"][] | null;
                 rule_id?: string | null;
-                kev_only?: boolean;
+                kev_only?: boolean | null;
                 min_epss?: number | null;
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination")[] | null;
                 fixable?: boolean | null;
@@ -14052,7 +14191,7 @@ export interface operations {
                 older_than_days?: number | null;
                 /** @description First seen within the last N days. */
                 newer_than_days?: number | null;
-                limit?: number;
+                limit?: number | null;
             };
             header?: never;
             path: {
@@ -14794,6 +14933,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DailyBriefingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    weekly_briefing_route_api_briefing_weekly_get: {
+        parameters: {
+            query?: {
+                /** @description One application's page, by onboarding id. Omit for every one. */
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WeeklyBriefingOut"];
                 };
             };
             /** @description Validation Error */

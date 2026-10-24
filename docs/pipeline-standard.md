@@ -521,8 +521,8 @@ These are named rather than done, each with the reason.
    and sast all schedule in the same instant onto two workers, which is what
    produced the iptables contention PS-12 now retries around. The three
    pipelines in this repository are structurally immune to the same thing:
-   `thehub` uses a `2:00–3:00 AM` window and puts every job in one
-   `serial_groups: [worker]`, `mykronos` and `personal-soc` use windows too.
+   `thehub` uses a `2:00–3:00 AM` window and puts every job in one of
+   three serial lanes (D-172), `mykronos` and `personal-soc` use windows too.
    But keel's pipeline is not maintained here — `docs/current-state/keel-pipeline.yml`
    is a captured snapshot, not a source — so the fan-out fix belongs in keel's
    own repository. Retrying a stampede is treating the symptom; the two changes
