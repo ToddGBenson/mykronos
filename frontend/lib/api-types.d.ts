@@ -5538,6 +5538,50 @@ export interface components {
             state: string;
         };
         /**
+         * CiStallJobOut
+         * @description One lane whose latest finished build errored (`ci_stall.ErroredJob`).
+         */
+        CiStallJobOut: {
+            /** Pipeline */
+            pipeline: string;
+            /** Job */
+            job: string;
+            /** Build */
+            build?: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * CiStallOut
+         * @description Is Concourse stalled - many lanes erroring together (TheHub #60975)?
+         */
+        CiStallOut: {
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /** Jobs */
+            jobs: components["schemas"]["CiStallJobOut"][];
+            /** Checklist */
+            checklist: string[];
+            /** Threshold */
+            threshold: number;
+            /** Window Minutes */
+            window_minutes: number;
+            /**
+             * Jobs Inspected
+             * @default 0
+             */
+            jobs_inspected: number;
+            /** Notified At */
+            notified_at?: string | null;
+        };
+        /**
          * CisGapOut
          * @description A CIS recommendation this read does not reach, and why.
          */
@@ -8638,6 +8682,7 @@ export interface components {
             jobs: components["schemas"]["JobHealthOut"][];
             /** Dependencies */
             dependencies: components["schemas"]["DependencyHealthOut"][];
+            ci_stall: components["schemas"]["CiStallOut"];
             /** Note */
             note: string;
         };

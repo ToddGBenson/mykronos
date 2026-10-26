@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import httpx2
 from sqlalchemy import select
 
-from mykronos import dormant_lanes, gate_liveness, timeout_audit
+from mykronos import ci_stall, dormant_lanes, gate_liveness, timeout_audit
 from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
@@ -1627,6 +1627,69 @@ class JobSkipped(Exception):  # noqa: N818 - an outcome, not an error
     since nothing broke, and never a success, since nothing was done. The
     briefing DM raises it when Slack is not configured for it.
     """
+
+
+#: The scheduled job's name and its `job_runs` row (TheHub #60975).
+CI_STALL_JOB = "ci-stall"
+
+
+class CiStallIncompleteError(RuntimeError):
+    """The stall check could not finish, or found a stall and could not
+    deliver the notice. `_every` records the run as failed, and because the
+    episode is not marked notified, the next tick tries again."""
+
+
+async def notify_ci_stall(
+    client: ConcourseClient,
+    *,
+    db: Database,
+    notifier: Notifier | None,
+    now: datetime | None = None,
+) -> ci_stall.CiStall:
+    """Say "Concourse is stalled" once per stall (TheHub #60975).
+
+    Reads the anonymous job summaries, assesses them (`ci_stall.assess`),
+    and records the evaluation as part of an episode. A red evaluation whose
+    episode has not been announced sends one notice; every later red of the
+    same episode sends nothing, and a green closes the episode.
+
+    Fails closed (TheHub #59331). The episode is marked notified only when
+    the notifier reports delivery. No Slack transport raises `JobSkipped`
+    with the reason; a refused post raises `CiStallIncompleteError`. Neither
+    looks like a delivered alert, and both are retried next tick.
+    """
+    moment = now or datetime.now(UTC)
+    payload = await asyncio.to_thread(client.all_jobs)
+    if payload is None:
+        raise CiStallIncompleteError("could not check: the Concourse job list is unreadable")
+
+    stall = ci_stall.assess(payload, link=client.build_url)
+    episode = ci_stall.observe(db, stall, now=moment)
+    if not stall.red or episode is None:
+        logger.info("CI stall: %s", stall.detail)
+        return stall
+
+    logger.warning("CI stall: %s", stall.detail)
+    if episode.notified_at is not None:
+        return stall
+    if notifier is None or not notifier.enabled:
+        raise JobSkipped(
+            "Concourse is stalled and no Slack transport is configured, so "
+            "nobody has been told; MyKronos Health shows it"
+        )
+    delivered = await notifier.send(
+        Notification(
+            title="Concourse is stalled",
+            detail=stall.detail,
+            repo_full_name="",
+            level="critical",
+            lines=tuple(ci_stall.notice_lines(stall)),
+        )
+    )
+    if not delivered:
+        raise CiStallIncompleteError("Concourse is stalled and the notice was not delivered")
+    ci_stall.mark_notified(db, episode.id, now=moment)
+    return stall
 
 
 #: The briefing DM's job name (`mykronos.briefing_dm`), here so the table

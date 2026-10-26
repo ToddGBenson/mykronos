@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from mykronos import (
     briefing,
     briefing_sources,
+    ci_stall,
     composition,
     consult,
     control_observations,
@@ -7100,6 +7101,34 @@ class DependencyHealthOut(BaseModel):
     configured: bool = True
 
 
+class CiStallJobOut(BaseModel):
+    """One lane whose latest finished build errored (`ci_stall.ErroredJob`)."""
+
+    pipeline: str
+    job: str
+    build: str | None = None
+    started_at: datetime
+    #: A browser link, or null: never a loopback address (TheHub #60924).
+    url: str | None = None
+
+
+class CiStallOut(BaseModel):
+    """Is Concourse stalled - many lanes erroring together (TheHub #60975)?"""
+
+    #: red | green | unknown. Unknown is "could not ask", never green.
+    status: str
+    detail: str
+    #: Red: the lanes in the window. Otherwise every unpaused errored lane.
+    jobs: list[CiStallJobOut]
+    #: The fixed order of repair, the same every time.
+    checklist: list[str]
+    threshold: int
+    window_minutes: int
+    jobs_inspected: int = 0
+    #: When this stall's notice was delivered; null if it has not been.
+    notified_at: datetime | None = None
+
+
 class PlatformHealthOut(BaseModel):
     """Whether this platform is itself working."""
 
@@ -7108,7 +7137,39 @@ class PlatformHealthOut(BaseModel):
     degraded: bool
     jobs: list[JobHealthOut]
     dependencies: list[DependencyHealthOut]
+    ci_stall: CiStallOut
     note: str
+
+
+async def _ci_stall_now(request: Request) -> CiStallOut:
+    """The stall assessment, read live: a cached "is CI stalled" is worth
+    nothing for the reason a cached Vault probe is not."""
+    settings = request.app.state.settings
+    if not settings.concourse_url:
+        stall = ci_stall.unknown("No Concourse is configured for this deployment.")
+    else:
+        client = ConcourseClient(
+            settings.concourse_url,
+            team=settings.concourse_team,
+            external_url=settings.concourse_external_url,
+        )
+        payload = await asyncio.to_thread(client.all_jobs)
+        stall = platform_health.assess_ci_stall(payload, link=client.build_url)
+    notified_at = None
+    if stall.red:
+        with request.app.state.db.session() as session:
+            episode = ci_stall.open_episode(session)
+            notified_at = episode.notified_at if episode is not None else None
+    return CiStallOut(
+        status=stall.status,
+        detail=stall.detail,
+        jobs=[CiStallJobOut(**vars(job)) for job in stall.jobs],
+        checklist=list(ci_stall.CHECKLIST),
+        threshold=ci_stall.STALL_THRESHOLD,
+        window_minutes=int(ci_stall.STALL_WINDOW.total_seconds() // 60),
+        jobs_inspected=stall.jobs_inspected,
+        notified_at=notified_at,
+    )
 
 
 @router.get("/platform-health", response_model=PlatformHealthOut)
@@ -7177,12 +7238,16 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     except Exception:  # noqa: BLE001 — job health still stands
         logger.warning("Self-check failed while rendering platform health")
 
-    health = platform_health.PlatformHealth(jobs=jobs, dependencies=dependencies)
+    stall = await _ci_stall_now(request)
+    health = platform_health.PlatformHealth(
+        jobs=jobs, dependencies=dependencies, ci_stalled=stall.status == "red"
+    )
 
     return PlatformHealthOut(
         degraded=health.degraded,
         jobs=[JobHealthOut(**vars(job)) for job in jobs],
         dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
+        ci_stall=stall,
         note=(
             "A job that fails is caught, logged and retried, which is right and is "
             "also what makes it invisible. These rows are the record that log line "
