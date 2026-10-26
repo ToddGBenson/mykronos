@@ -940,7 +940,9 @@ class Settings(BaseSettings):
             "Where a browser reaches this dashboard, e.g. `https://mykronos."
             "example`. The briefing DM links to `<dashboard_url>/briefing`; a "
             "DM with no link to the page it summarises is skipped rather than "
-            "sent."
+            "sent. The library-allowlist check run links each reported library "
+            "to `<dashboard_url>/libraries/request`; unset, it carries no links "
+            "and says so."
         ),
     )
 
