@@ -758,6 +758,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    oracle_read_coverage_threshold: float = Field(
+        default=0.8,
+        ge=0,
+        le=1,
+        description=(
+            "The share of a repository's application source (0 to 1) its SAST "
+            "analysers must read before an Oracle verdict stops carrying a "
+            "read-coverage confidence note (TheHub #60962). The note never "
+            "changes the verdict; coverage that cannot be read is always noted."
+        ),
+    )
+
     pipeline_definitions_dir: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "deploy" / "concourse" / "pipelines",
