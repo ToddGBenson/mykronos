@@ -45,7 +45,9 @@ has read the code records a proposed verdict (`true_positive`,
 id, rationale, confidence and what it read. Nothing reads that table to change
 a finding or to raise an approval. Each proposal is graded against the first
 verdict a **person** (audit `actor_kind = human`) recorded **after** it, or a
-scanner observing the finding fixed, which confirms `true_positive`. A
+scanner observing the finding fixed, which confirms `true_positive`; so
+does a person reopening it, or accepting its risk (operator decision on
+#1006). A
 proposal made after the verdict could have read it and is `ineligible`, not
 agreement. Grades are per model id and per model's latest proposal per
 finding.

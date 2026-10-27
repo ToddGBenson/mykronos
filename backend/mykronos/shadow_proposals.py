@@ -37,8 +37,9 @@ MODE = "shadow"
 #: verdict a rule classifier cannot give and a model reading the code can.
 PROPOSALS = ("true_positive", "false_positive", "suppressed", "accepted_risk")
 
-#: Human outcomes that confirm a finding was real.
-_REAL = ("accepted_risk", "fixed")
+#: Human outcomes that confirm a finding was real. A person reopening it
+#: says so too (operator decision on #1006, first review item 4).
+_REAL = ("accepted_risk", "fixed", "open")
 
 
 def record(
