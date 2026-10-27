@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -371,6 +372,73 @@ controls:
     evidence_ref: frontend/proxy.ts
     applies_to: public-shop
 """
+
+
+# Every line break YAML recognises (1.1 adds NEL, LS and PS to CR and LF), and
+# the C0/C1 controls a YAML reader refuses outright.
+_YAML_BREAKS = ["\r", "\n", "\x85", chr(0x2028), chr(0x2029)]
+_YAML_UNSAFE = (
+    [chr(c) for c in range(0x20) if c != 0x0A]
+    + [chr(c) for c in range(0x7F, 0xA0)]
+    + [chr(0x2028), chr(0x2029), chr(0xFEFF)]
+)
+
+
+class TestCommentInjection:
+    """#1008 review: record text rendered into `#` comments must not be able
+    to end the comment and add keys to the committed file."""
+
+    @pytest.mark.parametrize("brk", _YAML_BREAKS)
+    def test_one_line_strips_every_yaml_line_break(self, brk: str) -> None:
+        flat = tmd._one_line(f"title{brk}injected: 1")
+
+        assert yaml.safe_load(f"a: 1\n# c {flat}\n") == {"a": 1}
+
+    def test_one_line_strips_c0_and_c1_controls(self) -> None:
+        flat = tmd._one_line("a" + "".join(_YAML_UNSAFE) + "b")
+
+        assert not any(ch in flat for ch in _YAML_UNSAFE)
+        assert flat.startswith("a") and flat.endswith("b")
+
+    @pytest.mark.parametrize("brk", ["\x85", chr(0x2028), chr(0x2029), "\r"])
+    def test_crafted_records_cannot_add_keys_to_the_draft(self, brk: str) -> None:
+        payload = f"{brk}injected: 1{brk}"
+        bundle = _bundle()
+        assert bundle.endpoints is not None and bundle.findings is not None
+        # An endpoint URL is both the evidence detail and its unsanitised ref.
+        bundle.endpoints.append(
+            {
+                "url": f"https://shop.example.net/x{payload}",
+                "label": "crafted",
+                "last_status": "gated",
+                "last_probed_at": NOW,
+            }
+        )
+        bundle.findings.append(
+            {
+                "finding_id": "f-crafted",
+                "capability": "dast",
+                "rule_id": "10020",
+                "title": f"Crafted title{payload}",
+                "severity": "medium",
+                "file_path": "/crafted",
+                "raw_finding_json": json.dumps(
+                    {"instance": {"uri": f"https://shop.example.net/crafted{payload}"}}
+                ),
+                "cwe_ids_json": json.dumps(["CWE-79"]),
+            }
+        )
+        text = tmd.draft(bundle, now=NOW).render()
+
+        assert not any(ch in text for ch in _YAML_UNSAFE)
+        loaded = yaml.safe_load(text)
+        assert "injected" not in loaded
+        assert parse_manifest(text).state == "valid"
+        # The crafted values are still shown, flattened onto their comment line.
+        assert any(
+            line.lstrip().startswith("#") and "injected: 1" in line
+            for line in text.split("\n")
+        )
 
 
 class TestPullRequests:
