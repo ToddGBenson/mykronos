@@ -186,7 +186,7 @@ const GRADE_TONE = {
  * What somebody reads before deciding (TheHub #60893): history, how the same
  * rule was decided elsewhere, the cluster, and model proposals in shadow.
  */
-export function DossierPanel({ dossier, repoId }: { dossier: FindingDossier; repoId: string }) {
+export function DossierPanel({ dossier }: { dossier: FindingDossier }) {
   return (
     <section className="border border-rule bg-paper-2">
       <div className="border-b border-rule-soft px-3 py-1.5">
@@ -217,13 +217,20 @@ export function DossierPanel({ dossier, repoId }: { dossier: FindingDossier; rep
               {dossier.similar_dispositions.map((s) => (
                 <li key={s.finding_id} className="text-[12px]">
                   <Pill tone="muted">{s.status.replace(/_/g, " ")}</Pill>{" "}
-                  <Link
-                    href={`/repos/${repoId}/findings/${s.finding_id}`}
-                    className="font-mono text-[11px] underline decoration-dotted underline-offset-2"
-                  >
-                    {s.repo_full_name}
-                    {s.where ? ` · ${s.where}` : ""}
-                  </Link>
+                  {s.repo_id ? (
+                    <Link
+                      href={`/repos/${s.repo_id}/findings/${s.finding_id}`}
+                      className="font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                    >
+                      {s.repo_full_name}
+                      {s.where ? ` · ${s.where}` : ""}
+                    </Link>
+                  ) : (
+                    <span className="font-mono text-[11px]">
+                      {s.repo_full_name}
+                      {s.where ? ` · ${s.where}` : ""}
+                    </span>
+                  )}
                   {s.reason ? <span className="text-ink-2"> — {s.reason}</span> : null}
                   {s.decided_by ? (
                     <span className="font-mono text-[11px] text-ink-3"> · {s.decided_by}</span>

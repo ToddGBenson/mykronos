@@ -9578,7 +9578,7 @@ export interface components {
             confidence?: number | null;
             /**
              * Evidence
-             * @description What was read: files and line ranges, as the proposer reports them.
+             * @description What was read: files and line ranges, as the proposer reports them. At most 16384 bytes as JSON.
              */
             evidence?: {
                 [key: string]: unknown;
@@ -11109,6 +11109,8 @@ export interface components {
             finding_id: string;
             /** Repo Full Name */
             repo_full_name: string;
+            /** Repo Id */
+            repo_id?: string | null;
             /** Capability */
             capability: string;
             /** Status */

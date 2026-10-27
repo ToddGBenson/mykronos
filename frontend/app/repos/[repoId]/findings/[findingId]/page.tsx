@@ -137,7 +137,7 @@ export default async function FindingRecordPage({
       ) : null}
 
       {dossierResult.ok ? (
-        <DossierPanel dossier={dossierResult.data} repoId={repoId} />
+        <DossierPanel dossier={dossierResult.data} />
       ) : (
         <ErrorPanel title="Dossier unavailable" detail={dossierResult.error} />
       )}

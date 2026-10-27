@@ -17,7 +17,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import shadow_proposals
-from mykronos.db.models import AuditLogEntry, AutoTriageAction, ModelTriageProposal
+from mykronos.db.models import (
+    AuditLogEntry,
+    AutoTriageAction,
+    ModelTriageProposal,
+    RepoOnboarding,
+)
 from mykronos.schemas import asset_label
 from mykronos.threat_intel import extract_cve
 
@@ -59,10 +64,12 @@ def history(session: Session, row: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "detail": "the finding's current status",
             }
         )
+    # The newest entries when there are more than are listed: the latest
+    # decision is the one an investigator needs. Sorted oldest first below.
     for entry in session.scalars(
         select(AuditLogEntry)
         .where(AuditLogEntry.entity_id == finding_id)
-        .order_by(AuditLogEntry.created_at)
+        .order_by(AuditLogEntry.created_at.desc())
         .limit(HISTORY_LISTED)
     ):
         detail = entry.detail or {}
@@ -106,8 +113,9 @@ def similar(
     if not rule_id and not cve:
         return []
     statuses = ", ".join(f"'{s}'" for s in DISPOSED)
-    clauses = ["rule_id = ?"]
-    params: list[Any] = [rule_id]
+    # An empty rule id would match every disposed finding that has none.
+    clauses: list[str] = ["rule_id = ?"] if rule_id else []
+    params: list[Any] = [rule_id] if rule_id else []
     if cve:
         clauses.append("upper(title) LIKE ?")
         params.append(f"%{cve}%")
@@ -131,6 +139,21 @@ def similar(
                 str((entry.detail or {}).get("reason") or ""),
                 f"{entry.actor} ({entry.actor_kind or 'unattributed'})",
             )
+    # The record page's route takes a repository's onboarding id, and a
+    # precedent is often in another repository than the page it is shown on.
+    names = {str(r[1]) for r in rows if r[1]}
+    repo_ids = (
+        {
+            str(name): str(repo_id)
+            for name, repo_id in session.execute(
+                select(RepoOnboarding.github_repo_full_name, RepoOnboarding.id).where(
+                    RepoOnboarding.github_repo_full_name.in_(names)
+                )
+            )
+        }
+        if names
+        else {}
+    )
     out = []
     for fid, repo, capability, status, resolved_at, code, path, package in rows:
         reason, actor = reasons.get(str(fid), ("", ""))
@@ -138,6 +161,7 @@ def similar(
             {
                 "finding_id": str(fid),
                 "repo_full_name": str(repo or ""),
+                "repo_id": repo_ids.get(str(repo or "")),
                 "capability": str(capability or ""),
                 "status": str(status),
                 "resolved_at": resolved_at if isinstance(resolved_at, datetime) else None,

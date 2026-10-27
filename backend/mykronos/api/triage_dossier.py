@@ -14,12 +14,13 @@ with the verdicts people recorded afterwards.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from mykronos import clusters, dossier, shadow_proposals
 from mykronos.adminauth import PrincipalDep
@@ -33,6 +34,8 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 ProposedStatus = Literal["true_positive", "false_positive", "suppressed", "accepted_risk"]
 Grade = Literal["agree", "disagree", "pending", "ineligible"]
+#: A proposal's evidence is a list of what was read, not the code itself.
+EVIDENCE_MAX_BYTES = 16_384
 
 
 class DossierLocationOut(BaseModel):
@@ -63,6 +66,9 @@ class DossierEventOut(BaseModel):
 class SimilarDispositionOut(BaseModel):
     finding_id: str
     repo_full_name: str
+    #: The precedent's own repository id, for its record page's route; null
+    #: when that repository is no longer onboarded.
+    repo_id: str | None = None
     capability: str
     status: str
     resolved_at: datetime | None = None
@@ -126,8 +132,19 @@ class ProposalIn(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     evidence: dict[str, Any] = Field(
         default_factory=dict,
-        description="What was read: files and line ranges, as the proposer reports them.",
+        description=(
+            "What was read: files and line ranges, as the proposer reports them. "
+            f"At most {EVIDENCE_MAX_BYTES} bytes as JSON."
+        ),
     )
+
+    @field_validator("evidence")
+    @classmethod
+    def _bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # Stored on every proposal and returned on every dossier read.
+        if len(json.dumps(value, default=str)) > EVIDENCE_MAX_BYTES:
+            raise ValueError(f"evidence is larger than {EVIDENCE_MAX_BYTES} bytes as JSON")
+        return value
 
 
 class ModelGradeOut(BaseModel):

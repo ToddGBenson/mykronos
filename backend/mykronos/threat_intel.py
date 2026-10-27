@@ -40,7 +40,7 @@ from datetime import date, datetime, time
 from typing import Any
 
 import httpx2
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import ThreatIntelMatch
@@ -64,6 +64,12 @@ NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 #: for half an hour. Every CVE this platform has an open finding for is a
 #: finite set that only grows when a scanner finds something new.
 NVD_BATCH = 20
+#: Of that budget, at most this many go to reading NVD's exploit references
+#: for rows whose vector was looked up before #60890. Every such row is
+#: eligible at once after the upgrade, so without a cap of its own the
+#: backfill would be one estate-wide wave of NVD load; with it, it trickles
+#: in behind the first-time vector lookups, which always go first.
+NVD_REFS_BATCH = 5
 #: Between requests. Above NVD's published unauthenticated floor with margin,
 #: because being rate-limited by a public feed is a way to get an IP blocked
 #: rather than a way to go faster.
@@ -438,32 +444,47 @@ def refresh_vectors(
 
     Degrades rather than raises: a failed lookup leaves the row untouched and
     the next sweep tries again.
+
+    **References are a backfill, not a second vector lookup** (TheHub
+    #60890). NVD's exploit-tagged references arrive in the same response, so
+    a row whose vector was looked up before they were read is eligible once
+    more -- but only for them: at most `NVD_REFS_BATCH` per run, after every
+    first-time vector lookup, and without touching the row's vectors or
+    their stamps. It never counts as found, because found is what fans out
+    into an estate-wide environmental rescore.
     """
-    # NVD's exploit-tagged references (TheHub #60890) arrive in the same
-    # response, so a row never read for them is eligible once more too.
     from mykronos.exploitability import store_nvd_refs
 
+    needs_vector = and_(
+        ThreatIntelMatch.cvss_vector.is_(None),
+        ThreatIntelMatch.v4_checked_at.is_(None),
+    )
     pending = list(
         session.execute(
             select(ThreatIntelMatch)
-            .where(
-                or_(
-                    and_(
-                        ThreatIntelMatch.cvss_vector.is_(None),
-                        ThreatIntelMatch.v4_checked_at.is_(None),
-                    ),
-                    ThreatIntelMatch.nvd_refs_checked_at.is_(None),
-                )
-            )
-            .order_by(ThreatIntelMatch.cve_id)
+            .where(needs_vector)
+            # Never looked at first: a CVE matched today is not queued behind
+            # rows being asked about v4 a second time.
+            .order_by(ThreatIntelMatch.vector_checked_at.is_not(None), ThreatIntelMatch.cve_id)
             .limit(limit)
         ).scalars()
     )
-    if not pending:
+    refs_only: list[ThreatIntelMatch] = []
+    budget = min(NVD_REFS_BATCH, limit - len(pending))
+    if budget > 0:
+        refs_only = list(
+            session.execute(
+                select(ThreatIntelMatch)
+                .where(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None))
+                .order_by(ThreatIntelMatch.cve_id)
+                .limit(budget)
+            ).scalars()
+        )
+    if not pending and not refs_only:
         return 0
 
     found = 0
-    for index, row in enumerate(pending):
+    for index, row in enumerate([*pending, *refs_only]):
         if index:
             sleep(NVD_DELAY_SECONDS)
         try:
@@ -476,6 +497,8 @@ def refresh_vectors(
         # looked, and it is what stops this retrying for ever.
         checked = now()
         store_nvd_refs(row, payload, checked)
+        if index >= len(pending):
+            continue
         row.vector_checked_at = checked
         row.v4_checked_at = checked
         if vectors.v3:
