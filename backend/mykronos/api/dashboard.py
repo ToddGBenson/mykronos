@@ -7345,6 +7345,29 @@ class CiStallOut(BaseModel):
     notified_at: datetime | None = None
 
 
+class CredentialOut(BaseModel):
+    """A credential a person may need to act on (TheHub #60974).
+
+    State and dates only. This page is served on an internet-exposed
+    dashboard, so no hash, hash prefix, token id or label is carried, and
+    `extra="forbid"` keeps one from being added in passing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: "ingestion_token" | "agent_credential"
+    kind: str
+    repo_full_name: str | None = None
+    actor: str | None = None
+    #: "due" | "unverified" | "expiring". Only `due` is a reason to rotate.
+    state: str
+    rotate_after: datetime | None = None
+    expires_at: datetime | None = None
+    #: Negative once the date has passed.
+    days_until_due: float
+    action: str
+
+
 class PlatformHealthOut(BaseModel):
     """Whether this platform is itself working."""
 
@@ -7354,6 +7377,10 @@ class PlatformHealthOut(BaseModel):
     jobs: list[JobHealthOut]
     dependencies: list[DependencyHealthOut]
     ci_stall: CiStallOut
+    #: Ingestion tokens left for a person and agent credentials expiring within
+    #: 7 days. Not part of `degraded`: a token awaiting rotation is work to do,
+    #: not the platform failing.
+    credentials: list[CredentialOut] = Field(default_factory=list)
     note: str
 
 
@@ -7458,12 +7485,28 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     health = platform_health.PlatformHealth(
         jobs=jobs, dependencies=dependencies, ci_stalled=stall.status == "red"
     )
+    credentials = await asyncio.to_thread(
+        platform_health.credentials_needing_attention, request.app.state.db, now=now
+    )
 
     return PlatformHealthOut(
         degraded=health.degraded,
         jobs=[JobHealthOut(**vars(job)) for job in jobs],
         dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
         ci_stall=stall,
+        credentials=[
+            CredentialOut(
+                kind=c.kind,
+                repo_full_name=c.repo_full_name,
+                actor=c.actor,
+                state=c.state,
+                rotate_after=c.rotate_after,
+                expires_at=c.expires_at,
+                days_until_due=c.days_until_due,
+                action=c.action,
+            )
+            for c in credentials
+        ],
         note=(
             "A job that fails is caught, logged and retried, which is right and is "
             "also what makes it invisible. These rows are the record that log line "

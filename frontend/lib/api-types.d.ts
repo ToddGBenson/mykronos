@@ -6361,6 +6361,32 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * CredentialOut
+         * @description A credential a person may need to act on (TheHub #60974).
+         *
+         *     State and dates only. This page is served on an internet-exposed
+         *     dashboard, so no hash, hash prefix, token id or label is carried, and
+         *     `extra="forbid"` keeps one from being added in passing.
+         */
+        CredentialOut: {
+            /** Kind */
+            kind: string;
+            /** Repo Full Name */
+            repo_full_name?: string | null;
+            /** Actor */
+            actor?: string | null;
+            /** State */
+            state: string;
+            /** Rotate After */
+            rotate_after?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Days Until Due */
+            days_until_due: number;
+            /** Action */
+            action: string;
+        };
         /** DailyBriefingOut */
         DailyBriefingOut: {
             /**
@@ -8958,6 +8984,8 @@ export interface components {
             /** Dependencies */
             dependencies: components["schemas"]["DependencyHealthOut"][];
             ci_stall: components["schemas"]["CiStallOut"];
+            /** Credentials */
+            credentials?: components["schemas"]["CredentialOut"][];
             /** Note */
             note: string;
         };
