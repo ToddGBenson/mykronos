@@ -543,14 +543,18 @@ async def propose(
                 )
             assert live is not None
             above = _description_text(live.body[: mark.start()])
-            if mark.group(2) is None or mark.group(2) != _sha256(above):
-                # A person edited the description: their text stands, the
+            # GitHub's raw editor shows the hidden record as the last line,
+            # so text appended at the end lands below it: that is an edit too.
+            below = _description_text(live.body[mark.end() :]).strip()
+            if below or mark.group(2) is None or mark.group(2) != _sha256(above):
+                # A person edited the description: their text stands (moved
+                # above the record, so the next run still sees the edit), the
                 # record is replaced, and a dated line says what changed.
                 counts = ", ".join(
                     f"{n} {s.replace('_', ' ')}" for s, n in _count(elements).items() if n
                 )
                 kept = _description_text(
-                    above
+                    "\n\n".join(part for part in (above, below) if part)
                     + f"\n\nMyKronos updated the proposed file on {moment:%Y-%m-%d}: it now "
                     f"adds {counts or 'nothing new'}. The description was edited, so it "
                     "was kept; each element's evidence is in its `# evidence` comments."
