@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from mykronos import shadow_proposals
+from mykronos import dossier, shadow_proposals
 from mykronos.db.models import ApprovalRequest, AuditLogEntry, RepoOnboarding
 from tests.test_dashboard import outstanding  # noqa: F401  (fixture)
 from tests.test_environmental_view import _ids, _page
@@ -101,6 +101,44 @@ class TestDossier:
         mine = _dossier(client, admin_auth, estate.xss["web/b.py"])
         assert any(e["event"] == "finding.status" for e in mine["history"])
 
+    def test_a_precedent_links_to_its_own_repository(
+        self, client: TestClient, admin_auth: dict[str, str], estate
+    ) -> None:
+        """The record page's route takes the precedent's repository id, not
+        the current page's (review of #1006)."""
+        _dispose(
+            client, admin_auth, estate.xss["web/b.py"], "false_positive", "escaped by Jinja"
+        )
+
+        [precedent] = _dossier(client, admin_auth, estate.xss["web/a.py"])["similar_dispositions"]
+
+        assert precedent["repo_id"] == estate.repo_id
+
+    def test_history_keeps_the_newest_entries(
+        self, client: TestClient, admin_auth: dict[str, str], estate
+    ) -> None:
+        """A long history is cut from the old end: the latest decision is the
+        one an investigator needs (review of #1006)."""
+        finding_id = estate.xss["web/a.py"]
+        start = datetime(2026, 1, 1)
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            for n in range(dossier.HISTORY_LISTED + 5):
+                session.add(
+                    AuditLogEntry(
+                        actor="admin",
+                        action=f"test.event-{n:03d}",
+                        entity_type="finding",
+                        entity_id=finding_id,
+                        detail={},
+                        created_at=start + timedelta(hours=n),
+                    )
+                )
+
+        events = [e["event"] for e in _dossier(client, admin_auth, finding_id)["history"]]
+
+        assert f"test.event-{dossier.HISTORY_LISTED + 4:03d}" in events
+        assert "test.event-000" not in events
+
     def test_a_viewer_can_read_it(
         self, client: TestClient, viewer_auth: dict[str, str], estate
     ) -> None:
@@ -146,6 +184,45 @@ class TestProposalsAreNeverApplied:
     ) -> None:
         response = _propose(client, admin_auth, estate.xss["web/a.py"], status="fixed")
         assert response.status_code == 422
+
+
+class TestProposalEvidenceIsBounded:
+    def test_an_oversized_evidence_object_is_refused(
+        self, client: TestClient, admin_auth: dict[str, str], estate
+    ) -> None:
+        response = client.post(
+            f"/api/dashboard/findings/{estate.xss['web/a.py']}/model-proposals",
+            json={
+                "proposed_status": "false_positive",
+                "rationale": "escaped",
+                "model": MODEL,
+                "evidence": {"read": ["x" * 1000] * 100},
+            },
+            headers=admin_auth,
+        )
+        assert response.status_code == 422
+
+
+class TestSimilarQuery:
+    def test_an_empty_rule_id_is_not_matched_against_other_empty_rule_ids(self) -> None:
+        """A CVE named only in the title must not add `rule_id = ''`, which
+        matches every disposed finding that has no rule id (review of #1006)."""
+        seen: list[tuple[str, list[Any]]] = []
+
+        class Catalog:
+            def query(self, sql: str, params: list[Any]) -> list[Any]:
+                seen.append((sql, params))
+                return []
+
+        dossier.similar(
+            Catalog(),
+            None,  # type: ignore[arg-type]
+            {"finding_id": "f1", "rule_id": "", "title": "openssl CVE-2014-0160"},
+        )
+
+        [(sql, params)] = seen
+        assert "rule_id = ?" not in sql
+        assert "" not in params
 
 
 class TestGrading:
