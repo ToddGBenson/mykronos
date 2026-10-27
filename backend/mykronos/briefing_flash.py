@@ -10,8 +10,10 @@ on a pull-request branch, waits for the page.
 `briefing.flash` with its application and key, and an item already audited is
 not sent again, so a tick every half hour does not repeat itself and a restart
 does not either. When an item leaves a section that read everything it lists
-(`_read_in_full`), it is audited as `briefing.flash_cleared`; if it comes back
-- a fixed finding that regresses - it flashes again (review of #1009).
+(`_read_in_full`) altogether, it is audited as `briefing.flash_cleared`; if it
+comes back - a fixed finding that regresses - it flashes again (review of
+#1009). An item still listed but no longer flashing is not cleared: it is
+still open (review of #1027).
 
 **The first run is a baseline, not news.** The first time the job runs it
 records every item already flashing as sent (`seeded`) and DMs nothing, so
@@ -184,10 +186,13 @@ def _seed(db: Any, flashes: list[Flash], moment: datetime) -> None:
 
 
 def _read_in_full(briefing: WeeklyBriefingOut) -> dict[tuple[str, str], set[str]]:
-    """(repository, key prefix) -> the keys flashing there now, for every
-    section that read everything it could list and listed all of it. An item
-    is fixed only when it is missing from one of these; a page or section
-    that could not be read, or a list cut at `MAX_ITEMS`, says nothing."""
+    """(repository, key prefix) -> every key listed there now, flashing or
+    not, for every section that read everything it could list and listed all
+    of it. An item is fixed only when it is missing from one of these; a page
+    or section that could not be read, or a list cut at `MAX_ITEMS`, says
+    nothing. An item still listed but no longer flashing - a pull-request
+    scan made `shipped` false, or a re-score moved it - is still open, so it
+    stays sent (review of #1027)."""
     out: dict[tuple[str, str], set[str]] = {}
     for page in briefing.pages:
         by_key = {section.key: section for section in page.sections}
@@ -197,7 +202,7 @@ def _read_in_full(briefing: WeeklyBriefingOut) -> dict[tuple[str, str], set[str]
                 continue
             if len(section.items) >= MAX_ITEMS:
                 continue
-            out[(page.repo_full_name, prefix)] = {i.key for i in section.items if i.flash}
+            out[(page.repo_full_name, prefix)] = {i.key for i in section.items}
     return out
 
 
@@ -206,8 +211,8 @@ def _gone(sent: set[str], briefing: WeeklyBriefingOut) -> list[str]:
     gone = []
     for entity in sorted(sent):
         repo, _, key = entity.partition("|")
-        flashing = complete.get((repo, key.split(":", 1)[0]))
-        if flashing is not None and key not in flashing:
+        listed = complete.get((repo, key.split(":", 1)[0]))
+        if listed is not None and key not in listed:
             gone.append(entity)
     return gone
 
