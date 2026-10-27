@@ -762,9 +762,30 @@ def _finding_caveats(row: dict[str, Any], *, lane_frozen: bool) -> list[Caveat]:
     return caveats
 
 
-def _finding_actions(row: dict[str, Any], principal: Principal) -> list[ActionRef]:
+def _serious_members(briefing: Briefing) -> dict[str, str]:
+    """finding id -> the worst high or critical combination it is a member of."""
+    out: dict[str, str] = {}
+    for combo in briefing.toxic:
+        severity = str(combo.get("severity") or "").lower()
+        if severity not in finding_disposition.GOVERNED_SEVERITIES:
+            continue
+        for member in combo.get("members") or []:
+            fid = str(member.get("finding_id") or "")
+            out[fid] = finding_disposition.worse(out.get(fid), severity)
+    return out
+
+
+def _finding_actions(
+    row: dict[str, Any],
+    principal: Principal,
+    *,
+    serious_members: dict[str, str] | None = None,
+) -> list[ActionRef]:
     finding_id = str(row["finding_id"])
-    severity = str(row.get("severity") or "")
+    # Governed at the worst combination it belongs to (review of #1018).
+    severity = finding_disposition.worse(
+        str(row.get("severity") or ""), (serious_members or {}).get(finding_id)
+    )
     actions = [
         ActionRef(
             label="Claim it",
@@ -820,6 +841,7 @@ def _finding_items(
     rows: list[dict[str, Any]], briefing: Briefing, principal: Principal
 ) -> list[WorkItem]:
     stalled = {(lane.repo_full_name, lane.capability) for lane in briefing.stalled}
+    serious = _serious_members(briefing)
     items = []
     for row in rows:
         claimed_by = (row.get("state") or {}).get("claimed_by")
@@ -866,7 +888,7 @@ def _finding_items(
                     )
                 ],
                 preconditions=preconditions,
-                actions=_finding_actions(row, principal),
+                actions=_finding_actions(row, principal, serious_members=serious),
                 caveats=_finding_caveats(row, lane_frozen=frozen),
             )
         )

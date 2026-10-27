@@ -507,10 +507,40 @@ async def test_a_lesser_finding_is_dispositioned_directly(severity: str) -> None
     )
     assert fake.calls == [
         ("GET", "/api/dashboard/findings/f1"),
+        ("GET", "/api/dashboard/toxic-combinations"),
         ("PATCH", "/api/dashboard/findings/f1/status"),
     ]
     assert fake.body() == {"status": "suppressed", "reason": "Test code."}
     assert result.structured_content["governed_by"] is None
+
+
+@pytest.mark.parametrize("combination", ["critical", "high"])
+async def test_a_lesser_member_of_a_serious_combination_is_routed_to_a_request(
+    combination: str,
+) -> None:
+    """Review of #1018: a dispositioned member dissolves its combination, so
+    the low half of a critical pair is governed at the pair's severity."""
+    fake = FakeMykronos(
+        {
+            ("GET", "/api/dashboard/findings/f1"): _finding(
+                "low", capability="dast", repo_full_name="acme/api"
+            ),
+            ("GET", "/api/dashboard/toxic-combinations"): httpx2.Response(
+                200,
+                json={
+                    "combinations": [
+                        {"severity": combination, "members": [{"finding_id": "f1"}]}
+                    ]
+                },
+            ),
+        }
+    )
+    result = await _call(
+        fake, "disposition", {"finding_id": "f1", "status": "false_positive", "reason": "r1"}
+    )
+    assert fake.calls[-1] == ("POST", "/api/dashboard/findings/f1/disposition-requests")
+    assert result.structured_content["governed_by"] == "finding_disposition"
+    assert fake.requests[1].url.params["repo"] == "acme/api"
 
 
 def test_the_choice_is_the_routes_own_rule() -> None:

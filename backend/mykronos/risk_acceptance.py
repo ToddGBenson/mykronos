@@ -14,6 +14,11 @@ the risk. Only `risk_adjustment`, which must name a premise the platform can
 check, may rate the residual below the scanner. A requester cannot choose a low
 tier to get an easier approver.
 
+Whatever the deviation type, the tier is never below the worst open toxic
+combination a covered finding belongs to (review of #1018, PO decision): since
+#1018 an accepted member stops counting, so accepting the low half of a
+critical pair dissolves a critical, and that is approved as a critical.
+
 **The lake still carries the status.** On approval, the covered findings are
 stamped `accepted_risk` with the record's expiry and reason code, so the Oracle,
 the dashboard and `sweep_acceptances` keep working unchanged.
@@ -472,6 +477,7 @@ def _snapshot(
     premise_checks: list[dict[str, Any]] | None = None,
     evidence: dict[str, Any] | None = None,
     control_checks: list[dict[str, Any]] | None = None,
+    combinations: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """The evidence an approver sees, frozen into the request's digest."""
     snapshot = {
@@ -513,7 +519,49 @@ def _snapshot(
     # Each compensating control as the observations read it (TheHub #60902).
     if control_checks:
         snapshot["control_checks"] = control_checks
+    # The toxic combinations this acceptance would dissolve, which set its
+    # floor (review of #1018). Only when present, as above.
+    if combinations:
+        snapshot["combinations"] = combinations
     return snapshot
+
+
+def _combination_floor(
+    db: Any, catalog: Catalog, repo: str, matched: list[MatchedFinding]
+) -> tuple[str | None, list[dict[str, str]], bool]:
+    """(the worst combination severity over the covered findings, those
+    combinations, whether detection failed).
+
+    Read as the disposition guard reads it (`finding_disposition.
+    governing_severities`): the combinations the risk decision sees, KEV
+    included. Detection that cannot run floors at `critical` (fail closed)."""
+    from mykronos import finding_disposition
+
+    governing = finding_disposition.governing_severities(
+        [
+            {"finding_id": m.finding_id, "severity": m.severity, "repo_full_name": repo}
+            for m in matched
+        ],
+        catalog=catalog,
+        db=db,
+    )
+    floor: str | None = None
+    combinations: dict[str, dict[str, str]] = {}
+    failed = False
+    for m in matched:
+        severity, combos = governing.get(m.finding_id, (m.severity, []))
+        if combos:
+            combinations.update({c["combination_id"]: c for c in combos})
+        elif severity != m.severity:
+            # Raised with no combination named: detection did not run.
+            failed = True
+        else:
+            continue
+        if severity in SEVERITIES and (
+            floor is None or SEVERITIES.index(severity) > SEVERITIES.index(floor)
+        ):
+            floor = severity
+    return floor, list(combinations.values()), failed
 
 
 def check_controls(
@@ -704,6 +752,16 @@ def propose(
     elif controls and not any(c["status"] == "verified" for c in control_checks):
         floored_by_unverified = SEVERITIES.index(residual) < SEVERITIES.index(worst)
         residual = max(residual, worst, key=SEVERITIES.index)
+    # Never below a combination a covered finding is in, whatever the type:
+    # accepting a member dissolves the combination (review of #1018).
+    combo_floor, combinations, detection_failed = _combination_floor(
+        db, catalog, repo, matched
+    )
+    floored_by_combination = combo_floor is not None and SEVERITIES.index(
+        combo_floor
+    ) > SEVERITIES.index(residual)
+    if combo_floor is not None:
+        residual = max(residual, combo_floor, key=SEVERITIES.index)
     renewal_count = (renews.renewal_count + 1) if renews else 0
     _validate(
         policy=policy,
@@ -761,6 +819,23 @@ def propose(
                 ),
             }
         )
+    if combinations or detection_failed:
+        names = ", ".join(sorted({c["name"] for c in combinations})) or "unknown"
+        flags.append(
+            {
+                "code": "toxic_combination_member",
+                "combinations": sorted(c["combination_id"] for c in combinations),
+                "floored": floored_by_combination,
+                "reason": (
+                    "Toxic combination detection could not run, so the tier is "
+                    "critical until it can (fail closed)."
+                    if detection_failed and not combinations
+                    else f"A covered finding is a member of {names}. Accepting it dissolves "
+                    f"the combination, so the tier is at least {combo_floor} "
+                    "(review of #1018)."
+                ),
+            }
+        )
     for flag in flags:
         logger.warning("risk acceptance on %s flagged: %s", repo, flag["reason"])
 
@@ -795,7 +870,9 @@ def propose(
         requested_by=requested_by,
         statement=justification.strip(),
         context={
-            "snapshot": _snapshot(record, matched, flags, checks, evidence, control_checks)
+            "snapshot": _snapshot(
+                record, matched, flags, checks, evidence, control_checks, combinations
+            )
         },
     )
     record.approval_request_id = approval.id

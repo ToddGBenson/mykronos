@@ -2,7 +2,8 @@
 
 Operator decisions (2026-09-28) these pin:
 - a critical combination forces `no_go`; high and medium ones add points;
-- accepted findings still count, so accepting half a pair cannot hide it;
+- (superseded by TheHub #60965, 2026-10-23) a member dispositioned
+  `accepted_risk` or `false_positive` stops counting;
 - a combination is worse than its worst member, and critical when KEV-listed;
 - "none found" names the rules that could not have fired.
 """
@@ -103,7 +104,7 @@ class TestTheRiskDecision:
         )
         assert "Critical toxic combination" in render_reasoning(decision.inputs_snapshot)
 
-    def test_accepting_half_the_pair_does_not_hide_it(
+    def test_accepting_half_the_pair_closes_it(
         self, client, auth, admin_auth, run_compaction, catalog, policy
     ) -> None:
         _seed(client, auth, run_compaction, _pair("medium", "medium"))
@@ -125,9 +126,10 @@ class TestTheRiskDecision:
 
         decision = OracleEngine(catalog, policy).evaluate(REPO)
 
-        combo = decision.inputs_snapshot["toxic_combinations"]["combinations"][0]
-        assert combo["partly_accepted"] is True
-        assert _terms(decision)["toxic_combinations"] == pytest.approx(25)
+        # TheHub #60965 supersedes the 2026-09-28 decision: an accepted member
+        # stops counting, so the pair closes on the next evaluation.
+        assert decision.inputs_snapshot["toxic_combinations"]["count"] == 0
+        assert "toxic_combinations" not in _terms(decision)
 
     def test_the_policy_can_keep_it_reported_but_out_of_the_score(
         self, client, auth, run_compaction, catalog

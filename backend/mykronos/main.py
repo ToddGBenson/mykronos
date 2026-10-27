@@ -402,7 +402,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Spec 33: the risk-acceptance duty stamps findings in the lake when an
     # approval lands, and reads its limits from the approval policy.
     risk_acceptance.bind(app.state.catalog)
-    finding_disposition.bind(app.state.catalog)
+    # The guard reads toxic combinations as the risk decision does: KEV from
+    # the database, escalation from the Oracle policy (review of #1018).
+    finding_disposition.bind(
+        app.state.catalog,
+        db=app.state.db,
+        oracle_policy_path=settings.oracle_policy_path,
+    )
     # TheHub #60895: library vetting reads OSV and deps.dev; tests replace it.
     app.state.library_fetch = http_library_fetch
     try:

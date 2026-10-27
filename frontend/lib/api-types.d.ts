@@ -434,7 +434,8 @@ export interface paths {
          * @description Toxic combinations across the estate (spec 08 §5), worst first.
          *
          *     The same detection and severity the Oracle's risk decision uses
-         *     (`mykronos.toxic`), including combinations with an accepted member.
+         *     (`mykronos.toxic`). Findings dispositioned `false_positive` or
+         *     `accepted_risk` do not count toward a combination.
          */
         get: operations["toxic_combinations_api_dashboard_toxic_combinations_get"];
         put?: never;
@@ -1607,8 +1608,9 @@ export interface paths {
          *
          *     The finding stays open. The platform freezes the finding row, its raw scanner
          *     record and the reason into an approval request under the `finding_disposition`
-         *     duty, tiered by the finding's own severity, and applies the disposition only
-         *     when an approver the policy admits says yes.
+         *     duty, tiered by the finding's governing severity - its own, raised to that of
+         *     any high or critical toxic combination it is a member of - and applies the
+         *     disposition only when an approver the policy admits says yes.
          */
         post: operations["request_finding_disposition_api_dashboard_findings__finding_id__disposition_requests_post"];
         delete?: never;
@@ -12266,6 +12268,12 @@ export interface components {
             status?: string | null;
             /** File Path */
             file_path?: string | null;
+            /**
+             * Qualifies
+             * @description Which half of the rule this member satisfies, and why: the pattern it matched or the listed alert it is, and any severity floor.
+             * @default
+             */
+            qualifies: string;
         };
         /**
          * ToxicCombinationOut
