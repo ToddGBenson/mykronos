@@ -21,8 +21,11 @@ repository it reads the pipeline's job list (the same anonymous read
 * **red -> red**: nothing. The recorded state is the de-duplication key, and
   it is stored in the database, so a restart does not post it again. The
   exception is a red, a green and a red again between two polls: Concourse's
-  `transition_build` is then a newer red build than the one the lane went red
-  at, so it is a new red with its own culprit, and it is announced.
+  `transition_build` is then a newer red build than the last one recorded,
+  and the commit walk finds a green build after the recorded red, so it is a
+  new red with its own culprit, and it is announced. A transition between two
+  reds (failed -> errored, or an aborted build between failures) has no green
+  after the recorded red, so it stays silent and keeps the original culprit.
 * **red -> green**: one recovery message with how long the lane was red.
 
 Test results are suite totals only (D-046: the JUnit adapter records counts,
@@ -369,23 +372,40 @@ def _step(
         )
 
     transition = _build(job.get("transition_build"))
-    again = (
-        before is not None
-        and before.state == RED
-        and transition.get("status") in RED_STATUSES
-        and _newer(str(transition.get("name") or ""), before.first_bad_build)
-    )
-    if before is not None and before.state == RED and not again:
-        # Red to red: the news was sent when it went red.
-        return replace(before, status=str(status), build=build), None
-
-    # Green to red, red the first time this lane is seen, or red again after
-    # a green build between polls. The first failing build is Concourse's
-    # transition build when that is red too: several red builds may have
-    # finished since the last poll.
+    # The first failing build is Concourse's transition build when that is
+    # red too: several red builds may have finished since the last poll.
     bad = transition if transition.get("status") in RED_STATUSES else finished
     bad_build = str(bad["name"]) if bad.get("name") else build
-    resolved = _resolve(fetch, base, lane, bad)
+    again = False
+    if before is not None and before.state == RED:
+        # Red to red: the news was sent when it went red. Concourse moves
+        # `transition_build` whenever a build's status differs from the one
+        # before it, so failed -> errored and aborted -> failed move it as
+        # well as a real green between polls. Only a transition newer than
+        # the last build this lane recorded is looked at (so the commit walk
+        # runs once per transition, never on a steady poll), and only a green
+        # build after the recorded red makes it a new red.
+        seen = before.build or before.first_bad_build
+        moved = transition.get("status") in RED_STATUSES and _newer(
+            str(transition.get("name") or ""), seen
+        )
+        unchanged = replace(before, status=str(status), build=build)
+        if not moved:
+            return unchanged, None
+        resolved = _resolve(fetch, base, lane, bad)
+        if not _newer(resolved.last_green_build, before.first_bad_build or before.build):
+            if resolved.problem and resolved.last_green_sha is None:
+                # Could not tell: keep the recorded build so the next poll
+                # checks this transition again.
+                problems.append(
+                    f"{repo} {lane}: red-again check unreadable ({resolved.problem})"
+                )
+                return before, None
+            return unchanged, None
+        again = True
+    else:
+        # Green to red, or red the first time this lane is seen.
+        resolved = _resolve(fetch, base, lane, bad)
     after = LaneState(
         repo,
         pipeline,

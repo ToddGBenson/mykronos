@@ -356,6 +356,22 @@ class TestRedGreenRedBetweenPolls:
         assert len(notifier.sent) == 1
         assert calls == [f"{BASE}/jobs"], "a checked transition is not walked again"
 
+    async def test_an_unreadable_walk_is_checked_again_next_poll(self, db: Any) -> None:
+        notifier = Recorder()
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 461, transition=460)), HISTORY
+        )[0], notifier)
+
+        jobs_now = all_green(unit=_job("unit", "failed", 463, transition=463))
+        with pytest.raises(jobs.RedMainIncompleteError, match="red-again check unreadable"):
+            await poll(db, fake_concourse(jobs_now, self.LATER, fail="input_to")[0],
+                       notifier, now=NOW + timedelta(minutes=5))
+        assert len(notifier.sent) == 1
+
+        await poll(db, fake_concourse(jobs_now, self.LATER)[0], notifier,
+                   now=NOW + timedelta(minutes=10))
+        assert len(notifier.sent) == 2, "the next readable poll finds the green"
+
     async def test_failed_aborted_failed_is_the_same_red(self, db: Any) -> None:
         notifier = Recorder()
         await poll(db, fake_concourse(
