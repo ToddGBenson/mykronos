@@ -898,6 +898,61 @@ class TestReviewerDescription:
         body = github.pull_request_bodies[first.pull_request.number]
         assert "`ep-admin.example.net`" in body
 
+    def test_a_note_written_below_the_record_survives_an_update(self) -> None:
+        # GitHub's raw editor shows the hidden record as the last line, so a
+        # reviewer appending at the end writes below it (third #1008 review).
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.pull_request is not None
+        pr = github.repos[REPO].pull_requests[0]
+        note = "Reviewer, below the record: the admin host is decommissioned."
+        pr.body += "\n\n" + note
+
+        later = _propose(github, _more_drift())
+
+        assert later.state == "updated", later
+        body = github.pull_request_bodies[first.pull_request.number]
+        assert note in body
+        mark = tpr._PROPOSAL_MARK_RE.search(body)
+        assert mark is not None
+        # Carried above the record, so the next run still reads it as an edit.
+        assert body.index(note) < mark.start()
+        assert body[mark.end() :].strip() == ""
+
+    def test_a_note_below_the_record_stays_kept_on_the_run_after(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.pull_request is not None
+        pr = github.repos[REPO].pull_requests[0]
+        note = "Reviewer note below the record that must outlive two runs."
+        pr.body += "\r\n\r\n" + note
+        assert _propose(github, _more_drift()).state == "updated"
+        third = _bundle()
+        assert third.endpoints is not None
+        third.endpoints += [
+            {"url": "https://admin.example.net/", "last_status": "open", "label": ""},
+            {"url": "https://ops.example.net/", "last_status": "open", "label": ""},
+        ]
+
+        again = _propose(github, tmd.draft(third, now=NOW))
+
+        assert again.state == "updated", again
+        assert note in github.pull_request_bodies[first.pull_request.number]
+
+    def test_whitespace_below_the_record_is_not_an_edit(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.pull_request is not None
+        pr = github.repos[REPO].pull_requests[0]
+        pr.body += "\r\n\r\n  \n"
+
+        later = _propose(github, _more_drift())
+
+        assert later.state == "updated", later
+        body = github.pull_request_bodies[first.pull_request.number]
+        assert "`ep-admin.example.net`" in body
+        assert "The description was edited" not in body
+
 
 class TestPublicWithOpenProposal:
     """Review follow-up: a repository that turned public while a proposal was
