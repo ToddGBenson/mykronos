@@ -83,6 +83,77 @@ def test_plan_refuses_an_untagged_recipe(tmp_path: Path) -> None:
         ir.plan(_write(tmp_path, bad), "20261014", "r:5000")
 
 
+DIGEST = "sha256:" + "18adcaf7" * 8
+OTHER_DIGEST = "sha256:" + "0123abcd" * 8
+PINNED = f"""
+services:
+  postgres:
+    image: ${{REGISTRY:-localhost:5000}}/thehub-postgres:0.8.7-pg16-alpine-p20261017@{DIGEST}
+    x-thehub-build:
+      context: ./postgres-alpine
+      refresh_arg: APK_DATE
+"""
+
+
+def test_plan_accepts_a_digest_pinned_reference(tmp_path: Path) -> None:
+    """Production runs `<tag>@sha256:<digest>` (TheHub #500); the date is before the `@`."""
+    (recipe,) = ir.plan(_write(tmp_path, PINNED), "20261026", "r:5000")
+    # What runs is scanned by its digest: exactly the bytes production has.
+    assert recipe.current == f"r:5000/thehub-postgres:0.8.7-pg16-alpine-p20261017@{DIGEST}"
+    # The rebuild is a new tag. The old digest names the old bytes, so it must
+    # not ride along; the new digest is pinned when production adopts the tag.
+    assert recipe.candidate == "r:5000/thehub-postgres:0.8.7-pg16-alpine-p20261026"
+    assert recipe.tsv().split("\t")[0] == recipe.candidate
+    assert recipe.build_args == (("APK_DATE", "20261026"),)
+
+
+def test_plan_still_refuses_a_digest_pinned_tag_without_a_date(tmp_path: Path) -> None:
+    bad = PINNED.replace("-p20261017@", "@")
+    with pytest.raises(ValueError, match="no -pYYYYMMDD"):
+        ir.plan(_write(tmp_path, bad), "20261026", "r:5000")
+
+
+@pytest.mark.parametrize("digest", ["sha256:abc", "md5:" + "0" * 64, "sha256:" + "G" * 64, ""])
+def test_plan_refuses_a_malformed_digest(tmp_path: Path, digest: str) -> None:
+    bad = PINNED.replace(DIGEST, digest)
+    with pytest.raises(ValueError, match="sha256"):
+        ir.plan(_write(tmp_path, bad), "20261026", "r:5000")
+
+
+def test_a_pinned_and_a_tag_only_service_on_one_tag_are_one_recipe(tmp_path: Path) -> None:
+    """Production pins the digest, the demo names the same tag without one."""
+    (tmp_path / "docker-compose.demo.yml").write_text(
+        PINNED.replace("  postgres:", "  demo-postgres:").replace(f"@{DIGEST}", ""),
+        encoding="utf-8",
+    )
+    (recipe,) = ir.plan(_write(tmp_path, PINNED), "20261026", "r:5000")
+    assert recipe.current.endswith(f"-p20261017@{DIGEST}")
+    assert recipe.candidate == "r:5000/thehub-postgres:0.8.7-pg16-alpine-p20261026"
+    assert recipe.services == (
+        "docker-compose.yml::postgres",
+        "docker-compose.demo.yml::demo-postgres",
+    )
+
+
+def test_one_tag_pinned_to_two_digests_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "docker-compose.demo.yml").write_text(
+        PINNED.replace("  postgres:", "  demo-postgres:").replace(DIGEST, OTHER_DIGEST),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="two digests"):
+        ir.plan(_write(tmp_path, PINNED), "20261026", "r:5000")
+
+
+def test_cli_plan_writes_a_digest_free_candidate(tmp_path: Path) -> None:
+    out = tmp_path / "plan.tsv"
+    root = _write(tmp_path, PINNED)
+    argv = ["plan", "--root", str(root), "--date", "20261026", "--registry", "r:5000"]
+    assert ir.main([*argv, "--output", str(out)]) == 0
+    current, candidate = out.read_text(encoding="utf-8").splitlines()[0].split("\t")[:2]
+    assert current.endswith(f"@{DIGEST}")
+    assert "@" not in candidate and candidate.endswith("-p20261026")
+
+
 def test_plan_refuses_a_malformed_date(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         ir.plan(_write(tmp_path), "2026-10-14", "r:5000")
