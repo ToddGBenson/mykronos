@@ -323,6 +323,81 @@ class TestRedGreenRedBetweenPolls:
 
         assert len(notifier.sent) == 1
 
+    async def test_failed_then_errored_is_the_same_red(self, db: Any) -> None:
+        """Concourse moves `transition_build` on failed -> errored too.
+
+        Both are red and no green build ran in between, so it is the same red:
+        silent, and the recorded culprit and start of the red are kept (second
+        review of #1013, B1).
+        """
+        notifier = Recorder()
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 460, transition=460)), HISTORY
+        )[0], notifier)
+        before = jobs.load_lane_states(db)[(REPO, "unit")]
+
+        history = [(sha(5), "later", [ib("unit", 461, "errored")]), *HISTORY]
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "errored", 461, transition=461)), history
+        )[0], notifier, now=NOW + timedelta(minutes=5))
+
+        assert len(notifier.sent) == 1, "no green ran: not news"
+        state = jobs.load_lane_states(db)[(REPO, "unit")]
+        assert state.first_bad_build == "460"
+        assert state.first_bad_sha == sha(3)
+        assert state.red_since == before.red_since
+        assert state.build == "461"
+
+        # The next poll sees the same transition: no commit walk again.
+        fetch, calls = fake_concourse(
+            all_green(unit=_job("unit", "errored", 461, transition=461)), history
+        )
+        await poll(db, fetch, notifier, now=NOW + timedelta(minutes=10))
+        assert len(notifier.sent) == 1
+        assert calls == [f"{BASE}/jobs"], "a checked transition is not walked again"
+
+    async def test_failed_aborted_failed_is_the_same_red(self, db: Any) -> None:
+        notifier = Recorder()
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 460, transition=460)), HISTORY
+        )[0], notifier)
+
+        history = [(sha(6), "again", [ib("unit", 462, "failed")]),
+                   (sha(5), "later", [ib("unit", 461, "aborted")]), *HISTORY]
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "aborted", 461, transition=461)), history
+        )[0], notifier, now=NOW + timedelta(minutes=5))
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 462, transition=462)), history
+        )[0], notifier, now=NOW + timedelta(minutes=10))
+
+        assert len(notifier.sent) == 1
+        state = jobs.load_lane_states(db)[(REPO, "unit")]
+        assert state.first_bad_build == "460"
+        assert state.first_bad_sha == sha(3)
+
+    async def test_a_red_with_no_recorded_first_build_is_still_re_announced(
+        self, db: Any
+    ) -> None:
+        """N1: a red recorded without `first_bad_build` still sees a later green."""
+        jobs.save_lane_state(db, red_main.LaneState(
+            REPO, "mykronos", "unit", red_main.RED, "failed", "461",
+            red_since=NOW - timedelta(hours=3),
+        ))
+        for lane, build in (("lint-and-types", "700"), ("pin-check", "327")):
+            jobs.save_lane_state(db, red_main.LaneState(
+                REPO, "mykronos", lane, red_main.GREEN, "succeeded", build,
+            ))
+        notifier = Recorder()
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 463, transition=463)), self.LATER
+        )[0], notifier, now=NOW + timedelta(minutes=5))
+
+        assert len(notifier.sent) == 1
+        body = "\n".join(notifier.sent[0].lines)
+        assert f"First failing commit: {sha(5)[:12]}" in body
+        assert f"Last green: {sha(4)[:12]} (build 462)" in body
+
 
 class TestUnresolvedCommit:
     async def test_a_build_outside_the_window_says_commit_unknown(self, db: Any) -> None:
