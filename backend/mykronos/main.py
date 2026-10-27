@@ -92,13 +92,16 @@ from mykronos.jobs import (
     CI_STALL_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
+    RED_MAIN_JOB,
     SIGNAL_FILING_JOB,
     AcceptanceSweepResult,
     JobNotDue,
     JobSkipped,
+    announce_red_main,
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
+    junit_totals_lookup,
     notify_ci_stall,
     notify_dormant_lanes,
     purge_expired_insider_risk,
@@ -802,6 +805,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 threshold_hours=settings.dormant_lanes_threshold_hours,
             )
 
+        async def _red_main() -> None:
+            # A gating lane on main that went red, or came back green, is
+            # announced once, on the next poll (TheHub #60973). The recorded
+            # state is the de-duplication key and lives in the database, so a
+            # restart does not announce the same red twice.
+            client = ConcourseClient(
+                settings.concourse_url,
+                team=settings.concourse_team,
+                external_url=settings.concourse_external_url,
+            )
+            await announce_red_main(
+                settings.concourse_url,
+                db=app.state.db,
+                gating=settings.red_main_gating_lanes,
+                tests=junit_totals_lookup(app.state.catalog),
+                team=settings.concourse_team,
+                link_base=(
+                    f"{client.external_url}/teams/{settings.concourse_team}"
+                    if client.external_url
+                    else ""
+                ),
+                notifier=app.state.notifier,
+            )
+
         async def _ci_stall() -> None:
             # Many lanes erroring together - a dead worker after a restart
             # (TheHub #60975). Once per stall episode; an undelivered notice
@@ -967,6 +994,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             *(
                 [(DORMANT_LANES_JOB, settings.dormant_lanes_interval_seconds, _dormant_lanes)]
                 if settings.concourse_url
+                else []
+            ),
+            *(
+                [(RED_MAIN_JOB, settings.red_main_interval_seconds, _red_main)]
+                if settings.concourse_url and settings.red_main_gating_lanes
                 else []
             ),
             *(

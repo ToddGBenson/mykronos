@@ -1642,6 +1642,37 @@ class CiCheckRun(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class GatingLaneState(Base):
+    """What the red-main poll last saw of one gating lane (TheHub #60973).
+
+    The de-duplication key for its notifications: a lane recorded `red` is not
+    announced again until it has been recorded `green`. Kept here rather than
+    in memory so a backend restart does not post the same red twice, and read
+    by the CI page for `red_since` and `first_bad_sha`. Current state, one row
+    per lane, like `JobRun`.
+    """
+
+    __tablename__ = "gating_lane_states"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job: Mapped[str] = mapped_column(String(100), primary_key=True)
+    pipeline: Mapped[str] = mapped_column(String(100), default="")
+    #: `green` | `red`
+    state: Mapped[str] = mapped_column(String(8), default="green")
+    #: Concourse's word for the latest finished build.
+    status: Mapped[str | None] = mapped_column(String(16), default=None)
+    build: Mapped[str | None] = mapped_column(String(32), default=None)
+    red_since: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    first_bad_build: Mapped[str | None] = mapped_column(String(32), default=None)
+    #: Null when the commit could not be resolved from Concourse.
+    first_bad_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    last_green_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<GatingLaneState {self.repo_full_name} {self.job} {self.state}>"
+
+
 class LibraryRequest(Base):
     """A request to onboard one third-party library (TheHub #60895, #60896).
 

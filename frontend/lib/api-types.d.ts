@@ -5599,6 +5599,11 @@ export interface components {
              * @description Why there is no pipeline state, when there is none. 'No pipeline for this repo' and 'Concourse did not answer' are different facts, and a panel that conflates them teaches people to ignore it.
              */
             unavailable?: string | null;
+            /**
+             * Red Gating Lanes
+             * @description Each configured gating lane the red-main poll last recorded red on main, with when it went red and the first failing commit. Empty when none is red or none is configured for this repository.
+             */
+            red_gating_lanes?: components["schemas"]["RedGatingLaneOut"][];
         };
         /** CiReportingOut */
         CiReportingOut: {
@@ -10490,6 +10495,35 @@ export interface components {
             input: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * RedGatingLaneOut
+         * @description A gating lane recorded red on main by the red-main poll (TheHub #60973).
+         */
+        RedGatingLaneOut: {
+            /** Job */
+            job: string;
+            /**
+             * Status
+             * @description Concourse's word for the latest finished build.
+             */
+            status?: string | null;
+            /** Build */
+            build?: string | null;
+            /**
+             * Red Since
+             * @description When the first failing build of this red run finished (UTC).
+             */
+            red_since?: string | null;
+            /** First Bad Build */
+            first_bad_build?: string | null;
+            /**
+             * First Bad Sha
+             * @description The commit the first failing build ran. Null when Concourse's recent source versions did not include it: unknown, not absent.
+             */
+            first_bad_sha?: string | null;
+            /** Last Green Sha */
+            last_green_sha?: string | null;
         };
         /**
          * RegressionLinkRequest
