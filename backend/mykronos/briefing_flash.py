@@ -6,9 +6,17 @@ something shipped** (`weekly_briefing._flash`), it is DMed the same day.
 Nothing else fires one - a high that is not exploited, or a critical seen only
 on a pull-request branch, waits for the page.
 
-**Once per item.** Each sent item is audited as `briefing.flash` with its
-application and key, and an item already audited is never sent again, so a
-tick every half hour does not repeat itself and a restart does not either.
+**Once per item, until it is fixed.** Each sent item is audited as
+`briefing.flash` with its application and key, and an item already audited is
+not sent again, so a tick every half hour does not repeat itself and a restart
+does not either. When an item leaves a section that read everything it lists
+(`_read_in_full`), it is audited as `briefing.flash_cleared`; if it comes back
+- a fixed finding that regresses - it flashes again (review of #1009).
+
+**The first run is a baseline, not news.** The first time the job runs it
+records every item already flashing as sent (`seeded`) and DMs nothing, so
+deploying it does not DM every existing KEV or critical match at once. A job
+that has already sent flashes is past its first run and is not re-seeded.
 
 **Not configured is said, never silent.** It reuses the briefing DM's Slack
 settings, and with them missing raises `JobSkipped` naming them - but only
@@ -31,6 +39,7 @@ from mykronos.db.models import AuditLogEntry
 from mykronos.jobs import BRIEFING_FLASH_JOB, JobSkipped
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification, Notifier, SlackNotifier
+from mykronos.weekly_briefing import MAX_ITEMS
 
 if TYPE_CHECKING:  # pragma: no cover
     from fastapi import FastAPI
@@ -44,6 +53,24 @@ logger = logging.getLogger(__name__)
 TICK_SECONDS = 1_800
 
 ACTION = "briefing.flash"
+
+#: An item that left a section which read everything: it may flash again.
+CLEARED = "briefing.flash_cleared"
+
+#: Written once, by the first run, whether or not it found anything.
+SEEDED = "briefing.flash_seeded"
+SEED_ENTITY = "first-run"
+
+#: The section each flashing key prefix comes from, and the statuses in which
+#: that section has read everything it could list. `malicious_packages` is
+#: always `partial` - its takeover feed is not connected - while the findings
+#: it lists are read in full; `advisories` is `partial` when KEV could not be
+#: read, which turns flashes off without anything being fixed.
+_SECTIONS: dict[str, tuple[str, frozenset[str]]] = {
+    "advisory": ("advisories", frozenset({"ok"})),
+    "fit": ("threat_model", frozenset({"ok"})),
+    "malicious": ("malicious_packages", frozenset({"ok", "partial"})),
+}
 
 #: Items per DM; the page has the rest.
 MAX_IN_DM = 10
@@ -102,12 +129,100 @@ def _entity(flash: Flash) -> str:
 
 
 def already_sent(db: Any) -> set[str]:
+    """Entities sent (or seeded) more often than cleared.
+
+    Counted, not ordered by time: a clear is only written for a sent entity
+    and a send only for an unsent one, so the two alternate, and two events
+    in the same clock tick cannot be misread."""
     with db.session() as session:
-        return set(
-            session.scalars(
-                select(AuditLogEntry.entity_id).where(AuditLogEntry.action == ACTION)
+        rows = session.execute(
+            select(AuditLogEntry.entity_id, AuditLogEntry.action).where(
+                AuditLogEntry.action.in_((ACTION, CLEARED))
             )
+        ).all()
+    balance: dict[str, int] = {}
+    for entity, action in rows:
+        balance[str(entity)] = balance.get(str(entity), 0) + (1 if action == ACTION else -1)
+    return {e for e, n in balance.items() if n > 0}
+
+
+def _first_run(db: Any) -> bool:
+    """No seed marker and nothing ever sent."""
+    with db.session() as session:
+        found = session.scalars(
+            select(AuditLogEntry.id)
+            .where(AuditLogEntry.action.in_((SEEDED, ACTION)))
+            .limit(1)
+        ).first()
+    return found is None
+
+
+def _seed(db: Any, flashes: list[Flash], moment: datetime) -> None:
+    with db.session() as session:
+        for flash in flashes:
+            db.audit(
+                session,
+                actor=f"job:{BRIEFING_FLASH_JOB}",
+                action=ACTION,
+                entity_type="briefing_item",
+                entity_id=_entity(flash),
+                repo_full_name=flash.repo_full_name,
+                what=flash.what,
+                reason=flash.reason,
+                seeded=True,
+                sent_at=None,
+            )
+        db.audit(
+            session,
+            actor=f"job:{BRIEFING_FLASH_JOB}",
+            action=SEEDED,
+            entity_type="briefing_flash",
+            entity_id=SEED_ENTITY,
+            items=len(flashes),
+            seeded_at=moment.isoformat(),
         )
+
+
+def _read_in_full(briefing: WeeklyBriefingOut) -> dict[tuple[str, str], set[str]]:
+    """(repository, key prefix) -> the keys flashing there now, for every
+    section that read everything it could list and listed all of it. An item
+    is fixed only when it is missing from one of these; a page or section
+    that could not be read, or a list cut at `MAX_ITEMS`, says nothing."""
+    out: dict[tuple[str, str], set[str]] = {}
+    for page in briefing.pages:
+        by_key = {section.key: section for section in page.sections}
+        for prefix, (section_key, statuses) in _SECTIONS.items():
+            section = by_key.get(section_key)
+            if section is None or section.status not in statuses:
+                continue
+            if len(section.items) >= MAX_ITEMS:
+                continue
+            out[(page.repo_full_name, prefix)] = {i.key for i in section.items if i.flash}
+    return out
+
+
+def _gone(sent: set[str], briefing: WeeklyBriefingOut) -> list[str]:
+    complete = _read_in_full(briefing)
+    gone = []
+    for entity in sorted(sent):
+        repo, _, key = entity.partition("|")
+        flashing = complete.get((repo, key.split(":", 1)[0]))
+        if flashing is not None and key not in flashing:
+            gone.append(entity)
+    return gone
+
+
+def _clear(db: Any, entities: list[str], moment: datetime) -> None:
+    with db.session() as session:
+        for entity in entities:
+            db.audit(
+                session,
+                actor=f"job:{BRIEFING_FLASH_JOB}",
+                action=CLEARED,
+                entity_type="briefing_item",
+                entity_id=entity,
+                cleared_at=moment.isoformat(),
+            )
 
 
 def compose(flashes: list[Flash], *, dashboard_url: str) -> Notification:
@@ -139,11 +254,23 @@ async def send_flashes(
     notifier: Notifier | None = None,
     now: datetime | None = None,
 ) -> list[Flash]:
-    """DM every flash not sent before. Returns what was sent (possibly none)."""
+    """DM every flash not sent before. Returns what was sent (possibly none).
+
+    The first run seeds instead of sending; every run first clears the items
+    that are no longer there, so one that returns flashes again."""
     moment = now or datetime.now(UTC)
     briefing = await read()
+    now_flashing = candidates(briefing)
+    if _first_run(db):
+        _seed(db, now_flashing, moment)
+        logger.info("Flash: first run, %s existing item(s) recorded, none sent.", len(now_flashing))
+        return []
     sent = already_sent(db)
-    fresh = [f for f in candidates(briefing) if _entity(f) not in sent]
+    gone = _gone(sent, briefing)
+    if gone:
+        _clear(db, gone, moment)
+        sent -= set(gone)
+    fresh = [f for f in now_flashing if _entity(f) not in sent]
     if not fresh:
         return []
     reason = unconfigured(settings)
