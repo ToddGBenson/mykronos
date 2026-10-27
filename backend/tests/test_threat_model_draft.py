@@ -42,10 +42,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "127.0.0.1:8000:8000"
-  demo:
-    image: shop-demo:latest
+  worker:
+    image: shop-worker:latest
     ports:
-      - "8002:8002"
+      - "9090:9090"
   db:
     image: postgres:16
 """
@@ -126,7 +126,7 @@ def _bundle(**overrides: Any) -> tmd.EvidenceBundle:
                 "raw_ref": "",
             },
             {
-                "subject": "10.0.0.5:8002",
+                "subject": "10.0.0.5:9090",
                 "assertion": "port_published",
                 "state": "pass",
                 "vantage": "lan",
@@ -206,9 +206,9 @@ class TestDraft:
         loopback = entries["ep-backend-8000"]
         assert loopback.body["exposure"] == "local"
         assert loopback.body["evidence_ref"] == "docker-compose.yml"
-        lan = entries["ep-demo-8002"]
+        lan = entries["ep-worker-9090"]
         assert lan.body["exposure"] == "internal"
-        assert lan.body["selectors"]["addresses"] == ["*:8002"]
+        assert lan.body["selectors"]["addresses"] == ["*:9090"]
         assert any(e.source == "observation" for e in lan.evidence)
 
     def test_boundaries_come_from_exposure(self) -> None:
@@ -219,7 +219,7 @@ class TestDraft:
             "hostnames": ["shop.example.net"]
         }
         # Only the port published on every interface crosses the host edge.
-        assert boundaries["tb-host-network"].body["selectors"] == {"addresses": ["*:8002"]}
+        assert boundaries["tb-host-network"].body["selectors"] == {"addresses": ["*:9090"]}
 
     def test_assets_come_from_images_sbom_and_iac(self) -> None:
         draft = tmd.draft(_bundle(), now=NOW)
@@ -487,7 +487,7 @@ class TestPullRequests:
         assert "ep-shop.example.net" not in ids
         assert "img-postgres" not in ids
         # What moved on is.
-        assert {"ep-backend-8000", "ep-demo-8002", "img-shop-backend"} <= ids
+        assert {"ep-backend-8000", "ep-worker-9090", "img-shop-backend"} <= ids
         # The drafted gate is covered by the declared one on the same surface;
         # the loopback control is new, and points at the added entry point.
         controls = {c.id: c for c in state.manifest.controls}
@@ -495,7 +495,7 @@ class TestPullRequests:
         assert controls["ctl-bound_loopback-ep-backend-8000"].applies_to == "ep-backend-8000"
         body = github.pull_request_bodies[proposal.pull_request.number]
         assert "Nothing already declared is changed or removed" in body
-        assert "`ep-demo-8002`" in body and "`ep-shop.example.net`" not in body
+        assert "`ep-worker-9090`" in body and "`ep-shop.example.net`" not in body
 
     def test_a_drifted_control_points_at_the_declared_surface(self) -> None:
         github = _github(DECLARED.replace("kind: perimeter_gate", "kind: waf"))
@@ -762,7 +762,7 @@ class TestReviewerEdits:
         assert first.state == "opened", first.reason
         assert first.pull_request is not None
         branch = first.pull_request.head_branch
-        edited = _branch_file(github, first) + "# Reviewed: the demo port is retired." + chr(10)
+        edited = _branch_file(github, first) + "# Reviewed: the worker port is retired." + chr(10)
         github.repos[REPO].branches[branch][MANIFEST_PATH] = edited
         github.calls.clear()
         more = _bundle()
@@ -855,7 +855,7 @@ class TestReviewerDescription:
         assert first.state == "opened", first.reason
         assert first.pull_request is not None
         pr = github.repos[REPO].pull_requests[0]
-        note = "Reviewer: the demo port is behind the tunnel; checking with ops."
+        note = "Reviewer: confirm this port is meant to be published before merging."
         pr.body = note + "\n\n" + pr.body
 
         later = _propose(github, _more_drift())
