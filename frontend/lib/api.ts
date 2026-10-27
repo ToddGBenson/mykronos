@@ -338,6 +338,8 @@ export type VulnerabilityManagement = {
       severity: string;
       status: string;
       file_path: string | null;
+      /** Which half of the rule this member satisfies, and why (TheHub #60965). */
+      qualifies?: string;
     }[];
   }[];
   /** Auto-remediation's lifetime log of combinations: history, not current. */

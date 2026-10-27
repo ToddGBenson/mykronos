@@ -655,6 +655,22 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         segment = _segment(finding_id)
         row = await _call(api, "GET", f"/api/dashboard/findings/{segment}")
         severity = row.get("severity") if isinstance(row, dict) else None
+        if not finding_disposition.governed(principal, severity) and isinstance(row, dict):
+            # A member of a high or critical toxic combination is governed at
+            # the combination's severity (review of #1018).
+            repo = row.get("repo_full_name")
+            listing = await _call(
+                api,
+                "GET",
+                "/api/dashboard/toxic-combinations",
+                params={"repo": repo} if repo else None,
+            )
+            for combo in (listing or {}).get("combinations") or []:
+                if any(
+                    str(m.get("finding_id")) == str(row.get("finding_id") or finding_id)
+                    for m in combo.get("members") or []
+                ):
+                    severity = finding_disposition.worse(severity, combo.get("severity"))
         body = {"status": status, "reason": reason}
         if finding_disposition.governed(principal, severity):
             path = finding_disposition.ROUTE.format(finding_id=segment)

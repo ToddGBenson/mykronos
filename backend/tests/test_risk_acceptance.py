@@ -626,3 +626,108 @@ class TestAScopeNamesAnImageBuiltHere:
         )
         assert response.status_code == 201, response.text
         assert response.json()["risk_acceptance"]["findings"] == 1
+
+
+class TestAMemberOfASeriousCombination:
+    """The tier is floored at the combination a finding belongs to (review of
+    #1018, binding PO decision).
+
+    Since #1018 an accepted member stops counting toward a toxic combination,
+    so accepting the low ZAP-10037 half of a critical
+    vulnerable-image-and-live-service pair dissolves a critical. Tiered by the
+    member's own severity that acceptance was `low`, and a delegated agent may
+    approve `low`: two agents could lift a no_go between them. The tier must be
+    at least the combination's severity, whatever the deviation type."""
+
+    DAST = "ZAP-10037-CWE-497"
+
+    @staticmethod
+    def _pair(client, admin_auth, run_compaction, *, with_cve: bool = True) -> None:
+        import uuid
+
+        from mykronos import toxic
+        from tests.conftest import dependency_finding, finding_payload, post_findings, post_scan
+
+        onboard(client, admin_auth)
+        auth = _bearer(issue_token(client, REPO, "atlas", "dast"))
+        seeds: list[tuple[str, dict[str, Any]]] = [
+            (
+                "dast",
+                finding_payload(
+                    rule_id=TestAMemberOfASeriousCombination.DAST,
+                    title='Server Leaks Information via "X-Powered-By" at GET /',
+                    severity="low", file_path="/", line_start=None, line_end=None,
+                    symbol=None, code_snippet=None,
+                ),
+            )
+        ]
+        if with_cve:
+            seeds.insert(0, ("atlas", dependency_finding(severity="high")))
+        for capability, payload in seeds:
+            run = str(uuid.uuid4())
+            post_scan(client, auth, scan_run_id=run, capability=capability)
+            response = post_findings(
+                client, auth, [payload], scan_run_id=run, capability=capability
+            )
+            assert response.status_code in (200, 201), response.text
+        run_compaction()
+        combos = toxic.detect(client.app.state.catalog, repo=REPO)
+        assert [c.severity for c in combos] == (["critical"] if with_cve else [])
+
+    def _propose_dast(self, client, auth, **overrides: Any):
+        body: dict[str, Any] = {
+            "scope": {"capability": "dast", "rule_ids": [self.DAST]},
+            "deviation_type": "risk_adjustment",
+            "justification": "The header names a framework the image does not expose.",
+            "premises": [{"type": "not_internet_facing"}],
+            # Inside the 30 days a critical acceptance may run.
+            "requested_until": (date.today() + timedelta(days=20)).isoformat(),
+        }
+        body.update(overrides)
+        return _propose(client, auth, **body)
+
+    @pytest.mark.parametrize(
+        ("deviation_type", "premises"),
+        [
+            ("risk_adjustment", [{"type": "not_internet_facing"}]),
+            ("vendor_dependency", [{"type": "no_fixed_version"}]),
+        ],
+    )
+    def test_the_low_half_is_tiered_at_the_combination(
+        self, client, admin_auth, run_compaction, deviation_type, premises
+    ) -> None:
+        self._pair(client, admin_auth, run_compaction)
+
+        response = self._propose_dast(
+            client, _agent(client, admin_auth),
+            deviation_type=deviation_type, premises=premises,
+        )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["tier"] == "critical"
+
+    def test_the_frozen_evidence_names_the_combination(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        self._pair(client, admin_auth, run_compaction)
+
+        proposed = self._propose_dast(client, _agent(client, admin_auth)).json()
+
+        evidence = client.get(
+            f"/api/approvals/{proposed['approval_request_id']}/evidence", headers=admin_auth
+        ).json()
+        frozen = evidence.get("evidence", evidence)
+        assert [c["rule_id"] for c in frozen["combinations"]] == [
+            "vulnerable-image-and-live-service"
+        ]
+        assert any(f["code"] == "toxic_combination_member" for f in frozen["flags"])
+
+    def test_a_low_outside_any_combination_keeps_its_tier(
+        self, client, admin_auth, run_compaction
+    ) -> None:
+        self._pair(client, admin_auth, run_compaction, with_cve=False)
+
+        response = self._propose_dast(client, _agent(client, admin_auth))
+
+        assert response.status_code == 201, response.text
+        assert response.json()["tier"] == "low"

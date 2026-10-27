@@ -453,8 +453,9 @@ def _toxic(
 ) -> dict[str, Any]:
     """Combinations re-rated with max(scanner, effective) per member.
 
-    Members outside the scored scope (an accepted finding still counts toward
-    a combination) are read from their stored score where one is current."""
+    Members outside the scored scope are read from their stored score where
+    one is current. (Dispositioned findings no longer count toward a
+    combination at all since TheHub #60965, so this is now the rarer case.)"""
     pol = policy.toxic_combinations
     combinations: list[dict[str, Any]] = []
     for combo in snapshot.get("combinations") or []:

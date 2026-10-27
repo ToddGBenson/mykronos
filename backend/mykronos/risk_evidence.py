@@ -527,6 +527,9 @@ class RiskEvidence:
                         "severity": c.severity,
                         "kev_cves": list(c.kev_cves),
                         "finding_ids": [m["finding_id"] for m in c.members],
+                        "qualifies": {
+                            m["finding_id"]: m.get("qualifies", "") for m in c.members
+                        },
                     }
                     for c in self.toxic[:LISTED]
                 ],
