@@ -13,7 +13,7 @@ import dataclasses
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -32,6 +32,7 @@ from mykronos import (
     controls,
     cvss,
     environment,
+    exploitability,
     finding_disposition,
     finding_record,
     findings_export,
@@ -43,6 +44,7 @@ from mykronos import (
     read_coverage,
     regression,
     reown,
+    rescore_panel,
     risk_profile_builder,
     ssdf,
     supply_chain,
@@ -90,11 +92,13 @@ from mykronos.db.models import (
     AutoTriageAction,
     CapabilityGrant,
     EnvironmentalScore,
+    GatingLaneState,
     JobRun,
     RepoControl,
     RepoOnboarding,
     RepoSurface,
     RiskProfile,
+    ThreatIntelMatch,
     capability_config_for,
 )
 from mykronos.deployments import (
@@ -118,6 +122,7 @@ from mykronos.pull_requests import open_pull_requests
 from mykronos.read_coverage import ReadCoverage
 from mykronos.scan_run_report import ScanRunReport
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +432,17 @@ class RankTermOut(BaseModel):
     detail: str
 
 
+ExploitVerdict = Literal[
+    "exploited",
+    "weaponized",
+    "public_poc",
+    "elevated_epss",
+    "no_known_exploit",
+    "not_checked",
+    "no_cve",
+]
+
+
 class TriageItem(BaseModel):
     """One row of the cross-portfolio work queue."""
 
@@ -494,6 +510,14 @@ class TriageItem(BaseModel):
         description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    exploit_verdict: ExploitVerdict | None = Field(
+        default=None,
+        description=(
+            "The exploitability ladder (TheHub #60890): exploited (KEV), weaponized "
+            "(Metasploit), public_poc, elevated_epss, no_known_exploit, not_checked, "
+            "or no_cve. The finding record lists the sources behind it."
+        ),
+    )
     owner: str | None = Field(
         default=None, description="From CODEOWNERS or the risk profile (spec 24 §1)."
     )
@@ -2309,6 +2333,29 @@ class StageCoverageOut(BaseModel):
     problem: bool
 
 
+class RedGatingLaneOut(BaseModel):
+    """A gating lane recorded red on main by the red-main poll (TheHub #60973)."""
+
+    job: str
+    status: str | None = Field(
+        default=None, description="Concourse's word for the latest finished build."
+    )
+    build: str | None = None
+    red_since: datetime | None = Field(
+        default=None,
+        description="When the first failing build of this red run finished (UTC).",
+    )
+    first_bad_build: str | None = None
+    first_bad_sha: str | None = Field(
+        default=None,
+        description=(
+            "The commit the first failing build ran. Null when Concourse's "
+            "recent source versions did not include it: unknown, not absent."
+        ),
+    )
+    last_green_sha: str | None = None
+
+
 class CiPage(BaseModel):
     """Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a)."""
 
@@ -2344,6 +2391,14 @@ class CiPage(BaseModel):
             "for this repo' and 'Concourse did not answer' are different "
             "facts, and a panel that conflates them teaches people to ignore "
             "it."
+        ),
+    )
+    red_gating_lanes: list[RedGatingLaneOut] = Field(
+        default_factory=list,
+        description=(
+            "Each configured gating lane the red-main poll last recorded red "
+            "on main, with when it went red and the first failing commit. "
+            "Empty when none is red or none is configured for this repository."
         ),
     )
 
@@ -2446,6 +2501,25 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         enabled = set(row.enabled_capabilities or []) if row else set()
         scanned_by = row.scanned_by if row else "concourse"
         installation_id = row.github_installation_id if row else None
+        red_lanes = [
+            RedGatingLaneOut(
+                job=lane.job,
+                status=lane.status,
+                build=lane.build,
+                red_since=lane.red_since.replace(tzinfo=UTC) if lane.red_since else None,
+                first_bad_build=lane.first_bad_build,
+                first_bad_sha=lane.first_bad_sha,
+                last_green_sha=lane.last_green_sha,
+            )
+            for lane in session.execute(
+                select(GatingLaneState)
+                .where(
+                    GatingLaneState.repo_full_name == repo_full_name,
+                    GatingLaneState.state == "red",
+                )
+                .order_by(GatingLaneState.job)
+            ).scalars()
+        ]
 
         if row and row.scanned_by != "github_actions":
             # `enabled_capabilities` is the installer's ledger: capabilities
@@ -2515,6 +2589,7 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
             for r in reported
         ],
         unavailable=status.unavailable,
+        red_gating_lanes=red_lanes,
     )
 
 
@@ -6100,6 +6175,43 @@ class EnvironmentalFactOut(BaseModel):
     scope: str | None = None
     #: The control observation that verified it, when one did (#60828).
     evidence_id: str | None = None
+    #: fresh | expiring | lapsed | undated, read against now (TheHub #60889).
+    freshness: Literal["fresh", "expiring", "lapsed", "undated"] = "undated"
+    #: Days since it was verified or confirmed; null when undated.
+    age_days: int | None = None
+    #: Days until it stops counting; negative once lapsed, null when it never does.
+    expires_in_days: int | None = None
+
+
+class RescoreStepFactOut(BaseModel):
+    """One fact on a rescore step: the metric it set, from what to what."""
+
+    metric: str
+    from_value: str
+    to_value: str
+    applied: bool
+    direction: str
+    because: str = ""
+    not_applied_reason: str | None = None
+    source_kind: str
+    source_id: str
+    tier: str
+    freshness: Literal["fresh", "expiring", "lapsed", "undated"]
+    age_days: int | None = None
+    expires_in_days: int | None = None
+
+
+class RescoreStepOut(BaseModel):
+    """One step from the base score to the effective severity (TheHub #60889)."""
+
+    key: Literal["base", "environmental", "effective"]
+    label: str
+    #: The CVSS score at this step; null for the effective step, which is a word.
+    score: float | None = None
+    severity: str | None = None
+    detail: str
+    facts: list[RescoreStepFactOut] = []
+    notes: list[str] = []
 
 
 class SeverityHereOut(BaseModel):
@@ -6146,6 +6258,41 @@ class SeverityHereOut(BaseModel):
     #: When the stored score was computed; null when it was computed on read
     #: because no rescore has reached this finding yet.
     computed_at: datetime | None = None
+    #: The working, in order: base, environmental, effective, each with the
+    #: facts it rested on and their freshness (TheHub #60889).
+    steps: list[RescoreStepOut] = []
+    #: Why the stored score was not shown and this was computed on read
+    #: instead; null when the stored score is current.
+    recomputed_because: str | None = None
+
+
+class ExploitSourceOut(BaseModel):
+    """One source behind an exploitability verdict, with where to check it."""
+
+    source: str
+    label: str
+    detail: str
+    url: str
+    observed_at: datetime | None = None
+
+
+class ExploitFixOut(BaseModel):
+    state: Literal["fix_available", "no_fix_published", "not_a_package"]
+    fixed_version: str | None = None
+    detail: str
+
+
+class ExploitabilityOut(BaseModel):
+    """Can somebody exploit this today, and on whose word (TheHub #60890)."""
+
+    cve_id: str | None = None
+    verdict: ExploitVerdict
+    summary: str
+    #: Every source that spoke, whatever the verdict.
+    sources: list[ExploitSourceOut] = []
+    #: When the exploit catalogs last answered for this CVE; null if never.
+    checked_at: datetime | None = None
+    fix: ExploitFixOut
 
 
 class FindingRecordOut(BaseModel):
@@ -6171,6 +6318,10 @@ class FindingRecordOut(BaseModel):
     #: See PriorDispositionOut. Null when this finding re-asks nothing.
     prior_disposition: PriorDispositionOut | None = None
     missing_context: list[RecordGap]
+    #: KEV, EPSS, public exploits and fix availability, with a verdict and
+    #: its sources (TheHub #60890). Present on every finding: one with no CVE
+    #: says so rather than leaving the block out.
+    exploitability: ExploitabilityOut | None = None
 
 
 def _severity_here(
@@ -6197,6 +6348,7 @@ def _severity_here(
         "asset_id": row.get("repo_full_name"),
     }
 
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
     with request.app.state.db.session() as session:
         # NVD 3.x > advisory 3.x > v4.0 shown only (TheHub #60824, D1), chosen
         # in one place for the record page and the stored scores alike.
@@ -6206,6 +6358,8 @@ def _severity_here(
             if choice is not None and choice.rescored
             else None
         )
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        in_kev = bool(intel is not None and intel.in_kev)
     if choice is None:
         return None
     if not choice.rescored:
@@ -6221,13 +6375,32 @@ def _severity_here(
             rescored=False,
         )
 
-    if stored is not None and stored.vector == choice.vector:
+    # The stored score only while it still describes the evidence (TheHub
+    # #60889): a lapsed lowering fact, a changed scanner word or a pending
+    # rescore after a fact was written all mean the store is behind, and the
+    # page recomputes rather than showing yesterday's answer as today's.
+    now = utcnow()
+    stale = rescore_panel.stale_reason(
+        stored,
+        vector=choice.vector,
+        scanner_severity=str(row.get("severity") or ""),
+        repo_full_name=str(row.get("repo_full_name") or ""),
+        onboarding_id=(
+            str(profile.repo_onboarding_id)
+            if profile is not None and getattr(profile, "repo_onboarding_id", None)
+            else None
+        ),
+        pending=environment.pending(),
+        now=now,
+        monotonic_now=time.monotonic(),
+    )
+    if stored is not None and stale is None:
         facts = [environment.Fact.from_dict(raw) for raw in stored.facts_json or []]
         base, env_score = stored.base, stored.environmental
         effective, computed_at = stored.effective_severity, stored.computed_at
     else:
         on_read = environment.score_on_read(
-            request.app.state.db, request.app.state.catalog, finding
+            request.app.state.db, request.app.state.catalog, finding, now=now
         )
         if on_read is None:
             logger.warning("Stored vector for %s is unscoreable", scrub(finding_id[:12]))
@@ -6272,11 +6445,30 @@ def _severity_here(
                 because=f.because,
                 scope=f.scope,
                 evidence_id=f.evidence_id,
+                **rescore_panel.freshness(f, now),
             )
             for f in facts
         ],
         effective_severity=effective or None,
         computed_at=computed_at,
+        steps=[
+            RescoreStepOut.model_validate(step)
+            for step in rescore_panel.steps(
+                vector=choice.vector,
+                vector_source=choice.source,
+                vector_version=choice.version,
+                base=base,
+                environmental=env_score,
+                scanner_severity=str(row.get("severity") or ""),
+                effective=effective or None,
+                facts=facts,
+                now=now,
+                in_kev=in_kev,
+            )
+        ],
+        recomputed_because=(
+            rescore_panel.STALE_REASONS[stale] if stale is not None else None
+        ),
     )
 
 
@@ -6345,6 +6537,21 @@ async def whole_finding_record(
     ) if catalog.all_files("reachability") else []
     analysed = bool(reach_rows and reach_rows[0][0])
 
+    pkg_found = finding_record.package_for(
+        catalog,
+        repo_full_name=repo_full_name,
+        package_name=row.get("package_name"),
+    )
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
+    with request.app.state.db.session() as session:
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        exploit = exploitability.assess(
+            cve_id,
+            intel,
+            package_name=row.get("package_name"),
+            fixed_version=(pkg_found or {}).get("fixed_version"),
+        )
+
     return FindingRecordOut(
         finding=FindingOut.model_validate(row),
         repo_full_name=repo_full_name,
@@ -6374,17 +6581,8 @@ async def whole_finding_record(
             )
             else None
         ),
-        package=(
-            PackageOut(**pkg)
-            if (
-                pkg := finding_record.package_for(
-                    catalog,
-                    repo_full_name=repo_full_name,
-                    package_name=row.get("package_name"),
-                )
-            )
-            else None
-        ),
+        package=PackageOut(**pkg_found) if pkg_found else None,
+        exploitability=ExploitabilityOut.model_validate(exploit),
         missing_context=[
             RecordGap(**gap)
             for gap in finding_record.missing_context(
@@ -7343,6 +7541,29 @@ class CiStallOut(BaseModel):
     notified_at: datetime | None = None
 
 
+class CredentialOut(BaseModel):
+    """A credential a person may need to act on (TheHub #60974).
+
+    State and dates only. This page is served on an internet-exposed
+    dashboard, so no hash, hash prefix, token id or label is carried, and
+    `extra="forbid"` keeps one from being added in passing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: "ingestion_token" | "agent_credential"
+    kind: str
+    repo_full_name: str | None = None
+    actor: str | None = None
+    #: "due" | "unverified" | "expiring". Only `due` is a reason to rotate.
+    state: str
+    rotate_after: datetime | None = None
+    expires_at: datetime | None = None
+    #: Negative once the date has passed.
+    days_until_due: float
+    action: str
+
+
 class PlatformHealthOut(BaseModel):
     """Whether this platform is itself working."""
 
@@ -7352,6 +7573,10 @@ class PlatformHealthOut(BaseModel):
     jobs: list[JobHealthOut]
     dependencies: list[DependencyHealthOut]
     ci_stall: CiStallOut
+    #: Ingestion tokens left for a person and agent credentials expiring within
+    #: 7 days. Not part of `degraded`: a token awaiting rotation is work to do,
+    #: not the platform failing.
+    credentials: list[CredentialOut] = Field(default_factory=list)
     note: str
 
 
@@ -7456,12 +7681,28 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     health = platform_health.PlatformHealth(
         jobs=jobs, dependencies=dependencies, ci_stalled=stall.status == "red"
     )
+    credentials = await asyncio.to_thread(
+        platform_health.credentials_needing_attention, request.app.state.db, now=now
+    )
 
     return PlatformHealthOut(
         degraded=health.degraded,
         jobs=[JobHealthOut(**vars(job)) for job in jobs],
         dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
         ci_stall=stall,
+        credentials=[
+            CredentialOut(
+                kind=c.kind,
+                repo_full_name=c.repo_full_name,
+                actor=c.actor,
+                state=c.state,
+                rotate_after=c.rotate_after,
+                expires_at=c.expires_at,
+                days_until_due=c.days_until_due,
+                action=c.action,
+            )
+            for c in credentials
+        ],
         note=(
             "A job that fails is caught, logged and retried, which is right and is "
             "also what makes it invisible. These rows are the record that log line "

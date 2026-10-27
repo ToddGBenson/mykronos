@@ -86,6 +86,19 @@ AFFIRMING_STATE = {
 
 _EVIDENCE_STATES = ("pass", "fail")
 
+#: The most ids one `IN (...)` binds. SQLite refuses a statement with more
+#: than 32766 variables, and a migrated estate's open findings exceed that,
+#: which turned the `risk_evidence` block into `available: false` (review of
+#: #1005). Well under every engine's limit, and few round trips.
+IN_CHUNK = 900
+
+
+def chunked(values: Iterable[str], size: int = IN_CHUNK) -> Iterable[list[str]]:
+    """`values`, sorted and de-duplicated, in lists of at most `size`."""
+    ordered = sorted(set(values))
+    for start in range(0, len(ordered), size):
+        yield ordered[start : start + size]
+
 
 # ---------------------------------------------------------------------------
 # Threat intelligence: KEV and EPSS
@@ -121,10 +134,15 @@ def threat_signals(session: Session, cves: Iterable[str]) -> dict[str, ThreatSig
     wanted = sorted({str(c).upper() for c in cves if c})
     if not wanted:
         return {}
+    rows = [
+        row
+        for chunk in chunked(wanted)
+        for row in session.scalars(
+            select(ThreatIntelMatch).where(ThreatIntelMatch.cve_id.in_(chunk))
+        ).all()
+    ]
     out: dict[str, ThreatSignal] = {}
-    for row in session.scalars(
-        select(ThreatIntelMatch).where(ThreatIntelMatch.cve_id.in_(wanted))
-    ).all():
+    for row in rows:
         cve = str(row.cve_id).upper()
         out[cve] = ThreatSignal(
             cve=cve,
@@ -165,12 +183,20 @@ def environmental_scores(
     query = select(EnvironmentalScore)
     if repo is not None:
         query = query.where(EnvironmentalScore.repo_full_name == repo)
-    if finding_ids is not None:
-        ids = sorted({str(f) for f in finding_ids})
+    if finding_ids is None:
+        found = list(session.scalars(query).all())
+    else:
+        ids = {str(f) for f in finding_ids}
         if not ids:
             return {}
-        query = query.where(EnvironmentalScore.finding_id.in_(ids))
-    rows = {row.finding_id: row for row in session.scalars(query).all()}
+        found = [
+            row
+            for chunk in chunked(ids)
+            for row in session.scalars(
+                query.where(EnvironmentalScore.finding_id.in_(chunk))
+            ).all()
+        ]
+    rows = {row.finding_id: row for row in found}
     for row in rows.values():
         session.expunge(row)
     return rows

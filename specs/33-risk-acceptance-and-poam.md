@@ -477,6 +477,12 @@ Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
   covered CVE that joined KEV on or after the day it was proposed, which moves it to
   `premise_failed` through §4.2's path (the §13 criterion). Not built: a new toxic combination
   reopening an acceptance.
+- Built (review of #1005): the legacy sweep. Until #1005 the KEV refusal read rule ids only, so an
+  acceptance proposed before it (its approval evidence has no `risk_evidence` block) could cover a
+  GHSA-keyed finding whose title CVE was already in KEV. On those records a title-only KEV CVE
+  fails the implicit premise whatever its KEV date. No new record can enter that set, so the sweep
+  retires itself. The monitor's lake read is limited to the live acceptances' repositories, and
+  the evidence model's `IN` lists are read in chunks of 900, under SQLite's bind limit.
 - Not built: the POA&M export. No route or command produces OSCAL or CSV, so the §13 criterion on
   the OSCAL 1.1 schema is unmet.
 - Not built: §8's scoring changes. `residual_cap` is still **15** in `oracle-policy-v1.yaml`, not 30,

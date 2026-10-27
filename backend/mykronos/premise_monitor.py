@@ -69,6 +69,7 @@ from sqlalchemy.orm import Session
 from mykronos import control_observations, risk_evidence
 from mykronos import risk_acceptance as ra
 from mykronos.db.models import (
+    ApprovalRequest,
     AuditLogEntry,
     ControlObservation,
     RepoSurface,
@@ -849,14 +850,35 @@ def run(
         current_principal.reset(token)
 
 
+@dataclass(frozen=True)
+class KevHit:
+    """A covered finding's KEV-listed CVE, and where the finding names it."""
+
+    signal: risk_evidence.ThreatSignal
+    #: The CVE is named only in the title (an Atlas finding, whose rule id is
+    #: its GHSA id). The KEV refusal read rule ids only until #1005.
+    via_title: bool
+
+
 def kev_by_finding(
-    session: Session, catalog: Catalog, finding_ids: Iterable[str]
-) -> dict[str, risk_evidence.ThreatSignal]:
-    """Finding id -> the KEV signal of its CVE, for findings whose rule is a
-    KEV-listed CVE. One threat-intel read and one lake query for every live
-    acceptance, not one per record."""
+    session: Session,
+    catalog: Catalog,
+    finding_ids: Iterable[str],
+    *,
+    repos: Iterable[str] | None = None,
+) -> dict[str, KevHit]:
+    """Finding id -> the KEV hit of its CVE, for findings whose rule id or
+    title is a KEV-listed CVE. One threat-intel read and one lake query for
+    every live acceptance, not one per record.
+
+    `repos` limits the lake read to those repositories - the acceptances'
+    own - rather than every repository's findings (review of #1005).
+    """
     ids = {str(f) for f in finding_ids}
     if not ids or not catalog.all_files("findings"):
+        return {}
+    wanted_repos = sorted({str(r) for r in repos}) if repos is not None else None
+    if wanted_repos == []:
         return {}
     signals = risk_evidence.kev_signals(session)
     listed = sorted(signals)
@@ -867,24 +889,46 @@ def kev_by_finding(
     # rule id, or - an OSV-derived Atlas finding, whose rule id is the GHSA
     # id - the one its title names, as the Oracle reads it (`extract_cve`).
     marks = ", ".join("?" for _ in listed)
+    params: list[Any] = [*listed, *listed]
+    in_repos = ""
+    if wanted_repos is not None:
+        in_repos = f" AND repo_full_name IN ({', '.join('?' for _ in wanted_repos)})"
+        params.extend(wanted_repos)
     rows = catalog.query(
         "SELECT finding_id, upper(rule_id), "
         f"       regexp_extract(upper(coalesce(title, '')), '{_TITLE_CVE}') "
         "FROM findings "
-        f"WHERE upper(rule_id) IN ({marks}) "
-        f"   OR regexp_extract(upper(coalesce(title, '')), '{_TITLE_CVE}') IN ({marks})",
-        [*listed, *listed],
+        f"WHERE (upper(rule_id) IN ({marks}) "
+        f"   OR regexp_extract(upper(coalesce(title, '')), '{_TITLE_CVE}') IN ({marks}))"
+        f"{in_repos}",
+        params,
     )
-    out: dict[str, risk_evidence.ThreatSignal] = {}
+    out: dict[str, KevHit] = {}
     for fid, rule, titled in rows:
-        signal = signals.get(str(rule)) or signals.get(str(titled or ""))
+        by_rule = signals.get(str(rule))
+        signal = by_rule or signals.get(str(titled or ""))
         if str(fid) in ids and signal is not None and signal.in_kev:
-            out[str(fid)] = signal
+            out[str(fid)] = KevHit(signal, via_title=by_rule is None)
     return out
 
 
+def proposed_before_the_evidence_block(session: Session, record: RiskAcceptance) -> bool:
+    """True for an acceptance proposed before #1005: its approval evidence
+    has no frozen `risk_evidence` block, or there is no approval request to
+    read. Those were checked against KEV by rule id only, so a CVE named only
+    in a title and already listed then was never refused. Nothing proposed
+    since can join this set, so the sweep it drives retires itself as those
+    records close, fail or are renewed."""
+    if not record.approval_request_id:
+        return True
+    request = session.get(ApprovalRequest, record.approval_request_id)
+    if request is None:
+        return True
+    return not isinstance((request.evidence or {}).get("risk_evidence"), dict)
+
+
 def kev_join(
-    record: RiskAcceptance, kev: dict[str, risk_evidence.ThreatSignal]
+    record: RiskAcceptance, kev: dict[str, KevHit], *, legacy: bool = False
 ) -> PremiseCheck | None:
     """The implicit premise (spec 33 §13): a covered CVE that joined KEV
     after this acceptance was proposed fails it, named or not.
@@ -893,28 +937,58 @@ def kev_join(
     day the platform last checked KEV for it. A CVE already listed then was
     accepted knowingly (where policy allows that), and is not news. A KEV row
     with no date counts as joined: reopening is the safe direction.
+
+    `legacy` (`proposed_before_the_evidence_block`) is the sweep for the gap
+    the review of #1005 found. Until #1005 the refusal read rule ids only, so
+    a CVE named only in a finding's title was never checked, and its listing
+    date says nothing about what the approver knew. On those records a
+    title-only KEV CVE fails the acceptance whatever its KEV date.
     """
     proposed = (record.created_at or record.effective_at or utcnow()).date()
     joined: dict[str, tuple[risk_evidence.ThreatSignal, list[str]]] = {}
+    unchecked: dict[str, tuple[risk_evidence.ThreatSignal, list[str]]] = {}
     for fid in record.covered_finding_ids or []:
-        signal = kev.get(str(fid))
-        if signal is None:
+        hit = kev.get(str(fid))
+        if hit is None:
             continue
-        if signal.kev_added_at is not None and signal.kev_added_at < proposed:
-            continue
-        joined.setdefault(signal.cve, (signal, []))[1].append(str(fid))
-    if not joined:
+        signal = hit.signal
+        if signal.kev_added_at is None or signal.kev_added_at >= proposed:
+            joined.setdefault(signal.cve, (signal, []))[1].append(str(fid))
+        elif legacy and hit.via_title:
+            unchecked.setdefault(signal.cve, (signal, []))[1].append(str(fid))
+    if not joined and not unchecked:
         return None
+    reasons = []
+    if joined:
+        reasons.append(
+            "Joined CISA KEV after this acceptance was proposed: "
+            + ", ".join(f"{s.cve} (added {_added(s)})" for s, _ in joined.values())
+            + "."
+        )
+    if unchecked:
+        reasons.append(
+            "In CISA KEV and named only in a finding title, which the KEV check "
+            "did not read when this acceptance was proposed: "
+            + ", ".join(f"{s.cve} (added {_added(s)})" for s, _ in unchecked.values())
+            + "."
+        )
     return PremiseCheck(
         IMPLICIT_KEV_INDEX,
         "not_kev_listed",
         "failed",
-        "Joined CISA KEV after this acceptance was proposed: "
-        + ", ".join(f"{s.cve} (added {_added(s)})" for s, _ in joined.values())
-        + ". A known-exploited CVE cannot stay accepted, only mitigated.",
+        " ".join(reasons) + " A known-exploited CVE cannot stay accepted, only mitigated.",
         [
             {**_kev_evidence(s), "implicit": True, "finding_ids": sorted(ids)}
             for s, ids in joined.values()
+        ]
+        + [
+            {
+                **_kev_evidence(s),
+                "implicit": True,
+                "legacy_title_sweep": True,
+                "finding_ids": sorted(ids),
+            }
+            for s, ids in unchecked.values()
         ],
     )
 
@@ -930,10 +1004,17 @@ def _run(
             query = query.where(RiskAcceptance.repo_full_name == repo)
         records = session.scalars(query).all()
         kev = kev_by_finding(
-            session, catalog, (f for r in records for f in (r.covered_finding_ids or []))
+            session,
+            catalog,
+            (f for r in records for f in (r.covered_finding_ids or [])),
+            repos={r.repo_full_name for r in records},
         )
         for record in records:
-            implicit = kev_join(record, kev)
+            titled = any(
+                kev[str(f)].via_title for f in (record.covered_finding_ids or []) if str(f) in kev
+            )
+            legacy = titled and proposed_before_the_evidence_block(session, record)
+            implicit = kev_join(record, kev, legacy=legacy)
             if not record.premises and implicit is None:
                 continue
             checks = (

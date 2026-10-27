@@ -27,7 +27,13 @@ from mykronos import premise_monitor as pm
 from mykronos import risk_acceptance as ra
 from mykronos import risk_evidence
 from mykronos.approvals.policy import InterimReview
-from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskAcceptance, ThreatIntelMatch
+from mykronos.db.models import (
+    ApprovalRequest,
+    ReachabilityReport,
+    RepoOnboarding,
+    RiskAcceptance,
+    ThreatIntelMatch,
+)
 from mykronos.schemas import utcnow
 from tests.conftest import REPO
 from tests.test_notify import RecordingNotifier
@@ -271,3 +277,97 @@ class TestTheDetailShowsTheNewKinds:
         [check] = detail["premise_checks"]
         assert check["type"] == "path_unreachable"
         assert check["status"] == "holds"
+
+
+# ---------------------------------------------------------------------------
+# The legacy sweep: title-only CVEs the pre-#1005 refusal never read
+# ---------------------------------------------------------------------------
+
+
+def _as_proposed_before_the_evidence_block(client, record_id: str) -> None:
+    """What an acceptance proposed before #1005 looks like: its approval
+    evidence has no frozen `risk_evidence` block, because the KEV refusal
+    then read rule ids only."""
+    with client.app.state.db.session() as session:
+        record = session.get(RiskAcceptance, record_id)
+        assert record is not None and record.approval_request_id
+        request = session.get(ApprovalRequest, record.approval_request_id)
+        assert request is not None
+        evidence = dict(request.evidence or {})
+        assert "risk_evidence" in evidence  # what the sweep keys on
+        evidence.pop("risk_evidence")
+        request.evidence = evidence
+
+
+class TestLegacyTitleKevSweep:
+    LONG_AGO = timedelta(days=30)
+
+    def test_a_legacy_acceptance_whose_title_cve_was_already_listed_is_reopened(
+        self, client, admin_auth, title_cve
+    ) -> None:
+        """The #1005 review's Medium: approved when only rule ids were read,
+        so a GHSA-keyed finding's title CVE, KEV-listed before the proposal,
+        was never refused, and `kev_join` reads it as accepted knowingly."""
+        record_id = _accepted(client, admin_auth)
+        _as_proposed_before_the_evidence_block(client, record_id)
+        _kev(client, TITLE_CVE, utcnow().date() - self.LONG_AGO)
+
+        result = _run(client)
+
+        assert [f.record_id for f in result.failed] == [record_id]
+        [check] = result.failed[0].failed
+        assert check.index == pm.IMPLICIT_KEV_INDEX
+        assert check.type == "not_kev_listed"
+        assert TITLE_CVE in check.reason
+        assert "title" in check.reason
+        assert _record(client, record_id).status == "premise_failed"
+
+    def test_a_record_with_no_approval_request_is_swept_too(
+        self, client, admin_auth, title_cve
+    ) -> None:
+        record_id = _accepted(client, admin_auth)
+        with client.app.state.db.session() as session:
+            record = session.get(RiskAcceptance, record_id)
+            assert record is not None
+            record.approval_request_id = None
+        _kev(client, TITLE_CVE, utcnow().date() - self.LONG_AGO)
+        assert [f.record_id for f in _run(client).failed] == [record_id]
+
+    def test_a_record_proposed_with_the_evidence_block_is_not_swept(
+        self, client, admin_auth, title_cve
+    ) -> None:
+        """Guard: since #1005 the refusal reads the title, so a listed title
+        CVE at proposal was refused or (with refusal off) accepted knowingly."""
+        record_id = _accepted(client, admin_auth)
+        _kev(client, TITLE_CVE, utcnow().date() - self.LONG_AGO)
+        assert _run(client).failed == []
+        assert _record(client, record_id).status == "active"
+
+    def test_a_legacy_rule_id_cve_already_listed_is_not_news(
+        self, client, admin_auth, lake
+    ) -> None:
+        """Guard: the pre-#1005 refusal read rule ids, so a rule-id CVE
+        listed at proposal was refused or accepted knowingly."""
+        record_id = _accepted(client, admin_auth)
+        _as_proposed_before_the_evidence_block(client, record_id)
+        _kev(client, "CVE-2026-1", utcnow().date() - self.LONG_AGO)
+        assert _run(client).failed == []
+        assert _record(client, record_id).status == "active"
+
+
+class TestKevByFindingIsScopedToTheRepositories:
+    def test_it_reads_only_the_named_repositories(self, client, admin_auth, lake) -> None:
+        catalog = client.app.state.catalog
+        [(fid,)] = catalog.query(
+            "SELECT finding_id FROM findings WHERE rule_id = 'CVE-2026-2' "
+            "AND repo_full_name = ? LIMIT 1",
+            [REPO],
+        )
+        _kev(client, "CVE-2026-2", utcnow().date())
+        with client.app.state.db.session() as session:
+            here = pm.kev_by_finding(session, catalog, [fid], repos=[REPO])
+            elsewhere = pm.kev_by_finding(session, catalog, [fid], repos=["acme/other"])
+        assert set(here) == {str(fid)}
+        assert here[str(fid)].signal.cve == "CVE-2026-2"
+        assert not here[str(fid)].via_title
+        assert elsewhere == {}
