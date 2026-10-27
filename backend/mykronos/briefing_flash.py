@@ -13,7 +13,9 @@ does not either. When an item leaves a section that read everything it lists
 (`_read_in_full`) altogether, it is audited as `briefing.flash_cleared`; if it
 comes back - a fixed finding that regresses - it flashes again (review of
 #1009). An item still listed but no longer flashing is not cleared: it is
-still open (review of #1027).
+still open (review of #1027). A threat-model (`fit:`) item is cleared only
+when its advisory leaves every declared surface, because that section lists
+an item only while KEV or the re-score qualifies it.
 
 **The first run is a baseline, not news.** The first time the job runs it
 records every item already flashing as sent (`seeded`) and DMs nothing, so
@@ -66,13 +68,19 @@ SEED_ENTITY = "first-run"
 #: The section each flashing key prefix comes from, and the statuses in which
 #: that section has read everything it could list. `malicious_packages` is
 #: always `partial` - its takeover feed is not connected - while the findings
-#: it lists are read in full; `advisories` is `partial` when KEV could not be
-#: read, which turns flashes off without anything being fixed.
+#: it lists are read in full; `advisories` and `threat_model` are `partial`
+#: when KEV could not be read, which turns flashes off without anything being
+#: fixed.
 _SECTIONS: dict[str, tuple[str, frozenset[str]]] = {
     "advisory": ("advisories", frozenset({"ok"})),
     "fit": ("threat_model", frozenset({"ok"})),
     "malicious": ("malicious_packages", frozenset({"ok", "partial"})),
 }
+
+#: Prefixes whose section lists an item only while KEV or the re-score
+#: qualifies it, so its items are no evidence of a fix; only the section's
+#: `open_keys` are (review of #1027).
+_LISTED_BY_FLASH_INPUTS = frozenset({"fit"})
 
 #: Items per DM; the page has the rest.
 MAX_IN_DM = 10
@@ -192,7 +200,12 @@ def _read_in_full(briefing: WeeklyBriefingOut) -> dict[tuple[str, str], set[str]
     or section that could not be read, or a list cut at `MAX_ITEMS`, says
     nothing. An item still listed but no longer flashing - a pull-request
     scan made `shipped` false, or a re-score moved it - is still open, so it
-    stays sent (review of #1027)."""
+    stays sent (review of #1027).
+
+    The threat model lists a fitted advisory only when it is known exploited
+    or high here, so its list moves with KEV and the re-score. It is read
+    from the section's `open_keys` instead - every advisory that lands in a
+    declared surface, listed or not - and without them says nothing."""
     out: dict[tuple[str, str], set[str]] = {}
     for page in briefing.pages:
         by_key = {section.key: section for section in page.sections}
@@ -200,7 +213,11 @@ def _read_in_full(briefing: WeeklyBriefingOut) -> dict[tuple[str, str], set[str]
             section = by_key.get(section_key)
             if section is None or section.status not in statuses:
                 continue
-            if len(section.items) >= MAX_ITEMS:
+            open_keys = section.data.get("open_keys")
+            if isinstance(open_keys, list):
+                out[(page.repo_full_name, prefix)] = {str(k) for k in open_keys}
+                continue
+            if prefix in _LISTED_BY_FLASH_INPUTS or len(section.items) >= MAX_ITEMS:
                 continue
             out[(page.repo_full_name, prefix)] = {i.key for i in section.items}
     return out

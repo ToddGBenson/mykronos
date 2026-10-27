@@ -469,18 +469,24 @@ def _threat_model(inputs: Inputs, since: datetime, now: datetime) -> Section:
     intel = inputs.intel or {}
     environmental = inputs.environmental or {}
     items: list[tuple[tuple[Any, ...], Item]] = []
+    #: Every advisory that lands in a declared surface, whatever its
+    #: severity or exploitation. Which of them are listed depends on KEV and
+    #: the re-score, so an item leaving the list is not a fix; leaving this
+    #: set is (review of #1027).
+    open_keys: set[str] = set()
     for row in inputs.findings:
         advisory = advisory_id(row)
         if advisory is None:
-            continue
-        here = _severity_here(row, environmental)
-        facts = intel.get(advisory, {})
-        if not (facts.get("in_kev") or _SEVERITY_RANK.get(here, 0) >= 3):
             continue
         found = surface_match.matches(row, surfaces)
         if not found:
             continue
         surface = found[0].surface
+        open_keys.add(f"fit:{advisory}:{surface.id}")
+        here = _severity_here(row, environmental)
+        facts = intel.get(advisory, {})
+        if not (facts.get("in_kev") or _SEVERITY_RANK.get(here, 0) >= 3):
+            continue
         flash, flash_reason = _flash(row, facts, here)
         confidence, reason = _confidence(row)
         items.append(
@@ -508,14 +514,24 @@ def _threat_model(inputs: Inputs, since: datetime, now: datetime) -> Section:
             )
         )
     items.sort(key=lambda pair: pair[0])
+    # A known-exploited medium is fitted only when KEV can be read.
+    status: Status = "ok" if inputs.intel is not None else "partial"
+    reason = "" if inputs.intel is not None else (
+        "KEV could not be read, so known-exploited advisories below high are not fitted."
+    )
     return Section(
         "threat_model",
         title,
-        "ok",
+        status,
         source,
         now,
+        reason=reason,
         items=[i for _, i in items][:MAX_ITEMS],
-        data={"fitted": len(items), "surfaces": len(surfaces)},
+        data={
+            "fitted": len(items),
+            "surfaces": len(surfaces),
+            "open_keys": sorted(open_keys),
+        },
     )
 
 
