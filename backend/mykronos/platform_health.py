@@ -261,8 +261,10 @@ def _ago(delta: timedelta) -> str:
     return _duration(int(delta.total_seconds()))
 
 
-#: How far ahead an agent credential's expiry is shown (TheHub #60974).
-AGENT_EXPIRY_WINDOW = timedelta(days=14)
+#: How far ahead an agent credential's expiry is shown (TheHub #60974). Seven
+#: days, the PO's call on the #1019 review: fourteen outran the 7-day maximum
+#: agent TTL (`agents.MAX_TTL_HOURS`), so it listed every live credential.
+AGENT_EXPIRY_WINDOW = timedelta(days=7)
 
 CredentialState = Literal["due", "unverified", "expiring"]
 

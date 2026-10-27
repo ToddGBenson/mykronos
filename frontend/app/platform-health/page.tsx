@@ -224,10 +224,17 @@ function CredentialRow({ credential }: { credential: Credential }) {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="font-mono text-[13px] font-bold text-ink">{subject}</span>
         <span className="text-[12px] text-ink-3">
-          {/* "due", not "rotation date": an unverified row must not carry
-              the word at all, even as a label (D-097). */}
-          {credential.rotate_after ? "due" : "expires"}{" "}
-          {date ? date.slice(0, 10) : "unknown"} ({whenDue(credential.days_until_due)})
+          {/* An unverified row carries no date at all: "due <date> (N days
+              overdue)" reads as a prompt to rotate, which is the one thing
+              D-097 forbids for a token whose delivery is unconfirmed. */}
+          {credential.state === "unverified" ? (
+            "awaiting delivery confirmation"
+          ) : (
+            <>
+              {credential.rotate_after ? "due" : "expires"}{" "}
+              {date ? date.slice(0, 10) : "unknown"} ({whenDue(credential.days_until_due)})
+            </>
+          )}
         </span>
         <span className="ml-auto">
           <Pill tone={meaning.tone}>{meaning.word}</Pill>
@@ -326,7 +333,7 @@ export default async function PlatformHealthPage() {
         ) : (
           <p className="px-3 py-2.5 text-[13px] text-ink-3">
             No ingestion token is past its rotation date or awaiting delivery
-            confirmation, and no agent credential expires within 14 days.
+            confirmation, and no agent credential expires within 7 days.
           </p>
         )}
       </Section>

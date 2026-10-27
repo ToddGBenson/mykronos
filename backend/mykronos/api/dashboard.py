@@ -7180,7 +7180,7 @@ class PlatformHealthOut(BaseModel):
     dependencies: list[DependencyHealthOut]
     ci_stall: CiStallOut
     #: Ingestion tokens left for a person and agent credentials expiring within
-    #: 14 days. Not part of `degraded`: a token awaiting rotation is work to do,
+    #: 7 days. Not part of `degraded`: a token awaiting rotation is work to do,
     #: not the platform failing.
     credentials: list[CredentialOut] = Field(default_factory=list)
     note: str
