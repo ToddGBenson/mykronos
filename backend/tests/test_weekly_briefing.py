@@ -500,6 +500,27 @@ class TestARegressedItemFlashesAgain:
         assert _tick(client, _configured(settings), _page(), notifier) == []
         assert len(notifier.sent) == 1
 
+    def test_an_item_still_listed_but_not_flashing_is_not_cleared(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """A pull-request scan of the same vulnerable dependency makes the
+        finding's `shipped` false until the next default-branch scan, so it
+        stops flashing while it is still open and still listed. That is not a
+        fix: when it flashes again it must not be DMed a second time (review
+        of #1027)."""
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        assert {f.key for f in _tick(client, _configured(settings), _page(), notifier)} == (
+            ALL_FIVE
+        )
+        rows = [
+            {**r, "shipped": False} if r["finding_id"] == "kev" else r
+            for r in _inputs().findings or []
+        ]
+        assert _tick(client, _configured(settings), _page(findings=rows), notifier) == []
+        assert _tick(client, _configured(settings), _page(), notifier) == []
+        assert len(notifier.sent) == 1
+
     def test_a_vanished_application_is_not_cleared(
         self, client: TestClient, settings: Settings
     ) -> None:
