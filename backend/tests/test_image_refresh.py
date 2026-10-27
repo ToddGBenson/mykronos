@@ -116,7 +116,7 @@ def test_plan_still_refuses_a_digest_pinned_tag_without_a_date(tmp_path: Path) -
 @pytest.mark.parametrize("digest", ["sha256:abc", "md5:" + "0" * 64, "sha256:" + "G" * 64, ""])
 def test_plan_refuses_a_malformed_digest(tmp_path: Path, digest: str) -> None:
     bad = PINNED.replace(DIGEST, digest)
-    with pytest.raises(ValueError, match="sha256"):
+    with pytest.raises(ValueError, match="is not a sha256 digest"):
         ir.plan(_write(tmp_path, bad), "20261026", "r:5000")
 
 
