@@ -15,7 +15,9 @@ import { describe, expect, it } from "vitest";
 import { BriefingSectionCard, BriefingView } from "@/components/briefing";
 import {
   briefingHref,
+  doneActions,
   groupByWork,
+  operatorActions,
   productSignals,
   refLink,
   statusMeta,
@@ -34,6 +36,7 @@ function line(overrides: Partial<BriefingLine> = {}): BriefingLine {
     work: "story",
     repo_full_name: "",
     ref: "",
+    verification: "",
     ...overrides,
   };
 }
@@ -275,6 +278,64 @@ describe("helpers", () => {
   it("builds the switcher's links", () => {
     expect(briefingHref(null)).toBe("/briefing");
     expect(briefingHref("a b")).toBe("/briefing?repo_id=a%20b");
+  });
+});
+
+describe("operator actions that check themselves (TheHub #60972)", () => {
+  const actions = [
+    { id: 60931, title: "OPERATOR ACTION: backend-tests required", verification: "observed_done",
+      evidence: "Branch protection on main requires backend-tests." },
+    { id: 60810, title: "OPERATOR ACTION: protect v* tags", verification: "observed_not_done",
+      evidence: "none targets v*." },
+    { id: 60811, title: "OPERATOR ACTION: GitHub refused", verification: "probe_error",
+      evidence: "GitHub refused (HTTP 403)." },
+    { id: 60812, title: "OPERATOR ACTION: no probe", verification: "unprobed" },
+    { id: 60813, title: "OPERATOR ACTION: odd", verification: "something-new", evidence: "x" },
+  ];
+  const needsYou = section({
+    key: "needs_you_today",
+    title: "Needs you today",
+    data: { board: { operator_actions: actions } },
+    // Done actions are not lines: the API leaves them out of the count.
+    lines: [
+      line({ what: "OPERATOR ACTION: protect v* tags", verification: "observed_not_done",
+             so_what: "Checked: none targets v*.", ref: "TheHub #60810" }),
+      line({ what: "OPERATOR ACTION: GitHub refused", verification: "probe_error",
+             so_what: "could not check: GitHub refused (HTTP 403).", ref: "TheHub #60811" }),
+      line({ what: "OPERATOR ACTION: no probe", verification: "unprobed", ref: "TheHub #60812" }),
+      line({ what: "Merge o/thehub#1", work: "merge" }),
+    ],
+  });
+
+  it("parses actions and never upgrades an unknown verification to done", () => {
+    const parsed = operatorActions(needsYou);
+    expect(parsed.map((a) => a.verification)).toEqual([
+      "observed_done", "observed_not_done", "probe_error", "unprobed", "probe_error",
+    ]);
+    expect(doneActions(needsYou).map((a) => a.id)).toEqual([60931]);
+    expect(operatorActions(section({ data: {} }))).toEqual([]);
+  });
+
+  it("renders done actions under 'Done - close it' with their evidence", () => {
+    const html = render(needsYou);
+    expect(html).toContain("Done - close it · 1");
+    expect(html).toContain("Branch protection on main requires backend-tests.");
+    expect(html).toContain("could not check: GitHub refused (HTTP 403).");
+  });
+
+  it("renders one verification badge per action and none on other lines", () => {
+    const html = render(needsYou);
+    const badges = [...html.matchAll(/data-verification="([a-z_]+)"/g)].map((m) => m[1]);
+    expect(badges.sort()).toEqual(
+      ["observed_done", "observed_not_done", "probe_error", "unprobed"].sort(),
+    );
+    for (const word of ["Observed done", "Not done yet", "Could not check", "Not checked"]) {
+      expect(html.split(word).length - 1).toBe(1);
+    }
+  });
+
+  it("leaves done actions out of the Needs-you count", () => {
+    expect(workCounts([needsYou])).toEqual({ merge: 1, decision: 0, story: 3 });
   });
 });
 

@@ -41,6 +41,7 @@ from sqlalchemy import select
 
 from mykronos.db.models import RepoOnboarding
 from mykronos.github.client import ChecksSummary, GitHubError
+from mykronos.operator_checks import Verification
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,10 @@ class DeliveryInputs:
     board_error: str = "TheHub's board was not read."
     pull_requests: PullRequestRead | None = None
     pull_requests_error: str = "GitHub's pull requests were not read."
+    #: Hub story id -> what its operator-action probe saw (TheHub #60972).
+    #: None when the probes were not run, with why.
+    operator_checks: dict[int, Verification] | None = None
+    operator_checks_error: str = "Operator actions were not checked against GitHub."
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +228,7 @@ class _Cache(Generic[T]):
 
 _board_cache: _Cache[BoardRead] = _Cache()
 _pr_cache: _Cache[PullRequestRead] = _Cache()
+_checks_cache: _Cache[dict[int, Verification]] = _Cache()
 
 
 class NothingListedError(Exception):
@@ -232,6 +238,7 @@ class NothingListedError(Exception):
 def clear_cache() -> None:
     _board_cache.clear()
     _pr_cache.clear()
+    _checks_cache.clear()
 
 
 def _error(exc: BaseException) -> str:
@@ -382,6 +389,36 @@ async def pull_requests(
     return read, ""
 
 
+# ---------------------------------------------------------------------------
+# Operator actions that check themselves (TheHub #60972)
+# ---------------------------------------------------------------------------
+
+
+async def operator_checks(db: Any, factory: Any) -> tuple[dict[int, Verification] | None, str]:
+    """Every registered operator-action probe's answer, cached as pull
+    requests are. Read-only: each probe calls only GitHub `get_*` reads."""
+    from mykronos import operator_checks as checks
+
+    if factory is None:
+        return None, GITHUB_NOT_CONFIGURED
+    now = time.monotonic()
+    if (hit := _checks_cache.fresh(factory, PULL_REQUESTS_TTL_SECONDS, now)) is not None:
+        return hit, ""
+    try:
+        with db.session() as session:
+            installations = {
+                str(row.github_repo_full_name): row.github_installation_id
+                for row in session.execute(select(RepoOnboarding)).scalars()
+                if str(row.status or "") != "removed"
+            }
+        read = await checks.verify(factory, installations)
+    except Exception as exc:  # noqa: BLE001 - reported per action, never as done
+        logger.debug("Could not run the operator-action probes")
+        return None, f"Operator actions could not be checked: {_error(exc)}"
+    _checks_cache.put(factory, read, now)
+    return read, ""
+
+
 async def gather(state: Any, *, want_pull_requests: bool = True) -> DeliveryInputs:
     """The board, and (for the overall page) the pull requests, concurrently.
     Never raises."""
@@ -391,13 +428,21 @@ async def gather(state: Any, *, want_pull_requests: bool = True) -> DeliveryInpu
     async def no_prs() -> tuple[PullRequestRead | None, str]:
         return None, "Not read for a single product's page."
 
-    (board_read, board_error), (pr_read, pr_error) = await asyncio.gather(
-        board(hub),
-        pull_requests(state.db, state.catalog, factory) if want_pull_requests else no_prs(),
+    async def no_checks() -> tuple[dict[int, Verification] | None, str]:
+        return None, "Not checked for a single product's page."
+
+    (board_read, board_error), (pr_read, pr_error), (checks, checks_error) = (
+        await asyncio.gather(
+            board(hub),
+            pull_requests(state.db, state.catalog, factory) if want_pull_requests else no_prs(),
+            operator_checks(state.db, factory) if want_pull_requests else no_checks(),
+        )
     )
     return DeliveryInputs(
         board=board_read,
         board_error=board_error,
         pull_requests=pr_read,
         pull_requests_error=pr_error,
+        operator_checks=checks,
+        operator_checks_error=checks_error,
     )

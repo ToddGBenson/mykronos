@@ -56,6 +56,7 @@ EXPECTED_TOOLS = {
     "findings",
     "finding",
     "lane_health",
+    "coverage",
     "scan_run",
     "playbook",
     "scorecard",
@@ -249,6 +250,7 @@ EVERY_TOOL_CALL: list[tuple[str, dict[str, Any]]] = [
     ("findings", {"repo_id": "r1", "status": "fixed"}),
     ("finding", {"finding_id": "f1"}),
     ("lane_health", {"repo_id": "r1"}),
+    ("coverage", {"repo_id": "r1"}),
     ("scan_run", {"scan_run_id": "run-1"}),
     ("playbook", {"kind": "lane_stalled"}),
     ("scorecard", {}),
@@ -312,6 +314,7 @@ async def test_every_path_a_tool_calls_is_a_route_the_api_serves() -> None:
         ("scorecard", {}, "/api/agent/scorecard", {}),
         ("surfaces", {"repo_id": "r1"}, "/api/dashboard/repos/r1/surfaces", {}),
         ("controls", {"repo_id": "r1"}, "/api/dashboard/repos/r1/controls", {}),
+        ("coverage", {"repo_id": "r1"}, "/api/dashboard/repos/r1/coverage", {}),
         ("rule_vectors", {"repo_id": "r1"}, "/api/dashboard/repos/r1/rule-vectors", {}),
         ("scorecard", {"family": "claude-opus-5.5"}, "/api/agent/scorecard",
          {"family": "claude-opus-5.5"}),
@@ -329,11 +332,29 @@ async def test_read_tools_call_their_route(
     assert dict(fake.requests[0].url.params) == params
 
 
-async def test_repository_ids_cannot_become_another_path() -> None:
+@pytest.mark.parametrize("name", ["lane_health", "coverage"])
+async def test_repository_ids_cannot_become_another_path(name: str) -> None:
     fake = FakeMykronos()
-    await _call(fake, "lane_health", {"repo_id": "../../agents/whoami"})
+    await _call(fake, name, {"repo_id": "../../agents/whoami"})
     assert all(path.startswith("/api/dashboard/repos/") for _, path in fake.calls)
     assert "%2F" in str(fake.requests[0].url)
+
+
+async def test_coverage_returns_the_routes_unknown_list_as_it_came() -> None:
+    """TheHub #60795: a half the route could not read stays visible to the agent."""
+    body = {
+        "repo_id": "r1",
+        "repo_full_name": "acme/api",
+        "analysers": {"available": False, "reason": "GitHub could not be read"},
+        "regression": {"available": True, "fixed_findings": 3},
+        "unknown": [{"source": "analysers", "detail": "GitHub could not be read"}],
+    }
+    fake = FakeMykronos(
+        {("GET", "/api/dashboard/repos/r1/coverage"): httpx2.Response(200, json=body)}
+    )
+    out = (await _call(fake, "coverage", {"repo_id": "r1"})).structured_content
+    assert out["unknown"] == [{"source": "analysers", "detail": "GitHub could not be read"}]
+    assert out["regression"]["fixed_findings"] == 3
 
 
 @pytest.mark.parametrize(

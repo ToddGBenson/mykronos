@@ -81,6 +81,7 @@ id-only (TheHub #60739). `repos()` maps one to the other. `accept` and `request_
 | `findings(...)` | `GET /api/dashboard/repos/{id}/findings`, or `GET /api/dashboard/triage` without `repo_id` | Typed filters: capability, severity, status, rule_id, triage. Without a repository, the ranked queue of open findings. |
 | `finding(finding_id)` | `GET /api/dashboard/findings/{id}/record` | For DAST, `uri`, `method`, `param` and `evidence` from `raw_finding_json.instance` are at the top level. |
 | `lane_health(repo_id)` | `GET /api/dashboard/repos/{id}/scan-health` + `/ci` | A CI half that cannot be read is listed in `unknown`. |
+| `coverage(repo_id)` | `GET /api/dashboard/repos/{id}/coverage` | What the scanners cannot read (TheHub #60795): the share of application source no SAST analyser implements, with the largest unread languages, beside regression coverage. A half that cannot be read is listed in `unknown`, which means could not ask, never fully read. Needs a credential; never anonymous. |
 | `scan_run(scan_run_id)` | `GET /api/dashboard/scan-runs/{id}` | One run and what it changed against the previous run on its lane. A `lane_stalled` work item cites its latest run. `new` is exact; the rest are lower bounds unless `exact`. `raw_files` are listed, not returned; fetch one from `/api/dashboard/scan-runs/{id}/raw/{filename}` with the same credential (refused to viewers). |
 | `playbook(kind)` | `GET /api/agent/playbooks/{kind}` | How to work one kind of work item (spec 36 §5): ordered steps, the check between them, when to stop and when to escalate. A work item's `playbook` is `<kind>@<version>`; pass the kind. An unknown kind is the API's 404, naming the kinds; an unloadable playbooks file is its 503. |
 | `scorecard(family?, instance?)` | `GET /api/agent/scorecard` | The agents' track record per model family and per instance (spec 36 §6). Both filters are passed through. A metric the records cannot support is `unavailable`, never zero. |
@@ -109,5 +110,6 @@ that can close findings is already a risk, and one that can also stop the scans 
 is a worse one. Anything that removes coverage or authority stays behind a person. The test file
 fails if a tool's name, description or schema mentions any of those verbs.
 
-The tools #319 also proposed, `pipeline(repo)` and `coverage(repo)`, are not here because no route
-serves them yet (#318).
+#319 also proposed `pipeline(repo)` and `coverage(repo)`. `coverage` is built (TheHub #60795).
+`pipeline` was dropped by the same decision, because `lane_health` already reads `/ci` and a
+second tool would answer the same question.
