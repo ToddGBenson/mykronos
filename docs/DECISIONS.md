@@ -41,6 +41,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-170 — MyKronos files ranked next-sprint candidates to TheHub's backlog, and nowhere else](decisions/D-170-mykronos-files-ranked-candidates-to-thehubs-backlog-and-nowhere-else.md)
 - [D-171 — Network findings attach to the scanning repository, with their host in address and port](decisions/D-171-network-findings-attach-to-the-scanning-repository-with-their-host.md)
 - [D-172 — TheHub's Concourse jobs queue in three serial lanes, not one](decisions/D-172-thehubs-concourse-jobs-queue-in-three-serial-lanes.md)
+- [D-173 — Triage evidence is shown with its working, and model verdicts are graded before they act](decisions/D-173-triage-evidence-is-shown-with-its-working-and-model-verdicts-are-graded-before-they-act.md)
 - [D-174 — Concourse workers yield to production; task limits are CPU shares only](decisions/D-174-concourse-workers-yield-to-production-not-their-tasks.md)
 
 <!-- decisions-index:end -->

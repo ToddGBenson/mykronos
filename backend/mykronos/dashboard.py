@@ -37,7 +37,14 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius, environment_view, prior_disposition, toxic, worklist
+from mykronos import (
+    blast_radius,
+    environment_view,
+    exploitability,
+    prior_disposition,
+    toxic,
+    worklist,
+)
 from mykronos.ci import LaneResult
 from mykronos.config import get_settings
 from mykronos.controls import category_states
@@ -308,6 +315,7 @@ RANK_INPUTS: dict[str, str] = {
     "repo_is_no_go": "the repository's own risk decision",
     "fixable": "whether a fix already exists",
     "environmental": "environmental severity (exposure, data and criticality, from stored scores)",
+    "public_exploit": "public exploits (Metasploit, Exploit-DB, GitHub PoC via NVD)",
 }
 """Every term `rank_terms` can produce, and the input each one discloses.
 
@@ -375,6 +383,22 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             "epss",
             rank.epss_at_1_0 * float(epss),
             f"EPSS {float(epss):.2f} — probability of exploitation in 30 days",
+        )
+    # The exploitability verdict (TheHub #60890). Only the two rungs that mean
+    # "an exploit can be picked up today", and never on top of KEV, which
+    # already carries the larger term for the worse fact.
+    verdict = item.get("exploit_verdict")
+    if not item.get("in_kev") and verdict == "weaponized":
+        add(
+            "public_exploit",
+            rank.public_exploit_weaponized,
+            "a Metasploit module exploits it - weaponised, not yet KEV-listed",
+        )
+    elif not item.get("in_kev") and verdict == "public_poc":
+        add(
+            "public_exploit",
+            rank.public_exploit_poc,
+            "public exploit code is published - not yet KEV-listed",
         )
     due = item.get("due_state")
     if due == "overdue":
@@ -3300,6 +3324,8 @@ class DashboardQueries:
             row["cve_id"] = cve_id
             row["in_kev"] = None
             row["epss_score"] = None
+            # The verdict ladder (TheHub #60890): `no_cve` here, refined below.
+            row["exploit_verdict"] = exploitability.verdict_for(None, None)
             if cve_id:
                 cve_by_key[id(row)] = cve_id
 
@@ -3325,6 +3351,7 @@ class DashboardQueries:
             # — only once one was found to check.
             row["in_kev"] = bool(match and match.in_kev)
             row["epss_score"] = match.epss_score if match else None
+            row["exploit_verdict"] = exploitability.verdict_for(cve_id, match)
 
     def threat_intel(self, session: Session) -> list[dict[str, Any]]:
         """Every CVE currently matched to an open finding somewhere in the

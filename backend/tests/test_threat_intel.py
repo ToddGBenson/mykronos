@@ -366,7 +366,14 @@ class TestVectorLookup:
             assert threat_intel.parse_nvd_vector(payload) is None
 
     def test_only_rows_without_a_vector_are_looked_up(self, session) -> None:
-        session.add(ThreatIntelMatch(cve_id="CVE-2021-44228", cvss_vector=V31))
+        # Its references were read too (TheHub #60890): nothing left to ask.
+        session.add(
+            ThreatIntelMatch(
+                cve_id="CVE-2021-44228",
+                cvss_vector=V31,
+                nvd_refs_checked_at=datetime(2026, 10, 1),
+            )
+        )
         session.add(ThreatIntelMatch(cve_id="CVE-2014-0160"))
         session.flush()
 
@@ -510,3 +517,112 @@ class TestV4Capture:
             )
 
         assert asked == ["CVE-2025-0003"]
+
+V31_MOVED = "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
+
+def _nvd_with_poc(vector: str) -> dict[str, object]:
+    return {
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"vectorString": vector}}]},
+                    "references": [{"url": "https://github.com/a/poc", "tags": ["Exploit"]}],
+                }
+            }
+        ]
+    }
+
+
+class TestRefsBackfill:
+    """Reading NVD's exploit references for rows looked up before #60890 is a
+    backfill, not a second vector lookup (review of #1006): it is capped per
+    run, it never rewrites a vector the row already has, and it never counts
+    as a new vector -- which is what fans out into an estate-wide rescore."""
+
+    def _known(self, cve_id: str) -> ThreatIntelMatch:
+        checked = datetime(2026, 10, 1)
+        return ThreatIntelMatch(
+            cve_id=cve_id,
+            cvss_vector=V31,
+            vector_checked_at=checked,
+            v4_checked_at=checked,
+        )
+
+    def test_a_current_vector_is_not_overwritten_or_rescored(self, session) -> None:
+        session.add(self._known("CVE-2021-44228"))
+        session.flush()
+
+        found = threat_intel.refresh_vectors(
+            session, fetch=lambda _: _nvd_with_poc(V31_MOVED), sleep=lambda _: None
+        )
+
+        row = session.get(ThreatIntelMatch, "CVE-2021-44228")
+        assert row is not None
+        assert found == 0
+        assert row.cvss_vector == V31
+        assert row.vector_checked_at == datetime(2026, 10, 1)
+        assert row.v4_checked_at == datetime(2026, 10, 1)
+        assert [r["source"] for r in row.exploit_refs_json] == ["github-poc"]
+        assert row.nvd_refs_checked_at is not None
+
+    def test_the_backfill_is_capped_per_run(self, session) -> None:
+        for n in range(threat_intel.NVD_REFS_BATCH + 5):
+            session.add(self._known(f"CVE-2020-{n:05d}"))
+        session.flush()
+        asked: list[str] = []
+
+        threat_intel.refresh_vectors(
+            session, fetch=lambda c: asked.append(c) or {}, sleep=lambda _: None
+        )
+
+        assert len(asked) == threat_intel.NVD_REFS_BATCH
+
+    def test_a_new_cve_is_looked_up_before_any_backfill(self, session) -> None:
+        for n in range(5):
+            session.add(self._known(f"CVE-2000-{n:05d}"))
+        session.add(ThreatIntelMatch(cve_id="CVE-2026-99999"))
+        session.flush()
+        asked: list[str] = []
+
+        threat_intel.refresh_vectors(
+            session, fetch=lambda c: asked.append(c) or {}, sleep=lambda _: None, limit=1
+        )
+
+        assert asked[0] == "CVE-2026-99999"
+
+    def test_a_full_vector_queue_does_not_starve_the_backfill(self, session) -> None:
+        """Production had 3,603 never-looked rows at 20 a day: a backfill that
+        took only what the vectors left would not move for months, and every
+        scored row would read `not_checked` meanwhile (re-review of #1006)."""
+        for n in range(3):
+            session.add(self._known(f"CVE-2000-{n:05d}"))
+        for n in range(10):
+            session.add(ThreatIntelMatch(cve_id=f"CVE-2026-{n:05d}"))
+        session.flush()
+        asked: list[str] = []
+
+        found = threat_intel.refresh_vectors(
+            session,
+            fetch=lambda c: asked.append(c) or _nvd_with_poc(V31_MOVED),
+            sleep=lambda _: None,
+            limit=4,
+        )
+
+        assert asked == [
+            "CVE-2026-00000",
+            "CVE-2026-00001",
+            "CVE-2026-00002",
+            "CVE-2026-00003",
+            "CVE-2000-00000",
+            "CVE-2000-00001",
+            "CVE-2000-00002",
+        ]
+        # Four new vectors; the backfilled rows are not counted.
+        assert found == 4
+        for cve_id in ("CVE-2000-00000", "CVE-2000-00001", "CVE-2000-00002"):
+            row = session.get(ThreatIntelMatch, cve_id)
+            assert row is not None
+            assert row.nvd_refs_checked_at is not None
+            assert row.cvss_vector == V31
+            assert row.vector_checked_at == datetime(2026, 10, 1)
