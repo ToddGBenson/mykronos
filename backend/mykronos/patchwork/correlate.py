@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -221,7 +221,7 @@ def needs_disclosure_evidence(finding: dict[str, Any]) -> bool:
 
 def attach_disclosure_evidence(
     pool: list[dict[str, Any]],
-    query: Callable[[str, Sequence[Any]], Any],
+    query: Callable[[str, list[Any]], Any],
 ) -> None:
     """Read the evidence of each evidence-gated alert in a pool fetched
     without the raw record, and set `DISCLOSURE_EVIDENCE_KEY` on its row.
