@@ -201,6 +201,12 @@ const CREDENTIAL: Record<
 };
 
 function whenDue(days: number): string {
+  // An agent credential is listed only inside 24 hours (TheHub #61052), where a
+  // whole-day count reads "in 0 days" or "in 1 day"; give it in hours.
+  if (days > 0 && days < 1) {
+    const hours = Math.max(1, Math.round(days * 24));
+    return `in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
   const whole = Math.round(Math.abs(days));
   const unit = whole === 1 ? "day" : "days";
   return days < 0 ? `${whole} ${unit} overdue` : `in ${whole} ${unit}`;
@@ -333,7 +339,7 @@ export default async function PlatformHealthPage() {
         ) : (
           <p className="px-3 py-2.5 text-[13px] text-ink-3">
             No ingestion token is past its rotation date or awaiting delivery
-            confirmation, and no agent credential expires within 7 days.
+            confirmation, and no agent credential expires within 24 hours.
           </p>
         )}
       </Section>
