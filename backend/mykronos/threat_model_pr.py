@@ -33,11 +33,23 @@ declared control of that kind with no `applies_to`).
 **One open pull request per repository.** A later run with new drift commits
 to the open branch and updates its description rather than opening a second;
 a run whose proposal is byte-identical to what the open branch already holds
-changes nothing.
+changes nothing. A branch a person has edited is never overwritten: the
+description records the sha256 of the file MyKronos last committed, and a
+branch file that no longer hashes to it (or a description without the
+record) is `kept` as the reviewer left it.
+
+**Only a private repository is written to.** A threat model drafted from
+MyKronos evidence names routes, hostnames, published ports, controls and open
+weaknesses: an exposure map. GitHub's own `visibility` is read before
+anything is written, and a repository that is public, internal, or whose
+visibility could not be read or was not reported is `refused`: no branch, no
+file, no description. The draft stays readable inside MyKronos
+(`GET /repos/{id}/threat-model/draft`).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -65,8 +77,21 @@ BRANCH_PREFIX = "mykronos/threat-model-"
 DRAFT_ACTOR = "system:threat-model-draft"
 
 ProposalState = Literal[
-    "opened", "updated", "unchanged", "no_drift", "invalid", "unreadable", "failed"
+    "opened",
+    "updated",
+    "unchanged",
+    "kept",
+    "no_drift",
+    "invalid",
+    "unreadable",
+    "refused",
+    "failed",
 ]
+
+#: Recorded in the description: the hash of the file MyKronos committed, so
+#: a later run can tell its own proposal from a reviewer's edit of it.
+_PROPOSAL_MARK = "<!-- mykronos-threat-model-proposal sha256:{} -->"
+_PROPOSAL_MARK_RE = re.compile(r"<!-- mykronos-threat-model-proposal sha256:([0-9a-f]{64}) -->")
 
 _TOP_KEY = re.compile(r"^([a-z_]+):")
 
@@ -339,6 +364,34 @@ def pr_body(
     return "\n".join(out)
 
 
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def repository_is_private(github: GitHubClient, repo_full_name: str) -> bool:
+    """True only when GitHub says the repository is private.
+
+    `public` and `internal` (readable by a whole enterprise) are not private,
+    and neither is an answer that could not be read or did not say: "could
+    not look" is never evidence (B-058), and here the cost of guessing wrong
+    is publishing an exposure map.
+    """
+    try:
+        info = await github.get_repo(repo_full_name)
+    except Exception as exc:  # noqa: BLE001 - GitHubError, httpx errors alike
+        logger.warning(
+            "Threat-model draft: visibility of %s unreadable: %s",
+            scrub(repo_full_name),
+            scrub(str(exc)),
+        )
+        return False
+    visibility = info.get("visibility")
+    private = info.get("private")
+    if visibility is not None:
+        return visibility == "private" and private is not False
+    return private is True
+
+
 async def propose(
     github: GitHubClient,
     repo_full_name: str,
@@ -350,6 +403,16 @@ async def propose(
     """Open or update the repository's threat-model pull request, or say why
     nothing was proposed."""
     moment = now or utcnow()
+    # Before anything else, and before any body or file is built for
+    # writing: threat and evidence detail goes only to a private repository.
+    if not await repository_is_private(github, repo_full_name):
+        return Proposal(
+            repo_full_name,
+            "refused",
+            "The repository is not known to be private (public, internal, or its "
+            "visibility could not be read), so no threat-model detail is written to "
+            "it. The draft stays readable in MyKronos.",
+        )
     try:
         current = await github.get_file(repo_full_name, MANIFEST_PATH, default_branch)
     except Exception as exc:  # noqa: BLE001 - GitHubError, httpx errors alike
@@ -397,7 +460,9 @@ async def propose(
         if kind == "draft"
         else f"MyKronos: threat-model drift - {len(elements)} addition(s)"
     )
-    body = pr_body(draft, elements, kind=kind)
+    body = "\n\n".join(
+        [pr_body(draft, elements, kind=kind), _PROPOSAL_MARK.format(_sha256(content))]
+    )
     message = f"{title}\n\nDrafted from MyKronos evidence (TheHub #60899, #60900)."
     try:
         existing = await github.find_open_pull_request(repo_full_name, BRANCH_PREFIX)
@@ -408,6 +473,20 @@ async def propose(
                     repo_full_name,
                     "unchanged",
                     "The open pull request already proposes this.",
+                    pull_request=existing,
+                    added=_count(elements),
+                    covered=covered,
+                )
+            live = await github.get_pull_request(repo_full_name, existing.number)
+            mark = _PROPOSAL_MARK_RE.search(live.body if live is not None else "")
+            if held is None or mark is None or mark.group(1) != _sha256(held):
+                # Not what MyKronos last committed: a person edited the
+                # branch (or the description lost its record). Theirs stands.
+                return Proposal(
+                    repo_full_name,
+                    "kept",
+                    "The open pull request's branch was edited after MyKronos proposed "
+                    "it; the edits were kept and nothing was committed.",
                     pull_request=existing,
                     added=_count(elements),
                     covered=covered,
@@ -499,6 +578,11 @@ async def sweep(db: Any, catalog: Any, factory: Any) -> SweepResult:
             )
         ]
     for name, branch, installation in repos:
+        if installation is None:
+            result.proposals.append(
+                Proposal(name, "unreadable", "No GitHub installation to propose with.")
+            )
+            continue
         try:
             _, proposal = await propose_for_repo(
                 db, catalog, factory.for_installation(installation), name, branch

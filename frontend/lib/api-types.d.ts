@@ -1264,7 +1264,10 @@ export interface paths {
          *     With no `.sdlc/threat-model.yaml`, the whole draft is proposed. With a
          *     valid one, only drift is: drafted elements the file does not cover, added
          *     to its sections without changing a declared row. One open pull request per
-         *     repository, updated in place. Audited as `threat_model.propose`.
+         *     repository, updated in place unless a person has edited its branch.
+         *     Written only to a repository GitHub reports as private; anything else is
+         *     `refused` before a branch, file or description exists. Audited as
+         *     `threat_model.propose`.
          */
         post: operations["propose_threat_model_api_dashboard_repos__repo_id__threat_model_draft_pull_request_post"];
         delete?: never;
@@ -12157,10 +12160,10 @@ export interface components {
             repo_full_name: string;
             /**
              * State
-             * @description `opened`/`updated`: a pull request carries the proposal. `unchanged`: the open one already does. `no_drift`: the declared file covers everything drafted. `invalid`/`unreadable`: the declared file could not be used, so nothing was proposed.
+             * @description `opened`/`updated`: a pull request carries the proposal. `unchanged`: the open one already does. `kept`: a person edited the open one's branch, and their edits stand. `no_drift`: the declared file covers everything drafted. `invalid`/`unreadable`: the declared file could not be used, so nothing was proposed. `refused`: the repository is not known to be private, so no threat-model detail is written to it.
              * @enum {string}
              */
-            state: "opened" | "updated" | "unchanged" | "no_drift" | "invalid" | "unreadable" | "failed";
+            state: "opened" | "updated" | "unchanged" | "kept" | "no_drift" | "invalid" | "unreadable" | "refused" | "failed";
             /** Reason */
             reason: string;
             /** Pull Request Url */

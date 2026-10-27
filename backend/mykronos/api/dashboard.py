@@ -4422,13 +4422,23 @@ class ThreatModelProposalOut(BaseModel):
 
     repo_full_name: str
     state: Literal[
-        "opened", "updated", "unchanged", "no_drift", "invalid", "unreadable", "failed"
+        "opened",
+        "updated",
+        "unchanged",
+        "kept",
+        "no_drift",
+        "invalid",
+        "unreadable",
+        "refused",
+        "failed",
     ] = Field(
         description=(
             "`opened`/`updated`: a pull request carries the proposal. `unchanged`: "
-            "the open one already does. `no_drift`: the declared file covers "
+            "the open one already does. `kept`: a person edited the open one's "
+            "branch, and their edits stand. `no_drift`: the declared file covers "
             "everything drafted. `invalid`/`unreadable`: the declared file could "
-            "not be used, so nothing was proposed."
+            "not be used, so nothing was proposed. `refused`: the repository is "
+            "not known to be private, so no threat-model detail is written to it."
         )
     )
     reason: str
@@ -4450,7 +4460,10 @@ async def propose_threat_model(
     With no `.sdlc/threat-model.yaml`, the whole draft is proposed. With a
     valid one, only drift is: drafted elements the file does not cover, added
     to its sections without changing a declared row. One open pull request per
-    repository, updated in place. Audited as `threat_model.propose`.
+    repository, updated in place unless a person has edited its branch.
+    Written only to a repository GitHub reports as private; anything else is
+    `refused` before a branch, file or description exists. Audited as
+    `threat_model.propose`.
     """
     _require_writer(principal, "Proposing a threat-model pull request")
     repo_full_name = _resolve_repo(request, repo_id)
