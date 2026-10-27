@@ -19,7 +19,10 @@ repository it reads the pipeline's job list (the same anonymous read
   build not found in that window is reported as `commit unknown`, never left
   out.
 * **red -> red**: nothing. The recorded state is the de-duplication key, and
-  it is stored in the database, so a restart does not post it again.
+  it is stored in the database, so a restart does not post it again. The
+  exception is a red, a green and a red again between two polls: Concourse's
+  `transition_build` is then a newer red build than the one the lane went red
+  at, so it is a new red with its own culprit, and it is announced.
 * **red -> green**: one recovery message with how long the lane was red.
 
 Test results are suite totals only (D-046: the JUnit adapter records counts,
@@ -239,6 +242,24 @@ def _resolve(
     return found
 
 
+def _build_key(name: str | None) -> tuple[int, ...] | None:
+    """A build name as a sortable key: `463` -> (463,), a rerun `463.1` -> (463, 1)."""
+    try:
+        return tuple(int(part) for part in str(name).split("."))
+    except ValueError:
+        return None
+
+
+def _newer(candidate: str | None, than: str | None) -> bool:
+    """Whether build `candidate` came after build `than` in the same job."""
+    if not candidate or not than:
+        return False
+    a, b = _build_key(candidate), _build_key(than)
+    if a is None or b is None:
+        return candidate != than
+    return a > b
+
+
 def _hours(start: datetime | None, end: datetime) -> str:
     if start is None:
         return "for an unknown time"
@@ -294,7 +315,8 @@ def evaluate(
                     report.states.append(before)
                 continue
             after, message = _step(
-                fetch, base, repo, pipeline, lane, job, before, tests, now, link_base
+                fetch, base, repo, pipeline, lane, job, before, tests, now, link_base,
+                report.unreadable,
             )
             if after is not None:
                 report.states.append(after)
@@ -314,6 +336,7 @@ def _step(
     tests: TestLookup,
     now: datetime,
     link_base: str,
+    problems: list[str],
 ) -> tuple[LaneState | None, Message | None]:
     finished = _build(job.get("finished_build"))
     status = finished.get("status")
@@ -345,14 +368,21 @@ def _step(
             "recovered", repo, lane, f"Green again on main: {repo} {lane}", tuple(lines)
         )
 
-    if before is not None and before.state == RED:
+    transition = _build(job.get("transition_build"))
+    again = (
+        before is not None
+        and before.state == RED
+        and transition.get("status") in RED_STATUSES
+        and _newer(str(transition.get("name") or ""), before.first_bad_build)
+    )
+    if before is not None and before.state == RED and not again:
         # Red to red: the news was sent when it went red.
         return replace(before, status=str(status), build=build), None
 
-    # Green to red, or red the first time this lane is seen. The first failing
-    # build is Concourse's transition build when that is red too: several red
-    # builds may have finished since the last poll.
-    transition = _build(job.get("transition_build"))
+    # Green to red, red the first time this lane is seen, or red again after
+    # a green build between polls. The first failing build is Concourse's
+    # transition build when that is red too: several red builds may have
+    # finished since the last poll.
     bad = transition if transition.get("status") in RED_STATUSES else finished
     bad_build = str(bad["name"]) if bad.get("name") else build
     resolved = _resolve(fetch, base, lane, bad)
@@ -369,6 +399,11 @@ def _step(
         last_green_sha=resolved.last_green_sha,
     )
     lines = [f"{repo}: {lane} {status} on main, build {build or '?'}."]
+    if again:
+        lines.append(
+            f"It went green and then red again since the last poll "
+            f"(it had been red since build {before.first_bad_build if before else '?'})."
+        )
     if resolved.first_bad_sha:
         subject = f" {resolved.first_bad_subject}" if resolved.first_bad_subject else ""
         lines.append(
@@ -391,10 +426,18 @@ def _step(
     if not resolved.first_bad_sha:
         lines.append("Tests: not looked up, because the commit is unknown.")
     else:
-        totals = tests(repo, resolved.first_bad_sha, lane)
-        lines.append(
-            "Tests: no test report uploaded." if totals is None else f"Tests: {totals.phrase()}."
-        )
+        try:
+            totals = tests(repo, resolved.first_bad_sha, lane)
+        except Exception as exc:  # noqa: BLE001 - one lane's lookup never aborts the poll
+            # The error text stays out of the message (it can carry an
+            # internal address); the run records the lane as incomplete.
+            problems.append(f"{repo} {lane}: test totals unreadable ({type(exc).__name__})")
+            lines.append("Tests: the test report lookup failed.")
+        else:
+            lines.append(
+                "Tests: no test report uploaded." if totals is None
+                else f"Tests: {totals.phrase()}."
+            )
     url = _job_url(link_base, pipeline, lane, build)
     if url:
         lines.append(url)
