@@ -234,6 +234,15 @@ class TestPage:
         assert section.status == "partial"
         assert "KEV and EPSS" in section.reason
 
+    def test_unreadable_intel_makes_the_threat_model_partial(self) -> None:
+        """A known-exploited medium is fitted only when KEV can be read, so
+        without it the section has not read everything it would list
+        (review of #1027)."""
+        section = _section(_page(intel=None), "threat_model")
+
+        assert section.status == "partial"
+        assert "KEV" in section.reason
+
 
 class TestFlashRule:
     def test_a_flash_is_only_an_exploited_or_critical_match_to_something_shipped(
@@ -420,6 +429,35 @@ ALL_FIVE = {
     "malicious:MAL-2026-42:colourama",
 }
 
+FITTED_KEV = "fit:CVE-2026-9100:s2"
+FITTED_CRITICAL = "fit:CVE-2026-9200:s2"
+
+
+def _fitted(*, drop: str = "", **overrides: Any) -> wb.WeeklyPage:
+    """The default page plus two items that flash only from the threat
+    model: both sit in a file the advisories section sets aside, inside a
+    second declared surface. One is a known-exploited medium, one a
+    critical."""
+    base = _inputs()
+    rows = [
+        *(base.findings or []),
+        _row("tool", rule_id="CVE-2026-9100", package_name="toolkit", severity="medium",
+             file_path="tools/unused.py"),
+        _row("toolcrit", rule_id="CVE-2026-9200", package_name="toolbox",
+             severity="critical", file_path="tools/unused.py"),
+    ]
+    values: dict[str, Any] = {
+        "findings": [r for r in rows if r["finding_id"] != drop],
+        "intel": {**(base.intel or {}), "CVE-2026-9100": {"in_kev": True}},
+        "surfaces": [
+            *(base.surfaces or []),
+            {"id": "s2", "kind": "entry_point", "name": "Tools", "exposure": "internal",
+             "selectors": {"paths": ["tools/**"]}},
+        ],
+    }
+    values.update(overrides)
+    return _page(**values)
+
 
 class TestFirstRunSeeds:
     def test_the_first_run_records_what_is_already_there_and_sends_nothing(
@@ -520,6 +558,51 @@ class TestARegressedItemFlashesAgain:
         assert _tick(client, _configured(settings), _page(findings=rows), notifier) == []
         assert _tick(client, _configured(settings), _page(), notifier) == []
         assert len(notifier.sent) == 1
+
+    def test_a_fitted_item_is_not_cleared_while_kev_is_unreadable(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """A known-exploited medium in a file the advisories section sets
+        aside flashes only from the threat model. With KEV unreadable it drops
+        out of that section; that is not a fix, and when KEV reads again it
+        must not be DMed a second time (review of #1027)."""
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        sent = _tick(client, _configured(settings), _fitted(), notifier)
+        assert FITTED_KEV in {f.key for f in sent}
+        assert _tick(client, _configured(settings), _fitted(intel=None), notifier) == []
+        assert _tick(client, _configured(settings), _fitted(), notifier) == []
+        assert len(notifier.sent) == 1
+
+    def test_a_fitted_item_is_not_cleared_by_a_rescore(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """A critical fitted item re-scored to medium here leaves the threat
+        model's list while still open; re-scored back, it must not be DMed a
+        second time (review of #1027)."""
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        sent = _tick(client, _configured(settings), _fitted(), notifier)
+        assert FITTED_CRITICAL in {f.key for f in sent}
+        rescored = {**(_inputs().environmental or {}), "toolcrit": "medium"}
+        assert _tick(
+            client, _configured(settings), _fitted(environmental=rescored), notifier
+        ) == []
+        assert _tick(client, _configured(settings), _fitted(), notifier) == []
+        assert len(notifier.sent) == 1
+
+    def test_a_fixed_fitted_item_flashes_again_when_it_returns(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """Guard: a fitted item whose finding is gone is fixed, and its
+        return is news."""
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        _tick(client, _configured(settings), _fitted(), notifier)
+        assert _tick(client, _configured(settings), _fitted(drop="tool"), notifier) == []
+        sent = _tick(client, _configured(settings), _fitted(), notifier)
+        assert [f.key for f in sent] == [FITTED_KEV]
+        assert len(notifier.sent) == 2
 
     def test_a_vanished_application_is_not_cleared(
         self, client: TestClient, settings: Settings
