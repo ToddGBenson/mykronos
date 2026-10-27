@@ -49,6 +49,14 @@ PRODUCTION_CPU_SHARES = 1024
 # has. The workers together must leave room for production.
 VM_MEMORY_BYTES = int(11.68 * 1024**3)
 
+# Production's memory limits, from TheHub's docker-compose.yml on develop
+# (ToddGBenson/TheHub, `backend:` deploy.resources.limits.memory 3G and
+# `postgres:` 2048M, read 2026-10-26). TheHub is a different repository that
+# neither this test's image nor a mykronos checkout can reach, so they are
+# named here; update them when TheHub changes those limits.
+THEHUB_BACKEND_MEMORY_BYTES = 3 * 1024**3
+THEHUB_POSTGRES_MEMORY_BYTES = 2048 * 1024**2
+
 
 def _tasks(node: Any, where: str) -> Iterator[tuple[str, dict[str, Any]]]:
     """Every task step under `node`, hooks included, with anchors expanded."""
@@ -151,7 +159,7 @@ def test_workers_die_before_production_on_an_oom() -> None:
     )
 
 
-def test_workers_cannot_swap_or_outgrow_the_vm() -> None:
+def test_workers_and_production_fit_the_vm_without_swap() -> None:
     workers = _workers()
     limits = {n: _bytes(s["mem_limit"]) for n, s in workers.items()}
     swaps = {n: _bytes(s.get("memswap_limit", 0)) for n, s in workers.items()}
@@ -159,7 +167,12 @@ def test_workers_cannot_swap_or_outgrow_the_vm() -> None:
         "memswap_limit must equal mem_limit, or Docker lets each worker add as "
         f"much swap again as its RAM cap: mem={limits} memswap={swaps}"
     )
-    assert sum(limits.values()) < VM_MEMORY_BYTES, (
-        f"the workers' mem_limits add up to {sum(limits.values()) / 1024**3:.1f} GiB, "
-        f"more than the {VM_MEMORY_BYTES / 1024**3:.2f} GiB VM production shares"
+    production = THEHUB_BACKEND_MEMORY_BYTES + THEHUB_POSTGRES_MEMORY_BYTES
+    total = sum(limits.values()) + production
+    assert total <= VM_MEMORY_BYTES, (
+        f"the workers' mem_limits ({sum(limits.values()) / 1024**3:.1f} GiB) plus "
+        f"production's backend and postgres limits ({production / 1024**3:.1f} GiB) "
+        f"add up to {total / 1024**3:.1f} GiB, more than the "
+        f"{VM_MEMORY_BYTES / 1024**3:.2f} GiB VM. Err low: a worker cap that is too "
+        "small costs a CI flake inside the worker, never a production kill"
     )
