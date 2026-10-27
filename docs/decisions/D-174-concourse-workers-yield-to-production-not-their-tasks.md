@@ -41,11 +41,20 @@ so CI alone could claim 12 GiB of an 11.68 GiB VM, plus as much swap again.
   production's 100, or 174 with TheHub #539's `cpu_shares: 2048`),
   `oom_score_adj: 500` (inherited by every task process, since garden sets none
   of its own, so the VM's OOM killer takes a test run before a uvicorn worker),
-  and `mem_limit`/`memswap_limit` 5g each, so the two workers together stay
-  under the VM's memory and add no swap.
+  and `mem_limit`/`memswap_limit` 3g each. The VM is 11.68 GiB and the non-CI
+  baseline is about 5 GiB (production's backend limit 3G, thehub-postgres 2G,
+  staging-backend 2g, and the uncapped demo and mykronos-backend), so 3g + 3g
+  plus production's backend and postgres limits is 11 GiB, and the workers add
+  no swap. Err low: a cap too small costs a CI flake inside the worker's own
+  cgroup, never a production kill. (HubOps review; the first draft's 5g + 5g
+  overcommitted the VM.)
 
-CPU weight is work-conserving: on an idle VM CI still gets all six CPUs per
-worker. It decides only who waits when CPUs are contended.
+CPU weight is work-conserving: on an idle VM CI still gets up to 12 CPUs (6 per
+worker). It decides only who waits when CPUs are contended.
+
+`docker update` applies `cpu_shares`, the memory limit and the swap limit to a
+running worker. `oom_score_adj` takes effect only when a worker is recreated,
+and recreating must happen outside a deploy.
 
 **Not chosen.** `CONCOURSE_DEFAULT_TASK_CPU_LIMIT` on the web node: also shares,
 so no more reach than the per-task setting, and it would change every other
@@ -56,12 +65,17 @@ compose file records why guardian is stated).
 **How it is held.** `backend/tests/test_thehub_task_limits.py` fails when a task
 with a `run` lacks `container_limits`, sets CPU shares at or above 1024, or sets
 `memory`, and when a worker loses its `cpu_shares`, `oom_score_adj`, swap cap,
-or the workers' memory adds up to more than the VM.
+or the workers' memory limits plus production's backend and postgres limits
+(named in the test from TheHub's compose, which it cannot read) add up to more
+than the VM.
 
 **What it does not prove.** The OOM ordering and CPU precedence are read off
 the kernel's settings, not observed under load. The acceptance measurement is a
 full Concourse `unit` run alongside production with zero uvicorn worker deaths
 (`Child process [N] died` in `docker logs thehub-backend`, or TheHub's
-`hub_ops/worker_restarts` capability once #539 is deployed). If the lower memory
-cap makes the unit tier OOM inside a worker, the lever is `mem_limit` back to
-6g; keep `memswap_limit` equal to it and keep `oom_score_adj`.
+`hub_ops/worker_restarts` capability once #539 is deployed).
+
+**Rollback rule.** If the unit lane OOMs inside 3g, raise ONE worker to 3.5g or
+pin the unit lane to one worker with tags. Never let the workers' sum exceed the
+VM minus 5 GiB. Keep `memswap_limit` equal to `mem_limit`, and keep
+`oom_score_adj`.

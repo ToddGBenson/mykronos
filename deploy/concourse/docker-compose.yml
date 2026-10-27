@@ -73,22 +73,29 @@ x-worker: &worker
   # Precedence is set here, on the sibling of `thehub-backend`:
   #
   # - cpu_shares 256 is cpu.weight 35 against production's 100 (174 with
-  #   TheHub #539's 2048). Work-conserving: an idle VM still gives CI all
-  #   six CPUs; it only decides who waits when the CPUs are contended.
+  #   TheHub #539's 2048). Work-conserving: an idle VM still gives CI up
+  #   to 12 CPUs (6 per worker); it only decides who waits under contention.
   # - oom_score_adj 500 is inherited by every task process (garden sets
   #   none of its own), so if the VM runs out of memory its OOM killer
   #   takes a test run, not a uvicorn worker.
-  # - mem_limit 5g, not 6g: both workers had peaked at their full 6g, so CI
-  #   alone could claim 12 GiB of an 11.68 GiB VM. memswap_limit equal to
-  #   it, because Docker's default lets each worker add as much swap again,
-  #   and swap was at 52-67% during the 2026-10-23 outage (#36488).
+  # - mem_limit 3g, not 6g: both workers had peaked at their full 6g, so CI
+  #   alone could claim 12 GiB of an 11.68 GiB VM, and the non-CI baseline
+  #   is about 5 GiB. 3g + 3g + production's backend 3G + postgres 2G = 11
+  #   GiB. Err low: a cap too small costs a CI flake inside this cgroup,
+  #   never a production kill. memswap_limit equals it, because Docker's
+  #   default lets each worker add as much swap again, and swap was at
+  #   52-67% during the 2026-10-23 outage (#36488).
+  #   If the unit lane OOMs inside 3g: raise ONE worker to 3.5g, or pin the
+  #   unit lane to one worker with tags. Never let the workers' sum exceed
+  #   the VM minus 5 GiB.
   #
-  # Changing these needs the workers recreated; `docker update --cpu-shares`
-  # applies the CPU half live. Held by backend/tests/test_thehub_task_limits.py.
+  # `docker update` applies cpu-shares, memory and memswap live;
+  # oom_score_adj takes effect only when the workers are recreated, which
+  # must happen outside a deploy. Held by backend/tests/test_thehub_task_limits.py.
   cpus: 6
   cpu_shares: 256
-  mem_limit: 5g
-  memswap_limit: 5g
+  mem_limit: 3g
+  memswap_limit: 3g
   oom_score_adj: 500
   environment: &worker-env
     CONCOURSE_TSA_HOST: concourse:2222
