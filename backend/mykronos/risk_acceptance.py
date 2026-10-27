@@ -534,9 +534,13 @@ def _combination_floor(
 
     Read as the disposition guard reads it (`finding_disposition.
     governing_severities`): the combinations the risk decision sees, KEV
-    included. Detection that cannot run floors at `critical` (fail closed)."""
+    included. Detection that cannot run floors at `critical` (fail closed)
+    whatever the finding's own severity: a critical finding governs at
+    `critical` either way, so failure is read from `failed`, never inferred
+    from a raised severity (review of #1018)."""
     from mykronos import finding_disposition
 
+    undetected: set[str] = set()
     governing = finding_disposition.governing_severities(
         [
             {"finding_id": m.finding_id, "severity": m.severity, "repo_full_name": repo}
@@ -544,17 +548,18 @@ def _combination_floor(
         ],
         catalog=catalog,
         db=db,
+        failed=undetected,
     )
     floor: str | None = None
     combinations: dict[str, dict[str, str]] = {}
     failed = False
     for m in matched:
         severity, combos = governing.get(m.finding_id, (m.severity, []))
-        if combos:
-            combinations.update({c["combination_id"]: c for c in combos})
-        elif severity != m.severity:
-            # Raised with no combination named: detection did not run.
+        if m.finding_id in undetected:
             failed = True
+            severity = "critical"
+        elif combos:
+            combinations.update({c["combination_id"]: c for c in combos})
         else:
             continue
         if severity in SEVERITIES and (
