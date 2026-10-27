@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from mykronos import ci_stall
+
 #: How far past its interval a job may drift before it is called late. Two
 #: whole intervals, not one: a job that runs on a timer inside a process which
 #: also serves requests will sometimes be a little behind, and a health page
@@ -63,6 +65,9 @@ class DependencyHealth:
 class PlatformHealth:
     jobs: list[JobHealth] = field(default_factory=list)
     dependencies: list[DependencyHealth] = field(default_factory=list)
+    #: Many Concourse lanes errored together (`ci_stall`, TheHub #60975). A
+    #: reachable Concourse whose builds all error is not a healthy one.
+    ci_stalled: bool = False
 
     @property
     def degraded(self) -> bool:
@@ -73,10 +78,25 @@ class PlatformHealth:
         not a problem, and the first minutes after every deploy would otherwise
         be red.
         """
-        return any(job.status in ("failing", "late") for job in self.jobs) or any(
-            dependency.configured and not dependency.reachable
-            for dependency in self.dependencies
+        return (
+            self.ci_stalled
+            or any(job.status in ("failing", "late") for job in self.jobs)
+            or any(
+                dependency.configured and not dependency.reachable
+                for dependency in self.dependencies
+            )
         )
+
+
+def assess_ci_stall(
+    payload: list[dict[str, Any]] | None, *, link: ci_stall.Link | None = None
+) -> ci_stall.CiStall:
+    """The `ci_stall` check (TheHub #60975), from the anonymous `/api/v1/jobs`
+    summaries. `None` - Concourse unreadable - is `unknown`, never green.
+    The rule and its reasons live in `mykronos.ci_stall`."""
+    if payload is None:
+        return ci_stall.unknown("Concourse's job list could not be read.")
+    return ci_stall.assess(payload, link=link)
 
 
 def assess_ingestion(

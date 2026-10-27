@@ -49,6 +49,8 @@ import {
   type RepoSurfaces,
   type RiskAcceptanceDetail,
   type RuleVectorsPage,
+  type ManagedLibraries,
+  type LibraryRequestList,
   type SupplyChainPackages,
   type VulnerabilityManagement,
   type WorkflowsPage,
@@ -208,6 +210,35 @@ export async function getFindingRecord(
   }
 }
 
+/** Every library in use with a status, owner, policy and flags (TheHub #60897). */
+export async function getManagedLibraries(
+  ecosystem?: string,
+): Promise<Result<ManagedLibraries>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/libraries/managed", {
+      cache: "no-store",
+      ...(ecosystem ? { params: { query: { ecosystem } } } : {}),
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load managed libraries") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/** Library requests, newest first, with decisions copied back (TheHub #60896). */
+export async function getLibraryRequests(): Promise<Result<LibraryRequestList>> {
+  try {
+    const { data, response } = await backendClient().GET("/api/libraries/requests", {
+      cache: "no-store",
+    });
+    if (!data) return { ok: false, error: describe(response, "Could not load library requests") };
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export type EstateLibraries =
   paths["/api/dashboard/libraries"]["get"]["responses"]["200"]["content"]["application/json"];
 
@@ -350,7 +381,13 @@ export async function getTriageClusters(query: {
 
 export async function getDecisions(
   repoId: string,
-): Promise<Result<{ repo_full_name: string; decisions: RiskDecision[] }>> {
+): Promise<
+  Result<{
+    repo_full_name: string;
+    decisions: RiskDecision[];
+    confidence_note?: string | null;
+  }>
+> {
   try {
     const { data, response } = await backendClient().GET(
       "/api/oracle/decisions/{repo_id}",
@@ -359,7 +396,11 @@ export async function getDecisions(
     if (!data) return { ok: false, error: describe(response, "Could not load decisions") };
     return {
       ok: true,
-      data: data as { repo_full_name: string; decisions: RiskDecision[] },
+      data: data as {
+        repo_full_name: string;
+        decisions: RiskDecision[];
+        confidence_note?: string | null;
+      },
     };
   } catch (error) {
     return failure(error);

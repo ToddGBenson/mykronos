@@ -2,8 +2,9 @@
 
 **Read tools** answer #319's narrow questions without SQL: what needs doing
 (`work`, spec 36 §2), the briefing, findings by typed filter, one finding with
-its DAST target already parsed, a lane's health, the playbook a work item
-names (§5) and the agents' track record (§6). Repository-scoped tools
+its DAST target already parsed, a lane's health, what the scanners cannot
+read (`coverage`), the playbook a work item names (§5) and the agents'
+track record (§6). Repository-scoped tools
 take the onboarding **id** (the API's routes are id-only, TheHub #60739);
 `repos()` maps names to ids.
 
@@ -50,6 +51,7 @@ TOOL_NAMES = frozenset(
         "findings",
         "finding",
         "lane_health",
+        "coverage",
         "scan_run",
         "playbook",
         "scorecard",
@@ -509,6 +511,20 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         return {"repo_id": repo_id, "scan_health": health, "ci": ci, "unknown": unknown}
 
     @server.tool(annotations=_READ)
+    async def coverage(repo_id: RepoId) -> dict[str, Any]:
+        """What the scanners cannot read in one repository (TheHub #60795, #318).
+
+        GET /api/dashboard/repos/{id}/coverage: the share of application
+        source no SAST analyser implements, with the languages, beside
+        regression coverage (fixed findings with a test pinned). A half that
+        could not be read is listed in `unknown`; that means could not ask,
+        never fully read.
+        """
+        path = f"/api/dashboard/repos/{_segment(repo_id)}/coverage"
+        result: dict[str, Any] = await _call(api, "GET", path)
+        return result
+
+    @server.tool(annotations=_READ)
     async def scan_run(scan_run_id: ScanRunId) -> dict[str, Any]:
         """One scan run: its outcome, tool and commit, and what it changed
         against the previous run on its lane (TheHub #60761).
@@ -639,6 +655,22 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         segment = _segment(finding_id)
         row = await _call(api, "GET", f"/api/dashboard/findings/{segment}")
         severity = row.get("severity") if isinstance(row, dict) else None
+        if not finding_disposition.governed(principal, severity) and isinstance(row, dict):
+            # A member of a high or critical toxic combination is governed at
+            # the combination's severity (review of #1018).
+            repo = row.get("repo_full_name")
+            listing = await _call(
+                api,
+                "GET",
+                "/api/dashboard/toxic-combinations",
+                params={"repo": repo} if repo else None,
+            )
+            for combo in (listing or {}).get("combinations") or []:
+                if any(
+                    str(m.get("finding_id")) == str(row.get("finding_id") or finding_id)
+                    for m in combo.get("members") or []
+                ):
+                    severity = finding_disposition.worse(severity, combo.get("severity"))
         body = {"status": status, "reason": reason}
         if finding_disposition.governed(principal, severity):
             path = finding_disposition.ROUTE.format(finding_id=segment)

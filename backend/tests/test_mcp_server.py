@@ -56,6 +56,7 @@ EXPECTED_TOOLS = {
     "findings",
     "finding",
     "lane_health",
+    "coverage",
     "scan_run",
     "playbook",
     "scorecard",
@@ -249,6 +250,7 @@ EVERY_TOOL_CALL: list[tuple[str, dict[str, Any]]] = [
     ("findings", {"repo_id": "r1", "status": "fixed"}),
     ("finding", {"finding_id": "f1"}),
     ("lane_health", {"repo_id": "r1"}),
+    ("coverage", {"repo_id": "r1"}),
     ("scan_run", {"scan_run_id": "run-1"}),
     ("playbook", {"kind": "lane_stalled"}),
     ("scorecard", {}),
@@ -312,6 +314,7 @@ async def test_every_path_a_tool_calls_is_a_route_the_api_serves() -> None:
         ("scorecard", {}, "/api/agent/scorecard", {}),
         ("surfaces", {"repo_id": "r1"}, "/api/dashboard/repos/r1/surfaces", {}),
         ("controls", {"repo_id": "r1"}, "/api/dashboard/repos/r1/controls", {}),
+        ("coverage", {"repo_id": "r1"}, "/api/dashboard/repos/r1/coverage", {}),
         ("rule_vectors", {"repo_id": "r1"}, "/api/dashboard/repos/r1/rule-vectors", {}),
         ("scorecard", {"family": "claude-opus-5.5"}, "/api/agent/scorecard",
          {"family": "claude-opus-5.5"}),
@@ -329,11 +332,29 @@ async def test_read_tools_call_their_route(
     assert dict(fake.requests[0].url.params) == params
 
 
-async def test_repository_ids_cannot_become_another_path() -> None:
+@pytest.mark.parametrize("name", ["lane_health", "coverage"])
+async def test_repository_ids_cannot_become_another_path(name: str) -> None:
     fake = FakeMykronos()
-    await _call(fake, "lane_health", {"repo_id": "../../agents/whoami"})
+    await _call(fake, name, {"repo_id": "../../agents/whoami"})
     assert all(path.startswith("/api/dashboard/repos/") for _, path in fake.calls)
     assert "%2F" in str(fake.requests[0].url)
+
+
+async def test_coverage_returns_the_routes_unknown_list_as_it_came() -> None:
+    """TheHub #60795: a half the route could not read stays visible to the agent."""
+    body = {
+        "repo_id": "r1",
+        "repo_full_name": "acme/api",
+        "analysers": {"available": False, "reason": "GitHub could not be read"},
+        "regression": {"available": True, "fixed_findings": 3},
+        "unknown": [{"source": "analysers", "detail": "GitHub could not be read"}],
+    }
+    fake = FakeMykronos(
+        {("GET", "/api/dashboard/repos/r1/coverage"): httpx2.Response(200, json=body)}
+    )
+    out = (await _call(fake, "coverage", {"repo_id": "r1"})).structured_content
+    assert out["unknown"] == [{"source": "analysers", "detail": "GitHub could not be read"}]
+    assert out["regression"]["fixed_findings"] == 3
 
 
 @pytest.mark.parametrize(
@@ -486,10 +507,40 @@ async def test_a_lesser_finding_is_dispositioned_directly(severity: str) -> None
     )
     assert fake.calls == [
         ("GET", "/api/dashboard/findings/f1"),
+        ("GET", "/api/dashboard/toxic-combinations"),
         ("PATCH", "/api/dashboard/findings/f1/status"),
     ]
     assert fake.body() == {"status": "suppressed", "reason": "Test code."}
     assert result.structured_content["governed_by"] is None
+
+
+@pytest.mark.parametrize("combination", ["critical", "high"])
+async def test_a_lesser_member_of_a_serious_combination_is_routed_to_a_request(
+    combination: str,
+) -> None:
+    """Review of #1018: a dispositioned member dissolves its combination, so
+    the low half of a critical pair is governed at the pair's severity."""
+    fake = FakeMykronos(
+        {
+            ("GET", "/api/dashboard/findings/f1"): _finding(
+                "low", capability="dast", repo_full_name="acme/api"
+            ),
+            ("GET", "/api/dashboard/toxic-combinations"): httpx2.Response(
+                200,
+                json={
+                    "combinations": [
+                        {"severity": combination, "members": [{"finding_id": "f1"}]}
+                    ]
+                },
+            ),
+        }
+    )
+    result = await _call(
+        fake, "disposition", {"finding_id": "f1", "status": "false_positive", "reason": "r1"}
+    )
+    assert fake.calls[-1] == ("POST", "/api/dashboard/findings/f1/disposition-requests")
+    assert result.structured_content["governed_by"] == "finding_disposition"
+    assert fake.requests[1].url.params["repo"] == "acme/api"
 
 
 def test_the_choice_is_the_routes_own_rule() -> None:

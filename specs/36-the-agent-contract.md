@@ -150,8 +150,10 @@ An MCP server that wraps the API under the agent's own `mka_` credential. #319 l
 experience; this spec adds the queue in front of them:
 
 - **Read:** `work()`, `briefing()`, `findings(...)`, `finding(id)` with the parsed DAST instance,
-  `lane_health(repo)`, `pipeline(repo)`, `coverage(repo)`, `whoami()`. `pipeline()` and `coverage()` are
-  not built: neither has a route yet (§8, #318).
+  `lane_health(repo)`, `coverage(repo)`, `whoami()`. `coverage(repo)` reads
+  `GET /api/dashboard/repos/{id}/coverage` (TheHub #60795): the B-051 analyser gap beside regression
+  coverage. `pipeline(repo)` was dropped: `lane_health` already wraps `/ci`, so a second tool would
+  have answered the same question (§8).
 - **Write, few and governed:** `claim(finding_id)`, `disposition(finding_id, status, reason)` which routes to
   `disposition-requests` itself when governed, `accept(...)` through `/api/risk-acceptances`,
   `request_pr_review(repo, number, statement)`.
@@ -305,6 +307,6 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | §2 work queue, §3 caveats | Merged (#799) |
-| 2 | §4 MCP server (#319) | Merged (#803): `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). Not built: `pipeline()` and `coverage()`, which have no route yet (#318) |
+| 2 | §4 MCP server (#319) | Merged (#803): `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). `coverage()` built on `GET /api/dashboard/repos/{id}/coverage` (TheHub #60795, decision option B). `pipeline()` dropped by that decision: `lane_health` already wraps `/ci` |
 | 3 | §5 playbooks | Built (§5.1): `agent-playbooks-v1.yaml`, `mykronos.playbooks`, `GET /api/agent/playbooks[/{kind}]`, `WorkItem.playbook` |
 | 4 | §6 track record: `GET /api/agent/scorecard` | Merged (#802); two §6 items are reported `unavailable` with the reason (§6) |

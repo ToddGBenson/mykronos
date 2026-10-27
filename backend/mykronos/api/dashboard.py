@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from mykronos import (
     briefing,
     briefing_sources,
+    ci_stall,
     composition,
     consult,
     control_observations,
@@ -39,6 +40,7 @@ from mykronos import (
     incident,
     inventory,
     platform_health,
+    read_coverage,
     regression,
     reown,
     risk_profile_builder,
@@ -113,6 +115,7 @@ from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
 from mykronos.maturity import mean_time_to_fix, throughput, trend_series
 from mykronos.pull_requests import open_pull_requests
+from mykronos.read_coverage import ReadCoverage
 from mykronos.scan_run_report import ScanRunReport
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
 
@@ -958,9 +961,15 @@ class ToxicCombinationMemberOut(BaseModel):
     rule_id: str
     title: str
     severity: Severity
-    #: `accepted_risk` members count: accepting half a pair must not hide it.
+    #: Always a counting status: `false_positive` and `accepted_risk`
+    #: members no longer count toward a combination (TheHub #60965).
     status: str | None = None
     file_path: str | None = None
+    qualifies: str = Field(
+        default="",
+        description="Which half of the rule this member satisfies, and why: "
+        "the pattern it matched or the listed alert it is, and any severity floor.",
+    )
 
 
 class ToxicCombinationOut(BaseModel):
@@ -1707,7 +1716,8 @@ async def toxic_combinations(
     """Toxic combinations across the estate (spec 08 §5), worst first.
 
     The same detection and severity the Oracle's risk decision uses
-    (`mykronos.toxic`), including combinations with an accepted member.
+    (`mykronos.toxic`). Findings dispositioned `false_positive` or
+    `accepted_risk` do not count toward a combination.
     """
     from mykronos import toxic
     from mykronos.oracle.policy import load_policy
@@ -2704,6 +2714,123 @@ async def regression_coverage(
             regression.coverage(request.app.state.catalog, repo_full_name)
         ),
     }
+
+
+class UnreadLanguageOut(BaseModel):
+    """One language no analyser here reads, with its size."""
+
+    language: str
+    bytes: int
+
+
+class AnalyserCoverageOut(BaseModel):
+    """How much of the application source the SAST analysers read (B-051)."""
+
+    available: bool = Field(
+        description=(
+            "Whether the share was measured. False when GitHub's language "
+            "breakdown could not be read or reports no source; `reason` says "
+            "which. Never read an unavailable share as fully read."
+        )
+    )
+    reason: str = ""
+    tools: list[str] = Field(
+        default_factory=list,
+        description="The analysers that have reported SAST here, or the configured one.",
+    )
+    source_bytes: int = 0
+    share_read: float | None = Field(default=None, description="0.0 to 1.0, or null.")
+    share_unread: float | None = Field(default=None, description="0.0 to 1.0, or null.")
+    unread_languages: list[UnreadLanguageOut] = Field(
+        default_factory=list, description="Up to five languages nothing reads, largest first."
+    )
+
+
+class CoverageUnknownOut(BaseModel):
+    """A source the coverage route could not read, and why."""
+
+    source: Literal["analysers", "regression"]
+    detail: str
+
+
+class RepoCoverageOut(BaseModel):
+    """What the scanners cannot read in one repository (TheHub #60795)."""
+
+    repo_id: str
+    repo_full_name: str
+    analysers: AnalyserCoverageOut | None
+    regression: dict[str, Any] | None = Field(
+        description="Regression coverage (spec 31 §3); null when it could not be read."
+    )
+    unknown: list[CoverageUnknownOut] = Field(
+        default_factory=list,
+        description="Sources that could not be read. An entry here means could not ask, not none.",
+    )
+
+
+@router.get("/repos/{repo_id}/coverage", response_model=RepoCoverageOut)
+async def repo_coverage(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> RepoCoverageOut:
+    """What the scanners cannot read in one repository (TheHub #60795, #318).
+
+    Two halves: the share of application source no SAST analyser implements
+    (B-051), and how many fixed findings have a test pinned (spec 31 §3). A
+    half that could not be read is listed in `unknown` with the reason.
+
+    Any authenticated principal may read it; it is never public. It is a map
+    of what is not looked at, so it is not registered as a public endpoint and
+    no anonymous probe asks for it.
+    """
+    with request.app.state.db.session() as session:
+        onboarding = session.get(RepoOnboarding, repo_id)
+        found = (
+            None
+            if onboarding is None
+            else (str(onboarding.github_repo_full_name), onboarding.github_installation_id)
+        )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No repo {repo_id!r}. This takes the onboarding id from "
+                "/api/dashboard/portfolio, not an owner/repo name."
+            ),
+        )
+    repo_full_name, installation_id = found
+    unknown: list[CoverageUnknownOut] = []
+
+    try:
+        measured = await _repo_read_coverage(request, repo_full_name, installation_id)
+    except Exception:  # noqa: BLE001
+        # The analysers half degrades to "unknown"; it never takes the route with it.
+        logger.warning("Could not measure read coverage for %s", scrub(repo_full_name))
+        measured = read_coverage.measure(repo_full_name, None, ())
+    if not measured.available:
+        unknown.append(CoverageUnknownOut(source="analysers", detail=measured.reason))
+    analysers = AnalyserCoverageOut.model_validate(read_coverage.as_dict(measured))
+
+    pinned: dict[str, Any] | None
+    try:
+        pinned = regression.as_dict(
+            regression.coverage(request.app.state.catalog, repo_full_name)
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read regression coverage for %s", scrub(repo_full_name))
+        pinned = None
+        unknown.append(
+            CoverageUnknownOut(
+                source="regression", detail="Regression coverage could not be read from the lake."
+            )
+        )
+
+    return RepoCoverageOut(
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        analysers=analysers,
+        regression=pinned,
+        unknown=unknown,
+    )
 
 
 class AffectedRepoOut(BaseModel):
@@ -4523,19 +4650,37 @@ async def _languages(
             .scalars()
             .all()
         ]
+    tools = _sast_tools(request, [name for name, _ in rows])
+
+    async def one(name: str, installation_id: int | None) -> tuple[str, dict[str, int] | None]:
+        return name, await _cached_languages(request, name, installation_id)
+
+    languages: dict[str, dict[str, int]] = {}
+    for name, counts in await asyncio.gather(*(one(n, i) for n, i in rows)):
+        if counts is not None:
+            languages[name] = counts
+    return languages, tools
+
+
+def _sast_tools(request: Request, names: list[str]) -> dict[str, str | list[str]]:
+    """The analysers that read each repository's code (B-051).
+
+    What has actually reported, not what is configured. A repository running
+    a shell analyser beside CodeQL has two lanes on one capability, and the
+    config field holds one name — so reading it would report `keel` as 70%
+    unread on the day it stopped being. Evidence over intent, the same rule
+    the SSDF view holds itself to. A repository nothing has reported for falls
+    back to its configured tool.
+    """
+    with request.app.state.db.session() as session:
         configured = {
             name: str(
                 capability_config_for(session, name, "sast").get("enabled_tool")
                 or default_tool("sast")
             )
-            for name, _ in rows
+            for name in names
         }
 
-    # What has actually reported, not what is configured. A repository running
-    # a shell analyser beside CodeQL has two lanes on one capability, and the
-    # config field holds one name — so reading it would report `keel` as 70%
-    # unread on the day it stopped being (B-051). Evidence over intent, the
-    # same rule the SSDF view holds itself to.
     reported: dict[str, list[str]] = {}
     catalog = request.app.state.catalog
     if catalog.all_files("scan_runs"):
@@ -4545,45 +4690,57 @@ async def _languages(
             "AND tool_name IS NOT NULL AND tool_name <> ''"
         ):
             reported.setdefault(str(repo), []).append(str(tool))
-    tools: dict[str, str | list[str]] = {
+    return {
         name: sorted(reported[name]) if name in reported else configured[name]
         for name in configured
     }
 
-    # Concurrent, and cached per repository for LANGUAGES_TTL (#730). One
-    # sequential GitHub call per repository - each minting its own installation
-    # token - made this endpoint 11 s, and the Vulnerability Management page
-    # waits on it. A language mix moves on the scale of weeks; six hours old is
-    # still "live" for the question this answers. A failed read is never
-    # cached, so "could not look" is retried rather than remembered.
+
+async def _cached_languages(
+    request: Request, name: str, installation_id: int | None
+) -> dict[str, int] | None:
+    """One repository's language mix, or None when GitHub could not be read.
+
+    Cached per repository for LANGUAGES_TTL (#730). One sequential GitHub call
+    per repository - each minting its own installation token - made the
+    briefing 11 s, and the Vulnerability Management page waits on it. A
+    language mix moves on the scale of weeks; six hours old is still "live"
+    for the question this answers. A failed read is never cached, so "could
+    not look" is retried rather than remembered.
+    """
     cache: dict[str, tuple[float, dict[str, int]]] = getattr(
         request.app.state, "languages_cache", None
     ) or {}
     request.app.state.languages_cache = cache
     now = time.monotonic()
+    hit = cache.get(name)
+    if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
+        return hit[1]
+    try:
+        # Migration DDL moves to `SCHEMA` here (D-138), before the cache,
+        # so the SQL files are read once per TTL rather than per load.
+        counts = await read_languages(
+            request.app.state.github_factory.for_installation(installation_id), name
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read languages for %s", scrub(name))
+        return None
+    if counts is not None:
+        cache[name] = (now, counts)
+    return counts
 
-    async def one(name: str, installation_id: int | None) -> tuple[str, dict[str, int] | None]:
-        hit = cache.get(name)
-        if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
-            return name, hit[1]
-        try:
-            # Migration DDL moves to `SCHEMA` here (D-138), before the cache,
-            # so the SQL files are read once per TTL rather than per load.
-            counts = await read_languages(
-                request.app.state.github_factory.for_installation(installation_id), name
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("Could not read languages for %s", scrub(name))
-            return name, None
-        if counts is not None:
-            cache[name] = (now, counts)
-        return name, counts
 
-    languages: dict[str, dict[str, int]] = {}
-    for name, counts in await asyncio.gather(*(one(n, i) for n, i in rows)):
-        if counts is not None:
-            languages[name] = counts
-    return languages, tools
+async def _repo_read_coverage(
+    request: Request, name: str, installation_id: int | None
+) -> ReadCoverage:
+    """How much of one onboarded repository its analysers read (TheHub #60795).
+
+    The per-repository form of what the briefing's unread-code section reads
+    for the estate, from the same cache, so the two cannot disagree.
+    """
+    tools = _sast_tools(request, [name])[name]
+    languages = await _cached_languages(request, name, installation_id)
+    return read_coverage.measure(name, languages, tools)
 
 
 def _default_branches(request: Request) -> dict[str, str]:
@@ -5127,8 +5284,9 @@ async def request_finding_disposition(
 
     The finding stays open. The platform freezes the finding row, its raw scanner
     record and the reason into an approval request under the `finding_disposition`
-    duty, tiered by the finding's own severity, and applies the disposition only
-    when an approver the policy admits says yes.
+    duty, tiered by the finding's governing severity - its own, raised to that of
+    any high or critical toxic combination it is a member of - and applies the
+    disposition only when an approver the policy admits says yes.
     """
     if not principal.may_write:
         raise HTTPException(
@@ -5309,17 +5467,27 @@ async def apply_finding_status(
 
     # #713: an agent may not close a critical or high finding on its own word.
     # A false positive or a suppression goes through the governed duty; an
-    # acceptance already has one. A person's direct call is unchanged.
-    if finding_disposition.governed(principal, existing.get("severity")):
+    # acceptance already has one. A person's direct call is unchanged. A
+    # member of a high or critical toxic combination is governed at the
+    # combination's severity: dispositioning it dissolves the combination
+    # (review of #1018).
+    if finding_disposition.governed_finding(principal, {**existing, "finding_id": finding_id}):
         governed_route = (
             "POST /api/risk-acceptances"
             if body.status is FindingStatus.ACCEPTED_RISK
             else f"POST /api/dashboard/findings/{finding_id}/disposition-requests"
         )
+        own = str(existing.get("severity") or "").lower()
+        what = (
+            f"a {own} finding"
+            if own in finding_disposition.GOVERNED_SEVERITIES
+            else f"a {own} finding that is a member of a high or critical toxic "
+            "combination (dispositioning it dissolves the combination)"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"An agent may not set a {existing.get('severity')} finding to "
+                f"An agent may not set {what} to "
                 f"'{body.status.value}' directly: closing a serious finding is a "
                 f"governed decision (#713). Use {governed_route}; someone independent "
                 "approves it, and the finding stays open until they do."
@@ -6951,6 +7119,34 @@ class DependencyHealthOut(BaseModel):
     configured: bool = True
 
 
+class CiStallJobOut(BaseModel):
+    """One lane whose latest finished build errored (`ci_stall.ErroredJob`)."""
+
+    pipeline: str
+    job: str
+    build: str | None = None
+    started_at: datetime
+    #: A browser link, or null: never a loopback address (TheHub #60924).
+    url: str | None = None
+
+
+class CiStallOut(BaseModel):
+    """Is Concourse stalled - many lanes erroring together (TheHub #60975)?"""
+
+    #: red | green | unknown. Unknown is "could not ask", never green.
+    status: str
+    detail: str
+    #: Red: the lanes in the window. Otherwise every unpaused errored lane.
+    jobs: list[CiStallJobOut]
+    #: The fixed order of repair, the same every time.
+    checklist: list[str]
+    threshold: int
+    window_minutes: int
+    jobs_inspected: int = 0
+    #: When this stall's notice was delivered; null if it has not been.
+    notified_at: datetime | None = None
+
+
 class CredentialOut(BaseModel):
     """A credential a person may need to act on (TheHub #60974).
 
@@ -6982,11 +7178,43 @@ class PlatformHealthOut(BaseModel):
     degraded: bool
     jobs: list[JobHealthOut]
     dependencies: list[DependencyHealthOut]
+    ci_stall: CiStallOut
     #: Ingestion tokens left for a person and agent credentials expiring within
     #: 14 days. Not part of `degraded`: a token awaiting rotation is work to do,
     #: not the platform failing.
     credentials: list[CredentialOut] = Field(default_factory=list)
     note: str
+
+
+async def _ci_stall_now(request: Request) -> CiStallOut:
+    """The stall assessment, read live: a cached "is CI stalled" is worth
+    nothing for the reason a cached Vault probe is not."""
+    settings = request.app.state.settings
+    if not settings.concourse_url:
+        stall = ci_stall.unknown("No Concourse is configured for this deployment.")
+    else:
+        client = ConcourseClient(
+            settings.concourse_url,
+            team=settings.concourse_team,
+            external_url=settings.concourse_external_url,
+        )
+        payload = await asyncio.to_thread(client.all_jobs)
+        stall = platform_health.assess_ci_stall(payload, link=client.build_url)
+    notified_at = None
+    if stall.red:
+        with request.app.state.db.session() as session:
+            episode = ci_stall.open_episode(session)
+            notified_at = episode.notified_at if episode is not None else None
+    return CiStallOut(
+        status=stall.status,
+        detail=stall.detail,
+        jobs=[CiStallJobOut(**vars(job)) for job in stall.jobs],
+        checklist=list(ci_stall.CHECKLIST),
+        threshold=ci_stall.STALL_THRESHOLD,
+        window_minutes=int(ci_stall.STALL_WINDOW.total_seconds() // 60),
+        jobs_inspected=stall.jobs_inspected,
+        notified_at=notified_at,
+    )
 
 
 @router.get("/platform-health", response_model=PlatformHealthOut)
@@ -7055,7 +7283,10 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     except Exception:  # noqa: BLE001 — job health still stands
         logger.warning("Self-check failed while rendering platform health")
 
-    health = platform_health.PlatformHealth(jobs=jobs, dependencies=dependencies)
+    stall = await _ci_stall_now(request)
+    health = platform_health.PlatformHealth(
+        jobs=jobs, dependencies=dependencies, ci_stalled=stall.status == "red"
+    )
     credentials = await asyncio.to_thread(
         platform_health.credentials_needing_attention, request.app.state.db, now=now
     )
@@ -7064,6 +7295,7 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
         degraded=health.degraded,
         jobs=[JobHealthOut(**vars(job)) for job in jobs],
         dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
+        ci_stall=stall,
         credentials=[
             CredentialOut(
                 kind=c.kind,

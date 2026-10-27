@@ -50,6 +50,7 @@ from mykronos.api.exposure import router as exposure_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.lanes import router as lanes_router
+from mykronos.api.libraries import router as libraries_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.po_console import router as po_console_router
@@ -87,6 +88,7 @@ from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     BRIEFING_DM_JOB,
     BRIEFING_FLASH_JOB,
+    CI_STALL_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
     SIGNAL_FILING_JOB,
@@ -96,6 +98,7 @@ from mykronos.jobs import (
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
+    notify_ci_stall,
     notify_dormant_lanes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
@@ -117,6 +120,7 @@ from mykronos.lake.maintenance import (
     carry_forward_exclusively,
     reconcile_after_linking,
 )
+from mykronos.libraries import http_fetch as http_library_fetch
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
@@ -398,7 +402,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Spec 33: the risk-acceptance duty stamps findings in the lake when an
     # approval lands, and reads its limits from the approval policy.
     risk_acceptance.bind(app.state.catalog)
-    finding_disposition.bind(app.state.catalog)
+    # The guard reads toxic combinations as the risk decision does: KEV from
+    # the database, escalation from the Oracle policy (review of #1018).
+    finding_disposition.bind(
+        app.state.catalog,
+        db=app.state.db,
+        oracle_policy_path=settings.oracle_policy_path,
+    )
+    # TheHub #60895: library vetting reads OSV and deps.dev; tests replace it.
+    app.state.library_fetch = http_library_fetch
     try:
         risk_acceptance.bind_policy(cached_approval_policy(settings.approval_policy_path))
     except ApprovalPolicyError as exc:
@@ -636,6 +648,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db, policy, app.state.github_factory
             )
 
+        async def _library_checks() -> None:
+            # The library-allowlist check on every open pull request head that
+            # has none yet (TheHub #60898). Reports unless a person switched
+            # the repository to blocking once its allowlist covered it.
+            from mykronos import library_check
+
+            posted = await library_check.sweep(
+                app.state.db,
+                app.state.catalog,
+                app.state.github_factory,
+                dashboard_url=settings.dashboard_url,
+            )
+            if posted:
+                logger.info("Library checks posted: %s", ", ".join(posted))
+
+        async def _library_facts() -> None:
+            # Registry facts behind the EOL, abandoned and license-change
+            # flags on the managed Libraries view (TheHub #60897).
+            from mykronos import libraries
+
+            result = await libraries.refresh_facts(
+                app.state.db, app.state.catalog, fetch=app.state.library_fetch
+            )
+            logger.info("Library facts: %s", result)
+
         async def _shadow_reviews() -> None:
             # spec 34 §4.3 shadow mode: the reviewer reads pending requests and
             # its verdict is recorded, never counted. A no-op unless the mode is
@@ -764,6 +801,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 threshold_hours=settings.dormant_lanes_threshold_hours,
             )
 
+        async def _ci_stall() -> None:
+            # Many lanes erroring together - a dead worker after a restart
+            # (TheHub #60975). Once per stall episode; an undelivered notice
+            # raises, so the next tick retries it.
+            await notify_ci_stall(
+                ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                ),
+                db=app.state.db,
+                notifier=app.state.notifier,
+            )
+
         async def _briefing_dm() -> None:
             # The 07:00 DM (TheHub #60864): due once a local day, read through
             # the briefing route so it says what the page says. Not due raises
@@ -887,6 +938,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 ]
             ),
             ("pull-request-stamps", 120, _pull_request_stamps),
+            # Against a real GitHub and the real registries only, for the
+            # reason `installations` is: the demo's placeholders answer nothing.
+            *(
+                []
+                if isinstance(app.state.github_factory, FakeGitHubClientFactory)
+                else [
+                    ("library-checks", 300, _library_checks),
+                    ("library-facts", 86_400, _library_facts),
+                ]
+            ),
             ("exposure", settings.exposure_probe_interval_seconds, _exposure),
             ("environment", settings.environment_rescore_interval_seconds, _environment),
             # Only with a Concourse to read. Without one the job would fail
@@ -904,6 +965,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             *(
                 [(DORMANT_LANES_JOB, settings.dormant_lanes_interval_seconds, _dormant_lanes)]
+                if settings.concourse_url
+                else []
+            ),
+            *(
+                [(CI_STALL_JOB, settings.ci_stall_interval_seconds, _ci_stall)]
                 if settings.concourse_url
                 else []
             ),
@@ -1017,6 +1083,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repo_risk_acceptances_router)
     app.include_router(repo_read_router)
     app.include_router(lanes_router)
+    app.include_router(libraries_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
     # A body with NaN in a constrained float is a 422, not a 500.

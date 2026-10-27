@@ -175,6 +175,17 @@ the nearest scored ancestor of an unjudged sha and its verdict, and refuses
 the unjudged sha unless `-Force -ForceReason` is given (fail open is kept
 only for "could not ask", D-126).
 
+**A stall is watched too (TheHub #60975).** After a host or Docker restart
+the workers can die and lanes across every pipeline go `errored` at once,
+while Concourse itself stays reachable. The backend's `ci-stall` job
+(`mykronos.ci_stall`, every 10 minutes) reads the anonymous `/api/v1/jobs`
+summaries and calls Concourse stalled when 3 or more unpaused jobs' latest
+finished build errored with start times inside one 60-minute window. `failed`,
+`aborted` and paused jobs do not count. MyKronos Health shows the stall as its
+first row, with the lanes and a fixed checklist: restart the workers, check
+Vault is unsealed, re-trigger the errored jobs. One Slack notice is sent per
+stall episode, and it is marked sent only when delivered.
+
 **The amendment (2026-10-21, TheHub).** Behind the gate, a red quality gate
 also freezes every scanning lane on the last commit it passed, and each lane
 keeps showing that commit's green. TheHub's `unit` went red on 2026-10-19
