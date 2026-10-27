@@ -30,6 +30,7 @@ from mykronos.approvals import pull_requests
 from mykronos.approvals.engine import ApprovalError, decide
 from mykronos.approvals.policy import PolicyError, cached_policy
 from mykronos.db.models import ApprovalDecision, ApprovalRequest, Delegation, RepoOnboarding
+from mykronos.deployments import NOT_CONFIGURED, probe_setup_for
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -122,13 +123,49 @@ class PoDeliveryRowOut(BaseModel):
     deployed: str
 
 
+#: A probe that is configured (stored or derived, TheHub #60918) and that no
+#: sweep has answered yet. Not `not_configured`: that would tell the Product
+#: Owner to set up a probe that already exists (TheHub #60942).
+AWAITING_FIRST_ANSWER = "awaiting_first_answer"
+
+
 class PoDeploymentOut(BaseModel):
-    #: The probe's status: not_configured | ok | unreachable | unparsed.
+    #: The probe's status: not_configured | awaiting_first_answer | ok |
+    #: unreachable | unparsed.
     probe_status: str
     running_revision: str | None
     observed_at: str | None
     #: How far the running revision is behind the default branch (#452).
     lag: DeployLagOut | None = None
+    #: Where the probe comes from, as /api/dashboard/deployments says it; "" is none.
+    probe_source: str = ""
+    #: What the probe is missing, by setting or route name, never a value.
+    missing: list[str] = Field(default_factory=list)
+
+
+def _deployment_out(onboarding: RepoOnboarding | None, settings: Any) -> PoDeploymentOut:
+    """The running revision and its probe, read the way the deployments page reads it.
+
+    The console read only the stored status, so a probe derived from what the
+    platform already knows (TheHub, and this platform itself) said
+    `not_configured` until a sweep answered, and its lag was dropped as if it
+    had no probe at all (TheHub #60942).
+    """
+    if onboarding is None:
+        return PoDeploymentOut(
+            probe_status=NOT_CONFIGURED, running_revision=None, observed_at=None
+        )
+    setup = probe_setup_for(onboarding, settings)
+    stored = str(onboarding.deployment_probe_status or NOT_CONFIGURED)
+    status_ = AWAITING_FIRST_ANSWER if stored == NOT_CONFIGURED and setup.configured else stored
+    return PoDeploymentOut(
+        probe_status=status_,
+        running_revision=onboarding.deployed_revision,
+        observed_at=pc.iso(onboarding.deployed_revision_at),
+        lag=deploy_lag_out(unrecorded_lag(onboarding, probed=setup.configured)),
+        probe_source=setup.source,
+        missing=list(setup.missing),
+    )
 
 
 class PoDeliveryOut(BaseModel):
@@ -172,14 +209,7 @@ async def delivery(
     with request.app.state.db.session() as session:
         onboarding = session.get(RepoOnboarding, repo_id)
         revision = onboarding.deployed_revision if onboarding else None
-        deployment = PoDeploymentOut(
-            probe_status=str(onboarding.deployment_probe_status or "not_configured")
-            if onboarding
-            else "not_configured",
-            running_revision=revision,
-            observed_at=pc.iso(onboarding.deployed_revision_at) if onboarding else None,
-            lag=deploy_lag_out(unrecorded_lag(onboarding)) if onboarding else None,
-        )
+        deployment = _deployment_out(onboarding, request.app.state.settings)
     since = pc.window_start(days)
     catalog = request.app.state.catalog
     error = None

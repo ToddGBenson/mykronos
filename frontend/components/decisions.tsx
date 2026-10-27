@@ -38,9 +38,12 @@ const OUTCOME_LABEL: Record<string, string> = {
 export function DecisionsTab({
   repoFullName,
   decisions,
+  confidenceNote = null,
 }: {
   repoFullName: string;
   decisions: RiskDecision[];
+  /** The newest verdict's read-coverage note (TheHub #60962). */
+  confidenceNote?: string | null;
 }) {
   if (decisions.length === 0) {
     return (
@@ -81,15 +84,27 @@ export function DecisionsTab({
       </div>
 
       <ul className="flex flex-col gap-2">
-        {decisions.map((decision) => (
-          <DecisionCard key={decision.decision_id} decision={decision} />
+        {decisions.map((decision, index) => (
+          <DecisionCard
+            key={decision.decision_id}
+            decision={decision}
+            // Today's coverage qualifies today's verdict only: an older
+            // decision was made over whatever the code was then.
+            confidenceNote={index === 0 ? confidenceNote : null}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
-function DecisionCard({ decision }: { decision: RiskDecision }) {
+function DecisionCard({
+  decision,
+  confidenceNote,
+}: {
+  decision: RiskDecision;
+  confidenceNote: string | null;
+}) {
   const terms = decision.inputs_snapshot?.terms ?? [];
   const totals = decision.inputs_snapshot?.totals;
   const override = decision.human_override ?? null;
@@ -100,6 +115,7 @@ function DecisionCard({ decision }: { decision: RiskDecision }) {
         <Verdict
           recommendation={decision.recommendation}
           score={decision.overall_risk_score}
+          note={confidenceNote}
         />
         <ScoreMeter score={decision.overall_risk_score} />
 

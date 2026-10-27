@@ -774,6 +774,7 @@ async function RiskDecisionsTab({ repoId }: { repoId: string }) {
       <DecisionsTab
         repoFullName={result.data.repo_full_name}
         decisions={result.data.decisions}
+        confidenceNote={result.data.confidence_note ?? null}
       />
     </div>
   );

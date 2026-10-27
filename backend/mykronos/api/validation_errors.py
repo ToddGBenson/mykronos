@@ -7,9 +7,13 @@ finding's `cvss_score`, say — fails validation correctly and then fails
 *again* rendering the 422, because Starlette refuses to serialise a
 non-finite float. The caller saw a 500 for what spec 05 §4 says is a 422.
 
-The fallback drops `input` (and `ctx`, which can carry the same value as a
-bound) rather than rewriting it: the location and message still say exactly
-what was wrong, and the caller already holds what it sent.
+The fallback drops `ctx` too, which can carry the same value as a bound.
+
+`input` is never sent back, in any 422 (TheHub #60964). An error that repeats
+the request is what an application-error-disclosure check flags, and it hands
+whatever was sent back to be rendered somewhere else. The location and
+message still say exactly what was wrong, and the caller already holds what
+it sent.
 """
 
 from __future__ import annotations
@@ -26,7 +30,12 @@ _ECHOED = ("input", "ctx")
 
 async def _render(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
-    errors: list[Any] = list(exc.errors())
+    errors: list[Any] = [
+        {key: value for key, value in error.items() if key != "input"}
+        if isinstance(error, dict)
+        else error
+        for error in exc.errors()
+    ]
     try:
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
     except (ValueError, RecursionError):

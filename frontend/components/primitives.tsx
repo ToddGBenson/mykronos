@@ -507,9 +507,16 @@ const RECOMMENDATION_TONE: Record<string, PillTone> = {
 export function Verdict({
   recommendation,
   score,
+  note,
 }: {
   recommendation?: string | null;
   score?: number | null;
+  /**
+   * How much of the code the analysers read, beside the verdict (TheHub
+   * #60962): "go - read 31% of the code", or "read coverage unknown". It
+   * qualifies the verdict and never changes it.
+   */
+  note?: string | null;
 }) {
   if (!recommendation) {
     return (
@@ -528,6 +535,14 @@ export function Verdict({
       </Pill>
       {typeof score === "number" ? (
         <span className="tabular font-mono text-[12px] text-ink-3">{score}</span>
+      ) : null}
+      {note ? (
+        <span
+          className="font-mono text-[12px] text-high"
+          title="Share of the application source a SAST analyser reads. The verdict is unchanged by it."
+        >
+          {note}
+        </span>
       ) : null}
     </span>
   );

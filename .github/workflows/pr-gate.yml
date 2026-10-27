@@ -1,0 +1,65 @@
+# A risk decision on every pull request (TheHub #60927, mykronos#340).
+#
+# `mykronos-oracle.yml` did this until 2026-09-08, when the Concourse migration
+# deleted it with the scanner workflows Concourse really did replace (766ca5f).
+# Concourse builds `main` only, so nothing asked for a `pr_gate` decision after
+# that, and the last one for this repository was 2026-09-05.
+#
+# What it does: `scripts/pr_gate.py` POSTs `pr_gate` with the pull request's
+# number and HEAD commit to `/api/oracle/evaluate`. The platform records the
+# decision and posts `Mykronos / risk decision` on that commit through its
+# GitHub App, so this workflow's own token needs nothing but a checkout. The job
+# fails on a block verdict: the commit introduced an open critical or high
+# (D-048), or the answer cannot be read. A backlog `no_go` is printed, not
+# decisive. `backend/tests/test_pr_gate.py` pins all of this.
+#
+# What it does not do: wait for scans of the PR head. Concourse does not scan
+# pull requests, so `introduced` is usually empty here and the floor rarely
+# trips. That is the same limit keel's and binnacle's gate had before their
+# scanners ran per PR; the decision is still recorded, and it is what the
+# merged-versus-refused evidence for blocking mode is built from (spec 09 §6).
+#
+# Advisory: not a required check. Requiring `risk-decision` is a
+# branch-protection change the operator makes once the runs show it is steady.
+name: PR risk gate
+
+# `pull_request`, never `pull_request_target`. A fork's run then gets no
+# repository secret and the job says so; it never runs a fork's code with one.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# A new push supersedes the decision on the old head.
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  risk-decision:
+    name: risk-decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Ask Mykronos for a pr_gate decision
+        # Every value reaches the script through env, never pasted into `run`.
+        # HEAD_SHA is the PR's head, not `github.sha`: on a pull_request run
+        # that is GitHub's synthetic merge commit, which no scan sees and whose
+        # check runs do not show on the pull request.
+        env:
+          MYKRONOS_URL: https://mykronos.toddbenson.net
+          MYKRONOS_INGESTION_TOKEN: ${{ secrets.MYKRONOS_INGESTION_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/pr_gate.py

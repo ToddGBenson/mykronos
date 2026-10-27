@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 type Job = components["schemas"]["JobHealthOut"];
 type Dependency = components["schemas"]["DependencyHealthOut"];
+type CiStall = components["schemas"]["CiStallOut"];
 
 const STATUS: Record<
   string,
@@ -37,6 +38,10 @@ const CONSEQUENCE: Record<string, string> = {
   governance: "A control coming off goes unnoticed until somebody opens the panel.",
   "threat-model-draft":
     "Drift between what MyKronos observes and a repository's declared threat model is never proposed as a pull request.",
+  "library-checks":
+    "Pull requests get no library-allowlist check, so a new dependency is added without anyone seeing it is unapproved.",
+  "library-facts":
+    "EOL, abandoned and license-change flags on Libraries stop updating and read as unknown or out of date.",
   "threat-model-sync":
     "A change to a repository's .sdlc/threat-model.yaml never reaches the register, so scoring reads last month's threat model.",
   environment:
@@ -53,6 +58,10 @@ const CONSEQUENCE: Record<string, string> = {
   routing: "Findings are never routed to a tracker.",
   "briefing-dm":
     "The 07:00 briefing DM does not arrive. The /briefing page still answers when asked.",
+  "briefing-flash":
+    "An exploited or critical match to something shipped waits for Monday instead of a same-day DM. The weekly page still shows it.",
+  "ci-stall":
+    "A Concourse whose lanes all error after a restart reads as reachable, and nobody is told it stalled.",
   "briefing-signal-filing":
     "Next-sprint candidates are not filed to TheHub's backlog. The briefing still ranks them.",
 };
@@ -101,6 +110,67 @@ function DependencyRow({ dependency }: { dependency: Dependency }) {
   );
 }
 
+const STALL: Record<string, { tone: "pass" | "critical" | "muted"; word: string }> = {
+  red: { tone: "critical", word: "Stalled" },
+  green: { tone: "pass", word: "Not stalled" },
+  unknown: { tone: "muted", word: "Unknown" },
+};
+
+function utc(iso: string): string {
+  return `${iso.slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * Concourse is stalled (TheHub #60975): many lanes errored together, which is
+ * a dead worker or a sealed Vault after a restart, not the lanes themselves.
+ * A reachable Concourse whose builds all error reads healthy everywhere else.
+ */
+function CiStallRow({ stall }: { stall: CiStall }) {
+  const status = STALL[stall.status] ?? STALL.unknown;
+  const red = stall.status === "red";
+  return (
+    <div className="border-t border-rule-soft px-3 py-2.5" data-testid="ci-stall">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="font-mono text-[13px] font-bold text-ink">ci_stall</span>
+        <span className="text-[12px] text-ink-3">{stall.detail}</span>
+        <span className="ml-auto">
+          <Pill tone={status.tone} title={`Concourse is ${status.word.toLowerCase()}`}>
+            {status.word}
+          </Pill>
+        </span>
+      </div>
+      {red ? (
+        <>
+          <ul className="mt-1.5 flex flex-col gap-0.5 font-mono text-[12px] text-ink-2">
+            {stall.jobs.map((job) => (
+              <li key={`${job.pipeline}/${job.job}`}>
+                {job.url ? (
+                  <a className="underline" href={job.url}>
+                    {job.pipeline}/{job.job}
+                  </a>
+                ) : (
+                  `${job.pipeline}/${job.job}`
+                )}{" "}
+                errored, started {utc(job.started_at)}
+              </li>
+            ))}
+          </ul>
+          <ol className="mt-1.5 list-decimal pl-5 text-[12px] text-ink">
+            {stall.checklist.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+          <p className="mt-1 text-[12px] text-ink-3">
+            {stall.notified_at
+              ? `Notified ${utc(stall.notified_at)}.`
+              : "Not yet notified: the ci-stall job row says why."}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Is the platform itself working?
  *
@@ -114,6 +184,9 @@ export default async function PlatformHealthPage() {
     return <ErrorPanel title="MyKronos Health unavailable" detail={result.error} />;
   }
   const { degraded, jobs, dependencies, note } = result.data;
+  // Optional at runtime: a backend older than this page has no ci_stall.
+  const stall: CiStall | undefined = result.data.ci_stall;
+  const stalled = stall?.status === "red";
 
   return (
     <div className="flex flex-col gap-4">
@@ -127,6 +200,14 @@ export default async function PlatformHealthPage() {
           reports on it.
         </p>
       </header>
+
+      {/* A stall is the first row on the page: it explains every failing lane
+          below it, and its repair comes before any of theirs. */}
+      {stall && stalled ? (
+        <Section title="Concourse is stalled" detail="many lanes errored together">
+          <CiStallRow stall={stall} />
+        </Section>
+      ) : null}
 
       <Section
         title="Scheduled work"
@@ -155,6 +236,7 @@ export default async function PlatformHealthPage() {
             The self-check did not complete. The job rows above still stand.
           </p>
         )}
+        {stall && !stalled ? <CiStallRow stall={stall} /> : null}
       </Section>
 
       <div className="border border-rule bg-paper-2 px-3 py-2.5">

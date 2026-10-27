@@ -19,16 +19,19 @@ import {
   SIGNAL_WORD,
   WORK_LABEL,
   briefingHref,
+  doneActions,
   groupByWork,
   productSignals,
   refLink,
   repoHref,
   statusMeta,
+  verificationMeta,
   workCounts,
   type BriefingLine,
   type BriefingProduct,
   type BriefingSection,
   type DailyBriefing,
+  type OperatorAction,
   type ProductSignal,
 } from "@/lib/briefing";
 
@@ -49,9 +52,21 @@ function LineRow({
 }) {
   const link = refLink(line.ref, line.repo_full_name, repoIds);
   const repo = repoHref(line.repo_full_name, repoIds);
+  const badge = verificationMeta(line.verification);
   return (
-    <li className="border-t border-rule-soft px-3 py-2" data-work={line.work}>
-      <p className="text-[13px] text-ink">{line.what}</p>
+    <li
+      className="border-t border-rule-soft px-3 py-2"
+      data-work={line.work}
+      data-verification={line.verification || undefined}
+    >
+      <p className="flex flex-wrap items-baseline gap-x-3 text-[13px] text-ink">
+        <span>{line.what}</span>
+        {badge ? (
+          <Pill tone={badge.tone} title={badge.meaning}>
+            {badge.word}
+          </Pill>
+        ) : null}
+      </p>
       <p className="mt-0.5 max-w-prose text-[12px] text-ink-2">{line.so_what}</p>
       <p className="mt-1 flex flex-wrap gap-x-3 font-mono text-[11px] text-ink-3">
         {line.repo_full_name ? (
@@ -78,6 +93,43 @@ function LineRow({
         ) : null}
       </p>
     </li>
+  );
+}
+
+function DoneActions({ actions }: { actions: OperatorAction[] }) {
+  // Asks GitHub shows as done (TheHub #60972): listed so the story gets
+  // closed, and not counted as needing the operator.
+  const badge = verificationMeta("observed_done");
+  return (
+    <div className="mt-2" data-group="done">
+      <h3 className="px-3 font-mono text-[11px] font-bold uppercase tracking-[0.1em] text-ink-3">
+        Done - close it · {actions.length}
+      </h3>
+      <ul>
+        {actions.map((action) => (
+          <li
+            key={String(action.id)}
+            className="border-t border-rule-soft px-3 py-2"
+            data-verification={action.verification}
+          >
+            <p className="flex flex-wrap items-baseline gap-x-3 text-[13px] text-ink">
+              <span>{action.title}</span>
+              {badge ? (
+                <Pill tone={badge.tone} title={badge.meaning}>
+                  {badge.word}
+                </Pill>
+              ) : null}
+            </p>
+            <p className="mt-0.5 max-w-prose text-[12px] text-ink-2">{action.evidence}</p>
+            <p className="mt-1 font-mono text-[11px] text-ink-3">
+              <Link href="/product-owner" className="hover:text-accent">
+                TheHub #{action.id}
+              </Link>
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -118,6 +170,7 @@ export function BriefingSectionCard({
   const meta = statusMeta(section.status);
   const groups = groupByWork(section.lines);
   const signals = productSignals(section);
+  const done = section.key === "needs_you_today" ? doneActions(section) : [];
   return (
     <section
       className="ticks border border-rule bg-paper-2"
@@ -160,7 +213,7 @@ export function BriefingSectionCard({
             </ul>
           </div>
         ))
-      ) : (
+      ) : done.length > 0 ? null : (
         <p className="px-3 py-2 text-[12px] text-ink-3">
           {section.status === "ok"
             ? "Nothing here needs you."
@@ -169,6 +222,7 @@ export function BriefingSectionCard({
               : "Nothing shown, because nothing was read."}
         </p>
       )}
+      {done.length > 0 ? <DoneActions actions={done} /> : null}
       <div className="h-2" />
     </section>
   );

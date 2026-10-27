@@ -1,0 +1,54 @@
+# Gitleaks configuration for this repository.
+#
+# Every gitleaks run that scans this repository without `--config` loads this
+# file, including the full-history, all-branch scan. It keeps the default
+# ruleset and adds allowlists that are each scoped three ways at once: to the
+# one default rule they hang off, to one file, and to a regex over the
+# rule's whole match. A finding is suppressed only when all three hold, so
+# no entry here is a path allowlist and a real credential added to the same
+# file is still reported.
+#
+# Findings pinned to one commit, file and line belong in .gitleaksignore. This
+# file is for a fixture whose line lives in more than one commit (a branch
+# commit and its squash-merge), where a fingerprint would need one entry per
+# copy and a new entry every time the line moved.
+#
+# backend/tests/test_gitleaks_allowlist.py holds every entry to that shape.
+# Do not quote a real credential in a comment here: this file is scanned too.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# The network-assessment run key in test_network_lanes.py.
+#
+# The fixture's `run_key` is the dated archive file name a scheduled network
+# assessment produces. `generic-api-key` fires on the word `key` followed by a
+# long value; the value is a file name and authenticates nothing. (The line is
+# not quoted here: this file is scanned, and quoting it would re-raise it.)
+#
+# The regex is anchored at both ends of the rule's match, which is the key
+# name through the closing quote of the value: this key, this exact value,
+# nothing else. A different value, a longer key name, any other key on the same
+# line (gitleaks reports that as its own finding), or the same text in any
+# other file is still reported.
+#
+# `regexTarget = "match"`, not "line": run against gitleaks 8.28, the same
+# entry with a "line" regex did not suppress this finding.
+#
+# The entry hangs off the rule (`[[rules]]` naming only `id`, plus
+# `[[rules.allowlists]]`) rather than a top-level `[[allowlists]]` with
+# `targetRules`. Under gitleaks 8.28.0, the version the pipelines pin, with
+# `useDefault`, the top-level form loads without error and suppresses
+# nothing. Redeclaring the default rule by id with only an allowlist keeps its
+# regex, entropy, keywords and own allowlists, and adds this one.
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "test_network_lanes.py: the dated netassess archive name used as a run_key fixture"
+condition = "AND"
+paths = ['''(^|/)backend/tests/test_network_lanes\.py$''']
+regexTarget = "match"
+regexes = ['''^run_key": "netassess-2026\.10\.18\.zip"$''']
