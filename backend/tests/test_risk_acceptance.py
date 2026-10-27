@@ -731,3 +731,45 @@ class TestAMemberOfASeriousCombination:
 
         assert response.status_code == 201, response.text
         assert response.json()["tier"] == "low"
+
+
+class TestDetectionThatCannotRunFloorsEveryMember:
+    """Detection that cannot run floors the tier at critical whatever the
+    finding's own severity (review of #1018).
+
+    `_combination_floor` read a failure as "governing severity differs from the
+    finding's own". A finding that is critical on its own governs at critical
+    either way, so a failed detection looked like "no combination": no floor,
+    no flag, and a risk_adjustment on a critical member could come out low."""
+
+    @staticmethod
+    def _matched(severity: str) -> ra.MatchedFinding:
+        return ra.MatchedFinding(
+            f"f-{severity}", "ZAP-10037-CWE-497", "", severity, "/", "", "", "open"
+        )
+
+    @pytest.mark.parametrize("severity", ["critical", "high", "medium", "low"])
+    def test_a_failed_detection_is_reported_and_floored(self, monkeypatch, severity) -> None:
+        from mykronos import finding_disposition
+
+        def broken(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("lake unreadable")
+
+        monkeypatch.setattr(finding_disposition, "_repo_combinations", broken)
+
+        floor, combinations, failed = ra._combination_floor(
+            None, None, REPO, [self._matched(severity)]
+        )
+
+        assert (floor, combinations, failed) == ("critical", [], True)
+
+    def test_a_detection_that_runs_and_finds_nothing_is_not_a_failure(
+        self, monkeypatch
+    ) -> None:
+        from mykronos import finding_disposition
+
+        monkeypatch.setattr(finding_disposition, "_repo_combinations", lambda *a, **k: [])
+
+        assert ra._combination_floor(None, None, REPO, [self._matched("critical")]) == (
+            None, [], False
+        )
