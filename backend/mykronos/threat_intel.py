@@ -64,12 +64,16 @@ NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 #: for half an hour. Every CVE this platform has an open finding for is a
 #: finite set that only grows when a scanner finds something new.
 NVD_BATCH = 20
-#: Of that budget, at most this many go to reading NVD's exploit references
-#: for rows whose vector was looked up before #60890. Every such row is
-#: eligible at once after the upgrade, so without a cap of its own the
-#: backfill would be one estate-wide wave of NVD load; with it, it trickles
-#: in behind the first-time vector lookups, which always go first.
-NVD_REFS_BATCH = 5
+#: Beside that budget, not out of it: at most this many requests per sweep
+#: read NVD's exploit references for rows whose vector was looked up before
+#: #60890. Every such row is eligible at once after the upgrade, so without
+#: a cap the backfill would be one estate-wide wave of NVD load. It is not
+#: carved from `NVD_BATCH` because the vector queue is itself backlogged
+#: (TheHub #61034): a share of whatever the vectors leave would be zero for
+#: months, and until a row's references are read its verdict cannot say "no
+#: known exploit". 40 at the same spacing adds about four minutes a day and
+#: drains ~1,650 pre-existing rows in about six weeks.
+NVD_REFS_BATCH = 40
 #: Between requests. Above NVD's published unauthenticated floor with margin,
 #: because being rate-limited by a public feed is a way to get an IP blocked
 #: rather than a way to go faster.
@@ -418,6 +422,7 @@ def refresh_vectors(
     fetch: Callable[[str], object] = default_fetch_nvd,
     sleep: Callable[[float], None] = clock.sleep,
     limit: int = NVD_BATCH,
+    refs_limit: int = NVD_REFS_BATCH,
     now: Callable[[], datetime] = utcnow,
 ) -> int:
     """Look up base vectors for CVEs that do not have one yet.
@@ -448,10 +453,11 @@ def refresh_vectors(
     **References are a backfill, not a second vector lookup** (TheHub
     #60890). NVD's exploit-tagged references arrive in the same response, so
     a row whose vector was looked up before they were read is eligible once
-    more -- but only for them: at most `NVD_REFS_BATCH` per run, after every
-    first-time vector lookup, and without touching the row's vectors or
-    their stamps. It never counts as found, because found is what fans out
-    into an estate-wide environmental rescore.
+    more -- but only for them: at most `refs_limit` per run, beside the
+    vector budget rather than out of it so a full vector queue cannot starve
+    it, asked after the vector lookups, and without touching the row's
+    vectors or their stamps. It never counts as found, because found is what
+    fans out into an estate-wide environmental rescore.
     """
     from mykronos.exploitability import store_nvd_refs
 
@@ -470,14 +476,13 @@ def refresh_vectors(
         ).scalars()
     )
     refs_only: list[ThreatIntelMatch] = []
-    budget = min(NVD_REFS_BATCH, limit - len(pending))
-    if budget > 0:
+    if refs_limit > 0:
         refs_only = list(
             session.execute(
                 select(ThreatIntelMatch)
                 .where(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None))
                 .order_by(ThreatIntelMatch.cve_id)
-                .limit(budget)
+                .limit(refs_limit)
             ).scalars()
         )
     if not pending and not refs_only:

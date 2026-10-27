@@ -589,19 +589,40 @@ class TestRefsBackfill:
             session, fetch=lambda c: asked.append(c) or {}, sleep=lambda _: None, limit=1
         )
 
-        assert asked == ["CVE-2026-99999"]
+        assert asked[0] == "CVE-2026-99999"
 
-    def test_backfill_shares_the_run_budget(self, session) -> None:
-        for n in range(5):
-            session.add(self._known(f"CVE-2000-{n:05d}"))
+    def test_a_full_vector_queue_does_not_starve_the_backfill(self, session) -> None:
+        """Production had 3,603 never-looked rows at 20 a day: a backfill that
+        took only what the vectors left would not move for months, and every
+        scored row would read `not_checked` meanwhile (re-review of #1006)."""
         for n in range(3):
+            session.add(self._known(f"CVE-2000-{n:05d}"))
+        for n in range(10):
             session.add(ThreatIntelMatch(cve_id=f"CVE-2026-{n:05d}"))
         session.flush()
         asked: list[str] = []
 
-        threat_intel.refresh_vectors(
-            session, fetch=lambda c: asked.append(c) or {}, sleep=lambda _: None, limit=4
+        found = threat_intel.refresh_vectors(
+            session,
+            fetch=lambda c: asked.append(c) or _nvd_with_poc(V31_MOVED),
+            sleep=lambda _: None,
+            limit=4,
         )
 
-        assert asked[:3] == ["CVE-2026-00000", "CVE-2026-00001", "CVE-2026-00002"]
-        assert len(asked) == 4
+        assert asked == [
+            "CVE-2026-00000",
+            "CVE-2026-00001",
+            "CVE-2026-00002",
+            "CVE-2026-00003",
+            "CVE-2000-00000",
+            "CVE-2000-00001",
+            "CVE-2000-00002",
+        ]
+        # Four new vectors; the backfilled rows are not counted.
+        assert found == 4
+        for cve_id in ("CVE-2000-00000", "CVE-2000-00001", "CVE-2000-00002"):
+            row = session.get(ThreatIntelMatch, cve_id)
+            assert row is not None
+            assert row.nvd_refs_checked_at is not None
+            assert row.cvss_vector == V31
+            assert row.vector_checked_at == datetime(2026, 10, 1)
