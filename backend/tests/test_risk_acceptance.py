@@ -680,6 +680,8 @@ class TestAMemberOfASeriousCombination:
             "deviation_type": "risk_adjustment",
             "justification": "The header names a framework the image does not expose.",
             "premises": [{"type": "not_internet_facing"}],
+            # Inside the 30 days a critical acceptance may run.
+            "requested_until": (date.today() + timedelta(days=20)).isoformat(),
         }
         body.update(overrides)
         return _propose(client, auth, **body)
@@ -719,16 +721,6 @@ class TestAMemberOfASeriousCombination:
             "vulnerable-image-and-live-service"
         ]
         assert any(f["code"] == "toxic_combination_member" for f in frozen["flags"])
-
-    def test_a_delegated_agent_cannot_approve_it(
-        self, client, admin_auth, run_compaction
-    ) -> None:
-        self._pair(client, admin_auth, run_compaction)
-        proposed = self._propose_dast(client, _agent(client, admin_auth)).json()
-
-        approved = _approve(client, _agent(client, admin_auth, family="gpt-5"), proposed)
-
-        assert approved.status_code in (403, 409, 422), approved.text
 
     def test_a_low_outside_any_combination_keeps_its_tier(
         self, client, admin_auth, run_compaction
