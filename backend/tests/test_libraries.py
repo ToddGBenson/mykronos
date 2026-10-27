@@ -815,3 +815,79 @@ class TestTheCheckReadsTrue:
         assert len(outcome["summary"]) <= library_check.SUMMARY_LIMIT < 65_535
         assert "not shown" in outcome["summary"]
         assert len(outcome["results"]) == 2_000, "the record keeps every row"
+
+
+# -- Follow-up to PR #1010: a clean library needs a reviewer of another family ----
+
+
+class TestACleanLibraryNeedsAReviewerOfAnotherFamily:
+    """The `clean` tier lets a delegated agent approve, so it lists
+    `different_family` (operator decision 2026-10-23): a reviewer running the
+    requester's model lineage shares its blind spots about the package."""
+
+    def _clean_request_by_claude(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry
+    ) -> dict[str, Any]:
+        from tests.test_approvals import _bearer, _mint
+
+        registry.package("PYPI", "httpx", versions=[("0.27.0", 400)])
+        author = _bearer(_mint(client, admin_auth, family="claude-opus-5.5")["token"])
+        asked = _request(client, author)
+        assert asked.status_code == 201, asked.text
+        assert asked.json()["tier"] == "clean"
+        return asked.json()
+
+    def _delegate(self, client: TestClient, family: str) -> None:
+        from mykronos.db.models import Delegation
+
+        with client.app.state.db.session() as session:
+            session.add(Delegation(
+                granted_by="operator", grant_request_id="test", duty="library_approval",
+                tiers=["clean"], approver_families=[family], sampling=0.0,
+                expires_at=utcnow() + timedelta(days=1),
+            ))
+
+    def _review(self, client: TestClient, admin_auth: dict[str, str],
+                asked: dict[str, Any], family: str) -> Any:
+        from tests.test_approvals import _bearer, _platform_reviewer
+
+        reviewer = _bearer(_platform_reviewer(client, family))
+        approval_id = asked["approval_request_id"]
+        evidence = client.get(f"/api/approvals/{approval_id}/evidence", headers=admin_auth)
+        return client.post(
+            f"/api/approvals/{approval_id}/decisions",
+            json={
+                "verdict": "approve",
+                "rationale": "Vetting is clean and the reason names why urllib3 will not do.",
+                "evidence_digest": evidence.json()["evidence_digest"],
+            },
+            headers=reviewer,
+        )
+
+    def test_a_same_family_agent_cannot_approve(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry
+    ) -> None:
+        asked = self._clean_request_by_claude(client, admin_auth, registry)
+        self._delegate(client, "claude-sonnet-5")
+
+        response = self._review(client, admin_auth, asked, "claude-sonnet-5")
+
+        assert response.status_code == 409, response.text
+        assert "different_family" in response.json()["detail"]
+        with client.app.state.db.session() as session:
+            assert session.execute(select(LibraryEntry)).first() is None
+            assert session.get(ApprovalRequest, asked["approval_request_id"]).state == "pending"
+
+    def test_a_different_family_agent_can_approve(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry
+    ) -> None:
+        asked = self._clean_request_by_claude(client, admin_auth, registry)
+        self._delegate(client, "gpt-5")
+
+        response = self._review(client, admin_auth, asked, "gpt-5")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "approved"
+        with client.app.state.db.session() as session:
+            entry = session.execute(select(LibraryEntry)).scalar_one()
+            assert (entry.package_name, entry.status) == ("httpx", "approved")
