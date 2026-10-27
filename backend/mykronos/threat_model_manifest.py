@@ -484,13 +484,21 @@ async def sweep(db: Database, factory: GitHubClientFactory) -> SweepResult:
     """Sync every active onboarded repository. One failing never ends it."""
     result = SweepResult()
     with db.session() as session:
-        repos = [
+        # `int | None` although the column is NOT NULL today: the guard below
+        # must survive a nullable column, a fixture or a half-onboarded row.
+        repos: list[tuple[str, str, int | None]] = [
             (r.github_repo_full_name, r.default_branch or "main", r.github_installation_id)
             for r in session.scalars(
                 select(RepoOnboarding).where(RepoOnboarding.status == "active")
             )
         ]
     for name, branch, installation in repos:
+        if installation is None:
+            # Never `for_installation(None)`: no installation, nothing to read with.
+            result.reports.append(
+                SyncReport(name, "unreadable", "No GitHub installation to read the manifest with.")
+            )
+            continue
         result.reports.append(
             await sync_repo(db, factory.for_installation(installation), name, branch)
         )

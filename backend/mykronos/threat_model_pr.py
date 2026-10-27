@@ -36,7 +36,13 @@ a run whose proposal is byte-identical to what the open branch already holds
 changes nothing. A branch a person has edited is never overwritten: the
 description records the sha256 of the file MyKronos last committed, and a
 branch file that no longer hashes to it (or a description without the
-record) is `kept` as the reviewer left it.
+record) is `kept` as the reviewer left it. The description is a reviewer's
+too: the record also carries the hash of the description MyKronos wrote, and
+a description a person edited keeps their text on a later update, with only
+the record replaced and a dated line appended. (There is a window between
+the hash check and the commit in which a reviewer's push could be
+overwritten; for a weekly, off-by-default job that is accepted rather than
+locked against.)
 
 **Only a private repository is written to.** A threat model drafted from
 MyKronos evidence names routes, hostnames, published ports, controls and open
@@ -44,7 +50,17 @@ weaknesses: an exposure map. GitHub's own `visibility` is read before
 anything is written, and a repository that is public, internal, or whose
 visibility could not be read or was not reported is `refused`: no branch, no
 file, no description. The draft stays readable inside MyKronos
-(`GET /repos/{id}/threat-model/draft`).
+(`GET /repos/{id}/threat-model/draft`). A repository that turned public
+while a proposal was open is refused too, and the refusal names that pull
+request so a person can close it; the sweep audits every refusal.
+
+**Relation to TheHub's DEV-B `Threat-Model-MD:` trailer.** They are separate
+gates over different artifacts. The trailer is TheHub's own deploy check: a
+commit touching threat-relevant files must cite a hand-written threat-model
+markdown, or production deploy refuses. This module proposes changes to the
+machine-readable `.sdlc/threat-model.yaml` that MyKronos's risk engine reads;
+it neither writes nor satisfies the trailer, and a merged proposal is not a
+`Threat-Model-MD:` citation.
 """
 
 from __future__ import annotations
@@ -90,8 +106,12 @@ ProposalState = Literal[
 
 #: Recorded in the description: the hash of the file MyKronos committed, so
 #: a later run can tell its own proposal from a reviewer's edit of it.
-_PROPOSAL_MARK = "<!-- mykronos-threat-model-proposal sha256:{} -->"
-_PROPOSAL_MARK_RE = re.compile(r"<!-- mykronos-threat-model-proposal sha256:([0-9a-f]{64}) -->")
+#: `body:` is the hash of the description text MyKronos wrote above it; a
+#: record without one marks a description a person has edited.
+_PROPOSAL_MARK = "<!-- mykronos-threat-model-proposal sha256:{}{} -->"
+_PROPOSAL_MARK_RE = re.compile(
+    r"<!-- mykronos-threat-model-proposal sha256:([0-9a-f]{64})(?: body:([0-9a-f]{64}))? -->"
+)
 
 _TOP_KEY = re.compile(r"^([a-z_]+):")
 
@@ -297,6 +317,13 @@ def _md(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def _code(text: str) -> str:
+    """`text` as inline code, so an `@name` cannot mention a person and a
+    `#123` cannot cross-link an issue from the description."""
+    flat = " ".join(text.replace("`", "'").split())
+    return "`" + _md(flat) + "`" if flat else ""
+
+
 def pr_body(
     draft: tmd.Draft, elements: list[tmd.DraftElement], *, kind: Literal["draft", "drift"]
 ) -> str:
@@ -326,7 +353,7 @@ def pr_body(
     ]
     for element in elements:
         evidence = "<br>".join(
-            _md(
+            _code(
                 f"{e.source}: {e.detail}"
                 + (f" ({e.ref})" if e.ref else "")
                 + (f", {e.observed_at:%Y-%m-%d}" if e.observed_at else "")
@@ -349,7 +376,7 @@ def pr_body(
             "",
             f"{len(draft.uncited)} candidate(s) were seen but not drafted, because none "
             "of their evidence is a repository path or an https URL: "
-            + "; ".join(_md(label) for label, _ in draft.uncited[:10])
+            + "; ".join(_code(label) for label, _ in draft.uncited[:10])
             + ("; ..." if len(draft.uncited) > 10 else "")
             + ".",
         ]
@@ -366,6 +393,20 @@ def pr_body(
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _description_text(body: str) -> str:
+    """A description as hashed: line endings normalised (GitHub's editor
+    writes CRLF) and trailing space dropped."""
+    return body.replace("\r\n", "\n").rstrip()
+
+
+def _mark(content: str, description: str | None) -> str:
+    """The record of the committed file, and of the description while it is
+    still the one MyKronos wrote."""
+    return _PROPOSAL_MARK.format(
+        _sha256(content), f" body:{_sha256(description)}" if description is not None else ""
+    )
 
 
 async def repository_is_private(github: GitHubClient, repo_full_name: str) -> bool:
@@ -406,13 +447,23 @@ async def propose(
     # Before anything else, and before any body or file is built for
     # writing: threat and evidence detail goes only to a private repository.
     if not await repository_is_private(github, repo_full_name):
-        return Proposal(
-            repo_full_name,
-            "refused",
+        reason = (
             "The repository is not known to be private (public, internal, or its "
             "visibility could not be read), so no threat-model detail is written to "
-            "it. The draft stays readable in MyKronos.",
+            "it. The draft stays readable in MyKronos."
         )
+        # A read, never a write: a proposal opened while the repository was
+        # private is now readable by whoever can read the repository.
+        try:
+            open_pr = await github.find_open_pull_request(repo_full_name, BRANCH_PREFIX)
+        except Exception:  # noqa: BLE001 - the refusal stands either way
+            open_pr = None
+        if open_pr is not None:
+            reason += (
+                f" An open MyKronos threat-model proposal (#{open_pr.number}) is on it "
+                "and is not updated; review whether to close it."
+            )
+        return Proposal(repo_full_name, "refused", reason, pull_request=open_pr)
     try:
         current = await github.get_file(repo_full_name, MANIFEST_PATH, default_branch)
     except Exception as exc:  # noqa: BLE001 - GitHubError, httpx errors alike
@@ -460,9 +511,8 @@ async def propose(
         if kind == "draft"
         else f"MyKronos: threat-model drift - {len(elements)} addition(s)"
     )
-    body = "\n\n".join(
-        [pr_body(draft, elements, kind=kind), _PROPOSAL_MARK.format(_sha256(content))]
-    )
+    description = _description_text(pr_body(draft, elements, kind=kind))
+    body = "\n\n".join([description, _mark(content, description)])
     message = f"{title}\n\nDrafted from MyKronos evidence (TheHub #60899, #60900)."
     try:
         existing = await github.find_open_pull_request(repo_full_name, BRANCH_PREFIX)
@@ -491,6 +541,21 @@ async def propose(
                     added=_count(elements),
                     covered=covered,
                 )
+            assert live is not None
+            above = _description_text(live.body[: mark.start()])
+            if mark.group(2) is None or mark.group(2) != _sha256(above):
+                # A person edited the description: their text stands, the
+                # record is replaced, and a dated line says what changed.
+                counts = ", ".join(
+                    f"{n} {s.replace('_', ' ')}" for s, n in _count(elements).items() if n
+                )
+                kept = _description_text(
+                    above
+                    + f"\n\nMyKronos updated the proposed file on {moment:%Y-%m-%d}: it now "
+                    f"adds {counts or 'nothing new'}. The description was edited, so it "
+                    "was kept; each element's evidence is in its `# evidence` comments."
+                )
+                body = "\n\n".join([kept, _mark(content, None)])
             await github.commit_files(
                 repo_full_name,
                 existing.head_branch,
@@ -536,7 +601,7 @@ async def propose_for_repo(
     bundle = await tmd.gather(db, catalog, github, repo_full_name, default_branch)
     built = tmd.draft(bundle, now=utcnow())
     proposal = await propose(github, repo_full_name, default_branch, built)
-    if proposal.state in ("opened", "updated") or actor != DRAFT_ACTOR:
+    if proposal.state in ("opened", "updated", "refused") or actor != DRAFT_ACTOR:
         with db.session() as session:
             db.audit(
                 session,
