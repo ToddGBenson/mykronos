@@ -301,6 +301,7 @@ class TestFlashDm:
     def test_fires_once_for_each_exploited_or_critical_match(
         self, client: TestClient, settings: Settings
     ) -> None:
+        _seeded(client, settings)
         db = client.app.state.db
         notifier = RecordingNotifier()
 
@@ -357,6 +358,7 @@ class TestFlashDm:
     def test_something_to_send_without_slack_is_skipped_by_name(
         self, client: TestClient, settings: Settings
     ) -> None:
+        _seeded(client, settings)
         with pytest.raises(JobSkipped, match="MYKRONOS_SLACK_BOT_TOKEN"):
             asyncio.run(
                 briefing_flash.send_flashes(
@@ -368,6 +370,7 @@ class TestFlashDm:
     def test_an_undelivered_flash_is_retried(
         self, client: TestClient, settings: Settings
     ) -> None:
+        _seeded(client, settings)
         db = client.app.state.db
         with pytest.raises(briefing_flash.FlashUndeliveredError):
             asyncio.run(
@@ -377,6 +380,145 @@ class TestFlashDm:
                 )
             )
         assert briefing_flash.already_sent(db) == set()
+
+
+# --------------------------------------------------------------------------
+# The first run, and an item that comes back (review of #1009)
+# --------------------------------------------------------------------------
+
+
+def _quiet() -> wb.WeeklyPage:
+    return _page(findings=[])
+
+
+def _without(*finding_ids: str, **overrides: Any) -> wb.WeeklyPage:
+    rows = [r for r in _inputs().findings or [] if r["finding_id"] not in finding_ids]
+    return _page(findings=rows, **overrides)
+
+
+def _tick(
+    client: TestClient, settings: Settings, page: wb.WeeklyPage, notifier: RecordingNotifier
+) -> list[briefing_flash.Flash]:
+    return asyncio.run(
+        briefing_flash.send_flashes(
+            settings, db=client.app.state.db, read=_reader(page), notifier=notifier
+        )
+    )
+
+
+def _seeded(client: TestClient, settings: Settings) -> None:
+    """The first run, on an estate with nothing to flash: from here on a
+    flash is news."""
+    assert _tick(client, _configured(settings), _quiet(), RecordingNotifier()) == []
+
+
+ALL_FIVE = {
+    "advisory:CVE-2026-1000:urllib3",
+    "advisory:CVE-2026-2000:jinja2",
+    "advisory:CVE-2026-5000:pyyaml",
+    "advisory:CVE-2026-7000:openssl",
+    "malicious:MAL-2026-42:colourama",
+}
+
+
+class TestFirstRunSeeds:
+    def test_the_first_run_records_what_is_already_there_and_sends_nothing(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """Deploying the job must not DM every existing KEV/critical item."""
+        notifier = RecordingNotifier()
+        assert _tick(client, _configured(settings), _page(), notifier) == []
+        assert notifier.sent == []
+        assert {e.split("|", 1)[1] for e in briefing_flash.already_sent(client.app.state.db)} == (
+            ALL_FIVE
+        )
+        # The same page again: still nothing.
+        assert _tick(client, _configured(settings), _page(), notifier) == []
+        assert notifier.sent == []
+
+    def test_after_seeding_a_new_item_flashes(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        notifier = RecordingNotifier()
+        _tick(client, _configured(settings), _without("crit"), notifier)
+        sent = _tick(client, _configured(settings), _page(), notifier)
+        assert [f.key for f in sent] == ["advisory:CVE-2026-2000:jinja2"]
+        assert len(notifier.sent) == 1
+
+    def test_the_first_run_seeds_even_without_slack(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """Seeding comes before the configuration check, or configuring Slack
+        later would flash the whole estate at once."""
+        assert _tick(client, settings, _page(), RecordingNotifier()) == []
+        notifier = RecordingNotifier()
+        assert _tick(client, _configured(settings), _page(), notifier) == []
+        assert notifier.sent == []
+
+    def test_a_job_that_already_sent_is_not_reseeded(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """Guard: an estate where the job ran before this change has sent
+        flashes, so the next new item still flashes."""
+        db = client.app.state.db
+        with db.session() as session:
+            db.audit(
+                session,
+                actor="job:briefing-flash",
+                action=briefing_flash.ACTION,
+                entity_type="briefing_item",
+                entity_id=f"{REPO}|advisory:CVE-2026-1000:urllib3",
+            )
+        sent = _tick(client, _configured(settings), _page(), RecordingNotifier())
+        assert {f.key for f in sent} == ALL_FIVE - {"advisory:CVE-2026-1000:urllib3"}
+
+
+class TestARegressedItemFlashesAgain:
+    def test_fixed_then_back_flashes_again(self, client: TestClient, settings: Settings) -> None:
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        assert {f.key for f in _tick(client, _configured(settings), _page(), notifier)} == (
+            ALL_FIVE
+        )
+        # urllib3 is fixed: it leaves a section that read everything.
+        assert _tick(client, _configured(settings), _without("kev"), notifier) == []
+        # ...and regresses.
+        sent = _tick(client, _configured(settings), _page(), notifier)
+        assert [f.key for f in sent] == ["advisory:CVE-2026-1000:urllib3"]
+        assert len(notifier.sent) == 2
+
+    def test_an_item_missing_from_an_unread_section_is_not_cleared(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """Guard: KEV unreadable makes the advisories section partial and
+        urllib3 stops being a flash; that is not a fix, and when KEV reads
+        again it must not flash a second time."""
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        _tick(client, _configured(settings), _page(), notifier)
+        assert _tick(client, _configured(settings), _page(intel=None), notifier) == []
+        assert _tick(client, _configured(settings), _page(), notifier) == []
+        assert len(notifier.sent) == 1
+
+    def test_a_vanished_application_is_not_cleared(
+        self, client: TestClient, settings: Settings
+    ) -> None:
+        """Guard: a page missing from the briefing says nothing about its items."""
+        _seeded(client, settings)
+        notifier = RecordingNotifier()
+        _tick(client, _configured(settings), _page(), notifier)
+        empty = WeeklyBriefingOut(generated_at=NOW, week_of=MONDAY, pages=[])
+
+        async def read() -> WeeklyBriefingOut:
+            return empty
+
+        asyncio.run(
+            briefing_flash.send_flashes(
+                _configured(settings), db=client.app.state.db, read=read, notifier=notifier
+            )
+        )
+        assert _tick(client, _configured(settings), _page(), notifier) == []
+        assert len(notifier.sent) == 1
 
 
 # --------------------------------------------------------------------------
