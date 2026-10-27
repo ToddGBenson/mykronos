@@ -1278,6 +1278,9 @@ class DashboardQueries:
         pool = self._finding_rows(
             repo_full_name, columns, statuses, capabilities=CORRELATION_CAPABILITIES
         )
+        # A 90022 counts only on its evidence (TheHub #61014); the verdict is
+        # read without putting raw output on the rows.
+        correlate.attach_disclosure_evidence(pool, self.catalog.query)
         combinations = correlate.detect(pool)
         by_id = {str(f["finding_id"]): f for f in pool}
         kev_cves: set[str] = set()

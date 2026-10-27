@@ -118,15 +118,18 @@ def _escalate_steps() -> int:
         return 1
 
 
-def _repo_combinations(repo: str) -> list[dict[str, Any]]:
+def _repo_combinations(
+    repo: str, *, catalog: Catalog | None = None, db: Any = None
+) -> list[dict[str, Any]]:
     """Every open toxic combination in `repo`, as the risk decision sees it.
     Raises when detection cannot run."""
     from mykronos import toxic
 
-    catalog = _catalog()
+    catalog = catalog if catalog is not None else _catalog()
+    db = db if db is not None else _DB
     steps = _escalate_steps()
-    if _DB is not None:
-        with _DB.session() as session:
+    if db is not None:
+        with db.session() as session:
             combos = toxic.detect(catalog, repo=repo, session=session, escalate_steps=steps)
     else:
         combos = toxic.detect(catalog, repo=repo, escalate_steps=steps)
@@ -144,13 +147,19 @@ def _repo_combinations(repo: str) -> list[dict[str, Any]]:
 
 def governing_severities(
     rows: list[dict[str, Any]],
+    *,
+    catalog: Catalog | None = None,
+    db: Any = None,
 ) -> dict[str, tuple[str, list[dict[str, str]]]]:
     """finding id -> (governing severity, the combinations that raised it).
 
     The governing severity is the finding's own, raised to the worst open
     combination it is a member of; detection runs once per repository.
     Detection that cannot run answers `critical`, so an agent is sent to the
-    governed route rather than let through on a guess."""
+    governed route rather than let through on a guess.
+
+    `catalog` and `db` default to what `bind` was given; a caller that holds
+    its own (a risk acceptance's proposal) passes them."""
     out: dict[str, tuple[str, list[dict[str, str]]]] = {}
     by_repo: dict[str, list[dict[str, Any]] | None] = {}
     for row in rows:
@@ -159,7 +168,7 @@ def governing_severities(
         repo = str(row.get("repo_full_name") or "")
         if repo and repo not in by_repo:
             try:
-                by_repo[repo] = _repo_combinations(repo)
+                by_repo[repo] = _repo_combinations(repo, catalog=catalog, db=db)
             except Exception:  # noqa: BLE001 - fail closed; logged for the operator
                 logger.exception("Toxic detection failed for %s; governing as critical.", repo)
                 by_repo[repo] = None

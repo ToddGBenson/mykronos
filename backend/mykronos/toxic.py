@@ -122,7 +122,11 @@ def _pool(catalog: Catalog, repo: str | None) -> list[dict[str, Any]]:
         f"FROM findings WHERE {where}",
         params,
     )
-    return [dict(zip(_COLUMNS, row, strict=True)) for row in rows]
+    pool = [dict(zip(_COLUMNS, row, strict=True)) for row in rows]
+    # A 90022 counts only on its evidence, which this pool does not select
+    # (TheHub #61014).
+    correlate.attach_disclosure_evidence(pool, catalog.query)
+    return pool
 
 
 def _kev_ids(session: Session | None, findings: list[dict[str, Any]]) -> set[str]:

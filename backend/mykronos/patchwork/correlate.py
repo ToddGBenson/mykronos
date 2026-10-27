@@ -23,11 +23,16 @@ same request path produce two draft PRs that cannot both merge cleanly.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 from mykronos.threat_intel import extract_cve
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,136 @@ DISCLOSURE_CLASS_DAST_RULES: tuple[str, ...] = (
     "10061",  # X-AspNet-Version Response Header
     "90022",  # Application Error Disclosure
 )
+
+#: Listed alerts whose number alone does not show a disclosure (TheHub
+#: #61014). ZAP raises 90022 "Application Error Disclosure" for a generic 500
+#: body ("An internal error occurred") as readily as for a stack trace, so a
+#: 90022 qualifies only when its evidence shows a stack trace, a framework or a
+#: version string. Evidence that cannot be read qualifies: the gate drops
+#: findings shown to be generic, not findings nobody could read.
+EVIDENCE_GATED_DAST_RULES: tuple[str, ...] = ("90022",)
+
+#: The pool key holding what `disclosure_shown` found, set on a pool read
+#: without the raw record (`attach_disclosure_evidence`).
+DISCLOSURE_EVIDENCE_KEY = "disclosure_evidence"
+
+#: What, in an error page, says what the service runs. Each kind is searched
+#: on its own so the reason can quote what was found.
+_STACK_TRACE = re.compile(
+    r"Traceback \(most recent call last\)"
+    r'|File "[^"\n]+", line \d+'
+    r"|\bat [\w$.<>]+\([\w$.-]+\.(?:java|kt|scala|groovy|js|mjs|cjs|ts):\d+(?::\d+)?\)"
+    r"|\bin [^\s:]+\.(?:cs|vb):line \d+"
+    r"|\.php on line \d+"
+    r'|Exception in thread "[^"\n]*"'
+    r"|\bstack ?trace\b",
+    re.IGNORECASE,
+)
+#: `Product/1.2.3` or `version 1.2`, never the status line's `HTTP/1.1`.
+_VERSION_STRING = re.compile(
+    r"\b(?!HTTP/)[A-Za-z][\w.+-]*/v?\d+(?:\.\d+)+\b|\bversion:?\s*v?\d+(?:\.\d+)+",
+    re.IGNORECASE,
+)
+#: Proper names, matched case-sensitively so ordinary words ("spring",
+#: "express") in a generic message do not count.
+_FRAMEWORK = re.compile(
+    r"\b(?:Werkzeug|Django|Flask|FastAPI|Starlette|uvicorn|gunicorn|Express|Node\.js|"
+    r"Next\.js|Spring(?: Boot)?|Tomcat|Jetty|JBoss|WildFly|WebLogic|WebSphere|Struts|"
+    r"Laravel|Symfony|Ruby on Rails|ASP\.NET|Kestrel|Microsoft-IIS|Microsoft OLE DB|"
+    r"ODBC|JDBC|SQLSTATE|Hibernate|SQLAlchemy|psycopg2?|PostgreSQL|MySQL|MariaDB|"
+    r"SQLite|ORA-\d{5}|PHP|nginx|Apache)\b"
+)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def disclosure_text(raw: Any) -> str | None:
+    """The text of a ZAP finding's evidence: the instance's `evidence` and
+    `otherinfo`, and the alert's `otherinfo`. None when there is none to read:
+    no record, a record that is not JSON, or one with no evidence field."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    instance = raw.get("instance")
+    instance = instance if isinstance(instance, dict) else {}
+    parts = (instance.get("evidence"), instance.get("otherinfo"), raw.get("otherinfo"))
+    texts = [_TAG.sub(" ", p) for p in parts if isinstance(p, str) and p.strip()]
+    return "\n".join(texts) if texts else None
+
+
+def disclosure_shown(text: str | None) -> str | None:
+    """What in `text` discloses the stack, quoted; "" when the text shows
+    nothing; None when there was no text to read."""
+    if text is None:
+        return None
+    found = []
+    for pattern in (_STACK_TRACE, _VERSION_STRING, _FRAMEWORK):
+        hit = pattern.search(text)
+        if hit is not None:
+            found.append(f"`{hit.group(0).strip()[:80]}`")
+    return ", ".join(found)
+
+
+def needs_disclosure_evidence(finding: dict[str, Any]) -> bool:
+    """Whether `finding` is a DAST alert that qualifies only on its evidence."""
+    return (
+        str(finding.get("capability", "")) == "dast"
+        and _alert_ref(str(finding.get("rule_id", ""))) in EVIDENCE_GATED_DAST_RULES
+    )
+
+
+def attach_disclosure_evidence(
+    pool: list[dict[str, Any]],
+    query: Callable[[str, Sequence[Any]], Any],
+) -> None:
+    """Read the evidence of each evidence-gated alert in a pool fetched
+    without the raw record, and set `DISCLOSURE_EVIDENCE_KEY` on its row.
+
+    Only the verdict is kept on the row, never the evidence: the pools that
+    need this are listings, and raw output stays off them. A read that fails
+    leaves the rows unread, and an unread row qualifies (fail closed)."""
+    ids = [
+        str(f["finding_id"])
+        for f in pool
+        if needs_disclosure_evidence(f)
+        and DISCLOSURE_EVIDENCE_KEY not in f
+        and "raw_finding_json" not in f
+    ]
+    if not ids:
+        return
+    raw_by_id: dict[str, Any] = {}
+    try:
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            rows = query(
+                "SELECT finding_id, raw_finding_json FROM findings "
+                f"WHERE finding_id IN ({', '.join('?' for _ in chunk)})",
+                chunk,
+            )
+            raw_by_id.update({str(r[0]): r[1] for r in rows})
+    except Exception:  # noqa: BLE001 - unread evidence qualifies; logged
+        logger.exception("Could not read DAST evidence; those alerts count as disclosure.")
+        return
+    wanted = set(ids)
+    for f in pool:
+        finding_id = str(f["finding_id"])
+        if finding_id in wanted:
+            f[DISCLOSURE_EVIDENCE_KEY] = disclosure_shown(
+                disclosure_text(raw_by_id.get(finding_id))
+            )
+
+
+def _evidence_verdict(finding: dict[str, Any]) -> str | None:
+    """`disclosure_shown` for this finding, from the attached verdict or the
+    raw record it carries."""
+    if DISCLOSURE_EVIDENCE_KEY in finding:
+        value = finding[DISCLOSURE_EVIDENCE_KEY]
+        return value if isinstance(value, str) else None
+    return disclosure_shown(disclosure_text(finding.get("raw_finding_json")))
+
 
 #: Human dispositions under which a finding no longer counts toward any
 #: combination (TheHub #60965, superseding the 2026-09-28 decision that
@@ -448,6 +583,15 @@ def _qualifies(requirement: Requirement, finding: dict[str, Any]) -> str | None:
         if ref is None or ref not in requirement.rule_ids:
             return None
         how = f"alert {ref} is on the configured disclosure-class list"
+        if ref in EVIDENCE_GATED_DAST_RULES:
+            shown = _evidence_verdict(finding)
+            if shown == "":
+                return None
+            how += (
+                "; its evidence is unreadable, so it counts (fail closed)"
+                if shown is None
+                else f"; its evidence shows {shown}"
+            )
     else:
         haystack = f"{rule_id} {finding.get('title', '')}"
         hit = re.search(requirement.pattern, haystack, re.IGNORECASE)
