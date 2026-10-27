@@ -121,7 +121,13 @@ MAX_ROUTES_SHOWN = 5
 MAX_ELEMENTS_PER_SECTION = 200
 
 _KEY_BAD = re.compile(r"[^a-z0-9_.-]+")
-_COMMENT_BAD = re.compile(r"[\r\n\t]+")
+#: Everything that could end a `#` comment or make a YAML reader refuse the
+#: file: every line break YAML recognises (CR, LF, and in YAML 1.1 also NEL
+#: U+0085, LS U+2028 and PS U+2029), tab, the rest of C0, DEL, C1 and the BOM.
+#: Record text (finding titles, DAST URIs, endpoint URLs) is rendered into
+#: comments of a file committed to the target repository, so one surviving
+#: break would let a crafted value add keys nobody observed (#1008 review).
+_COMMENT_BAD = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff]+")
 
 
 # --------------------------------------------------------------------------
@@ -265,8 +271,15 @@ def _unique(key: str, taken: set[str]) -> str:
 
 
 def _one_line(text: str, limit: int = 200) -> str:
+    """`text` as one line that cannot end the comment it is rendered into."""
     flat = _COMMENT_BAD.sub(" ", str(text)).strip()
     return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
+def _comment(line: str) -> str:
+    """A whole comment line flattened once more, so no interpolated value,
+    whatever its source, can end it."""
+    return _COMMENT_BAD.sub(" ", line)
 
 
 def _when(value: Any) -> datetime | None:
@@ -867,8 +880,10 @@ _SEVERITY = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 def _evidence_comment(evidence: Evidence, indent: str) -> str:
     when = f" ({evidence.observed_at:%Y-%m-%d})" if evidence.observed_at else ""
-    ref = f" [{evidence.ref}]" if evidence.ref else ""
-    return f"{indent}# evidence ({evidence.source}): {_one_line(evidence.detail)}{ref}{when}"
+    ref = f" [{_one_line(evidence.ref, 512)}]" if evidence.ref else ""
+    return indent + _comment(
+        f"# evidence ({evidence.source}): {_one_line(evidence.detail)}{ref}{when}"
+    )
 
 
 def render_element(element: DraftElement, draft: Draft | None = None) -> str:
@@ -878,9 +893,12 @@ def render_element(element: DraftElement, draft: Draft | None = None) -> str:
     for threat in (draft.threats if draft else []):
         if threat.element_id == element.id:
             lines.append(
-                f"  # threat ({'/'.join(threat.stride)}, {threat.resolution}): "
-                f"{threat.weakness} x{threat.findings} {threat.severity} - "
-                f"{_one_line(threat.title, 100)}"
+                "  "
+                + _comment(
+                    f"# threat ({'/'.join(threat.stride)}, {threat.resolution}): "
+                    f"{threat.weakness} x{threat.findings} {threat.severity} - "
+                    f"{_one_line(threat.title, 100)}"
+                )
             )
     dumped = yaml.safe_dump(
         [element.body], sort_keys=False, default_flow_style=False, allow_unicode=True, width=100
@@ -893,7 +911,7 @@ def render(draft: Draft) -> str:
     """The draft as `.sdlc/threat-model.yaml` text, comments included."""
     stamp = f"{draft.generated_at:%Y-%m-%d %H:%M} UTC" if draft.generated_at else "now"
     out = [
-        f"# {draft.repo_full_name}'s threat model, drafted by MyKronos from its own",
+        _comment(f"# {draft.repo_full_name}'s threat model, drafted by MyKronos from its own"),
         f"# evidence on {stamp} (TheHub #60899). Every element below names the",
         "# records it was drafted from as `# evidence` comments; `evidence_ref` is",
         "# the first one that is a path in this repository or an https URL.",
@@ -904,9 +922,11 @@ def render(draft: Draft) -> str:
     ]
     if draft.unread:
         out.append(
-            "# Not read while drafting (so absent here, not proven absent): "
-            + ", ".join(draft.unread)
-            + "."
+            _comment(
+                "# Not read while drafting (so absent here, not proven absent): "
+                + ", ".join(draft.unread)
+                + "."
+            )
         )
     out += ["", "version: 1"]
     for name in SECTIONS:
@@ -924,9 +944,11 @@ def render(draft: Draft) -> str:
     if unplaced:
         out += ["", "# Threats no drafted element covers (findings mapped CWE -> STRIDE):"]
         out += [
-            f"#   {'/'.join(t.stride)} ({t.resolution}): {t.weakness} x{t.findings} "
-            f"{t.severity} - {_one_line(t.title, 100)}"
-            + (f" [{t.ref}]" if t.ref else "")
+            _comment(
+                f"#   {'/'.join(t.stride)} ({t.resolution}): {t.weakness} x{t.findings} "
+                f"{t.severity} - {_one_line(t.title, 100)}"
+                + (f" [{_one_line(t.ref, 512)}]" if t.ref else "")
+            )
             for t in unplaced
         ]
     if draft.uncited:
