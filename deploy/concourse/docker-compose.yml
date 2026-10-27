@@ -66,8 +66,30 @@ x-worker: &worker
   depends_on:
     concourse:
       condition: service_healthy
+  # The workers share a Docker VM (14 CPUs, 11.68 GiB on 2026-10-26) with
+  # TheHub's production backend, and a task's own container_limits cannot
+  # protect production: its cgroup is nested inside this container, so its
+  # weight only ranks it against sibling tasks (D-174, TheHub #61009).
+  # Precedence is set here, on the sibling of `thehub-backend`:
+  #
+  # - cpu_shares 256 is cpu.weight 35 against production's 100 (174 with
+  #   TheHub #539's 2048). Work-conserving: an idle VM still gives CI all
+  #   six CPUs; it only decides who waits when the CPUs are contended.
+  # - oom_score_adj 500 is inherited by every task process (garden sets
+  #   none of its own), so if the VM runs out of memory its OOM killer
+  #   takes a test run, not a uvicorn worker.
+  # - mem_limit 5g, not 6g: both workers had peaked at their full 6g, so CI
+  #   alone could claim 12 GiB of an 11.68 GiB VM. memswap_limit equal to
+  #   it, because Docker's default lets each worker add as much swap again,
+  #   and swap was at 52-67% during the 2026-10-23 outage (#36488).
+  #
+  # Changing these needs the workers recreated; `docker update --cpu-shares`
+  # applies the CPU half live. Held by backend/tests/test_thehub_task_limits.py.
   cpus: 6
-  mem_limit: 6g
+  cpu_shares: 256
+  mem_limit: 5g
+  memswap_limit: 5g
+  oom_score_adj: 500
   environment: &worker-env
     CONCOURSE_TSA_HOST: concourse:2222
     CONCOURSE_TSA_PUBLIC_KEY: /keys/tsa_host_key.pub
