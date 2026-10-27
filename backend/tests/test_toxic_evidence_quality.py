@@ -223,3 +223,144 @@ class TestTheSharedAnswer:
         run_compaction()
 
         assert toxic.detect(catalog, repo=REPO) == []
+
+
+def _error_disclosure(fid: str, raw: Any) -> dict[str, Any]:
+    row = finding(
+        fid, "ZAP-90022-CWE-550", "dast",
+        title="Application Error Disclosure at GET /api/orders", severity="low",
+    )
+    row["raw_finding_json"] = raw
+    return row
+
+
+class TestErrorDisclosureNeedsEvidence:
+    """ZAP 90022 fires on any error page (TheHub #61014).
+
+    "Application Error Disclosure" is raised for a generic 500 body as readily
+    as for a stack trace, so the alert number alone does not show that the
+    service disclosed what it runs. A 90022 counts as the disclosure half only
+    when its evidence shows a stack trace, a framework or a version string;
+    evidence that cannot be read counts (fail closed)."""
+
+    @pytest.mark.parametrize(
+        "evidence",
+        [
+            "An internal error occurred",
+            "HTTP/1.1 500 Internal Server Error",
+            "<p>Something went wrong. Please try again later.</p>",
+        ],
+    )
+    def test_a_generic_error_body_does_not_qualify(self, evidence: str) -> None:
+        dast = _error_disclosure("d1", {"instance": {"uri": "/", "evidence": evidence}})
+
+        assert correlate.detect([CVE, dast], rules=(VULNERABLE_IMAGE,)) == [], evidence
+
+    @pytest.mark.parametrize(
+        ("raw", "shown"),
+        [
+            (
+                {"instance": {"evidence": 'Traceback (most recent call last):\n  File '
+                              '"/app/orders.py", line 41, in get_order'}},
+                "Traceback",
+            ),
+            (
+                {"instance": {"evidence": "at com.acme.Orders.get(Orders.java:41)"}},
+                "Orders.java:41",
+            ),
+            ({"instance": {"evidence": "Werkzeug Debugger"}}, "Werkzeug"),
+            ({"instance": {"evidence": "nginx/1.18.0"}}, "nginx/1.18.0"),
+            (
+                {"instance": {"evidence": "500"}, "otherinfo": "<p>Django version 3.2.4</p>"},
+                "Django",
+            ),
+        ],
+    )
+    def test_a_stack_trace_framework_or_version_qualifies(
+        self, raw: dict[str, Any], shown: str
+    ) -> None:
+        dast = _error_disclosure("d1", raw)
+
+        combos = correlate.detect([CVE, dast], rules=(VULNERABLE_IMAGE,))
+
+        assert [c.finding_ids for c in combos] == [frozenset({"c1", "d1"})]
+        why = dict(combos[0].qualifications)["d1"]
+        assert shown in why and "evidence" in why
+
+    @pytest.mark.parametrize("raw", [None, "{not json", {}, {"instance": {"evidence": ""}}])
+    def test_unreadable_evidence_qualifies(self, raw: Any) -> None:
+        """Fail closed: evidence nobody can read is not evidence of absence."""
+        dast = _error_disclosure("d1", raw)
+
+        combos = correlate.detect([CVE, dast], rules=(VULNERABLE_IMAGE,))
+
+        assert len(combos) == 1
+        assert "unreadable" in dict(combos[0].qualifications)["d1"]
+
+    def test_other_listed_alerts_need_no_evidence(self) -> None:
+        """10037 is a header naming the stack: the alert itself is the evidence."""
+        dast = finding("d1", "ZAP-10037-CWE-497", "dast", severity="low")
+        dast["raw_finding_json"] = {"instance": {"evidence": "An internal error occurred"}}
+
+        assert len(correlate.detect([CVE, dast], rules=(VULNERABLE_IMAGE,))) == 1
+
+
+class TestErrorDisclosureThroughTheLake:
+    """The risk decision reads its pool from the lake, which carries the raw
+    record; the pool must read the 90022 evidence or every one would count."""
+
+    @staticmethod
+    def _seed(client, run_compaction, evidence: str) -> None:
+        import uuid
+
+        from tests.conftest import dependency_finding, issue_token
+
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'atlas', 'dast')}"}
+        for capability, payload in (
+            ("atlas", dependency_finding(severity="high")),
+            (
+                "dast",
+                finding_payload(
+                    rule_id="ZAP-90022-CWE-550",
+                    title="Application Error Disclosure at GET /api/orders",
+                    severity="low", file_path=None, line_start=None, line_end=None,
+                    symbol=None, code_snippet=None,
+                    raw_finding_json={
+                        "pluginid": "90022",
+                        "instance": {"uri": "/api/orders", "method": "GET",
+                                     "evidence": evidence},
+                    },
+                ),
+            ),
+        ):
+            run = str(uuid.uuid4())
+            post_scan(client, auth, scan_run_id=run, capability=capability)
+            response = post_findings(
+                client, auth, [payload], scan_run_id=run, capability=capability
+            )
+            assert response.status_code in (200, 201), response.text
+        run_compaction()
+
+    def test_a_generic_500_forms_no_combination(
+        self, client, admin_auth, run_compaction, catalog
+    ) -> None:
+        self._seed(client, run_compaction, "An internal error occurred")
+
+        assert toxic.detect(catalog, repo=REPO) == []
+        api = client.get("/api/dashboard/toxic-combinations", headers=admin_auth).json()
+        assert api["combinations"] == []
+        from mykronos.dashboard import DashboardQueries
+
+        page = DashboardQueries(catalog).open_findings(REPO)
+        assert page["toxic_combinations"] == []
+
+    def test_a_stack_trace_forms_it(self, client, admin_auth, run_compaction, catalog) -> None:
+        self._seed(
+            client, run_compaction,
+            'Traceback (most recent call last):\n  File "/app/orders.py", line 41',
+        )
+
+        combos = toxic.detect(catalog, repo=REPO)
+
+        assert [c.rule_id for c in combos] == ["vulnerable-image-and-live-service"]
+        assert any("Traceback" in m["qualifies"] for m in combos[0].members)
