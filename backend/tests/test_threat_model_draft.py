@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -23,6 +24,7 @@ from mykronos import threat_model_draft as tmd
 from mykronos import threat_model_pr as tpr
 from mykronos.db.models import AuditLogEntry, PublicEndpoint
 from mykronos.github import FakeGitHubClient
+from mykronos.github.client import GitHubError
 from mykronos.threat_model_manifest import MANIFEST_PATH, parse_manifest
 from tests.conftest import REPO, issue_token, post_findings, post_scan
 from tests.test_onboarding import onboard
@@ -597,3 +599,167 @@ class TestApi:
         )
 
         assert r.status_code == 403
+
+
+# --------------------------------------------------------------------------
+# Rework of #1008 after review
+# --------------------------------------------------------------------------
+
+#: Every call that writes to the target repository.
+_WRITES = {"create_branch", "commit_files", "create_pull_request", "update_pull_request"}
+
+
+def _writes(github: FakeGitHubClient) -> list[tuple[str, str]]:
+    return [c for c in github.calls if c[0] in _WRITES]
+
+
+class TestVisibility:
+    """[High] Threat and evidence detail is written only to a repository
+    GitHub says is private. Public, internal, unreported or unreadable
+    visibility writes nothing: no branch, no file, no body."""
+
+    @pytest.mark.parametrize("visibility", ["public", "internal", None])
+    def test_a_repository_not_known_private_gets_nothing_written(
+        self, visibility: str | None
+    ) -> None:
+        github = _github()
+        github.repos[REPO].visibility = visibility  # type: ignore[attr-defined]
+
+        proposal = _propose(github, tmd.draft(_bundle(), now=NOW))
+
+        assert proposal.state == "refused", proposal
+        assert _writes(github) == []
+        assert github.pull_request_bodies == {}
+        assert list(github.repos[REPO].branches) == ["main"]
+        # The reason names no host, address or finding.
+        assert "example.net" not in proposal.reason
+
+    def test_unreadable_visibility_writes_nothing(self) -> None:
+        github = _github()
+
+        async def broken(repo_full_name: str) -> dict[str, Any]:
+            raise GitHubError("boom", status=502)
+
+        github.get_repo = broken  # type: ignore[method-assign]
+
+        proposal = _propose(github, tmd.draft(_bundle(), now=NOW))
+
+        assert proposal.state == "refused"
+        assert _writes(github) == []
+
+    def test_a_repository_made_public_keeps_its_open_proposal_unchanged(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.state == "opened", first.reason
+        held = _branch_file(github, first)
+        github.repos[REPO].visibility = "public"  # type: ignore[attr-defined]
+        github.calls.clear()
+        more = _bundle()
+        assert more.endpoints is not None
+        more.endpoints.append(
+            {"url": "https://admin.example.net/", "last_status": "open", "label": ""}
+        )
+
+        later = _propose(github, tmd.draft(more, now=NOW))
+
+        assert later.state == "refused"
+        assert _writes(github) == []
+        assert _branch_file(github, first) == held
+
+    def test_the_route_refuses_a_public_repository(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        repo_id = _seed(client, admin_auth)
+        github.repos[REPO].visibility = "public"  # type: ignore[attr-defined]
+        github.calls.clear()
+
+        r = client.post(
+            f"/api/dashboard/repos/{repo_id}/threat-model/draft/pull-request",
+            headers=admin_auth,
+        )
+
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] == "refused"
+        assert _writes(github) == []
+        assert github.repos[REPO].pull_requests == []
+
+
+class TestReviewerEdits:
+    """[Medium] A person's edits on the proposal branch are never overwritten
+    by a later run."""
+
+    def test_reviewer_edits_on_the_branch_are_kept(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.state == "opened", first.reason
+        assert first.pull_request is not None
+        branch = first.pull_request.head_branch
+        edited = _branch_file(github, first) + "# Reviewed: the demo port is retired." + chr(10)
+        github.repos[REPO].branches[branch][MANIFEST_PATH] = edited
+        github.calls.clear()
+        more = _bundle()
+        assert more.endpoints is not None
+        more.endpoints.append(
+            {"url": "https://admin.example.net/", "last_status": "open", "label": ""}
+        )
+
+        later = _propose(github, tmd.draft(more, now=NOW))
+
+        assert later.state == "kept", later
+        assert github.repos[REPO].branches[branch][MANIFEST_PATH] == edited
+        assert [c for c in github.calls if c[0] == "commit_files"] == []
+
+    def test_an_unedited_proposal_is_still_updated(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.state == "opened", first.reason
+        more = _bundle()
+        assert more.endpoints is not None
+        more.endpoints.append(
+            {"url": "https://admin.example.net/", "last_status": "open", "label": ""}
+        )
+
+        later = _propose(github, tmd.draft(more, now=NOW))
+
+        assert later.state == "updated", later
+        assert "ep-admin.example.net" in _branch_file(github, first)
+
+
+class _Rows:
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = rows
+
+    def __enter__(self) -> _Rows:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def scalars(self, _query: Any) -> list[Any]:
+        return self.rows
+
+
+class TestSweep:
+    """[Low] A repository with no GitHub installation is skipped, never handed
+    to `for_installation(None)`."""
+
+    def test_no_installation_is_skipped_not_passed_as_none(self) -> None:
+        from types import SimpleNamespace
+
+        row = SimpleNamespace(
+            github_repo_full_name=REPO, default_branch="main", github_installation_id=None
+        )
+        db = SimpleNamespace(session=lambda: _Rows([row]))
+        asked: list[Any] = []
+
+        class Factory:
+            def for_installation(self, installation_id: int) -> FakeGitHubClient:
+                asked.append(installation_id)
+                if installation_id is None:
+                    raise TypeError("installation_id is None")
+                return _github()
+
+        result = asyncio.run(tpr.sweep(db, None, Factory()))
+
+        assert asked == []
+        assert [p.state for p in result.proposals] == ["unreadable"]
