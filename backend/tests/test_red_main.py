@@ -275,6 +275,55 @@ class TestRedToGreen:
         assert f"It went red at build 460, commit {sha(3)[:12]}" in body
 
 
+class TestRedGreenRedBetweenPolls:
+    """Red, then green, then red again, all between two polls (review of #1013).
+
+    The poll only sees red then red, but Concourse's `transition_build` has
+    moved: it is a newer red build than the one the lane went red at, so a
+    green build came in between and this is a new red, with a new culprit.
+    """
+
+    #: unit #462 ran sha(4) and passed; #463 ran sha(5) and failed.
+    LATER = [
+        (sha(5), "feat: a second, different break", [ib("unit", 463, "failed")]),
+        (sha(4), "fix: unit green again", [ib("unit", 462, "succeeded")]),
+        *HISTORY,
+    ]
+
+    async def test_a_new_red_is_announced_with_its_own_commit(self, db: Any) -> None:
+        notifier = Recorder()
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 461, transition=460)), HISTORY
+        )[0], notifier)
+        assert len(notifier.sent) == 1
+
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 463, transition=463)), self.LATER
+        )[0], notifier, now=NOW + timedelta(minutes=5))
+
+        assert len(notifier.sent) == 2, "the second red is news"
+        body = "\n".join(notifier.sent[1].lines)
+        assert f"First failing commit: {sha(5)[:12]} feat: a second, different break" in body
+        assert f"Last green: {sha(4)[:12]} (build 462)" in body
+        state = jobs.load_lane_states(db)[(REPO, "unit")]
+        assert state.first_bad_build == "463"
+        assert state.first_bad_sha == sha(5)
+
+    async def test_the_same_red_episode_is_still_silent(self, db: Any) -> None:
+        """Guard: an unchanged transition build is the same red, sent once."""
+        notifier = Recorder()
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 461, transition=460)), HISTORY
+        )[0], notifier)
+
+        history = [(sha(5), "later", [ib("unit", 463, "failed")]), *HISTORY]
+        await poll(db, fake_concourse(
+            all_green(unit=_job("unit", "failed", 463, transition=460)), history
+        )[0], notifier, now=NOW + timedelta(minutes=5))
+
+        assert len(notifier.sent) == 1
+
+
 class TestUnresolvedCommit:
     async def test_a_build_outside_the_window_says_commit_unknown(self, db: Any) -> None:
         notifier = Recorder()
@@ -325,6 +374,39 @@ class TestTheTestTotals:
         [note] = notifier.sent
         assert "Tests: 3 of 120 tests failed." in note.lines
         assert asked == [(REPO, sha(3), "unit")]
+
+    async def test_a_failed_lookup_still_announces_every_red_lane(self, db: Any) -> None:
+        """A lake error must not abort the poll (review of #1013).
+
+        Both red lanes are announced, the message says the lookup failed
+        rather than claiming no report was uploaded, the reds are recorded
+        so they are not sent twice, and the run is marked incomplete.
+        """
+        notifier = Recorder()
+
+        def broken(repo: str, commit: str, lane: str) -> red_main.TestTotals | None:
+            raise OSError("lake unreachable at http://lake.internal:9000")
+
+        fetch, _ = fake_concourse(
+            all_green(unit=_job("unit", "failed", 460),
+                      **{"pin-check": _job("pin-check", "failed", 328)}),
+            HISTORY,
+        )
+        with pytest.raises(jobs.RedMainIncompleteError, match="test totals unreadable"):
+            await poll(db, fetch, notifier, tests=broken)
+
+        assert sorted(n.title for n in notifier.sent) == [
+            f"Red on main: {REPO} pin-check", f"Red on main: {REPO} unit",
+        ]
+        for note in notifier.sent:
+            assert "Tests: the test report lookup failed." in note.lines
+            assert "lake.internal" not in "\n".join(note.lines)
+        states = jobs.load_lane_states(db)
+        assert states[(REPO, "unit")].state == "red"
+        assert states[(REPO, "pin-check")].state == "red"
+
+        await poll(db, fetch, notifier, now=NOW + timedelta(minutes=5))
+        assert len(notifier.sent) == 2, "recorded, so not announced again"
 
     def test_totals_are_read_back_from_the_adapter_detail(self) -> None:
         assert red_main.totals_from_run(
