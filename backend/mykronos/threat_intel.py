@@ -40,7 +40,7 @@ from datetime import date, datetime, time
 from typing import Any
 
 import httpx2
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import ThreatIntelMatch
@@ -64,6 +64,16 @@ NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 #: for half an hour. Every CVE this platform has an open finding for is a
 #: finite set that only grows when a scanner finds something new.
 NVD_BATCH = 20
+#: Beside that budget, not out of it: at most this many requests per sweep
+#: read NVD's exploit references for rows whose vector was looked up before
+#: #60890. Every such row is eligible at once after the upgrade, so without
+#: a cap the backfill would be one estate-wide wave of NVD load. It is not
+#: carved from `NVD_BATCH` because the vector queue is itself backlogged
+#: (TheHub #61034): a share of whatever the vectors leave would be zero for
+#: months, and until a row's references are read its verdict cannot say "no
+#: known exploit". 40 at the same spacing adds about four minutes a day and
+#: drains ~1,650 pre-existing rows in about six weeks.
+NVD_REFS_BATCH = 40
 #: Between requests. Above NVD's published unauthenticated floor with margin,
 #: because being rate-limited by a public feed is a way to get an IP blocked
 #: rather than a way to go faster.
@@ -412,6 +422,7 @@ def refresh_vectors(
     fetch: Callable[[str], object] = default_fetch_nvd,
     sleep: Callable[[float], None] = clock.sleep,
     limit: int = NVD_BATCH,
+    refs_limit: int = NVD_REFS_BATCH,
     now: Callable[[], datetime] = utcnow,
 ) -> int:
     """Look up base vectors for CVEs that do not have one yet.
@@ -438,33 +449,61 @@ def refresh_vectors(
 
     Degrades rather than raises: a failed lookup leaves the row untouched and
     the next sweep tries again.
+
+    **References are a backfill, not a second vector lookup** (TheHub
+    #60890). NVD's exploit-tagged references arrive in the same response, so
+    a row whose vector was looked up before they were read is eligible once
+    more -- but only for them: at most `refs_limit` per run, beside the
+    vector budget rather than out of it so a full vector queue cannot starve
+    it, asked after the vector lookups, and without touching the row's
+    vectors or their stamps. It never counts as found, because found is what
+    fans out into an estate-wide environmental rescore.
     """
+    from mykronos.exploitability import store_nvd_refs
+
+    needs_vector = and_(
+        ThreatIntelMatch.cvss_vector.is_(None),
+        ThreatIntelMatch.v4_checked_at.is_(None),
+    )
     pending = list(
         session.execute(
             select(ThreatIntelMatch)
-            .where(
-                ThreatIntelMatch.cvss_vector.is_(None),
-                ThreatIntelMatch.v4_checked_at.is_(None),
-            )
-            .order_by(ThreatIntelMatch.cve_id)
+            .where(needs_vector)
+            # Never looked at first: a CVE matched today is not queued behind
+            # rows being asked about v4 a second time.
+            .order_by(ThreatIntelMatch.vector_checked_at.is_not(None), ThreatIntelMatch.cve_id)
             .limit(limit)
         ).scalars()
     )
-    if not pending:
+    refs_only: list[ThreatIntelMatch] = []
+    if refs_limit > 0:
+        refs_only = list(
+            session.execute(
+                select(ThreatIntelMatch)
+                .where(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None))
+                .order_by(ThreatIntelMatch.cve_id)
+                .limit(refs_limit)
+            ).scalars()
+        )
+    if not pending and not refs_only:
         return 0
 
     found = 0
-    for index, row in enumerate(pending):
+    for index, row in enumerate([*pending, *refs_only]):
         if index:
             sleep(NVD_DELAY_SECONDS)
         try:
-            vectors = parse_nvd_vectors(fetch(row.cve_id))
+            payload = fetch(row.cve_id)
+            vectors = parse_nvd_vectors(payload)
         except Exception as exc:  # noqa: BLE001 - a feed failure degrades
             logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
             continue
         # Stamped even when nothing was found: that is the record of having
         # looked, and it is what stops this retrying for ever.
         checked = now()
+        store_nvd_refs(row, payload, checked)
+        if index >= len(pending):
+            continue
         row.vector_checked_at = checked
         row.v4_checked_at = checked
         if vectors.v3:
@@ -529,6 +568,22 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
                 from mykronos import environment
 
                 environment.mark_all_dirty("vector refresh")
+    # Public exploit catalogs (TheHub #60890), after the upsert so a CVE that
+    # arrived on this run is matched today. Degrades like the feeds above.
+    from mykronos.exploitability import refresh_exploits
+
+    with db.session() as session:
+        try:
+            exploits = refresh_exploits(session)
+        except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
+            logger.warning("Exploit lookup degraded: %s", scrub(str(exc)))
+        else:
+            if exploits.exploitdb_error or exploits.metasploit_error:
+                logger.warning(
+                    "Exploit feeds partly unavailable: exploit-db=%s metasploit=%s",
+                    exploits.exploitdb_error,
+                    exploits.metasploit_error,
+                )
     return result
 
 

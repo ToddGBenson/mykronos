@@ -64,6 +64,7 @@ from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.rule_vectors import router as rule_vectors_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.triage_clusters import router as triage_clusters_router
+from mykronos.api.triage_dossier import router as triage_dossier_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.approvals import pull_requests as approval_pull_requests
 from mykronos.approvals import reviewer as approval_reviewer
@@ -1074,6 +1075,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(triage_clusters_router)
+    app.include_router(triage_dossier_router)
     app.include_router(auto_triage_router)
     app.include_router(webhooks_router)
     app.include_router(agents_router)

@@ -3663,6 +3663,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/dossier": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Finding Dossier
+         * @description Location, owner, history, similar past dispositions, the cluster, and
+         *     shadow model proposals with their grades - for one finding.
+         */
+        get: operations["finding_dossier_api_dashboard_findings__finding_id__dossier_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/model-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Model Proposal
+         * @description Record a model's proposed verdict, in shadow.
+         *
+         *     Never applied: the finding's status does not change and no approval is
+         *     requested. The proposal is graded later against the verdict a person
+         *     records (`GET /api/dashboard/triage/model-proposals/grade`).
+         */
+        post: operations["record_model_proposal_api_dashboard_findings__finding_id__model_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/model-proposals/grade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Grade Model Proposals
+         * @description How often each model's shadow proposals matched what a person decided.
+         */
+        get: operations["grade_model_proposals_api_dashboard_triage_model_proposals_grade_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/auto-triage/digest": {
         parameters: {
             query?: never;
@@ -6576,6 +6641,93 @@ export interface components {
             /** Evidence Digest */
             evidence_digest: string;
         };
+        /** DossierClusterOut */
+        DossierClusterOut: {
+            /** Cluster Id */
+            cluster_id: string;
+            /** Kind */
+            kind: string;
+            /** Reason */
+            reason: string;
+            /** Count */
+            count: number;
+            /** Member Ids */
+            member_ids: string[];
+        };
+        /** DossierEventOut */
+        DossierEventOut: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Event */
+            event: string;
+            /** Actor */
+            actor: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /** DossierLocationOut */
+        DossierLocationOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** File Path */
+            file_path?: string | null;
+            /** Line Start */
+            line_start?: number | null;
+            /** Line End */
+            line_end?: number | null;
+            /** Symbol */
+            symbol?: string | null;
+            /** Package Name */
+            package_name?: string | null;
+            /** Package Version */
+            package_version?: string | null;
+            /** Asset */
+            asset?: string | null;
+        };
+        /**
+         * DossierOut
+         * @description What somebody reads before deciding (TheHub #60893).
+         */
+        DossierOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Status */
+            status: string;
+            /** Severity */
+            severity: string;
+            /** Title */
+            title: string;
+            location: components["schemas"]["DossierLocationOut"];
+            owner: components["schemas"]["DossierOwnerOut"];
+            /** History */
+            history: components["schemas"]["DossierEventOut"][];
+            /** Similar Dispositions */
+            similar_dispositions: components["schemas"]["SimilarDispositionOut"][];
+            cluster?: components["schemas"]["DossierClusterOut"] | null;
+            /** Proposals */
+            proposals: components["schemas"]["mykronos__api__triage_dossier__ProposalOut"][];
+            /**
+             * Proposals Mode
+             * @default shadow
+             * @constant
+             */
+            proposals_mode: "shadow";
+        };
+        /** DossierOwnerOut */
+        DossierOwnerOut: {
+            /** Owner */
+            owner?: string | null;
+            /** Owner Source */
+            owner_source?: string | null;
+        };
         /**
          * EcosystemEvidence
          * @description Per-ecosystem detail for one repo.
@@ -6841,6 +6993,16 @@ export interface components {
             scope?: string | null;
             /** Evidence Id */
             evidence_id?: string | null;
+            /**
+             * Freshness
+             * @default undated
+             * @enum {string}
+             */
+            freshness: "fresh" | "expiring" | "lapsed" | "undated";
+            /** Age Days */
+            age_days?: number | null;
+            /** Expires In Days */
+            expires_in_days?: number | null;
         };
         /**
          * EnvironmentalRankOut
@@ -7222,6 +7384,57 @@ export interface components {
             /** Open Total */
             open_total: number | null;
         };
+        /** ExploitFixOut */
+        ExploitFixOut: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fix_available" | "no_fix_published" | "not_a_package";
+            /** Fixed Version */
+            fixed_version?: string | null;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * ExploitSourceOut
+         * @description One source behind an exploitability verdict, with where to check it.
+         */
+        ExploitSourceOut: {
+            /** Source */
+            source: string;
+            /** Label */
+            label: string;
+            /** Detail */
+            detail: string;
+            /** Url */
+            url: string;
+            /** Observed At */
+            observed_at?: string | null;
+        };
+        /**
+         * ExploitabilityOut
+         * @description Can somebody exploit this today, and on whose word (TheHub #60890).
+         */
+        ExploitabilityOut: {
+            /** Cve Id */
+            cve_id?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "exploited" | "weaponized" | "public_poc" | "elevated_epss" | "no_known_exploit" | "not_checked" | "no_cve";
+            /** Summary */
+            summary: string;
+            /**
+             * Sources
+             * @default []
+             */
+            sources: components["schemas"]["ExploitSourceOut"][];
+            /** Checked At */
+            checked_at?: string | null;
+            fix: components["schemas"]["ExploitFixOut"];
+        };
         /**
          * FindingBatch
          * @description A batch of findings for one scan run.
@@ -7492,6 +7705,7 @@ export interface components {
             prior_disposition?: components["schemas"]["PriorDispositionOut"] | null;
             /** Missing Context */
             missing_context: components["schemas"]["RecordGap"][];
+            exploitability?: components["schemas"]["ExploitabilityOut"] | null;
         };
         /**
          * FindingStatus
@@ -7684,6 +7898,22 @@ export interface components {
              * @default
              */
             note: string;
+        };
+        /** GradeReportOut */
+        GradeReportOut: {
+            /** Duty */
+            duty: string;
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "shadow";
+            /** Applied */
+            applied: number;
+            /** Models */
+            models: components["schemas"]["ModelGradeOut"][];
+            /** Interpretation */
+            interpretation: string;
         };
         /** GroomResult */
         GroomResult: {
@@ -8364,6 +8594,32 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
+        };
+        /** ModelGradeOut */
+        ModelGradeOut: {
+            /** Model */
+            model: string;
+            /** Proposals */
+            proposals: number;
+            /** Graded */
+            graded: number;
+            /** Agree */
+            agree: number;
+            /** Disagree */
+            disagree: number;
+            /** Pending */
+            pending: number;
+            /** Ineligible */
+            ineligible: number;
+            /** Agreement Rate */
+            agreement_rate?: number | null;
+            /**
+             * Pairs
+             * @default {}
+             */
+            pairs: {
+                [key: string]: number;
+            };
         };
         /** NeedsHumanOut */
         NeedsHumanOut: {
@@ -9872,6 +10128,30 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** ProposalIn */
+        ProposalIn: {
+            /**
+             * Proposed Status
+             * @enum {string}
+             */
+            proposed_status: "true_positive" | "false_positive" | "suppressed" | "accepted_risk";
+            /** Rationale */
+            rationale: string;
+            /**
+             * Model
+             * @description The exact model id that read the code; grades are per model.
+             */
+            model: string;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Evidence
+             * @description What was read: files and line ranges, as the proposer reports them. At most 16384 bytes as JSON.
+             */
+            evidence?: {
+                [key: string]: unknown;
+            };
+        };
         /** ProposeIn */
         ProposeIn: {
             /** Repo */
@@ -10594,6 +10874,73 @@ export interface components {
             decided_at: string | null;
             /** Decisions */
             decisions?: components["schemas"]["DecisionOut"][];
+        };
+        /**
+         * RescoreStepFactOut
+         * @description One fact on a rescore step: the metric it set, from what to what.
+         */
+        RescoreStepFactOut: {
+            /** Metric */
+            metric: string;
+            /** From Value */
+            from_value: string;
+            /** To Value */
+            to_value: string;
+            /** Applied */
+            applied: boolean;
+            /** Direction */
+            direction: string;
+            /**
+             * Because
+             * @default
+             */
+            because: string;
+            /** Not Applied Reason */
+            not_applied_reason?: string | null;
+            /** Source Kind */
+            source_kind: string;
+            /** Source Id */
+            source_id: string;
+            /** Tier */
+            tier: string;
+            /**
+             * Freshness
+             * @enum {string}
+             */
+            freshness: "fresh" | "expiring" | "lapsed" | "undated";
+            /** Age Days */
+            age_days?: number | null;
+            /** Expires In Days */
+            expires_in_days?: number | null;
+        };
+        /**
+         * RescoreStepOut
+         * @description One step from the base score to the effective severity (TheHub #60889).
+         */
+        RescoreStepOut: {
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "base" | "environmental" | "effective";
+            /** Label */
+            label: string;
+            /** Score */
+            score?: number | null;
+            /** Severity */
+            severity?: string | null;
+            /** Detail */
+            detail: string;
+            /**
+             * Facts
+             * @default []
+             */
+            facts: components["schemas"]["RescoreStepFactOut"][];
+            /**
+             * Notes
+             * @default []
+             */
+            notes: string[];
         };
         /** RetireRequest */
         RetireRequest: {
@@ -11339,6 +11686,36 @@ export interface components {
             effective_severity?: string | null;
             /** Computed At */
             computed_at?: string | null;
+            /**
+             * Steps
+             * @default []
+             */
+            steps: components["schemas"]["RescoreStepOut"][];
+            /** Recomputed Because */
+            recomputed_because?: string | null;
+        };
+        /** SimilarDispositionOut */
+        SimilarDispositionOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Repo Id */
+            repo_id?: string | null;
+            /** Capability */
+            capability: string;
+            /** Status */
+            status: string;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Accepted Reason Code */
+            accepted_reason_code?: string | null;
+            /** Where */
+            where?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Decided By */
+            decided_by?: string | null;
         };
         /** SnoozeRequest */
         SnoozeRequest: {
@@ -12187,6 +12564,11 @@ export interface components {
              */
             epss_score?: number | null;
             /**
+             * Exploit Verdict
+             * @description The exploitability ladder (TheHub #60890): exploited (KEV), weaponized (Metasploit), public_poc, elevated_epss, no_known_exploit, not_checked, or no_cve. The finding record lists the sources behind it.
+             */
+            exploit_verdict?: ("exploited" | "weaponized" | "public_poc" | "elevated_epss" | "no_known_exploit" | "not_checked" | "no_cve") | null;
+            /**
              * Owner
              * @description From CODEOWNERS or the risk profile (spec 24 §1).
              */
@@ -12802,6 +13184,56 @@ export interface components {
             base_score: number;
             /** Rationale */
             rationale: string;
+        };
+        /**
+         * ProposalOut
+         * @description One shadow proposal and how it graded. `applied` is always false.
+         */
+        mykronos__api__triage_dossier__ProposalOut: {
+            /** Id */
+            id: string;
+            /** Model */
+            model: string;
+            /**
+             * Proposed Status
+             * @enum {string}
+             */
+            proposed_status: "true_positive" | "false_positive" | "suppressed" | "accepted_risk";
+            /** Confidence */
+            confidence?: number | null;
+            /** Rationale */
+            rationale: string;
+            /**
+             * Evidence
+             * @default {}
+             */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Proposed By */
+            proposed_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Applied
+             * @default false
+             * @constant
+             */
+            applied: false;
+            /**
+             * Grade
+             * @enum {string}
+             */
+            grade: "agree" | "disagree" | "pending" | "ineligible";
+            /** Human Verdict */
+            human_verdict?: string | null;
+            /** Human Actor */
+            human_actor?: string | null;
+            /** Verdict At */
+            verdict_at?: string | null;
         };
     };
     responses: never;
@@ -17311,6 +17743,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    finding_dossier_api_dashboard_findings__finding_id__dossier_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DossierOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_model_proposal_api_dashboard_findings__finding_id__model_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposalIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["mykronos__api__triage_dossier__ProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grade_model_proposals_api_dashboard_triage_model_proposals_grade_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradeReportOut"];
                 };
             };
         };

@@ -32,6 +32,7 @@ from mykronos import (
     controls,
     cvss,
     environment,
+    exploitability,
     finding_disposition,
     finding_record,
     findings_export,
@@ -43,6 +44,7 @@ from mykronos import (
     read_coverage,
     regression,
     reown,
+    rescore_panel,
     risk_profile_builder,
     ssdf,
     supply_chain,
@@ -95,6 +97,7 @@ from mykronos.db.models import (
     RepoOnboarding,
     RepoSurface,
     RiskProfile,
+    ThreatIntelMatch,
     capability_config_for,
 )
 from mykronos.deployments import (
@@ -118,6 +121,7 @@ from mykronos.pull_requests import open_pull_requests
 from mykronos.read_coverage import ReadCoverage
 from mykronos.scan_run_report import ScanRunReport
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +431,17 @@ class RankTermOut(BaseModel):
     detail: str
 
 
+ExploitVerdict = Literal[
+    "exploited",
+    "weaponized",
+    "public_poc",
+    "elevated_epss",
+    "no_known_exploit",
+    "not_checked",
+    "no_cve",
+]
+
+
 class TriageItem(BaseModel):
     """One row of the cross-portfolio work queue."""
 
@@ -494,6 +509,14 @@ class TriageItem(BaseModel):
         description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    exploit_verdict: ExploitVerdict | None = Field(
+        default=None,
+        description=(
+            "The exploitability ladder (TheHub #60890): exploited (KEV), weaponized "
+            "(Metasploit), public_poc, elevated_epss, no_known_exploit, not_checked, "
+            "or no_cve. The finding record lists the sources behind it."
+        ),
+    )
     owner: str | None = Field(
         default=None, description="From CODEOWNERS or the risk profile (spec 24 §1)."
     )
@@ -5904,6 +5927,43 @@ class EnvironmentalFactOut(BaseModel):
     scope: str | None = None
     #: The control observation that verified it, when one did (#60828).
     evidence_id: str | None = None
+    #: fresh | expiring | lapsed | undated, read against now (TheHub #60889).
+    freshness: Literal["fresh", "expiring", "lapsed", "undated"] = "undated"
+    #: Days since it was verified or confirmed; null when undated.
+    age_days: int | None = None
+    #: Days until it stops counting; negative once lapsed, null when it never does.
+    expires_in_days: int | None = None
+
+
+class RescoreStepFactOut(BaseModel):
+    """One fact on a rescore step: the metric it set, from what to what."""
+
+    metric: str
+    from_value: str
+    to_value: str
+    applied: bool
+    direction: str
+    because: str = ""
+    not_applied_reason: str | None = None
+    source_kind: str
+    source_id: str
+    tier: str
+    freshness: Literal["fresh", "expiring", "lapsed", "undated"]
+    age_days: int | None = None
+    expires_in_days: int | None = None
+
+
+class RescoreStepOut(BaseModel):
+    """One step from the base score to the effective severity (TheHub #60889)."""
+
+    key: Literal["base", "environmental", "effective"]
+    label: str
+    #: The CVSS score at this step; null for the effective step, which is a word.
+    score: float | None = None
+    severity: str | None = None
+    detail: str
+    facts: list[RescoreStepFactOut] = []
+    notes: list[str] = []
 
 
 class SeverityHereOut(BaseModel):
@@ -5950,6 +6010,41 @@ class SeverityHereOut(BaseModel):
     #: When the stored score was computed; null when it was computed on read
     #: because no rescore has reached this finding yet.
     computed_at: datetime | None = None
+    #: The working, in order: base, environmental, effective, each with the
+    #: facts it rested on and their freshness (TheHub #60889).
+    steps: list[RescoreStepOut] = []
+    #: Why the stored score was not shown and this was computed on read
+    #: instead; null when the stored score is current.
+    recomputed_because: str | None = None
+
+
+class ExploitSourceOut(BaseModel):
+    """One source behind an exploitability verdict, with where to check it."""
+
+    source: str
+    label: str
+    detail: str
+    url: str
+    observed_at: datetime | None = None
+
+
+class ExploitFixOut(BaseModel):
+    state: Literal["fix_available", "no_fix_published", "not_a_package"]
+    fixed_version: str | None = None
+    detail: str
+
+
+class ExploitabilityOut(BaseModel):
+    """Can somebody exploit this today, and on whose word (TheHub #60890)."""
+
+    cve_id: str | None = None
+    verdict: ExploitVerdict
+    summary: str
+    #: Every source that spoke, whatever the verdict.
+    sources: list[ExploitSourceOut] = []
+    #: When the exploit catalogs last answered for this CVE; null if never.
+    checked_at: datetime | None = None
+    fix: ExploitFixOut
 
 
 class FindingRecordOut(BaseModel):
@@ -5975,6 +6070,10 @@ class FindingRecordOut(BaseModel):
     #: See PriorDispositionOut. Null when this finding re-asks nothing.
     prior_disposition: PriorDispositionOut | None = None
     missing_context: list[RecordGap]
+    #: KEV, EPSS, public exploits and fix availability, with a verdict and
+    #: its sources (TheHub #60890). Present on every finding: one with no CVE
+    #: says so rather than leaving the block out.
+    exploitability: ExploitabilityOut | None = None
 
 
 def _severity_here(
@@ -6001,6 +6100,7 @@ def _severity_here(
         "asset_id": row.get("repo_full_name"),
     }
 
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
     with request.app.state.db.session() as session:
         # NVD 3.x > advisory 3.x > v4.0 shown only (TheHub #60824, D1), chosen
         # in one place for the record page and the stored scores alike.
@@ -6010,6 +6110,8 @@ def _severity_here(
             if choice is not None and choice.rescored
             else None
         )
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        in_kev = bool(intel is not None and intel.in_kev)
     if choice is None:
         return None
     if not choice.rescored:
@@ -6025,13 +6127,32 @@ def _severity_here(
             rescored=False,
         )
 
-    if stored is not None and stored.vector == choice.vector:
+    # The stored score only while it still describes the evidence (TheHub
+    # #60889): a lapsed lowering fact, a changed scanner word or a pending
+    # rescore after a fact was written all mean the store is behind, and the
+    # page recomputes rather than showing yesterday's answer as today's.
+    now = utcnow()
+    stale = rescore_panel.stale_reason(
+        stored,
+        vector=choice.vector,
+        scanner_severity=str(row.get("severity") or ""),
+        repo_full_name=str(row.get("repo_full_name") or ""),
+        onboarding_id=(
+            str(profile.repo_onboarding_id)
+            if profile is not None and getattr(profile, "repo_onboarding_id", None)
+            else None
+        ),
+        pending=environment.pending(),
+        now=now,
+        monotonic_now=time.monotonic(),
+    )
+    if stored is not None and stale is None:
         facts = [environment.Fact.from_dict(raw) for raw in stored.facts_json or []]
         base, env_score = stored.base, stored.environmental
         effective, computed_at = stored.effective_severity, stored.computed_at
     else:
         on_read = environment.score_on_read(
-            request.app.state.db, request.app.state.catalog, finding
+            request.app.state.db, request.app.state.catalog, finding, now=now
         )
         if on_read is None:
             logger.warning("Stored vector for %s is unscoreable", scrub(finding_id[:12]))
@@ -6076,11 +6197,30 @@ def _severity_here(
                 because=f.because,
                 scope=f.scope,
                 evidence_id=f.evidence_id,
+                **rescore_panel.freshness(f, now),
             )
             for f in facts
         ],
         effective_severity=effective or None,
         computed_at=computed_at,
+        steps=[
+            RescoreStepOut.model_validate(step)
+            for step in rescore_panel.steps(
+                vector=choice.vector,
+                vector_source=choice.source,
+                vector_version=choice.version,
+                base=base,
+                environmental=env_score,
+                scanner_severity=str(row.get("severity") or ""),
+                effective=effective or None,
+                facts=facts,
+                now=now,
+                in_kev=in_kev,
+            )
+        ],
+        recomputed_because=(
+            rescore_panel.STALE_REASONS[stale] if stale is not None else None
+        ),
     )
 
 
@@ -6149,6 +6289,21 @@ async def whole_finding_record(
     ) if catalog.all_files("reachability") else []
     analysed = bool(reach_rows and reach_rows[0][0])
 
+    pkg_found = finding_record.package_for(
+        catalog,
+        repo_full_name=repo_full_name,
+        package_name=row.get("package_name"),
+    )
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
+    with request.app.state.db.session() as session:
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        exploit = exploitability.assess(
+            cve_id,
+            intel,
+            package_name=row.get("package_name"),
+            fixed_version=(pkg_found or {}).get("fixed_version"),
+        )
+
     return FindingRecordOut(
         finding=FindingOut.model_validate(row),
         repo_full_name=repo_full_name,
@@ -6178,17 +6333,8 @@ async def whole_finding_record(
             )
             else None
         ),
-        package=(
-            PackageOut(**pkg)
-            if (
-                pkg := finding_record.package_for(
-                    catalog,
-                    repo_full_name=repo_full_name,
-                    package_name=row.get("package_name"),
-                )
-            )
-            else None
-        ),
+        package=PackageOut(**pkg_found) if pkg_found else None,
+        exploitability=ExploitabilityOut.model_validate(exploit),
         missing_context=[
             RecordGap(**gap)
             for gap in finding_record.missing_context(
