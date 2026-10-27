@@ -10,7 +10,9 @@ fixes, different severities, never one rule.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -209,3 +211,96 @@ class TestTheLaneIsWired:
         scan = next(s for s in self._containers()["plan"] if s.get("task") == "scan-images")
         body = "\n".join(scan["ensure"]["config"]["run"]["args"])
         assert body.index("mykronos.image_provenance") < body.index("mykronos.upload")
+
+
+class TestTheHubLaneIsWired:
+    """TheHub #60929: the same check in TheHub's containers lane.
+
+    Only the mykronos lane stamped its reports, so a thehub image that could
+    not name its commit produced no finding at all. These read the committed
+    thehub.yml and then run the files it names through the real annotate step
+    and adapter, so a lane that stops writing the JSON twin goes red here.
+    """
+
+    THEHUB_IMAGE = f"registry.example:5000/thehub:{SHA}"
+
+    def _containers(self) -> dict[str, Any]:
+        path = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "thehub.yml"
+        jobs = {j["name"]: j for j in yaml.safe_load(path.read_text("utf-8"))["jobs"]}
+        return jobs["containers"]
+
+    def _scan(self) -> dict[str, Any]:
+        return next(s for s in self._containers()["plan"] if s.get("task") == "scan-image")
+
+    def _report_paths(self) -> tuple[str, str]:
+        """(json, sarif) the thehub image's scan writes, as the lane spells them."""
+        body = "\n".join(self._scan()["config"]["run"]["args"])
+        start = body.index('trivy image "${REGISTRY}/thehub:${SHA}"')
+        own = body[start : body.index("estate_total=0")]
+        json_out = re.search(r"--format json --output (\S+)", own)
+        convert = re.search(
+            r"trivy convert --format sarif\s*\\?\s*--output (\S+) (\S+)", own
+        )
+        assert json_out and convert, "the thehub image is not scanned to JSON and converted"
+        assert convert.group(2) == json_out.group(1), "the SARIF is not converted from the JSON"
+        return json_out.group(1), convert.group(1)
+
+    def _run(self, tmp_path: Path, *env: str) -> list[Any]:
+        json_path, sarif_path = self._report_paths()
+        results = tmp_path / "results"
+        results.mkdir()
+        sarif = results / Path(sarif_path).name
+        twin = results / Path(json_path).name
+        # annotate pairs X.sarif with X.json: the lane must name them so.
+        assert twin == sarif.with_suffix(".json"), (json_path, sarif_path)
+        sarif.write_text(json.dumps(_sarif({"imageName": self.THEHUB_IMAGE})), "utf-8")
+        report = {"ArtifactName": self.THEHUB_IMAGE,
+                  "Metadata": {"ImageConfig": _config(*env)}, "Results": []}
+        twin.write_text(json.dumps(report), "utf-8")
+        assert image_provenance.main(["--annotate", str(results)]) == 0
+        context = ScanContext(
+            repo_full_name="ToddGBenson/TheHub",
+            capability="containers",
+            tool_name="trivy",
+            tool_version="0.70.0",
+            commit_sha=SHA,
+            branch="develop",
+        )
+        return containers_trivy.normalize(sarif.read_bytes(), context).findings
+
+    def test_an_unstamped_thehub_image_raises_a_finding(self, tmp_path: Path) -> None:
+        # `unknown` is what every thehub image carried before the build arg.
+        [finding] = self._run(tmp_path, "HUB_BUILD_SHA=unknown")
+        assert finding.rule_id == RULE_ABSENT
+        assert "thehub" in finding.title
+        assert finding.raw_finding_json["variable"] == "HUB_BUILD_SHA"
+
+    def test_a_thehub_image_naming_another_commit_is_a_mismatch(self, tmp_path: Path) -> None:
+        [finding] = self._run(tmp_path, f"HUB_BUILD_SHA={OTHER}")
+        assert finding.rule_id == RULE_MISMATCH
+
+    def test_a_thehub_image_naming_its_commit_says_nothing(self, tmp_path: Path) -> None:
+        assert self._run(tmp_path, f"HUB_BUILD_SHA={SHA}") == []
+
+    def test_the_upload_stamps_before_it_uploads_and_never_instead(self) -> None:
+        body = "\n".join(self._scan()["ensure"]["config"]["run"]["args"])
+        stamp = body.index("python -m mykronos.image_provenance --annotate results")
+        assert stamp < body.index("python -m mykronos.upload")
+        # PS-3: the upload runs after a failed scan; a stamp that cannot run
+        # must not take the upload down with it under `set -e`.
+        line = body[stamp : body.index("\n", body.index("\n", stamp) + 1)]
+        assert "|| echo" in line, line
+
+    def test_the_build_passes_the_commit_the_image_records(self) -> None:
+        """AC: all three images name their commit. thehub records it as
+        HUB_BUILD_SHA only when the build passes it; mykronos's two images
+        are asserted by the lane test above and their Dockerfiles."""
+        path = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "thehub.yml"
+        build = yaml.safe_load(path.read_text("utf-8"))
+        jobs = {j["name"]: j for j in build["jobs"]}
+        text = json.dumps(jobs["build"])
+        assert '--build-arg \\"HUB_BUILD_SHA=${SHA}\\"' in text
+        assert '--destination \\"${REGISTRY}/thehub:${SHA}\\"' in text
+        for dockerfile in ("backend/Dockerfile", "frontend/Dockerfile"):
+            source = (REPO_ROOT / dockerfile).read_text("utf-8")
+            assert "ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA}" in source, dockerfile

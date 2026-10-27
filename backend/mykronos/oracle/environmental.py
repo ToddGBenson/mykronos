@@ -50,10 +50,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
-
-from mykronos import toxic
-from mykronos.db.models import EnvironmentalScore, ThreatIntelMatch
+from mykronos import risk_evidence, toxic
+from mykronos.db.models import EnvironmentalScore
 from mykronos.environment import _lapsed
 from mykronos.oracle.engine import (
     AGE_DAYS,
@@ -207,30 +205,11 @@ def shadow(
         for fid, _sev, rule_id, title, _first, _unfix in rows
         if (cve := extract_cve(str(rule_id), str(title))) is not None
     }
+    # Read through the shared evidence model (TheHub #60901), the same reads
+    # a risk acceptance makes.
     with db.session() as session:
-        scores = {
-            row.finding_id: row
-            for row in session.scalars(
-                select(EnvironmentalScore).where(
-                    EnvironmentalScore.repo_full_name == live.repo_full_name
-                )
-            )
-        }
-        for row in scores.values():
-            session.expunge(row)
-        kev_cves = (
-            {
-                str(m.cve_id)
-                for m in session.scalars(
-                    select(ThreatIntelMatch).where(
-                        ThreatIntelMatch.cve_id.in_(sorted(set(cves.values())))
-                    )
-                )
-                if m.in_kev
-            }
-            if cves
-            else set()
-        )
+        scores = risk_evidence.environmental_scores(session, repo=live.repo_full_name)
+        kev_cves = set(risk_evidence.kev_listed(session, cves.values()))
 
     in_scope = set(policy.severities_in_scope())
     tallies = _Tallies(
@@ -474,8 +453,9 @@ def _toxic(
 ) -> dict[str, Any]:
     """Combinations re-rated with max(scanner, effective) per member.
 
-    Members outside the scored scope (an accepted finding still counts toward
-    a combination) are read from their stored score where one is current."""
+    Members outside the scored scope are read from their stored score where
+    one is current. (Dispositioned findings no longer count toward a
+    combination at all since TheHub #60965, so this is now the rarer case.)"""
     pol = policy.toxic_combinations
     combinations: list[dict[str, Any]] = []
     for combo in snapshot.get("combinations") or []:

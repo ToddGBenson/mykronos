@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, s
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import read_coverage
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.api.refusals import CapabilityRefusedError
@@ -523,22 +524,56 @@ async def decisions_for_repo(
     decision_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict[str, Any]:
-    """Decision history for one repo, newest first (spec 09 §7)."""
+    """Decision history for one repo, newest first (spec 09 §7).
+
+    `confidence_note` qualifies the newest verdict with how much of the code
+    the analysers read (TheHub #60962, decision 60814 option 2): "go - read
+    31% of the code" under the configured threshold, "go - read coverage
+    unknown" when it could not be measured, null otherwise. It is computed
+    when the history is read and never changes a recorded verdict.
+    """
+    from mykronos.api.dashboard import _repo_read_coverage
+
     with request.app.state.db.session() as session:
         onboarding = session.get(RepoOnboarding, repo_id)
-    if onboarding is None:
+        found = (
+            None
+            if onboarding is None
+            else (str(onboarding.github_repo_full_name), onboarding.github_installation_id)
+        )
+    if found is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No repo {repo_id!r}. This takes the onboarding id.",
         )
+    repo_full_name, installation_id = found
+
+    decisions = _service(request).recent_decisions(
+        repo_full_name,
+        decision_type=decision_type,
+        limit=limit,
+    )
+
+    threshold = float(request.app.state.settings.oracle_read_coverage_threshold)
+    measured: read_coverage.ReadCoverage | None
+    try:
+        measured = await _repo_read_coverage(request, repo_full_name, installation_id)
+    except Exception:  # noqa: BLE001
+        # The note degrades to "unknown"; it never takes the history with it.
+        logger.warning("Could not measure read coverage for %s", scrub(repo_full_name))
+        measured = None
+    newest = str(decisions[0]["recommendation"]) if decisions else None
+    coverage_out: dict[str, Any] = (
+        read_coverage.as_dict(measured)
+        if measured is not None
+        else {"available": False, "reason": "Read coverage could not be measured."}
+    )
 
     return {
-        "repo_full_name": onboarding.github_repo_full_name,
-        "decisions": _service(request).recent_decisions(
-            onboarding.github_repo_full_name,
-            decision_type=decision_type,
-            limit=limit,
-        ),
+        "repo_full_name": repo_full_name,
+        "decisions": decisions,
+        "read_coverage": {**coverage_out, "threshold": threshold},
+        "confidence_note": read_coverage.confidence_note(measured, newest, threshold),
     }
 
 

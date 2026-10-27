@@ -170,6 +170,87 @@ export function briefingHref(repoId?: string | null): string {
   return repoId ? `/briefing?repo_id=${encodeURIComponent(repoId)}` : "/briefing";
 }
 
+/**
+ * What an operator action's probe read from GitHub (TheHub #60972). Empty on
+ * every line that is not an operator action.
+ */
+export type Verification = "observed_done" | "observed_not_done" | "unprobed" | "probe_error";
+
+export const VERIFICATION_META: Record<
+  Verification,
+  { tone: "pass" | "warn" | "critical" | "muted"; word: string; meaning: string }
+> = {
+  observed_done: {
+    tone: "pass",
+    word: "Observed done",
+    meaning: "GitHub was read and the ask is in place. Close the story.",
+  },
+  observed_not_done: {
+    tone: "warn",
+    word: "Not done yet",
+    meaning: "GitHub was read and the ask is not in place.",
+  },
+  unprobed: {
+    tone: "muted",
+    word: "Not checked",
+    meaning: "No probe is registered for this action, so nothing was checked.",
+  },
+  probe_error: {
+    tone: "critical",
+    word: "Could not check",
+    meaning: "A probe is registered but could not read GitHub. Never counted as done.",
+  },
+};
+
+/** A line's verification badge, or null for a line that is not an operator action. */
+export function verificationMeta(value: string | undefined | null) {
+  if (!value) return null;
+  return VERIFICATION_META[value as Verification] ?? VERIFICATION_META.probe_error;
+}
+
+/** One operator action as `data.board.operator_actions` carries it. */
+export type OperatorAction = {
+  id: number | string;
+  title: string;
+  verification: Verification;
+  evidence: string;
+};
+
+/**
+ * The operator actions a "Needs you today" section carries in its data.
+ * An unknown verification reads as `probe_error`, never as done.
+ */
+export function operatorActions(section: BriefingSection): OperatorAction[] {
+  const board = (section.data as Record<string, unknown> | undefined)?.board;
+  const raw = (board as Record<string, unknown> | undefined)?.operator_actions;
+  if (!Array.isArray(raw)) return [];
+  const out: OperatorAction[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as Record<string, unknown>;
+    if (typeof a.title !== "string") continue;
+    if (typeof a.id !== "number" && typeof a.id !== "string") continue;
+    const verification =
+      typeof a.verification === "string" && a.verification in VERIFICATION_META
+        ? (a.verification as Verification)
+        : a.verification === undefined
+          ? "unprobed"
+          : "probe_error";
+    out.push({
+      id: a.id,
+      title: a.title,
+      verification,
+      evidence: typeof a.evidence === "string" ? a.evidence : "",
+    });
+  }
+  return out;
+}
+
+/** The actions GitHub shows as done: "Done - close it", not counted as needing you. */
+export function doneActions(section: BriefingSection): OperatorAction[] {
+  return operatorActions(section).filter((a) => a.verification === "observed_done");
+}
+
 /** One product signal (TheHub #60863): measured, not measurable yet, or unread. */
 export type ProductSignal = {
   key: string;

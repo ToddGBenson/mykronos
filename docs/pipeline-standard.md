@@ -175,6 +175,17 @@ the nearest scored ancestor of an unjudged sha and its verdict, and refuses
 the unjudged sha unless `-Force -ForceReason` is given (fail open is kept
 only for "could not ask", D-126).
 
+**A stall is watched too (TheHub #60975).** After a host or Docker restart
+the workers can die and lanes across every pipeline go `errored` at once,
+while Concourse itself stays reachable. The backend's `ci-stall` job
+(`mykronos.ci_stall`, every 10 minutes) reads the anonymous `/api/v1/jobs`
+summaries and calls Concourse stalled when 3 or more unpaused jobs' latest
+finished build errored with start times inside one 60-minute window. `failed`,
+`aborted` and paused jobs do not count. MyKronos Health shows the stall as its
+first row, with the lanes and a fixed checklist: restart the workers, check
+Vault is unsealed, re-trigger the errored jobs. One Slack notice is sent per
+stall episode, and it is marked sent only when delivered.
+
 **The amendment (2026-10-21, TheHub).** Behind the gate, a red quality gate
 also freezes every scanning lane on the last commit it passed, and each lane
 keeps showing that commit's green. TheHub's `unit` went red on 2026-10-19
@@ -521,8 +532,8 @@ These are named rather than done, each with the reason.
    and sast all schedule in the same instant onto two workers, which is what
    produced the iptables contention PS-12 now retries around. The three
    pipelines in this repository are structurally immune to the same thing:
-   `thehub` uses a `2:00–3:00 AM` window and puts every job in one
-   `serial_groups: [worker]`, `mykronos` and `personal-soc` use windows too.
+   `thehub` uses a `2:00–3:00 AM` window and puts every job in one of
+   three serial lanes (D-172), `mykronos` and `personal-soc` use windows too.
    But keel's pipeline is not maintained here — `docs/current-state/keel-pipeline.yml`
    is a captured snapshot, not a source — so the fan-out fix belongs in keel's
    own repository. Retrying a stampede is treating the symptom; the two changes

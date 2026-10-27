@@ -276,9 +276,26 @@ print("RESULT " + json.dumps({"integrity": ok, "tables": counts}))
         $null = Invoke-Docker -Arguments @('volume', 'create', $vol)
         $script:volumes += $vol
         $leaf = Split-Path -Leaf $plain[$Component]
-        $r = Invoke-Docker -Arguments @('run', '--rm', '-i', '--network', 'none', '--user', '0:0', '-v', "${scratch}:/r:ro", '-v', "${vol}:/w", $ToolImage, 'sh', '-s') -InputText "tar -xzf '/r/$leaf' -C /w; echo `"RC `$?`""
+        # docker cp the archive into the volume, then untar there. Read through the
+        # Windows bind mount, tar failed part-way on the 400 MB datalake with the
+        # host short of memory ("gzip: stdin: Cannot allocate memory", 2026-10-22).
+        $c = Invoke-Docker -Arguments @('create', '-v', "${vol}:/w", $ToolImage)
+        if ($c.ExitCode -ne 0) { throw "docker create for the copy-in failed: $(($c.Lines | Select-Object -Last 1))" }
+        $cid = ($c.Lines | Select-Object -Last 1).Trim()
+        try {
+            $cp = Invoke-Docker -Arguments @('cp', $plain[$Component], "${cid}:/w/.drill-archive")
+            if ($cp.ExitCode -ne 0) { throw "docker cp of $leaf failed: $(($cp.Lines | Select-Object -Last 1))" }
+        } finally {
+            $null = Invoke-Docker -Arguments @('rm', '-f', $cid)
+        }
+        $sh = "tar -xzf /w/.drill-archive -C /w; rc=`$?; rm -f /w/.drill-archive; echo `"RC `$rc`""
+        $r = Invoke-Docker -Arguments @('run', '--rm', '-i', '--network', 'none', '--user', '0:0', '-v', "${vol}:/w", $ToolImage, 'sh', '-s') -InputText $sh
         $rc = $r.Lines | Where-Object { $_.StartsWith('RC ') } | Select-Object -Last 1
-        if (-not $rc -or $rc -ne 'RC 0') { throw "untar failed: $(($r.Lines | Select-Object -Last 2) -join ' | ')" }
+        if (-not $rc -or $rc -ne 'RC 0') {
+            # The first error is the cause; the last lines are tar's generic epilogue.
+            $errs = @($r.Lines | Where-Object { $_ -and -not $_.StartsWith('RC ') })
+            throw "untar failed: $(($errs | Select-Object -First 1)) ... $(($errs | Select-Object -Last 1))"
+        }
         Remove-Item -LiteralPath $plain[$Component] -Force -ErrorAction SilentlyContinue
         return $vol
     }

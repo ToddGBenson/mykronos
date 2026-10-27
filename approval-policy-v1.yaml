@@ -110,6 +110,7 @@ duties:
         - "environment-map-v1.yaml"   # what a statement may do to a CVSS metric, reviewed as policy (TheHub #60827, as D-164)
         - "cwe-vector-templates-v1.yaml"  # the CWE-class vectors that pre-fill a rule-vector proposal (TheHub #60832, as D-164)
         - ".gitleaksignore"
+        - ".gitleaks.toml"            # gitleaks allowlists: silencing a scanner is policy
         - ".github/**"                # CI definitions and CODEOWNERS
         - "deploy/concourse/**"       # the pipelines themselves
         - "backend/mykronos/approvals/**"   # the engine that enforces all of this
@@ -197,6 +198,35 @@ duties:
         approvers: [{kind: human}, {kind: agent, delegation: required}]
         quorum: 1
         independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context, different_family]
+        cooling_off_hours: 0
+
+  library_approval:                    # TheHub #60896 - onboarding a third-party library
+    # Tier from the platform's own vetting report (OSV, deps.dev, Scorecard,
+    # typosquat and new-package checks): `flagged` when it found anything or
+    # could not read a source, `clean` otherwise. Approval puts the library on
+    # its ecosystem's allowlist with the version policy requested.
+    tier_by: vetting
+    reviewer_instructions: |
+      This is a request to add a third-party library to the allowlist. The evidence holds
+      the package, the version, the requester's reason, the proposed owner and version
+      policy, and the platform's vetting report: known vulnerabilities (OSV), license,
+      release history, OpenSSF Scorecard, transitive dependency count, and typosquat and
+      new-package checks, each with its source.
+      Reject a library that is a suspected typosquat of one the estate uses, that carries
+      known vulnerabilities in the requested version, or whose license the reason does not
+      address. A check marked unavailable is unknown, not clean: answer needs_info when the
+      decision turns on it. Reject a reason that does not say why an existing library will
+      not do.
+    tiers:
+      flagged:
+        approvers: [{kind: human}]
+        quorum: 1
+        independence: [distinct_principal]
+        cooling_off_hours: 0
+      clean:
+        approvers: [{kind: human}, {kind: agent, delegation: required}]
+        quorum: 1
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
         cooling_off_hours: 0
 
   delegation_grant:                    # spec 34 §5 - trusting an agent approver

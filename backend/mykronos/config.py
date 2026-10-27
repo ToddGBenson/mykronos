@@ -749,6 +749,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    ci_stall_interval_seconds: int = Field(
+        default=600,
+        ge=60,
+        description=(
+            "How often the ci-stall job (mykronos.ci_stall) reads Concourse's "
+            "job summaries for many lanes erroring together, the shape of a "
+            "dead worker after a restart (TheHub #60975). It notifies once per "
+            "stall. Scheduled only when concourse_url is set."
+        ),
+    )
+
     dormant_lanes_threshold_hours: float = Field(
         default=72.0,
         gt=0,
@@ -780,6 +791,18 @@ class Settings(BaseSettings):
             "name lower-cased. A JSON object in the environment, for example "
             '{"owner/repo": ["unit", "lint"]}; an empty object turns the '
             "announcements off."
+        ),
+    )
+
+    oracle_read_coverage_threshold: float = Field(
+        default=0.8,
+        ge=0,
+        le=1,
+        description=(
+            "The share of a repository's application source (0 to 1) its SAST "
+            "analysers must read before an Oracle verdict stops carrying a "
+            "read-coverage confidence note (TheHub #60962). The note never "
+            "changes the verdict; coverage that cannot be read is always noted."
         ),
     )
 
@@ -965,7 +988,9 @@ class Settings(BaseSettings):
             "Where a browser reaches this dashboard, e.g. `https://mykronos."
             "example`. The briefing DM links to `<dashboard_url>/briefing`; a "
             "DM with no link to the page it summarises is skipped rather than "
-            "sent."
+            "sent. The library-allowlist check run links each reported library "
+            "to `<dashboard_url>/libraries/request`; unset, it carries no links "
+            "and says so."
         ),
     )
 

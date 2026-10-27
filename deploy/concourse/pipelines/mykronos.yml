@@ -296,9 +296,12 @@ anchors:
     # pipeline and team are static per file; each hook passes JOB.
     PIPELINE: mykronos
     TEAM: main
-    # Concourse is bound to 127.0.0.1:8080 on this host and has no public
-    # hostname, so the link opens on this machine only.
-    CONCOURSE_URL: http://localhost:8080
+    # The browser URL an alert links to. Concourse is published on 127.0.0.1
+    # only, so the http://localhost:8080 this used to carry opened on this
+    # host and nowhere a phone reads Slack (TheHub #60941; #988 refused the
+    # same links in the briefing). Empty sends no link, and the notify script
+    # refuses a loopback one. A LAN or public URL here brings the link back.
+    CONCOURSE_URL: ""
 
   # Failure notification. curl rather than a slack-notification resource type:
   # this pipeline already carries no third-party resource types, and adding
@@ -365,7 +368,16 @@ anchors:
             # The JOB page, not a build page: no task-visible mechanism carries the
             # build number (BUILD_NAME is resource-only), and the failing build
             # is the newest one listed there.
-            BUILD_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-mykronos}/jobs/${JOB:-}"
+            #
+            # TheHub #60941: no link unless CONCOURSE_URL names a real host. A
+            # loopback URL opens only on the Concourse host itself, never on
+            # the phone the alert is read on, so it is left out rather than
+            # sent as a link that cannot open.
+            BUILD_URL=""
+            case "${CONCOURSE_URL:-}" in
+              ""|*://localhost|*://localhost[:/]*|*://127.*|*://\[::1\]*|*://0.0.0.0*) ;;
+              *) BUILD_URL="${CONCOURSE_URL%/}/teams/${TEAM:-main}/pipelines/${PIPELINE:-mykronos}/jobs/${JOB:-}" ;;
+            esac
             JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
 
             # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
@@ -402,8 +414,9 @@ anchors:
             # directory owned by root, so `> payload.json` is "Permission
             # denied" - a second way this same hook can die inside the failure
             # it was trying to report. thehub's notifier already found this one.
-            printf '{"channel":"%s","text":"%s\\n%s"}' \
-              "$SLACK_CHANNEL" "$ESCAPED" "$BUILD_URL" > /tmp/payload.json
+            # The link is its own line when there is one, and absent when not.
+            printf '{"channel":"%s","text":"%s%s"}' \
+              "$SLACK_CHANNEL" "$ESCAPED" "${BUILD_URL:+\\n$BUILD_URL}" > /tmp/payload.json
 
             RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer $SLACK_BOT_TOKEN" \

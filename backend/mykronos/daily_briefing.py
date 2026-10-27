@@ -44,6 +44,7 @@ from typing import Any
 from sqlalchemy import select
 
 from mykronos import briefing as briefing_report
+from mykronos import operator_checks
 from mykronos.lake.catalog import Catalog
 
 logger = logging.getLogger(__name__)
@@ -98,10 +99,15 @@ class Line:
     repo_full_name: str = ""
     #: A route or id to act on, when one exists.
     ref: str = ""
+    #: On an operator action only: what its probe saw (TheHub #60972), one of
+    #: `operator_checks.VERIFICATIONS`. Empty on every other line.
+    verification: str = ""
 
     def __post_init__(self) -> None:
         if self.work not in WORK_KINDS:
             raise ValueError(f"work must be one of {WORK_KINDS}, not {self.work!r}")
+        if self.verification and self.verification not in operator_checks.VERIFICATIONS:
+            raise ValueError(f"not a verification: {self.verification!r}")
 
 
 @dataclass
@@ -1042,7 +1048,8 @@ _MERGEABLE_STATES = ("clean", "has_hooks", "unstable", "blocked", "")
 
 NEEDS_YOU_SOURCE = (
     "TheHub board (icebox OPERATOR ACTION:, backlog DECISION:); GitHub open pull "
-    "requests on onboarded repositories (mergeable, checks, age)"
+    "requests on onboarded repositories (mergeable, checks, age); GitHub branch "
+    "protection and rulesets for the operator actions a probe can check"
 )
 SPRINT_SOURCE = "TheHub board (sprint and done buckets); GitHub open pull requests"
 
@@ -1176,7 +1183,19 @@ def _pr_line(r: Readiness) -> Line | None:
     return None
 
 
-def _board_items(board: Any, now: datetime) -> tuple[list[Line], list[Line], dict[str, Any]]:
+def _board_items(
+    board: Any,
+    now: datetime,
+    checks: dict[int, operator_checks.Verification] | None = None,
+    checks_error: str = "Operator actions were not checked against GitHub.",
+) -> tuple[list[Line], list[Line], dict[str, Any]]:
+    """The operator's asks and calls from the board.
+
+    Each operator action carries what its probe saw (TheHub #60972). One
+    GitHub shows as done is not a line, so it is not counted as needing the
+    operator; it is listed in `data` for "Done - close it". One whose probe
+    could not read GitHub stays a line and says so; it is never done.
+    """
     actions = [
         s for s in board.stories.get("icebox", [])
         if _title(s).lower().startswith(OPERATOR_ACTION_PREFIX)
@@ -1192,16 +1211,46 @@ def _board_items(board: Any, now: datetime) -> tuple[list[Line], list[Line], dic
     def oldest_first(stories: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sorted(stories, key=lambda s: -(waited(s) or 0))
 
-    action_lines = [
-        Line(
-            what=_title(s),
-            so_what="Needs your action, and nobody else can take it"
-            + (f": in the icebox {waited(s)} day(s)." if waited(s) is not None else "."),
-            work=STORY,
-            ref=_story_ref(s),
+    verified = {
+        id(s): operator_checks.for_story(s.get("id"), checks, checks_error) for s in actions
+    }
+
+    def action_line(story: dict[str, Any]) -> Line:
+        v = verified[id(story)]
+        so_what = "Needs your action, and nobody else can take it" + (
+            f": in the icebox {waited(story)} day(s)." if waited(story) is not None else "."
         )
+        if v.verification == operator_checks.PROBE_ERROR:
+            so_what = f"could not check: {v.evidence} {so_what}"
+        elif v.verification == operator_checks.OBSERVED_NOT_DONE:
+            so_what = f"{so_what} Checked: {v.evidence}"
+        return Line(
+            what=_title(story),
+            so_what=so_what,
+            work=STORY,
+            ref=_story_ref(story),
+            verification=v.verification,
+        )
+
+    action_lines = [
+        action_line(s)
         for s in oldest_first(actions)
+        if verified[id(s)].verification != operator_checks.OBSERVED_DONE
     ]
+
+    def action_data(story: dict[str, Any]) -> dict[str, Any]:
+        v = verified[id(story)]
+        item: dict[str, Any] = {
+            "id": story.get("id"),
+            "title": _title(story),
+            "waiting_days": waited(story),
+            "verification": v.verification,
+        }
+        if v.verification != operator_checks.UNPROBED:
+            item["evidence"] = v.evidence
+            item["probe"] = v.probe
+        return item
+
     decision_lines = [
         Line(
             what=_title(s),
@@ -1213,9 +1262,10 @@ def _board_items(board: Any, now: datetime) -> tuple[list[Line], list[Line], dic
         for s in oldest_first(decisions)
     ]
     data = {
-        "operator_actions": [
-            {"id": s.get("id"), "title": _title(s), "waiting_days": waited(s)} for s in actions
-        ],
+        "operator_actions": [action_data(s) for s in actions],
+        "operator_actions_done": sum(
+            1 for v in verified.values() if v.verification == operator_checks.OBSERVED_DONE
+        ),
         "decisions": [
             {"id": s.get("id"), "title": _title(s), "waiting_days": waited(s)} for s in decisions
         ],
@@ -1276,7 +1326,16 @@ def needs_you_section(delivery: Any, *, now: datetime) -> Section:
         blocked = []
 
     if board is not None:
-        action_lines, decision_lines, board_data = _board_items(board, now)
+        action_lines, decision_lines, board_data = _board_items(
+            board,
+            now,
+            getattr(delivery, "operator_checks", None),
+            getattr(
+                delivery,
+                "operator_checks_error",
+                "Operator actions were not checked against GitHub.",
+            ),
+        )
         lines.extend(decision_lines)
         lines.extend(action_lines)
         data["board"] = board_data

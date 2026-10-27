@@ -8,11 +8,15 @@ own way, and the risk decision did not look at all.
 
 Three decisions are made here, and made here only:
 
-**Accepted findings still count.** Detection runs over `open` and
-`accepted_risk` findings (operator decision, 2026-09-28). An acceptance is a
-decision about one finding judged alone; accepting half of a toxic pair must
-not make the pair disappear. A combination with an accepted member is
-reported `partly_accepted`, not dropped.
+**Dispositioned findings stop counting.** Detection runs over `open`
+findings only (TheHub #60965, 2026-10-23, superseding the 2026-09-28 decision
+that accepted members still count). A member a person has dispositioned
+`false_positive` or `accepted_risk` no longer satisfies its half, so the
+combination closes on the next evaluation - or re-forms from another open
+finding that does satisfy it. Two live criticals were a false-positive
+credential and an accepted finding escalated a second time through a
+combination. `partly_accepted` is kept on the record for older readers and is
+now always false.
 
 **A combination is worse than its worst member.** Its severity is the worst
 member's raised by `escalate_steps` bands (default one), and `critical` when
@@ -30,9 +34,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import risk_evidence
 from mykronos.lake import Catalog
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
@@ -40,8 +44,8 @@ from mykronos.threat_intel import extract_cve
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 
-#: Statuses detection runs over. `accepted_risk` on purpose: see the module doc.
-STATUSES = ("open", "accepted_risk")
+#: Statuses detection runs over: see the module doc (TheHub #60965).
+STATUSES = ("open",)
 
 _COLUMNS = (
     "finding_id",
@@ -118,28 +122,23 @@ def _pool(catalog: Catalog, repo: str | None) -> list[dict[str, Any]]:
         f"FROM findings WHERE {where}",
         params,
     )
-    return [dict(zip(_COLUMNS, row, strict=True)) for row in rows]
+    pool = [dict(zip(_COLUMNS, row, strict=True)) for row in rows]
+    # A 90022 counts only on its evidence, which this pool does not select
+    # (TheHub #61014).
+    correlate.attach_disclosure_evidence(pool, catalog.query)
+    return pool
 
 
 def _kev_ids(session: Session | None, findings: list[dict[str, Any]]) -> set[str]:
     if session is None:
         return set()
-    from mykronos.db.models import ThreatIntelMatch
-
     cves = {
-        extract_cve(str(f.get("rule_id") or ""), str(f.get("title") or "")) for f in findings
+        cve
+        for f in findings
+        if (cve := extract_cve(str(f.get("rule_id") or ""), str(f.get("title") or "")))
     }
-    cves.discard(None)
-    if not cves:
-        return set()
-    return {
-        str(c)
-        for c in session.execute(
-            select(ThreatIntelMatch.cve_id).where(
-                ThreatIntelMatch.cve_id.in_(cves), ThreatIntelMatch.in_kev.is_(True)
-            )
-        ).scalars()
-    }
+    # The one KEV read every risk decision shares (TheHub #60901).
+    return set(risk_evidence.kev_listed(session, cves))
 
 
 def detect(
@@ -164,6 +163,7 @@ def detect(
         by_id = {str(f["finding_id"]): f for f in pool}
         for combo in correlate.detect(pool):
             members = [by_id[fid] for fid in sorted(combo.finding_ids) if fid in by_id]
+            why = dict(combo.qualifications)
             kev = _kev_ids(session, members)
             member_kev = sorted(
                 c
@@ -196,6 +196,7 @@ def detect(
                             "severity": str(m["severity"]),
                             "status": str(m["status"]),
                             "file_path": m.get("file_path"),
+                            "qualifies": why.get(str(m["finding_id"]), ""),
                         }
                         for m in members
                     ),

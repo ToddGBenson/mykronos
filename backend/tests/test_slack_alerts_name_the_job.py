@@ -108,23 +108,62 @@ def test_every_hook_passes_its_own_job_name_and_the_static_metadata(name):
         p = hook.get("params") or {}
         assert p.get("JOB") == job, f"{name}: a hook in {job} passes JOB={p.get('JOB')!r}"
         assert p.get("PIPELINE") == name and p.get("TEAM") == "main"
-        assert p.get("CONCOURSE_URL", "").startswith("http")
+        # TheHub #60941: never a loopback link; "" sends none.
+        url = str(p.get("CONCOURSE_URL", ""))
+        assert url == "" or url.startswith("http"), url
+        for loopback in LOOPBACK:
+            assert loopback not in url, f"{name}/{job}: CONCOURSE_URL={url!r}"
         assert "SLACK_BOT_TOKEN" in p and "SLACK_CHANNEL" in p, (
             f"{name}/{job}: step params replaced the credentials instead of merging"
         )
+
+
+#: Hosts a phone reading Slack cannot reach: they name the Concourse host itself.
+LOOPBACK = ("localhost", "127.0.0.1", "[::1]", "0.0.0.0")
 
 
 @pytest.mark.parametrize("name", PIPELINES)
 @pytest.mark.parametrize("outcome", [None, "errored"])
 def test_the_posted_alert_names_the_job_and_links_to_it(name, outcome, tmp_path):
     job, hook = _hooks(name)[0]
-    payload = _render(hook, tmp_path, OUTCOME=outcome)
+    payload = _render(hook, tmp_path, OUTCOME=outcome, CONCOURSE_URL="http://ci.example.net:8080/")
     text = payload["text"]
     assert f"`{job}`" in text, text
-    assert f"/teams/main/pipelines/{name}/jobs/{job}" in text, text
-    for empty in ("``", "(build )", "teams//", "pipelines//", "jobs//"):
+    assert f"\nhttp://ci.example.net:8080/teams/main/pipelines/{name}/jobs/{job}" in text, text
+    for empty in ("``", "(build )", "teams//", "pipelines//", "jobs//", "8080//"):
         assert empty not in text, f"{empty!r} in {text!r}"
     assert ("ERRORED" in text) == (outcome == "errored")
+
+
+@pytest.mark.parametrize("name", PIPELINES)
+def test_the_alert_as_the_pipeline_ships_carries_no_link_it_cannot_open(name, tmp_path):
+    """TheHub #60941: as applied, every alert linked to http://localhost:8080."""
+    job, hook = _hooks(name)[0]
+    text = _render(hook, tmp_path)["text"]
+    assert f"`{job}`" in text, text
+    assert "http" not in text and "/teams/" not in text, text
+    assert not text.endswith("\n"), "an empty link line was still sent"
+
+
+@pytest.mark.parametrize("name", PIPELINES)
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8080",
+        "http://localhost",
+        "http://127.0.0.1:8080/",
+        "http://[::1]:8080",
+        "http://0.0.0.0:8080",
+    ],
+)
+def test_a_loopback_concourse_url_is_refused(name, url, tmp_path):
+    """Matching #988: a loopback URL set by hand is left out, not linked."""
+    job, hook = _hooks(name)[0]
+    text = _render(hook, tmp_path, CONCOURSE_URL=url)["text"]
+    assert f"`{job}`" in text, text
+    for loopback in LOOPBACK:
+        assert loopback not in text, f"{loopback!r} in {text!r}"
+    assert "/teams/" not in text, text
 
 
 def test_a_hook_that_forgot_job_says_so_rather_than_posting_an_empty_name(tmp_path):

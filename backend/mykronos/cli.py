@@ -202,6 +202,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "self-check",
         help="Ask the internet whether this platform is reachable (spec 32 §8)",
     )
+    sub.add_parser(
+        "notify-test",
+        help="Post one test message through the configured Slack notifier (B-035)",
+    )
 
     host_controls = sub.add_parser(
         "host-controls",
@@ -867,6 +871,55 @@ def main(argv: list[str] | None = None) -> int:
             # here would be a second place for App credential handling to
             # drift from the one the platform actually uses.
             print(asyncio.run(minter()))
+            return 0
+
+        if args.command == "notify-test":
+            # TheHub #60573 (B-035). The token and channel arrive from Vault
+            # (D-137) and the log can show nothing was refused, but only a
+            # person can see that a message landed. This posts one, through
+            # the same notifier the server builds, and prints the transport
+            # and the outcome -- never the token or the channel.
+            from mykronos.notify import Notification
+            from mykronos.schemas import utcnow
+
+            test_notifier = SlackNotifier(
+                settings.slack_webhook_url,
+                bot_token=settings.slack_bot_token,
+                channel=settings.slack_channel,
+            )
+            if not test_notifier.enabled:
+                print(
+                    "Slack notification is not configured, so nothing was sent. "
+                    "Set MYKRONOS_SLACK_BOT_TOKEN and MYKRONOS_SLACK_CHANNEL "
+                    "(D-137: from Vault at deploy), or MYKRONOS_SLACK_WEBHOOK_URL."
+                )
+                return 1
+            sent_at = utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            delivered = asyncio.run(
+                test_notifier.send(
+                    Notification(
+                        title="MyKronos test notification",
+                        detail="",
+                        repo_full_name="",
+                        level="info",
+                        lines=(
+                            f"Sent by `mykronos notify-test` at {sent_at}.",
+                            "If this is visible, alerts from this platform reach "
+                            "this channel (B-035).",
+                        ),
+                    )
+                )
+            )
+            if not delivered:
+                print(
+                    f"Not delivered ({test_notifier.transport}). The warning above "
+                    "names Slack's answer, e.g. channel_not_found or invalid_auth."
+                )
+                return 1
+            print(
+                f"Posted a test notification via {test_notifier.transport} at "
+                f"{sent_at}. Confirm it in the channel and record the date on B-035."
+            )
             return 0
 
         if args.command == "self-check":
