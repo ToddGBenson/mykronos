@@ -838,6 +838,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Coverage
+         * @description What the scanners cannot read in one repository (TheHub #60795, #318).
+         *
+         *     Two halves: the share of application source no SAST analyser implements
+         *     (B-051), and how many fixed findings have a test pinned (spec 31 §3). A
+         *     half that could not be read is listed in `unknown` with the reason.
+         *
+         *     Any authenticated principal may read it; it is never public. It is a map
+         *     of what is not looked at, so it is not registered as a public endpoint and
+         *     no anonymous probe asks for it.
+         */
+        get: operations["repo_coverage_api_dashboard_repos__repo_id__coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/governance": {
         parameters: {
             query?: never;
@@ -2040,6 +2068,11 @@ export interface paths {
          *     TheHub's board and GitHub (TheHub #60861), cached for a few minutes; an
          *     earlier answer standing in for a failed read makes its section
          *     `partial`. A read.
+         *
+         *     Each operator action in "Needs you" carries a `verification` from a
+         *     read-only GitHub probe where one is registered (TheHub #60972); one
+         *     observed done is listed in `data.board.operator_actions` only, not as a
+         *     line, so it is not counted as needing you.
          */
         get: operations["daily_briefing_route_api_briefing_daily_get"];
         put?: never;
@@ -2677,6 +2710,12 @@ export interface paths {
         /**
          * Decisions For Repo
          * @description Decision history for one repo, newest first (spec 09 §7).
+         *
+         *     `confidence_note` qualifies the newest verdict with how much of the code
+         *     the analysers read (TheHub #60962, decision 60814 option 2): "go - read
+         *     31% of the code" under the configured threshold, "go - read coverage
+         *     unknown" when it could not be measured, null otherwise. It is computed
+         *     when the history is read and never changes a recorded verdict.
          */
         get: operations["decisions_for_repo_api_oracle_decisions__repo_id__get"];
         put?: never;
@@ -4486,6 +4525,194 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/libraries/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Requests
+         * @description Library requests, newest first, with decisions copied back.
+         */
+        get: operations["list_requests_api_libraries_requests_get"];
+        put?: never;
+        /**
+         * Request Library
+         * @description Request a library: the platform vets it and opens its approval.
+         *
+         *     The vetting report reads OSV, deps.dev and OpenSSF Scorecard, and runs
+         *     typosquat and new-package checks; each check names its source, and one
+         *     that could not be read says so. The report is the evidence of a
+         *     `library_approval` request whose tier it decides.
+         */
+        post: operations["request_library_api_libraries_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/requests/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Request
+         * @description One library request and its vetting report.
+         */
+        get: operations["get_request_api_libraries_requests__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/managed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Managed Libraries
+         * @description Every library in use, with its status, owner, version policy and flags.
+         *
+         *     A library nobody has recorded reads `tolerated` with `status_source:
+         *     default`. EOL and abandonment come from registry facts; until the
+         *     `library-facts` job has read a library, those flags are null.
+         */
+        get: operations["managed_libraries_api_libraries_managed_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Library
+         * @description Record a library as tolerated or banned, or set its owner or policy.
+         *
+         *     Approving is refused here: a library is approved through a vetted request.
+         *     Tolerated is refused for a library no repository's SBOM has. Banning,
+         *     lifting a ban and loosening an approved library need a person.
+         */
+        patch: operations["update_library_api_libraries_managed_patch"];
+        trace?: never;
+    };
+    "/api/libraries/baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Baseline
+         * @description Record every in-use library with no entry as tolerated.
+         */
+        post: operations["baseline_api_libraries_baseline_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/facts/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Facts
+         * @description Read registry facts (latest release, licenses, deprecations) for the
+         *     libraries in use, least recently read first.
+         */
+        post: operations["refresh_facts_api_libraries_facts_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Coverage
+         * @description Whether the allowlist covers a repository's current dependencies.
+         */
+        get: operations["repo_coverage_api_libraries_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/repo-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Repo Mode
+         * @description Switch a repository's library check between report and blocking.
+         *
+         *     A person's decision. Blocking is refused until every library in the
+         *     repository's SBOM has an approved or tolerated entry.
+         */
+        put: operations["set_repo_mode_api_libraries_repo_mode_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/pr-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Pr Check
+         * @description Run the library-allowlist check on one pull request's head now.
+         *
+         *     The `library-checks` job does this for every open pull request; this is
+         *     for not waiting.
+         */
+        post: operations["run_pr_check_api_libraries_pr_checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -4663,6 +4890,47 @@ export interface components {
             revoked_at: string | null;
             /** Active */
             active: boolean;
+        };
+        /**
+         * AnalyserCoverageOut
+         * @description How much of the application source the SAST analysers read (B-051).
+         */
+        AnalyserCoverageOut: {
+            /**
+             * Available
+             * @description Whether the share was measured. False when GitHub's language breakdown could not be read or reports no source; `reason` says which. Never read an unavailable share as fully read.
+             */
+            available: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Tools
+             * @description The analysers that have reported SAST here, or the configured one.
+             */
+            tools?: string[];
+            /**
+             * Source Bytes
+             * @default 0
+             */
+            source_bytes: number;
+            /**
+             * Share Read
+             * @description 0.0 to 1.0, or null.
+             */
+            share_read?: number | null;
+            /**
+             * Share Unread
+             * @description 0.0 to 1.0, or null.
+             */
+            share_unread?: number | null;
+            /**
+             * Unread Languages
+             * @description Up to five languages nothing reads, largest first.
+             */
+            unread_languages?: components["schemas"]["UnreadLanguageOut"][];
         };
         /** AtlasAccepted */
         AtlasAccepted: {
@@ -4950,6 +5218,13 @@ export interface components {
              * @default
              */
             ref: string;
+            /**
+             * Verification
+             * @description On an operator action: observed_done, observed_not_done, unprobed (no probe registered) or probe_error (the probe could not read GitHub; never counted as done). Empty on every other line.
+             * @default
+             * @enum {string}
+             */
+            verification: "" | "observed_done" | "observed_not_done" | "unprobed" | "probe_error";
         };
         /** BriefingOut */
         BriefingOut: {
@@ -5338,6 +5613,50 @@ export interface components {
              * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. failed: the lane ran and its last build did not succeed, so there is no successful build to measure the lake against - distinct from not_run, which used to absorb it and reads as 'nobody has triggered this yet'. not_run: the job exists and has never run. unknown: the pipeline runs this job and nothing records what it produces, so no claim can be made about it - it is neither mapped to a capability nor written down as producing none, and until one of those is true nothing is watching it (B-59330). `capability` reads 'unknown' on these rows.
              */
             state: string;
+        };
+        /**
+         * CiStallJobOut
+         * @description One lane whose latest finished build errored (`ci_stall.ErroredJob`).
+         */
+        CiStallJobOut: {
+            /** Pipeline */
+            pipeline: string;
+            /** Job */
+            job: string;
+            /** Build */
+            build?: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * CiStallOut
+         * @description Is Concourse stalled - many lanes erroring together (TheHub #60975)?
+         */
+        CiStallOut: {
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /** Jobs */
+            jobs: components["schemas"]["CiStallJobOut"][];
+            /** Checklist */
+            checklist: string[];
+            /** Threshold */
+            threshold: number;
+            /** Window Minutes */
+            window_minutes: number;
+            /**
+             * Jobs Inspected
+             * @default 0
+             */
+            jobs_inspected: number;
+            /** Notified At */
+            notified_at?: string | null;
         };
         /**
          * CisGapOut
@@ -5974,6 +6293,19 @@ export interface components {
              * @description `controls.CONTROL_KINDS`, in order.
              */
             kinds: string[];
+        };
+        /**
+         * CoverageUnknownOut
+         * @description A source the coverage route could not read, and why.
+         */
+        CoverageUnknownOut: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "analysers" | "regression";
+            /** Detail */
+            detail: string;
         };
         /** CoveredFindingOut */
         CoveredFindingOut: {
@@ -7902,6 +8234,105 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** LibraryBaselineOut */
+        LibraryBaselineOut: {
+            /** Recorded */
+            recorded: number;
+            /** Libraries */
+            libraries: string[];
+        };
+        /** LibraryCoverageOut */
+        LibraryCoverageOut: {
+            /** Repo */
+            repo: string;
+            /** Mode */
+            mode: string;
+            /** Libraries */
+            libraries: number;
+            /** Missing */
+            missing: string[];
+            /** Covered */
+            covered: boolean;
+        };
+        /** LibraryEntryIn */
+        LibraryEntryIn: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Status */
+            status?: string | null;
+            /** Owner */
+            owner?: string | null;
+            /** Version Policy */
+            version_policy?: string | null;
+            /** Version Ref */
+            version_ref?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /** LibraryEntryOut */
+        LibraryEntryOut: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Status */
+            status: string;
+            /** Owner */
+            owner: string;
+            /** Version Policy */
+            version_policy: string;
+            /** Version Ref */
+            version_ref: string;
+            /** Source */
+            source: string;
+            /** Approval Request Id */
+            approval_request_id: string | null;
+            /** Note */
+            note: string;
+            /** Updated By */
+            updated_by: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** LibraryFactsOut */
+        LibraryFactsOut: {
+            /** Read */
+            read: number;
+            /** Failed */
+            failed: number;
+            /** Libraries */
+            libraries: number;
+        };
+        /**
+         * LibraryFlagsOut
+         * @description `null` means the platform holds no data to decide, never "fine".
+         */
+        LibraryFlagsOut: {
+            /** Divergent */
+            divergent: boolean;
+            /** Eol */
+            eol: boolean | null;
+            /** Abandoned */
+            abandoned: boolean | null;
+            /** License Changed */
+            license_changed: boolean | null;
+            /** Version Policy Violation */
+            version_policy_violation: boolean | null;
+            /** Banned In Use */
+            banned_in_use: boolean;
+        };
+        /** LibraryModeIn */
+        LibraryModeIn: {
+            /** Repo */
+            repo: string;
+            /** Mode */
+            mode: string;
+        };
         /**
          * LibraryOut
          * @description One library across the estate.
@@ -7919,6 +8350,140 @@ export interface components {
             divergent: boolean;
             /** Direct Anywhere */
             direct_anywhere: boolean;
+        };
+        /** LibraryPrCheckIn */
+        LibraryPrCheckIn: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+        };
+        /** LibraryPrCheckOut */
+        LibraryPrCheckOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Mode */
+            mode: string;
+            /** Conclusion */
+            conclusion: string;
+            /** Results */
+            results: {
+                [key: string]: unknown;
+            }[];
+            /** Error */
+            error: string | null;
+        };
+        /** LibraryRequestIn */
+        LibraryRequestIn: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Version */
+            version: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Owner
+             * @default
+             */
+            owner: string;
+            /**
+             * Version Policy
+             * @default minimum
+             */
+            version_policy: string;
+        };
+        /** LibraryRequestList */
+        LibraryRequestList: {
+            /** Requests */
+            requests: components["schemas"]["LibraryRequestOut"][];
+        };
+        /** LibraryRequestOut */
+        LibraryRequestOut: {
+            /** Id */
+            id: string;
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Version */
+            version: string;
+            /** Reason */
+            reason: string;
+            /** Owner */
+            owner: string;
+            /** Version Policy */
+            version_policy: string;
+            /** Requested By */
+            requested_by: string;
+            /** State */
+            state: string;
+            /** Tier */
+            tier: string;
+            /** Vetting */
+            vetting: {
+                [key: string]: unknown;
+            };
+            /** Approval Request Id */
+            approval_request_id: string | null;
+            /** Decision Reason */
+            decision_reason: string;
+            /** Decided By */
+            decided_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ManagedLibrariesOut */
+        ManagedLibrariesOut: {
+            /** Libraries */
+            libraries: components["schemas"]["ManagedLibraryOut"][];
+            /** By Status */
+            by_status: {
+                [key: string]: number;
+            };
+            /** Unrecorded */
+            unrecorded: number;
+            /** Flagged */
+            flagged: number;
+            /** Without Owner */
+            without_owner: number;
+        };
+        /** ManagedLibraryOut */
+        ManagedLibraryOut: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Repos */
+            repos: string[];
+            /** Versions */
+            versions: string[];
+            /** Status */
+            status: string;
+            /** Status Source */
+            status_source: string;
+            /** Owner */
+            owner: string;
+            /** Version Policy */
+            version_policy: string;
+            /** Version Ref */
+            version_ref: string;
+            flags: components["schemas"]["LibraryFlagsOut"];
+            /** Facts Read At */
+            facts_read_at: string | null;
         };
         /** ManifestOut */
         ManifestOut: {
@@ -8385,6 +8950,7 @@ export interface components {
             jobs: components["schemas"]["JobHealthOut"][];
             /** Dependencies */
             dependencies: components["schemas"]["DependencyHealthOut"][];
+            ci_stall: components["schemas"]["CiStallOut"];
             /** Note */
             note: string;
         };
@@ -10124,6 +10690,29 @@ export interface components {
             };
             /** Dry Run */
             dry_run: boolean;
+        };
+        /**
+         * RepoCoverageOut
+         * @description What the scanners cannot read in one repository (TheHub #60795).
+         */
+        RepoCoverageOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            analysers: components["schemas"]["AnalyserCoverageOut"] | null;
+            /**
+             * Regression
+             * @description Regression coverage (spec 31 §3); null when it could not be read.
+             */
+            regression: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Unknown
+             * @description Sources that could not be read. An entry here means could not ask, not none.
+             */
+            unknown?: components["schemas"]["CoverageUnknownOut"][];
         };
         /** RepoDetail */
         RepoDetail: {
@@ -12132,6 +12721,16 @@ export interface components {
             path_refusal: string;
             action?: components["schemas"]["BriefingActionOut"] | null;
         };
+        /**
+         * UnreadLanguageOut
+         * @description One language no analyser here reads, with its size.
+         */
+        UnreadLanguageOut: {
+            /** Language */
+            language: string;
+            /** Bytes */
+            bytes: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -13627,6 +14226,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_coverage_api_dashboard_repos__repo_id__coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoCoverageOut"];
                 };
             };
             /** @description Validation Error */
@@ -18630,6 +19260,313 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetiredLaneOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_requests_api_libraries_requests_get: {
+        parameters: {
+            query?: {
+                state?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryRequestList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_library_api_libraries_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_request_api_libraries_requests__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    managed_libraries_api_libraries_managed_get: {
+        parameters: {
+            query?: {
+                ecosystem?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagedLibrariesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_library_api_libraries_managed_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryEntryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    baseline_api_libraries_baseline_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryBaselineOut"];
+                };
+            };
+        };
+    };
+    refresh_facts_api_libraries_facts_refresh_post: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryFactsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_coverage_api_libraries_coverage_get: {
+        parameters: {
+            query: {
+                repo: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryCoverageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_repo_mode_api_libraries_repo_mode_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryModeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryCoverageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_pr_check_api_libraries_pr_checks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryPrCheckIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryPrCheckOut"];
                 };
             };
             /** @description Validation Error */

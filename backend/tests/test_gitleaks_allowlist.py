@@ -3,14 +3,21 @@
 `.gitleaks.toml` at the repository root is picked up by every gitleaks run
 that scans this repository without a `--config` flag, including the full
 history scan in the Concourse pipeline. A rule in it silences findings across
-every commit and every branch, so the file is held to three properties:
+every commit and every branch, so the file is held to these properties:
 
 * it extends the default ruleset rather than replacing it;
-* every allowlist names the rules it applies to, the one file it applies to,
-  and a regex anchored over the rule's whole match - all three must hold
-  (`condition = "AND"`), so no entry is a path allowlist;
+* every allowlist hangs off the one default rule it applies to (a
+  `[[rules]]` entry that carries only `id` and `allowlists`, so the rule's
+  detection is inherited, not redefined);
+* every allowlist names the one file it applies to and a regex anchored over
+  the rule's whole match - both must hold (`condition = "AND"`), so no entry
+  is a path allowlist;
 * each regex matches the fixture it was written for, and does not match a
   credential-shaped value on the same key.
+
+Why not a top-level `[[allowlists]]` with `targetRules`: under gitleaks
+8.28.0, the version the pipelines pin, combined with `useDefault`, that form
+loads without error and suppresses nothing. A test below refuses it.
 
 These are structural checks. Whether gitleaks itself honours the file is
 proved by running gitleaks; the pull request that added each entry records
@@ -38,12 +45,19 @@ def load() -> dict:
         return tomllib.load(handle)
 
 
-def allowlists() -> list[dict]:
-    # Also called at collection time to parametrize; a missing file is reported
-    # by the tests below, not as a collection error.
+def allowlists() -> list[tuple[str, dict]]:
+    """Every (rule id, allowlist) pair declared under `[[rules]]`.
+
+    Also called at collection time to parametrize; a missing file is reported
+    by the tests below, not as a collection error.
+    """
     if not CONFIG.exists():
         return []
-    return load().get("allowlists", [])
+    return [
+        (rule.get("id", "?"), entry)
+        for rule in load().get("rules", [])
+        for entry in rule.get("allowlists", [])
+    ]
 
 
 def test_the_config_exists_and_extends_the_default_ruleset() -> None:
@@ -52,36 +66,54 @@ def test_the_config_exists_and_extends_the_default_ruleset() -> None:
         "without [extend] useDefault = true the file replaces gitleaks' "
         "default rules and the scan stops looking for almost everything"
     )
-    assert "rules" not in config, "this file allowlists; it does not redefine rules"
 
 
 def test_there_is_no_global_allowlist() -> None:
-    # `[allowlist]` (singular) applies to every rule. Entries go under
-    # `[[allowlists]]` with targetRules instead.
+    # `[allowlist]` (singular) applies to every rule.
     assert "allowlist" not in load()
 
 
-@pytest.mark.parametrize("entry", allowlists(), ids=lambda e: e.get("description", "?")[:40])
-class TestEveryAllowlist:
-    def test_names_its_rules(self, entry: dict) -> None:
-        assert entry.get("targetRules"), "an allowlist without targetRules covers every rule"
+def test_there_is_no_top_level_allowlists_table() -> None:
+    # `[[allowlists]]` with `targetRules` is the documented form, but under
+    # gitleaks 8.28.0 with `useDefault` it suppresses nothing: the entry would
+    # look like a fix while the finding stays open. Allowlists go under the
+    # rule they apply to instead.
+    assert "allowlists" not in load()
 
-    def test_requires_path_and_regex_together(self, entry: dict) -> None:
+
+def test_rules_only_attach_allowlists_to_default_rules() -> None:
+    rules = load().get("rules", [])
+    assert rules, "no [[rules]] entry carries an allowlist"
+    for rule in rules:
+        assert set(rule) <= {"id", "allowlists"}, (
+            f"{rule.get('id')}: a [[rules]] entry here may only name a default "
+            "rule and add allowlists; any other key redefines its detection"
+        )
+        assert rule.get("id") and rule.get("allowlists"), rule
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "entry"), allowlists(), ids=lambda v: v if isinstance(v, str) else "allowlist"
+)
+class TestEveryAllowlist:
+    def test_requires_path_and_regex_together(self, rule_id: str, entry: dict) -> None:
         assert entry.get("condition") == "AND"
         assert entry.get("paths") and entry.get("regexes")
 
-    def test_has_no_other_escape_hatch(self, entry: dict) -> None:
-        # commits/stopwords would widen the entry past "this line in this file".
+    def test_has_no_other_escape_hatch(self, rule_id: str, entry: dict) -> None:
+        # commits/stopwords would widen the entry past "this match in this
+        # file"; targetRules is ignored under a rule and only misleads.
         assert not entry.get("commits")
         assert not entry.get("stopwords")
+        assert not entry.get("targetRules")
 
-    def test_each_path_is_one_file(self, entry: dict) -> None:
+    def test_each_path_is_one_file(self, rule_id: str, entry: dict) -> None:
         for path in entry["paths"]:
-            assert path.endswith(r"\.py$") or path.endswith("$"), path
+            assert path.endswith("$"), path
             assert ".*" not in path and ".+" not in path, f"{path} matches more than one file"
             assert "*" not in path.replace(r"\*", ""), f"{path} has a wildcard"
 
-    def test_regexes_are_anchored_over_the_whole_match(self, entry: dict) -> None:
+    def test_regexes_are_anchored_over_the_whole_match(self, rule_id: str, entry: dict) -> None:
         # "match" is the rule's full match (key name through value). An
         # unanchored regex would also cover a longer match that contains it.
         assert entry.get("regexTarget") == "match"
@@ -89,7 +121,7 @@ class TestEveryAllowlist:
             assert pattern.startswith("^") and pattern.endswith("$"), pattern
             assert not re.search(pattern, LOOKALIKE), pattern
 
-    def test_has_a_reason(self, entry: dict) -> None:
+    def test_has_a_reason(self, rule_id: str, entry: dict) -> None:
         assert len(entry.get("description", "")) > 20
 
 
@@ -102,14 +134,22 @@ FIXTURE = "backend/tests/test_network_lanes.py"
 RUN_KEY = "netassess-" + "2026.10.18" + ".zip"
 
 
+def fixture_entries() -> list[tuple[str, dict]]:
+    return [
+        (rule_id, entry)
+        for rule_id, entry in allowlists()
+        if any(re.search(p, FIXTURE) for p in entry["paths"])
+    ]
+
+
 def fixture_entry() -> dict:
-    matches = [e for e in allowlists() if any(re.search(p, FIXTURE) for p in e["paths"])]
+    matches = fixture_entries()
     assert len(matches) == 1, f"expected one allowlist covering {FIXTURE}"
-    return matches[0]
+    return matches[0][1]
 
 
 def test_the_fixture_entry_is_scoped_to_generic_api_key() -> None:
-    assert fixture_entry()["targetRules"] == ["generic-api-key"]
+    assert [rule_id for rule_id, _ in fixture_entries()] == ["generic-api-key"]
 
 
 def test_the_fixture_entry_covers_no_other_test_file() -> None:

@@ -89,6 +89,7 @@ METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "update_check_run": (("checks", "write"),),
     "get_branch_protection": (("administration", "read"),),
     "get_rulesets": (("administration", "read"),),
+    "get_ruleset": (("administration", "read"),),
     "get_installation": (),
     "dispatch_workflow": (("actions", "write"),),
     "list_workflows": (("actions", "read"),),
@@ -565,6 +566,9 @@ class GitHubClient(Protocol):
         unprotected.
         """
 
+    async def get_ruleset(self, repo_full_name: str, ruleset_id: int) -> dict[str, Any]:
+        """One ruleset in full. The listing leaves out `conditions` and
+        `rules`; this read carries them (TheHub #60972)."""
 
     async def get_installation(self, installation_id: int) -> dict[str, Any]: ...
 
@@ -1047,6 +1051,14 @@ class FakeGitHubClient:
         self._require("administration", "read", "Reading rulesets")
         return list(self._repo(repo_full_name).rulesets)
 
+    async def get_ruleset(self, repo_full_name: str, ruleset_id: int) -> dict[str, Any]:
+        self.calls.append(("get_ruleset", f"{repo_full_name}:{ruleset_id}"))
+        self._require("administration", "read", "Reading a ruleset")
+        for ruleset in self._repo(repo_full_name).rulesets:
+            if ruleset.get("id") == ruleset_id:
+                return dict(ruleset)
+        raise GitHubError(f"Ruleset {ruleset_id} not found", status=404)
+
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         self.calls.append(("get_installation", str(installation_id)))
         try:
@@ -1334,6 +1346,14 @@ class RestGitHubClient:
             params={"includes_parents": "true"},
         )
         return list(rules) if isinstance(rules, list) else []
+
+    async def get_ruleset(self, repo_full_name: str, ruleset_id: int) -> dict[str, Any]:
+        rule = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/rulesets/{int(ruleset_id)}",
+            params={"includes_parents": "true"},
+        )
+        return dict(rule) if isinstance(rule, dict) else {}
 
     async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
         response = await self._request(
