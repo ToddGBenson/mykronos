@@ -280,6 +280,20 @@ class TestGradeOne:
         )
         assert (got["grade"], got["human_verdict"]) == ("agree", "fixed")
 
+    def test_a_human_reopen_confirms_true_positive(self) -> None:
+        """Operator decision on #1006 (first review, item 4): a person
+        reopening the finding says it is real."""
+        got = shadow_proposals.grade_one(
+            self._p("true_positive"), [(self.T0 + timedelta(days=1), "open", "admin")], None
+        )
+        assert (got["grade"], got["human_verdict"]) == ("agree", "open")
+
+    def test_a_human_reopen_contradicts_false_positive(self) -> None:
+        got = shadow_proposals.grade_one(
+            self._p("false_positive"), [(self.T0 + timedelta(days=1), "open", "admin")], None
+        )
+        assert got["grade"] == "disagree"
+
     def test_agent_verdicts_are_not_graders(self) -> None:
         # human_verdicts filters on actor_kind; with none, the grade waits.
         assert shadow_proposals.grade_one(self._p("false_positive"), [], None)["grade"] == (
