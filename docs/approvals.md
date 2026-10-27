@@ -26,7 +26,7 @@ uses its own `mka_` credential (`POST /api/agents/credentials`).
 | | reversible | a person, or a delegated agent (break-glass) |
 | `deploy_override` | any | a person |
 | `library_approval` | flagged | a person |
-| | clean | a person, or a delegated agent |
+| | clean | a person, or a delegated agent of a *different* model family |
 | `delegation_grant` | any | a person, requested by a person |
 
 The requester never approves their own request. An agent's sub-agents are in

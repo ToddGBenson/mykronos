@@ -27,11 +27,11 @@ from typing import TYPE_CHECKING, Any
 import httpx2
 from sqlalchemy import select
 
-from mykronos import ci_stall, dormant_lanes, gate_liveness, timeout_audit
+from mykronos import ci_stall, dormant_lanes, gate_liveness, red_main, timeout_audit
 from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
-from mykronos.db.models import JobRun, RepoOnboarding, capability_config_for
+from mykronos.db.models import GatingLaneState, JobRun, RepoOnboarding, capability_config_for
 from mykronos.github.client import GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import seal_secret
@@ -1607,6 +1607,157 @@ async def notify_dormant_lanes(
     logger.info(
         "Dormant lanes: none across %s pipeline(s)", len(report.pipelines_read)
     )
+    return report
+
+
+#: The scheduled job's name (TheHub #60973).
+RED_MAIN_JOB = "red-main"
+
+
+class RedMainIncompleteError(RuntimeError):
+    """A configured pipeline or lane could not be read, so this poll has no
+    verdict for it. Raised for `TimeoutAuditIncompleteError`'s reason, after
+    every readable lane has been handled, so `job_runs` reads `could not
+    check` and not clean."""
+
+
+def load_lane_states(db: Database) -> dict[tuple[str, str], red_main.LaneState]:
+    """Every recorded gating-lane state, keyed on `(repo_full_name, job)`."""
+    with db.session() as session:
+        rows = session.execute(select(GatingLaneState)).scalars().all()
+        return {
+            (row.repo_full_name, row.job): red_main.LaneState(
+                repo_full_name=row.repo_full_name,
+                pipeline=row.pipeline,
+                job=row.job,
+                state=row.state,
+                status=row.status,
+                build=row.build,
+                red_since=row.red_since.replace(tzinfo=UTC) if row.red_since else None,
+                first_bad_build=row.first_bad_build,
+                first_bad_sha=row.first_bad_sha,
+                last_green_sha=row.last_green_sha,
+            )
+            for row in rows
+        }
+
+
+def save_lane_state(db: Database, state: red_main.LaneState) -> None:
+    with db.session() as session:
+        row = session.get(GatingLaneState, (state.repo_full_name, state.job))
+        if row is None:
+            row = GatingLaneState(repo_full_name=state.repo_full_name, job=state.job)
+            session.add(row)
+        row.pipeline = state.pipeline
+        row.state = state.state
+        row.status = state.status
+        row.build = state.build
+        row.red_since = (
+            state.red_since.astimezone(UTC).replace(tzinfo=None) if state.red_since else None
+        )
+        row.first_bad_build = state.first_bad_build
+        row.first_bad_sha = state.first_bad_sha
+        row.last_green_sha = state.last_green_sha
+        row.updated_at = utcnow()
+
+
+def junit_totals_lookup(catalog: Catalog | None) -> red_main.TestLookup:
+    """The newest JUnit run one lane uploaded for one commit, as suite totals.
+
+    Matched on the run's recorded `job`, so another lane's report for the
+    same commit is never attributed to this one; a run uploaded with no job
+    name is not matched. Reads the compacted lake only: a report still in the
+    write-ahead buffer reads as not uploaded until the next compaction.
+    """
+
+    def lookup(repo_full_name: str, commit_sha: str, lane: str) -> red_main.TestTotals | None:
+        if catalog is None or not commit_sha or not catalog.all_files("scan_runs"):
+            return None
+        rows = catalog.query(
+            """
+            SELECT scan_status, detail FROM scan_runs
+            WHERE repo_full_name = ? AND tool_name = 'junit' AND job = ?
+              AND commit_sha IS NOT NULL AND commit_sha <> ''
+              AND (starts_with(commit_sha, ?) OR starts_with(?, commit_sha))
+            ORDER BY coalesce(completed_at, started_at) DESC
+            LIMIT 1
+            """,
+            [repo_full_name, lane, commit_sha, commit_sha],
+        )
+        if not rows:
+            return None
+        status, detail = rows[0]
+        return red_main.totals_from_run(
+            str(status) if status is not None else None,
+            str(detail) if detail is not None else None,
+        )
+
+    return lookup
+
+
+async def announce_red_main(
+    concourse_url: str,
+    *,
+    db: Database,
+    gating: dict[str, list[str]],
+    tests: red_main.TestLookup,
+    team: str = "main",
+    link_base: str = "",
+    notifier: Notifier | None = None,
+    fetch: red_main.Fetch | None = None,
+    now: datetime | None = None,
+) -> red_main.RedMainReport:
+    """Announce a gating lane that went red on main, or recovered, once (TheHub #60973).
+
+    The recorded state in `gating_lane_states` is the de-duplication key. A
+    lane's new state is saved only after its message is delivered, so a
+    message Slack refused is retried on the next poll rather than lost. With
+    no Slack transport configured the state is saved anyway: there is nothing
+    to retry, and the CI page still needs `red_since`.
+
+    An unreadable pipeline or a configured lane Concourse does not have raises
+    `RedMainIncompleteError` after everything readable has been handled.
+    """
+    prior = await asyncio.to_thread(load_lane_states, db)
+    report = await asyncio.to_thread(
+        red_main.evaluate,
+        fetch or _concourse_fetch(concourse_url),
+        gating=gating,
+        prior=prior,
+        tests=tests,
+        now=now or datetime.now(UTC),
+        team=team,
+        link_base=link_base,
+    )
+    pending = {(m.repo_full_name, m.job): m for m in report.messages}
+    for state in report.states:
+        message = pending.get((state.repo_full_name, state.job))
+        if message is not None:
+            logger.warning("Red main: %s", " ".join(message.lines))
+            if notifier is not None and notifier.enabled:
+                delivered = await notifier.send(
+                    Notification(
+                        title=message.title,
+                        detail="",
+                        repo_full_name="",
+                        level="warning" if message.kind == "red" else "info",
+                        lines=message.lines,
+                    )
+                )
+                if not delivered:
+                    # Not saved: the next poll sees the same transition.
+                    report.unreadable.append(
+                        f"{state.repo_full_name} {state.job}: the {message.kind} "
+                        "message was not delivered"
+                    )
+                    continue
+        if prior.get((state.repo_full_name, state.job)) != state:
+            await asyncio.to_thread(save_lane_state, db, state)
+
+    if not report.complete:
+        raise RedMainIncompleteError(
+            "could not check: " + "; ".join(scrub(entry) for entry in report.unreadable)
+        )
     return report
 
 

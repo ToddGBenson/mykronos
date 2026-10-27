@@ -157,10 +157,18 @@ class TestEveryTermSaysWhatInputItIs:
         have the queue claim an input it cannot use."""
         from mykronos.dashboard import RANK_INPUTS
 
+        # `public_exploit` is the other side of `in_kev` (TheHub #60890): a
+        # KEV-listed finding already carries the larger term, so it is reached
+        # with KEV off, like `due_soon` is with `overdue` off.
+        variants = (
+            {"due_state": "overdue"},
+            {"due_state": "due_soon"},
+            {"in_kev": False, "exploit_verdict": "weaponized"},
+        )
         reachable = {
             term["key"]
-            for state in ("overdue", "due_soon")
-            for term in rank_terms({**self._loud(), "due_state": state}, policy)[1]
+            for variant in variants
+            for term in rank_terms({**self._loud(), **variant}, policy)[1]
         }
 
         assert set(RANK_INPUTS) == reachable, (
