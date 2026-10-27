@@ -831,3 +831,165 @@ class TestSweep:
 
         assert asked == []
         assert [p.state for p in result.proposals] == ["unreadable"]
+
+
+# --------------------------------------------------------------------------
+# Second rework of #1008 (wave-2 review, 2026-10-27)
+# --------------------------------------------------------------------------
+
+
+def _more_drift() -> tmd.Draft:
+    more = _bundle()
+    assert more.endpoints is not None
+    more.endpoints.append({"url": "https://admin.example.net/", "last_status": "open", "label": ""})
+    return tmd.draft(more, now=NOW)
+
+
+class TestReviewerDescription:
+    """[Medium] Reviewer edits are preserved: the description a person wrote on
+    the open proposal is not replaced by a later run, as the file is not."""
+
+    def test_an_edited_description_survives_an_update(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.state == "opened", first.reason
+        assert first.pull_request is not None
+        pr = github.repos[REPO].pull_requests[0]
+        note = "Reviewer: the demo port is behind the tunnel; checking with ops."
+        pr.body = note + "\n\n" + pr.body
+
+        later = _propose(github, _more_drift())
+
+        assert later.state == "updated", later
+        assert "ep-admin.example.net" in _branch_file(github, first)
+        body = github.pull_request_bodies[first.pull_request.number]
+        assert note in body
+        # The record still lets the next run tell its own file from an edit.
+        assert tpr._PROPOSAL_MARK_RE.search(body) is not None
+
+    def test_an_edited_description_stays_kept_on_the_run_after(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.pull_request is not None
+        pr = github.repos[REPO].pull_requests[0]
+        note = "Reviewer note that must outlive two runs."
+        pr.body = note + "\n\n" + pr.body
+        assert _propose(github, _more_drift()).state == "updated"
+        third = _bundle()
+        assert third.endpoints is not None
+        third.endpoints += [
+            {"url": "https://admin.example.net/", "last_status": "open", "label": ""},
+            {"url": "https://ops.example.net/", "last_status": "open", "label": ""},
+        ]
+
+        again = _propose(github, tmd.draft(third, now=NOW))
+
+        assert again.state == "updated", again
+        assert note in github.pull_request_bodies[first.pull_request.number]
+
+    def test_an_unedited_description_is_regenerated(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.pull_request is not None
+
+        later = _propose(github, _more_drift())
+
+        assert later.state == "updated", later
+        body = github.pull_request_bodies[first.pull_request.number]
+        assert "`ep-admin.example.net`" in body
+
+
+class TestPublicWithOpenProposal:
+    """Review follow-up: a repository that turned public while a proposal was
+    open is refused, and the refusal names the open proposal so a person can
+    close it; the sweep audits a refusal."""
+
+    def test_the_refusal_names_the_open_proposal(self) -> None:
+        github = _github(DECLARED)
+        first = _propose(github, tmd.draft(_bundle(), now=NOW))
+        assert first.pull_request is not None
+        github.repos[REPO].visibility = "public"  # type: ignore[attr-defined]
+        github.calls.clear()
+
+        later = _propose(github, _more_drift())
+
+        assert later.state == "refused"
+        assert _writes(github) == []
+        assert later.pull_request is not None
+        assert later.pull_request.number == first.pull_request.number
+        assert f"#{first.pull_request.number}" in later.reason
+
+    def test_the_sweep_audits_a_refusal(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        _seed(client, admin_auth)
+        github.repos[REPO].visibility = "public"  # type: ignore[attr-defined]
+        state = client.app.state
+        from mykronos.db.models import RepoOnboarding
+
+        with state.db.session() as session:
+            for row in session.scalars(select(RepoOnboarding)):
+                row.status = "active"
+
+        result = asyncio.run(tpr.sweep(state.db, state.catalog, state.github_factory))
+
+        assert [p.state for p in result.proposals] == ["refused"]
+        with state.db.session() as session:
+            audit = session.scalars(
+                select(AuditLogEntry).where(AuditLogEntry.action == "threat_model.propose")
+            ).all()
+        assert len(audit) == 1
+
+
+class TestBodyMentions:
+    """Low: evidence text in the description cannot @-mention a person or
+    cross-link an issue: it is rendered as inline code."""
+
+    def test_evidence_cannot_mention_or_cross_link(self) -> None:
+        bundle = _bundle()
+        assert bundle.endpoints is not None
+        bundle.endpoints.append(
+            {
+                "url": "https://shop.example.net/@octocat/issues#12",
+                "label": "@octocat see #12",
+                "last_status": "open",
+            }
+        )
+        draft = tmd.draft(bundle, now=NOW)
+
+        body = tpr.pr_body(draft, list(draft.elements), kind="draft")
+
+        for line in body.split("\n"):
+            if "@octocat" not in line:
+                continue
+            for cell in line.split(" | ")[2:]:
+                for part in cell.split("<br>"):
+                    if "@octocat" in part:
+                        assert part.strip(" |").startswith("`"), part
+                        assert part.strip(" |").endswith("`"), part
+
+
+class TestManifestSweepInstallation:
+    """[Low] for_installation(None): the declared-manifest sync sweep skips a
+    repository with no installation too, as the draft sweep does."""
+
+    def test_no_installation_is_skipped(self) -> None:
+        from types import SimpleNamespace
+
+        from mykronos import threat_model_manifest as tmm
+
+        row = SimpleNamespace(
+            github_repo_full_name=REPO, default_branch="main", github_installation_id=None
+        )
+        db = SimpleNamespace(session=lambda: _Rows([row]))
+        asked: list[Any] = []
+
+        class Factory:
+            def for_installation(self, installation_id: int) -> FakeGitHubClient:
+                asked.append(installation_id)
+                raise TypeError("installation_id is None")
+
+        result = asyncio.run(tmm.sweep(db, Factory()))  # type: ignore[arg-type]
+
+        assert asked == []
+        assert [r.state for r in result.reports] == ["unreadable"]
