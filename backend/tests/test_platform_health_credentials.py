@@ -7,7 +7,8 @@ an expiry (spec 34). Neither reached a page. These tests pin three things:
 - the two ingestion-token states stay apart, and only ``due`` tells anybody
   to rotate - an ``unverified`` token is a reason to check that scans arrive,
   and rotating it is how a repository goes dark (D-097);
-- an agent credential is listed inside a 14-day window and not outside it;
+- an agent credential is listed inside a 7-day window and not outside it
+  (the PO's rework decision on #1019: 14 days outran the agent TTL);
 - the page carries state and dates only: no hash, hash prefix or plaintext,
   because it is served on an internet-exposed dashboard.
 """
@@ -117,8 +118,8 @@ class TestIngestionTokens:
 
 
 class TestAgentCredentials:
-    def test_one_expiring_in_13_days_is_listed(self, client, admin_auth) -> None:
-        _agent(client.app.state.db, actor="agent:test-family:aaaa1111", days=13)
+    def test_one_expiring_in_6_days_is_listed(self, client, admin_auth) -> None:
+        _agent(client.app.state.db, actor="agent:test-family:aaaa1111", days=6)
 
         rows = [r for r in _credentials(client, admin_auth) if r["kind"] == "agent_credential"]
 
@@ -126,10 +127,11 @@ class TestAgentCredentials:
         assert rows[0]["state"] == "expiring"
         assert rows[0]["expires_at"]
         assert rows[0]["repo_full_name"] is None
-        assert 12.9 < rows[0]["days_until_due"] <= 13
+        assert 5.9 < rows[0]["days_until_due"] <= 6
 
-    def test_one_expiring_in_15_days_is_not_listed(self, client, admin_auth) -> None:
-        _agent(client.app.state.db, actor="agent:test-family:bbbb2222", days=15)
+    def test_one_expiring_in_8_days_is_not_listed(self, client, admin_auth) -> None:
+        """Outside the 7-day window, though it would have been inside the old 14."""
+        _agent(client.app.state.db, actor="agent:test-family:bbbb2222", days=8)
 
         assert _credentials(client, admin_auth) == []
 
@@ -186,7 +188,7 @@ class TestNoRows:
 
 
 class TestTheWindow:
-    """The 14-day boundary, decided without a clock race."""
+    """The 7-day boundary, decided without a clock race."""
 
-    def test_the_window_is_fourteen_days(self) -> None:
-        assert timedelta(days=14) == platform_health.AGENT_EXPIRY_WINDOW
+    def test_the_window_is_seven_days(self) -> None:
+        assert timedelta(days=7) == platform_health.AGENT_EXPIRY_WINDOW

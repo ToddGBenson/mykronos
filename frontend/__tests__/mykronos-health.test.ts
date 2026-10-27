@@ -201,6 +201,33 @@ describe("MyKronos Health (TheHub #60883)", () => {
       expect(unverified.replaceAll("do not rotate", "").toLowerCase()).not.toMatch(/rotat/);
     });
 
+    it("shows no due date or overdue count on an unverified row (D-097, #1019 review)", async () => {
+      // An unverified token past its rotate_after date: "due 2026-10-01 (22
+      // days overdue)" reads as a prompt to rotate, which D-097 forbids.
+      const overdueUnverified = {
+        ...rows[1],
+        rotate_after: "2026-10-01T00:00:00Z",
+        days_until_due: -22,
+      };
+      const unverified = row(await render([overdueUnverified]), "unverified");
+      expect(unverified).toContain("example-org/unverified-service");
+      expect(unverified).not.toContain("2026-10-01");
+      expect(unverified.toLowerCase()).not.toMatch(/overdue|\bdue\b/);
+      expect(unverified).toContain("check that scans are arriving - do not rotate (D-097)");
+    });
+
+    it("keeps the due date and overdue count on a due row", async () => {
+      const due = row(await render(rows), "due");
+      expect(due).toContain("2026-10-18");
+      expect(due).toContain("5 days overdue");
+    });
+
+    it("names a 7-day agent window when nothing needs attention", async () => {
+      const html = await render([]);
+      expect(html).toContain("expires within 7 days");
+      expect(html).not.toContain("14 days");
+    });
+
     it("lists an expiring agent credential by actor and date", async () => {
       const agent = row(await render(rows), "expiring");
       expect(agent).toContain("agent:test-family:aaaa1111");
