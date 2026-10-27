@@ -16,11 +16,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from mykronos import libraries, library_check
-from mykronos.db.models import ApprovalRequest, LibraryEntry
+from mykronos.db.models import ApprovalRequest, Delegation, LibraryEntry
 from mykronos.github import FakeGitHubClient
 from mykronos.github.client import PullRequest, PullRequestFile
 from mykronos.schemas import utcnow
 from tests.conftest import REPO
+from tests.test_approvals import _bearer, _mint, _platform_reviewer
 from tests.test_onboarding import onboard
 
 REASON = "We need an HTTP client with retries; the stdlib one has none and urllib3 is lower level."
@@ -626,6 +627,84 @@ class TestManifests:
         assert libraries.version_allowed("same_major", "1.2.0", "2.0.0") is False
         assert libraries.version_allowed("any", "", "latest") is True
 
+
+
+class TestACleanLibraryNeedsAnotherModelFamily:
+    """Operator decision 2026-10-23 (follow-up to #1010): a `clean` library can
+    be approved by a delegated agent, but not one of the requester's model
+    family, which shares its blind spots about the package it asked for."""
+
+    def _clean_request_by_claude(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry
+    ) -> dict[str, Any]:
+        registry.package("PYPI", "httpx", versions=[("0.27.0", 400)])
+        author = _mint(client, admin_auth, family="claude-opus-5.5")
+        asked = _request(client, _bearer(author["token"]))
+        assert asked.status_code == 201, asked.text
+        body: dict[str, Any] = asked.json()
+        with client.app.state.db.session() as session:
+            approval = session.get(ApprovalRequest, body["approval_request_id"])
+            assert approval is not None and approval.tier == "clean"
+        return body
+
+    def _reviewer_decides(
+        self, client: TestClient, admin_auth: dict[str, str], approval_id: str, family: str
+    ) -> Any:
+        _delegate_library(client, family)
+        evidence = client.get(f"/api/approvals/{approval_id}/evidence", headers=admin_auth).json()
+        return client.post(
+            f"/api/approvals/{approval_id}/decisions",
+            json={"verdict": "approve",
+                  "rationale": "Vetting is clean and the reason names why urllib3 will not do.",
+                  "evidence_digest": evidence["evidence_digest"]},
+            headers=_bearer(_platform_reviewer(client, family)),
+        )
+
+    def test_a_reviewer_of_the_requesters_family_cannot_approve(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry
+    ) -> None:
+        asked = self._clean_request_by_claude(client, admin_auth, registry)
+
+        response = self._reviewer_decides(
+            client, admin_auth, asked["approval_request_id"], "claude-sonnet-5"
+        )
+
+        assert response.status_code == 409, response.text
+        assert "different_family" in response.json()["detail"]
+        with client.app.state.db.session() as session:
+            assert session.execute(select(LibraryEntry)).first() is None
+        again = client.get(f"/api/libraries/requests/{asked['id']}", headers=admin_auth).json()
+        assert again["state"] == "pending_approval"
+
+    def test_a_reviewer_of_another_family_can_approve(
+        self, client: TestClient, admin_auth: dict[str, str], registry: Registry
+    ) -> None:
+        asked = self._clean_request_by_claude(client, admin_auth, registry)
+
+        response = self._reviewer_decides(
+            client, admin_auth, asked["approval_request_id"], "gpt-5"
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "approved"
+        with client.app.state.db.session() as session:
+            entry = session.execute(select(LibraryEntry)).scalar_one()
+            assert (entry.package_name, entry.status) == ("httpx", "approved")
+
+
+def _delegate_library(client: TestClient, family: str) -> None:
+    with client.app.state.db.session() as session:
+        session.add(
+            Delegation(
+                granted_by="operator",
+                grant_request_id="test",
+                duty="library_approval",
+                tiers=["clean"],
+                approver_families=[family],
+                sampling=0.0,
+                expires_at=utcnow() + timedelta(days=1),
+            )
+        )
 
 
 # -- Rework after review (PR #1010) --------------------------------------------

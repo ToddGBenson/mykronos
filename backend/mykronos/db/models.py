@@ -722,6 +722,18 @@ class ThreatIntelMatch(Base):
     #: v3-only lookup, which may have dropped a v4 vector: those are eligible
     #: for exactly one more lookup, then a miss is a miss.
     v4_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Public exploit references for this CVE (TheHub #60890): Exploit-DB
+    #: entries, Metasploit modules and NVD references tagged `Exploit` (which
+    #: is where GitHub proof-of-concept links appear). Each is
+    #: {source, ref, url, title}. Null until a lookup has run; an empty list
+    #: once one has and found nothing, which is a different statement.
+    exploit_refs_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=None)
+    #: When the Exploit-DB / Metasploit feeds last answered for this CVE.
+    exploits_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: When NVD's references were last read for exploit links. Separate from
+    #: `vector_checked_at` because rows looked up before #60890 were read for
+    #: vectors only, and are eligible for exactly one more lookup.
+    nvd_refs_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -927,6 +939,41 @@ class AutoTriageAction(Base):
     undone_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     undone_by: Mapped[str | None] = mapped_column(String(255), default=None)
     undo_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class ModelTriageProposal(Base):
+    """A model's proposed verdict on one finding, in shadow (TheHub #60893,
+    absorbing #60748).
+
+    Recorded under the `finding_disposition` duty and **never applied**:
+    nothing reads this table to change a finding. It exists to be graded -
+    `shadow_proposals.grade` compares each proposal with the verdict a person
+    later recorded - so the decision to let a model act is made on a measured
+    agreement rate rather than on how convincing its prose was.
+
+    Append-only like the audit log: a model that changes its mind writes a
+    new row, and the grade reads the latest per finding and model.
+    """
+
+    __tablename__ = "model_triage_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: The cluster the finding was in when proposed (TheHub #60887), if known.
+    cluster_id: Mapped[str] = mapped_column(String(64), default="")
+    duty: Mapped[str] = mapped_column(String(64), default="finding_disposition")
+    #: true_positive | false_positive | suppressed | accepted_risk
+    proposed_status: Mapped[str] = mapped_column(String(32), default="")
+    confidence: Mapped[float | None] = mapped_column(Float, default=None)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    #: The exact model id that read the code, so grades are per model.
+    model: Mapped[str] = mapped_column(String(128), default="")
+    #: What it read: files and lines, as the proposer reported them.
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    proposed_by: Mapped[str] = mapped_column(String(255), default="")
+    actor_kind: Mapped[str] = mapped_column(String(16), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class PublicEndpoint(Base):
@@ -1593,6 +1640,37 @@ class CiCheckRun(Base):
     last_job: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GatingLaneState(Base):
+    """What the red-main poll last saw of one gating lane (TheHub #60973).
+
+    The de-duplication key for its notifications: a lane recorded `red` is not
+    announced again until it has been recorded `green`. Kept here rather than
+    in memory so a backend restart does not post the same red twice, and read
+    by the CI page for `red_since` and `first_bad_sha`. Current state, one row
+    per lane, like `JobRun`.
+    """
+
+    __tablename__ = "gating_lane_states"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job: Mapped[str] = mapped_column(String(100), primary_key=True)
+    pipeline: Mapped[str] = mapped_column(String(100), default="")
+    #: `green` | `red`
+    state: Mapped[str] = mapped_column(String(8), default="green")
+    #: Concourse's word for the latest finished build.
+    status: Mapped[str | None] = mapped_column(String(16), default=None)
+    build: Mapped[str | None] = mapped_column(String(32), default=None)
+    red_since: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    first_bad_build: Mapped[str | None] = mapped_column(String(32), default=None)
+    #: Null when the commit could not be resolved from Concourse.
+    first_bad_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    last_green_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<GatingLaneState {self.repo_full_name} {self.job} {self.state}>"
 
 
 class LibraryRequest(Base):

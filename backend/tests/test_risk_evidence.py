@@ -23,6 +23,7 @@ from sqlalchemy import select
 from mykronos import risk_evidence
 from mykronos.db.models import (
     ControlObservation,
+    EnvironmentalScore,
     RepoControl,
     RepoOnboarding,
     RepoSurface,
@@ -326,3 +327,36 @@ class TestVerifiedControls:
             status = risk_evidence.control_verification(session, REPO, control.id, now=utcnow())
         assert status.status == "unverified"
         assert "declaration is not evidence" in status.reason
+
+
+# ---------------------------------------------------------------------------
+# IN lists are read in chunks (review of #1005)
+# ---------------------------------------------------------------------------
+
+#: More ids than SQLite binds in one statement (SQLITE_MAX_VARIABLE_NUMBER
+#: is 32766), which a migrated estate's open findings exceed.
+MANY = 40_000
+
+
+class TestManyIdsStillRead:
+    """A repository with tens of thousands of open findings must not turn
+    the `risk_evidence` block into `available: false` on a bind limit."""
+
+    def test_threat_signals_reads_past_the_bind_limit(self, client) -> None:
+        wanted = [f"CVE-2026-{n}" for n in range(10_000, 10_000 + MANY)]
+        with client.app.state.db.session() as session:
+            session.add(
+                ThreatIntelMatch(cve_id=wanted[-1], in_kev=True, fetched_at=utcnow())
+            )
+            session.flush()
+            signals = risk_evidence.threat_signals(session, wanted)
+        assert list(signals) == [wanted[-1]]
+        assert signals[wanted[-1]].in_kev
+
+    def test_environmental_scores_reads_past_the_bind_limit(self, client) -> None:
+        ids = [f"f{n:06d}" for n in range(MANY)]
+        with client.app.state.db.session() as session:
+            session.add(EnvironmentalScore(finding_id=ids[-1], repo_full_name=REPO))
+            session.flush()
+            scores = risk_evidence.environmental_scores(session, finding_ids=ids)
+        assert list(scores) == [ids[-1]]

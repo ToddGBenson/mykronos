@@ -13,6 +13,7 @@ import {
 import { ClassificationReview } from "@/components/classification-review";
 import { AutoTriageUndo } from "@/components/auto-triage-undo";
 import { ClusterDisposition } from "@/components/cluster-disposition";
+import { verdictLabel } from "@/components/finding-workbench";
 import { WorklistKeys } from "@/components/worklist";
 import { FilterSelect } from "@/components/filter-select";
 import {
@@ -434,6 +435,11 @@ export default async function TriagePage({
                             <span className="font-mono text-[10px] uppercase tracking-wide text-critical">
                               kev
                             </span>
+                          ) : item.exploit_verdict === "weaponized" ||
+                            item.exploit_verdict === "public_poc" ? (
+                            <span className="font-mono text-[10px] uppercase tracking-wide text-high">
+                              {verdictLabel(item.exploit_verdict)}
+                            </span>
                           ) : null}
                           <span className="font-mono text-[11px] text-ink-3">
                             {item.capability}
@@ -510,6 +516,9 @@ function WorklistDetail({
         <span className="flex flex-wrap items-baseline gap-2">
           <SeverityText severity={item.severity as Severity} />
           {item.in_kev ? <Pill tone="critical">KEV</Pill> : null}
+          {item.exploit_verdict && item.exploit_verdict !== "no_cve" && !item.in_kev ? (
+            <Pill tone="muted">{verdictLabel(item.exploit_verdict)}</Pill>
+          ) : null}
           <span className="font-mono text-[12px] text-ink-3">{item.capability}</span>
         </span>
         <h2 className="text-[13px] font-semibold leading-snug">{item.title}</h2>

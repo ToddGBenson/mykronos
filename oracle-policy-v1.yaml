@@ -116,7 +116,14 @@
 # only on recorded evidence - a verified fix, a VEX not_affected statement,
 # an exact duplicate of a person's verdict, an orphaned Python file - and
 # every action is audited and undoable. See the block at the end of this file.
-version: "1.16"
+#
+# 1.17 - adds triage_rank.public_exploit_weaponized and public_exploit_poc
+# (TheHub #60890, Triage T3). No risk score changes - triage_rank orders the
+# work queue only. A queue row whose CVE has a Metasploit module, or published
+# proof-of-concept code (Exploit-DB, a GitHub PoC NVD tagged as an exploit),
+# and is not KEV-listed now ranks by these points; every other row ranks
+# exactly as it did under 1.16.
+version: "1.17"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -498,6 +505,15 @@ triage_rank:
   # The scanner's word stays the larger signal until the rescoring has a
   # track record; raise it in review once it does.
   environmental_per_band: 10
+  # A public exploit somebody can pick up today, for a CVE CISA has not (yet)
+  # listed as exploited (TheHub #60890). Never added on top of in_kev: a
+  # KEV-listed finding already carries the larger term. A Metasploit module is
+  # point-and-shoot, so it outranks proof-of-concept code. Both sit below
+  # in_kev (25) - exploited beats exploitable. A weaponised medium (12 + 15)
+  # outranks a high nobody has an exploit for (25), which is the point; a
+  # medium with only proof-of-concept code (12 + 8) does not.
+  public_exploit_weaponized: 15
+  public_exploit_poc: 8
 
 thresholds:
   no_go: 70                  # >= 70

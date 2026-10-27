@@ -769,6 +769,31 @@ class Settings(BaseSettings):
         ),
     )
 
+    red_main_interval_seconds: int = Field(
+        default=300,
+        ge=60,
+        description=(
+            "How often the red-main poll (mykronos.red_main) reads each gating "
+            "lane's latest build and announces a lane that went red on main, or "
+            "came back green, once (TheHub #60973). One anonymous job-list read "
+            "per configured pipeline per poll; commits are resolved only on a "
+            "transition. Scheduled only when concourse_url is set."
+        ),
+    )
+
+    red_main_gating_lanes: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "ToddGBenson/mykronos": ["unit", "lint-and-types", "pin-check"],
+        },
+        description=(
+            "Per repository, the Concourse jobs whose red build on main is "
+            "announced by the red-main poll. The pipeline is the repository "
+            "name lower-cased. A JSON object in the environment, for example "
+            '{"owner/repo": ["unit", "lint"]}; an empty object turns the '
+            "announcements off."
+        ),
+    )
+
     oracle_read_coverage_threshold: float = Field(
         default=0.8,
         ge=0,
