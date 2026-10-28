@@ -36,6 +36,20 @@ back a HIGH/CRITICAL fix. LOW and UNKNOWN never decide.
 The verdict authorises the demo only. Production keeps the date its compose
 file pins, and moving it is a reviewed one-line change.
 
+**Digest-pinned references.** Production names each image as
+`<repository>:<tag>-p<YYYYMMDD>@sha256:<digest>` (TheHub #500), so the date
+is the end of the tag, not of the reference. `plan` reads the date from the
+part before the `@`, scans the current image by its digest, and emits a
+candidate with the new date and no digest: the old digest names the old
+bytes, and the new one does not exist until the rebuild is pushed. Nothing
+in this lane writes a reference back to production's compose file. Adopting
+a candidate there is the reviewed change above, and TheHub's
+`scripts/publish-patched-images.sh` prints the `pin: <ref>@<digest>` line
+that change carries. The demo names its images by tag alone and takes the
+new date from the lane, so it needs no digest. One tag pinned to two
+different digests across the compose files is refused: it means a tag was
+re-pushed, and which bytes run is then a question for a person.
+
 **MyKronos's own images (`x-mykronos-build`).** The same lane, out of band,
 for the estate this repository runs: Concourse, Postgres, the registry, Vault
 and the ZAP scanner. Their recipes differ from TheHub's in one way: they are
@@ -92,6 +106,7 @@ GATED = ("CRITICAL", "HIGH")
 SECOND_TIER = ("MEDIUM",)
 _DATE_SUFFIX = re.compile(r"-p(\d{8})$")
 _DATE = re.compile(r"^\d{8}$")
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 Verdict = Literal["improved", "unchanged", "regressed", "failed"]
 
@@ -140,26 +155,40 @@ def plan(
             reference, unresolved = interpolate(str(definition.get("image", "")), env or {})
             if unresolved:
                 raise ValueError(f"{name}::{service}: unset {', '.join(unresolved)}")
-            if not _DATE_SUFFIX.search(reference):
-                raise ValueError(f"{name}::{service}: {reference!r} has no -pYYYYMMDD suffix")
-            current = _registry_path(reference, registry)
+            where = f"{name}::{service}"
+            tagged, at, digest = reference.partition("@")
+            if at and not _SHA256.match(digest):
+                raise ValueError(f"{where}: {digest!r} is not a sha256 digest")
+            if not _DATE_SUFFIX.search(tagged):
+                raise ValueError(f"{where}: {reference!r} has no -pYYYYMMDD suffix")
+            tag_ref = _registry_path(tagged, registry)
+            # Scan what runs: by digest when compose pins one.
+            current = f"{tag_ref}@{digest}" if at else tag_ref
             args = [(str(k), str(v)) for k, v in (build.get("args") or {}).items()]
             if build.get("refresh_arg"):
                 args.append((str(build["refresh_arg"]), date))
-            where = f"{name}::{service}"
-            if current in found:
-                previous = found[current]
-                found[current] = Recipe(
-                    previous.current,
+            if tag_ref in found:
+                previous = found[tag_ref]
+                pinned = {r.partition("@")[2] for r in (previous.current, current)} - {""}
+                if len(pinned) > 1:
+                    raise ValueError(
+                        f"{where}: {tagged} is pinned to two digests "
+                        f"({' and '.join(sorted(pinned))}); {previous.services[0]} disagrees"
+                    )
+                found[tag_ref] = Recipe(
+                    # A pinned reference outranks a tag-only one for the same tag.
+                    current if at else previous.current,
                     previous.candidate,
                     previous.context,
                     previous.build_args,
                     (*previous.services, where),
                 )
                 continue
-            found[current] = Recipe(
+            found[tag_ref] = Recipe(
                 current=current,
-                candidate=_DATE_SUFFIX.sub(f"-p{date}", current),
+                # A rebuild is new bytes under a new tag, so the old digest
+                # cannot ride along; see the module note on digests.
+                candidate=_DATE_SUFFIX.sub(f"-p{date}", tag_ref),
                 context=str(build["context"]).removeprefix("./"),
                 build_args=tuple(args),
                 services=(where,),
