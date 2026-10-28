@@ -710,6 +710,10 @@ class FakeRepo:
     workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
     #: Commits on the default branch, newest first (spec 35 §8.5).
     commits: list[CommitInfo] = field(default_factory=list)
+    #: GitHub's `visibility` (`private`, `internal`, `public`). `None` leaves
+    #: both `visibility` and `private` out of `get_repo`, which is how a test
+    #: asks for "GitHub did not say".
+    visibility: str | None = "private"
 
 
 class FakeGitHubClient:
@@ -775,7 +779,11 @@ class FakeGitHubClient:
     async def get_repo(self, repo_full_name: str) -> dict[str, Any]:
         self.calls.append(("get_repo", repo_full_name))
         repo = self._repo(repo_full_name)
-        return {"full_name": repo.full_name, "default_branch": repo.default_branch}
+        out: dict[str, Any] = {"full_name": repo.full_name, "default_branch": repo.default_branch}
+        if repo.visibility is not None:
+            out["visibility"] = repo.visibility
+            out["private"] = repo.visibility == "private"
+        return out
 
     async def get_file(self, repo_full_name: str, path: str, ref: str) -> str | None:
         self.calls.append(("get_file", f"{repo_full_name}:{path}@{ref}"))
@@ -879,6 +887,7 @@ class FakeGitHubClient:
             # it away, so every pull request it produced had an empty one and
             # any test asserting on titles was quietly asserting against "".
             title=title,
+            body=body,
         )
         self._next_pr_number += 1
         repo.pull_requests.append(pr)
@@ -892,6 +901,8 @@ class FakeGitHubClient:
         repo = self._repo(repo_full_name)
         for pr in repo.pull_requests:
             if pr.number == number:
+                pr.title, pr.body = title, body
+                self.pull_request_bodies[number] = body
                 return pr
         raise GitHubError(f"Pull request #{number} not found", status=404)
 

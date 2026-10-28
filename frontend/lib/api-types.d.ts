@@ -1224,6 +1224,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/threat-model/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Draft Threat Model
+         * @description Draft `.sdlc/threat-model.yaml` from what MyKronos already holds about
+         *     this repository (TheHub #60899): entry points from public endpoints, DAST
+         *     routes and hostnames; assets from images, the SBOM and infrastructure
+         *     files; boundaries from exposure; controls from collector observations;
+         *     open findings mapped CWE to STRIDE. Every element cites its evidence. A
+         *     read: nothing is written anywhere.
+         */
+        get: operations["draft_threat_model_api_dashboard_repos__repo_id__threat_model_draft_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/threat-model/draft/pull-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose Threat Model
+         * @description Propose the drafted threat model as a pull request now (TheHub #60900).
+         *
+         *     With no `.sdlc/threat-model.yaml`, the whole draft is proposed. With a
+         *     valid one, only drift is: drafted elements the file does not cover, added
+         *     to its sections without changing a declared row. One open pull request per
+         *     repository, updated in place unless a person has edited its branch.
+         *     Written only to a repository GitHub reports as private; anything else is
+         *     `refused` before a branch, file or description exists. Audited as
+         *     `threat_model.propose`.
+         */
+        post: operations["propose_threat_model_api_dashboard_repos__repo_id__threat_model_draft_pull_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/findings": {
         parameters: {
             query?: never;
@@ -6758,6 +6811,73 @@ export interface components {
             owner?: string | null;
             /** Owner Source */
             owner_source?: string | null;
+        };
+        /** DraftElementOut */
+        DraftElementOut: {
+            /**
+             * Section
+             * @enum {string}
+             */
+            section: "assets" | "entry_points" | "trust_boundaries" | "controls";
+            /** Id */
+            id: string;
+            /**
+             * Body
+             * @description The element exactly as the file would hold it.
+             */
+            body: {
+                [key: string]: unknown;
+            };
+            /** Evidence */
+            evidence: components["schemas"]["DraftEvidenceOut"][];
+        };
+        /** DraftEvidenceOut */
+        DraftEvidenceOut: {
+            /**
+             * Source
+             * @description exposure | dast | compose | containers | sbom | iac | observation | finding.
+             */
+            source: string;
+            /** Detail */
+            detail: string;
+            /**
+             * Ref
+             * @description A path in the repository or an https URL; empty when not citable.
+             */
+            ref: string;
+            /** Observed At */
+            observed_at?: string | null;
+        };
+        /** DraftThreatOut */
+        DraftThreatOut: {
+            /** Stride */
+            stride: string[];
+            /**
+             * Resolution
+             * @enum {string}
+             */
+            resolution: "cwe" | "capability";
+            /** Weakness */
+            weakness: string;
+            /** Title */
+            title: string;
+            /** Capability */
+            capability: string;
+            /** Severity */
+            severity: string;
+            /** Findings */
+            findings: number;
+            /** Element Id */
+            element_id: string | null;
+            /** Ref */
+            ref: string;
+        };
+        /** DraftUncitedOut */
+        DraftUncitedOut: {
+            /** Label */
+            label: string;
+            /** Evidence */
+            evidence: components["schemas"]["DraftEvidenceOut"][];
         };
         /**
          * EcosystemEvidence
@@ -12411,6 +12531,40 @@ export interface components {
             reason: string;
         };
         /**
+         * ThreatModelDraftOut
+         * @description A threat model drafted from MyKronos's own evidence (TheHub #60899).
+         */
+        ThreatModelDraftOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Path
+             * @description Always `.sdlc/threat-model.yaml`.
+             */
+            path: string;
+            /** Generated At */
+            generated_at: string | null;
+            /**
+             * Yaml
+             * @description The draft as file text; parses as a valid schema-v1 manifest.
+             */
+            yaml: string;
+            /** Elements */
+            elements: components["schemas"]["DraftElementOut"][];
+            /** Threats */
+            threats: components["schemas"]["DraftThreatOut"][];
+            /**
+             * Uncited
+             * @description Seen, but not drafted: none of the evidence is citable.
+             */
+            uncited: components["schemas"]["DraftUncitedOut"][];
+            /**
+             * Unread
+             * @description Sources that could not be read; absent here, not proven absent.
+             */
+            unread: string[];
+        };
+        /**
          * ThreatModelOut
          * @description A STRIDE-categorized attack-surface inventory (spec 18 §6).
          */
@@ -12437,6 +12591,38 @@ export interface components {
             nothing_scanned: boolean;
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
             component_coverage?: components["schemas"]["ComponentCoverageOut"] | null;
+        };
+        /**
+         * ThreatModelProposalOut
+         * @description What proposing the drafted threat model did (TheHub #60900).
+         */
+        ThreatModelProposalOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * State
+             * @description `opened`/`updated`: a pull request carries the proposal. `unchanged`: the open one already does. `kept`: a person edited the open one's branch, and their edits stand. `no_drift`: the declared file covers everything drafted. `invalid`/`unreadable`: the declared file could not be used, so nothing was proposed. `refused`: the repository is not known to be private, so no threat-model detail is written to it.
+             * @enum {string}
+             */
+            state: "opened" | "updated" | "unchanged" | "kept" | "no_drift" | "invalid" | "unreadable" | "refused" | "failed";
+            /** Reason */
+            reason: string;
+            /** Pull Request Url */
+            pull_request_url: string | null;
+            /** Pull Request Number */
+            pull_request_number: number | null;
+            /**
+             * Added
+             * @description Elements proposed, per section.
+             */
+            added: {
+                [key: string]: number;
+            };
+            /**
+             * Covered
+             * @description Drafted elements the declared file already covers.
+             */
+            covered: number;
         };
         /**
          * ThreatModelSupplyChainOut
@@ -14769,6 +14955,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ThreatModelSyncOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    draft_threat_model_api_dashboard_repos__repo_id__threat_model_draft_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatModelDraftOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    propose_threat_model_api_dashboard_repos__repo_id__threat_model_draft_pull_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatModelProposalOut"];
                 };
             };
             /** @description Validation Error */

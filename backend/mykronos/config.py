@@ -453,6 +453,26 @@ class Settings(BaseSettings):
             "`POST /repos/{id}/threat-model/sync` re-reads one on demand."
         ),
     )
+    threat_model_draft_prs_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the `threat-model-draft` job opens pull requests (TheHub "
+            "#60900): a drafted `.sdlc/threat-model.yaml` for a repository with "
+            "none, and drift as additions to one that exists. Off unless opted "
+            "in, because it writes to every onboarded repository; "
+            "`POST /repos/{id}/threat-model/draft/pull-request` proposes one on "
+            "demand either way."
+        ),
+    )
+    threat_model_draft_interval_seconds: int = Field(
+        default=604_800,
+        ge=3_600,
+        description=(
+            "How often the `threat-model-draft` job compares each repository's "
+            "evidence with its declared threat model (TheHub #60900). Weekly: "
+            "drift is a review, not an alert."
+        ),
+    )
     environment_rescore_interval_seconds: int = Field(
         default=86_400,
         ge=300,

@@ -4381,6 +4381,202 @@ async def sync_threat_model(
     )
 
 
+class DraftEvidenceOut(BaseModel):
+    source: str = Field(
+        description=(
+            "exposure | dast | compose | containers | sbom | iac | observation | finding."
+        )
+    )
+    detail: str
+    ref: str = Field(
+        description="A path in the repository or an https URL; empty when not citable."
+    )
+    observed_at: datetime | None = None
+
+
+class DraftElementOut(BaseModel):
+    section: Literal["assets", "entry_points", "trust_boundaries", "controls"]
+    id: str
+    body: dict[str, Any] = Field(description="The element exactly as the file would hold it.")
+    evidence: list[DraftEvidenceOut]
+
+
+class DraftThreatOut(BaseModel):
+    stride: list[str]
+    resolution: Literal["cwe", "capability"]
+    weakness: str
+    title: str
+    capability: str
+    severity: str
+    findings: int
+    element_id: str | None
+    ref: str
+
+
+class DraftUncitedOut(BaseModel):
+    label: str
+    evidence: list[DraftEvidenceOut]
+
+
+class ThreatModelDraftOut(BaseModel):
+    """A threat model drafted from MyKronos's own evidence (TheHub #60899)."""
+
+    repo_full_name: str
+    path: str = Field(description="Always `.sdlc/threat-model.yaml`.")
+    generated_at: datetime | None
+    yaml: str = Field(
+        description="The draft as file text; parses as a valid schema-v1 manifest."
+    )
+    elements: list[DraftElementOut]
+    threats: list[DraftThreatOut]
+    uncited: list[DraftUncitedOut] = Field(
+        description="Seen, but not drafted: none of the evidence is citable."
+    )
+    unread: list[str] = Field(
+        description="Sources that could not be read; absent here, not proven absent."
+    )
+
+
+def _draft_out(built: Any) -> ThreatModelDraftOut:
+    def evidence(items: Any) -> list[DraftEvidenceOut]:
+        return [DraftEvidenceOut.model_validate(dataclasses.asdict(e)) for e in items]
+
+    return ThreatModelDraftOut(
+        repo_full_name=built.repo_full_name,
+        path=".sdlc/threat-model.yaml",
+        generated_at=built.generated_at,
+        yaml=built.render(),
+        elements=[
+            DraftElementOut(
+                section=e.section, id=e.id, body=e.body, evidence=evidence(e.evidence)
+            )
+            for e in built.elements
+        ],
+        threats=[
+            DraftThreatOut.model_validate({**dataclasses.asdict(t), "stride": list(t.stride)})
+            for t in built.threats
+        ],
+        uncited=[
+            DraftUncitedOut(label=label, evidence=evidence(items))
+            for label, items in built.uncited
+        ],
+        unread=built.unread,
+    )
+
+
+def _repo_github(request: Request, repo_id: str) -> tuple[Any, str]:
+    with request.app.state.db.session() as session:
+        onboarding = session.get(RepoOnboarding, repo_id)
+        branch = (onboarding.default_branch if onboarding else None) or "main"
+        installation = onboarding.github_installation_id if onboarding else None
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:
+        return None, branch
+    return factory.for_installation(installation), branch
+
+
+@router.get("/repos/{repo_id}/threat-model/draft", response_model=ThreatModelDraftOut)
+async def draft_threat_model(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ThreatModelDraftOut:
+    """Draft `.sdlc/threat-model.yaml` from what MyKronos already holds about
+    this repository (TheHub #60899): entry points from public endpoints, DAST
+    routes and hostnames; assets from images, the SBOM and infrastructure
+    files; boundaries from exposure; controls from collector observations;
+    open findings mapped CWE to STRIDE. Every element cites its evidence. A
+    read: nothing is written anywhere.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    from mykronos import threat_model_draft as tmd
+
+    github, branch = _repo_github(request, repo_id)
+    if github is None:
+        from mykronos.github import FakeGitHubClient
+
+        github = FakeGitHubClient()
+    state = request.app.state
+    bundle = await tmd.gather(state.db, state.catalog, github, repo_full_name, branch)
+    return _draft_out(tmd.draft(bundle, now=utcnow()))
+
+
+class ThreatModelProposalOut(BaseModel):
+    """What proposing the drafted threat model did (TheHub #60900)."""
+
+    repo_full_name: str
+    state: Literal[
+        "opened",
+        "updated",
+        "unchanged",
+        "kept",
+        "no_drift",
+        "invalid",
+        "unreadable",
+        "refused",
+        "failed",
+    ] = Field(
+        description=(
+            "`opened`/`updated`: a pull request carries the proposal. `unchanged`: "
+            "the open one already does. `kept`: a person edited the open one's "
+            "branch, and their edits stand. `no_drift`: the declared file covers "
+            "everything drafted. `invalid`/`unreadable`: the declared file could "
+            "not be used, so nothing was proposed. `refused`: the repository is "
+            "not known to be private, so no threat-model detail is written to it."
+        )
+    )
+    reason: str
+    pull_request_url: str | None
+    pull_request_number: int | None
+    added: dict[str, int] = Field(description="Elements proposed, per section.")
+    covered: int = Field(description="Drafted elements the declared file already covers.")
+
+
+@router.post(
+    "/repos/{repo_id}/threat-model/draft/pull-request",
+    response_model=ThreatModelProposalOut,
+)
+async def propose_threat_model(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ThreatModelProposalOut:
+    """Propose the drafted threat model as a pull request now (TheHub #60900).
+
+    With no `.sdlc/threat-model.yaml`, the whole draft is proposed. With a
+    valid one, only drift is: drafted elements the file does not cover, added
+    to its sections without changing a declared row. One open pull request per
+    repository, updated in place unless a person has edited its branch.
+    Written only to a repository GitHub reports as private; anything else is
+    `refused` before a branch, file or description exists. Audited as
+    `threat_model.propose`.
+    """
+    _require_writer(principal, "Proposing a threat-model pull request")
+    repo_full_name = _resolve_repo(request, repo_id)
+    from mykronos import threat_model_pr
+
+    github, branch = _repo_github(request, repo_id)
+    if github is None:
+        return ThreatModelProposalOut(
+            repo_full_name=repo_full_name,
+            state="unreadable",
+            reason="No GitHub installation to open a pull request with.",
+            pull_request_url=None,
+            pull_request_number=None,
+            added={},
+            covered=0,
+        )
+    state = request.app.state
+    _, proposal = await threat_model_pr.propose_for_repo(
+        state.db, state.catalog, github, repo_full_name, branch, actor=principal.actor
+    )
+    return ThreatModelProposalOut(
+        repo_full_name=repo_full_name,
+        state=proposal.state,
+        reason=proposal.reason,
+        pull_request_url=proposal.pull_request.url if proposal.pull_request else None,
+        pull_request_number=proposal.pull_request.number if proposal.pull_request else None,
+        added=proposal.added,
+        covered=proposal.covered,
+    )
+
+
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)
 async def repo_findings(
     request: Request,

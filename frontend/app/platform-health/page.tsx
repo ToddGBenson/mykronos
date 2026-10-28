@@ -37,6 +37,8 @@ const CONSEQUENCE: Record<string, string> = {
   "premise-monitor":
     "A risk acceptance stays in force after the evidence it rests on has changed: a published port or a rising EPSS reopens nothing.",
   governance: "A control coming off goes unnoticed until somebody opens the panel.",
+  "threat-model-draft":
+    "Drift between what MyKronos observes and a repository's declared threat model is never proposed as a pull request.",
   "library-checks":
     "Pull requests get no library-allowlist check, so a new dependency is added without anyone seeing it is unapproved.",
   "library-facts":
