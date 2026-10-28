@@ -60,7 +60,8 @@ UNSERIALISED = {"set-pipeline", "oracle-gate", "deploy-demo", "cloud-posture"}
 
 # The ceiling on concurrent heavy jobs. One lane was 1 (the OOM that killed the
 # quickstart container was 7 at once, on one worker that was also the web
-# node). Three lanes across two 6g workers is the most this change claims.
+# node). Three lanes across two 3g workers (6g until D-174) is the most this
+# change claims.
 MAX_LANES = 3
 
 

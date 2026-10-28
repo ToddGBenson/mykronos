@@ -503,6 +503,12 @@ anchors:
   # (spec 15 SS4a.1), and producing one deliberately is worse than not starting.
   preflight: &preflight
     task: preflight
+    # Every task step carries this (TheHub #61009, D-174). CPU shares, not a
+    # quota: 512 is cpu.weight 59 inside the worker, so a task yields to
+    # resource checks and other pipelines' tasks there. It cannot reach
+    # production - that precedence is set on the worker containers - and a
+    # `memory:` limit here makes runc refuse the container on these workers.
+    container_limits: {cpu: 512}
     # 4m, not 2m, and the arithmetic is the reason (#417).
     #
     # The curl below is allowed 5 attempts x 20s plus 4 x 5s of delay = exactly
@@ -590,6 +596,7 @@ anchors:
 
   check_run: &check_run
     task: report-check-run
+    container_limits: {cpu: 512}
     # PS-7. Three attempts of 45s plus two 5s delays is 145s; 5m is twice that.
     timeout: 5m
     config:
@@ -696,6 +703,7 @@ anchors:
 
   hub_report: &hub_report
     task: report-to-hub
+    container_limits: {cpu: 512}
     # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
     # reach a non-success is by never having run at all -- a resolver blip
     # pulling its image, a lost container lock. There is no verdict here to
@@ -938,6 +946,7 @@ anchors:
   # notification per event instead of a specific one racing a generic one.
   slack_alert: &slack_alert
     task: notify-slack
+    container_limits: {cpu: 512}
     # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
     # reach a non-success is by never having run at all -- a resolver blip
     # pulling its image, a lost container lock. There is no verdict here to
@@ -1260,6 +1269,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: audit
+        container_limits: {cpu: 512}
         image: python
         timeout: 15m
         config:
@@ -1494,6 +1504,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: grade
+        container_limits: {cpu: 512}
         image: python
         # Two tiers at a 45m soft cap each, plus the bootstrap and the report.
         # The SOFT cap inside the task is the one that matters: a run killed by
@@ -1983,6 +1994,7 @@ jobs:
       - <<: *check_run
         params: { <<: *check_params, JOB: unit, PHASE: start }
       - task: pytest
+        container_limits: {cpu: 512}
         image: python
         # 45 minutes was not a slow test suite; it was a full reinstall of
         # TheHub's dependency set on every run, from PyPI, with nothing kept
@@ -2743,6 +2755,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: check-links
+        container_limits: {cpu: 512}
         timeout: 45m
         image: python
         params: *mykronos_env
@@ -2835,6 +2848,7 @@ jobs:
       # kaniko's image is busybox with no git, so the SHA is computed here and
       # handed over as a file.
       - task: resolve-sha
+        container_limits: {cpu: 512}
         timeout: 5m
         image: python
         config:
@@ -2856,6 +2870,7 @@ jobs:
                 echo "Building $(cat meta/sha)"
 
       - task: kaniko
+        container_limits: {cpu: 512}
         # 71m, not 60m (#60002). MEASURED 2026-09-18 over the last 95 successful
         # builds: p50 4.6m, p90 14.9m, worst 50.0m. Target = max(p90 x 5.10,
         # worst x 1.30) = max(76.0, 65.0) = 76m for the job; `resolve-sha` holds
@@ -2977,6 +2992,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: gitleaks
+        container_limits: {cpu: 512}
         timeout: 55m
         image: python
         # Written out rather than `*mykronos_env`, per the note on that anchor:
@@ -3117,6 +3133,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: semgrep
+        container_limits: {cpu: 512}
         timeout: 130m
         image: python313
         params: *mykronos_env
@@ -3198,6 +3215,7 @@ jobs:
         # finding. Reporting, not gating. PLpgSQL is still unread.
         ensure:
           task: psscriptanalyzer
+          container_limits: {cpu: 512}
           timeout: 10m
           image: pwsh
           config:
@@ -3236,6 +3254,7 @@ jobs:
                   }
           ensure:
             task: upload-psscriptanalyzer
+            container_limits: {cpu: 512}
             timeout: 10m
             image: python313
             params: *mykronos_env
@@ -3313,6 +3332,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: osv-scanner
+        container_limits: {cpu: 512}
         timeout: 45m
         image: python
         params: *mykronos_env
@@ -3543,6 +3563,7 @@ jobs:
       # evidence, and evidence produced after the gate is evidence the gate
       # could not use.
       - task: sbom-and-evidence
+        container_limits: {cpu: 512}
         timeout: 30m
         image: python
         params: *mykronos_env
@@ -3701,6 +3722,7 @@ jobs:
       # Trivy's image does not, and reading `.git/HEAD` by hand works right up
       # until the ref is packed.
       - task: resolve-sha
+        container_limits: {cpu: 512}
         timeout: 5m
         image: python
         config:
@@ -3736,6 +3758,7 @@ jobs:
       # file that starts the container is a fact rather than a guess about
       # which it is.
       - task: derive-estate-images
+        container_limits: {cpu: 512}
         timeout: 10m
         image: python
         params:
@@ -3766,6 +3789,7 @@ jobs:
                 python -m mykronos.estate_images --root source --output estate/images.txt --set "REGISTRY=${REGISTRY}"
 
       - task: scan-image
+        container_limits: {cpu: 512}
         # 45m covered one application image. TheHub's stack adds eight more,
         # and a cap below the observed worst case does not make a slow job
         # fast, it makes a working job red (PS-7).
@@ -3907,6 +3931,7 @@ jobs:
         # lake, to a capability nobody enabled (L0003).
         ensure:
           task: upload
+          container_limits: {cpu: 512}
           timeout: 10m
           image: python
           params: *mykronos_env
@@ -4031,6 +4056,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: evaluate
+        container_limits: {cpu: 512}
         timeout: 25m
         image: python
         params:
@@ -4232,6 +4258,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: request-deploy
+        container_limits: {cpu: 512}
         timeout: 45m
         image: python
         params:
@@ -4467,6 +4494,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: check-inventory
+        container_limits: {cpu: 512}
         timeout: 20m
         image: python
         params:
@@ -4582,6 +4610,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: run-functional
+        container_limits: {cpu: 512}
         timeout: 30m
         image: python
         params:
@@ -4717,6 +4746,7 @@ jobs:
       # git, python3 and pip, so the report never has to cross a volume
       # boundary at all.
       - task: zap-baseline
+        container_limits: {cpu: 512}
         image: zap
         timeout: 45m
         config:
@@ -5100,6 +5130,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: scan-iac
+        container_limits: {cpu: 512}
         timeout: 20m
         image: checkov
         config:
@@ -5157,6 +5188,7 @@ jobs:
         # lake, to a capability nobody enabled (L0003).
         ensure:
           task: upload
+          container_limits: {cpu: 512}
           timeout: 10m
           image: python
           params: *mykronos_env
@@ -5228,6 +5260,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: run-evals
+        container_limits: {cpu: 512}
         timeout: 90m
         image: python
         params:
@@ -5448,6 +5481,7 @@ jobs:
       # git, python3 and pip, so the report never has to cross a volume
       # boundary at all.
       - task: zap-baseline
+        container_limits: {cpu: 512}
         image: zap
         timeout: 45m
         config:
@@ -5774,6 +5808,7 @@ jobs:
       # One task, for the reason `dast-prod` gives: this image runs as `zap`
       # and cannot hand its report across a Concourse output volume.
       - task: zap-baseline-edge
+        container_limits: {cpu: 512}
         image: zap
         timeout: 45m
         config:
@@ -6157,6 +6192,7 @@ jobs:
       # output volumes root-owned and this image runs as the unprivileged `zap`
       # user, so a separate upload task cannot read the report.
       - task: zap-baseline
+        container_limits: {cpu: 512}
         image: zap
         timeout: 45m
         config:
@@ -6414,6 +6450,7 @@ jobs:
 
       - *preflight
       - task: prowler-azure
+        container_limits: {cpu: 512}
         timeout: 60m
         image: prowler
         params:
@@ -6487,6 +6524,7 @@ jobs:
         # uploads as a failed scan, as above.
         ensure:
           task: upload
+          container_limits: {cpu: 512}
           timeout: 10m
           image: python
           params: *mykronos_env
@@ -6588,6 +6626,7 @@ jobs:
             attempts: *retry_fetch
 
       - task: plan
+        container_limits: {cpu: 512}
         timeout: 10m
         image: python
         params:
@@ -6613,6 +6652,7 @@ jobs:
                 test -s refresh/plan.tsv || { echo "::error::no x-thehub-build recipes found"; exit 1; }
 
       - task: build
+        container_limits: {cpu: 512}
         timeout: 90m
         image: kaniko
         config:
@@ -6649,6 +6689,7 @@ jobs:
                 done < refresh/plan.tsv
 
       - task: scan
+        container_limits: {cpu: 512}
         timeout: 90m
         image: trivy
         config:
@@ -6679,6 +6720,7 @@ jobs:
                 done < refresh/plan.tsv
 
       - task: decide
+        container_limits: {cpu: 512}
         timeout: 10m
         image: python
         params:
@@ -6706,6 +6748,7 @@ jobs:
                 esac
 
       - task: publish
+        container_limits: {cpu: 512}
         timeout: 30m
         config:
           platform: linux
@@ -6733,6 +6776,7 @@ jobs:
                 done < verdict/plan.tsv
 
       - task: deploy-demo
+        container_limits: {cpu: 512}
         timeout: 45m
         image: python
         params:
@@ -6849,6 +6893,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: patchwork
+        container_limits: {cpu: 512}
         timeout: 20m
         image: python
         params: *mykronos_env
@@ -6982,6 +7027,7 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: model-inventory
+        container_limits: {cpu: 512}
         # 23m, not 15m (#60002). MEASURED 2026-09-18 over the last 80 successful
         # builds: p50 1.6m, p90 4.4m, worst 13.5m -- 1.1x headroom, the second
         # tightest in the estate. Target = max(p90 x 5.10, worst x 1.30) =
