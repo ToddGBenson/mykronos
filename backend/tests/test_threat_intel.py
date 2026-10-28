@@ -6,6 +6,7 @@ import gzip
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 
+import httpx2
 import pytest
 
 from mykronos import threat_intel
@@ -626,3 +627,138 @@ class TestRefsBackfill:
             assert row.nvd_refs_checked_at is not None
             assert row.cvss_vector == V31
             assert row.vector_checked_at == datetime(2026, 10, 1)
+
+
+def _status(code: int) -> httpx2.HTTPStatusError:
+    request = httpx2.Request("GET", threat_intel.NVD_URL)
+    response = httpx2.Response(code, request=request)
+    return httpx2.HTTPStatusError(f"HTTP {code}", request=request, response=response)
+
+
+class TestFailedLookups:
+    """A lookup NVD refuses for one CVE is recorded, so it stops sitting at
+    the head of both queues every run; a feed that is down charges nobody
+    (TheHub #61037)."""
+
+    def _known(self, cve_id: str) -> ThreatIntelMatch:
+        checked = datetime(2026, 10, 1)
+        return ThreatIntelMatch(
+            cve_id=cve_id, cvss_vector=V31, vector_checked_at=checked, v4_checked_at=checked
+        )
+
+    def _fetch(self, bad: set[str], asked: list[str], exc: Exception | None = None):
+        def fetch(cve_id: str) -> object:
+            asked.append(cve_id)
+            if cve_id in bad:
+                raise exc or _status(404)
+            return _nvd_with_poc(V31)
+
+        return fetch
+
+    def test_a_refused_lookup_is_recorded_and_retried_later(self, session) -> None:
+        session.add(self._known("CVE-2000-00001"))
+        session.flush()
+
+        threat_intel.refresh_vectors(
+            session,
+            fetch=self._fetch({"CVE-2000-00001"}, []),
+            sleep=lambda _: None,
+            now=lambda: datetime(2026, 10, 2),
+        )
+        row = session.get(ThreatIntelMatch, "CVE-2000-00001")
+        assert row is not None
+        assert (row.nvd_failures, row.nvd_failed_at) == (1, datetime(2026, 10, 2))
+        assert row.nvd_refs_checked_at is None
+
+        asked: list[str] = []
+        threat_intel.refresh_vectors(
+            session, fetch=self._fetch(set(), asked), sleep=lambda _: None
+        )
+        assert asked == ["CVE-2000-00001"]
+        assert (row.nvd_failures, row.nvd_failed_at) == (0, None)
+        assert row.nvd_refs_checked_at is not None
+
+    def test_permanently_refused_rows_do_not_stop_a_healthy_row_behind_them(
+        self, session
+    ) -> None:
+        bad = {f"CVE-2000-{n:05d}" for n in range(threat_intel.NVD_REFS_BATCH + 5)}
+        for cve_id in bad:
+            session.add(self._known(cve_id))
+        session.add(self._known("CVE-2001-00000"))
+        session.flush()
+
+        first: list[str] = []
+        threat_intel.refresh_vectors(session, fetch=self._fetch(bad, first), sleep=lambda _: None)
+        assert "CVE-2001-00000" not in first
+        second: list[str] = []
+        threat_intel.refresh_vectors(
+            session, fetch=self._fetch(bad, second), sleep=lambda _: None
+        )
+
+        assert "CVE-2001-00000" in second
+        row = session.get(ThreatIntelMatch, "CVE-2001-00000")
+        assert row is not None and row.nvd_refs_checked_at is not None
+
+    def test_a_refused_vector_lookup_queues_after_new_cves(self, session) -> None:
+        session.add(ThreatIntelMatch(cve_id="CVE-2000-00001"))
+        session.add(ThreatIntelMatch(cve_id="CVE-2026-00001"))
+        session.flush()
+        threat_intel.refresh_vectors(
+            session, fetch=self._fetch({"CVE-2000-00001"}, []), sleep=lambda _: None, limit=1
+        )
+        asked: list[str] = []
+
+        threat_intel.refresh_vectors(
+            session, fetch=self._fetch(set(), asked), sleep=lambda _: None, limit=1
+        )
+
+        assert asked == ["CVE-2026-00001"]
+
+    def test_after_the_limit_a_row_is_no_longer_asked(self, session) -> None:
+        session.add(self._known("CVE-2000-00001"))
+        session.flush()
+        for _ in range(threat_intel.NVD_MAX_FAILURES):
+            threat_intel.refresh_vectors(
+                session, fetch=self._fetch({"CVE-2000-00001"}, []), sleep=lambda _: None
+            )
+        asked: list[str] = []
+
+        threat_intel.refresh_vectors(
+            session, fetch=self._fetch({"CVE-2000-00001"}, asked), sleep=lambda _: None
+        )
+
+        assert asked == []
+        row = session.get(ThreatIntelMatch, "CVE-2000-00001")
+        assert row is not None and row.nvd_refs_checked_at is None
+
+    @pytest.mark.parametrize(
+        "exc",
+        [httpx2.ConnectError("down"), _status(429), _status(403), _status(503)],
+        ids=["transport", "429", "403", "503"],
+    )
+    def test_a_feed_failure_charges_no_row(self, session, exc: Exception) -> None:
+        """NVD being down or rate-limiting this address says nothing about the
+        CVE: counting it would retire the whole estate after a five-day outage."""
+        session.add(self._known("CVE-2000-00001"))
+        session.flush()
+
+        threat_intel.refresh_vectors(
+            session, fetch=self._fetch({"CVE-2000-00001"}, [], exc), sleep=lambda _: None
+        )
+
+        row = session.get(ThreatIntelMatch, "CVE-2000-00001")
+        assert row is not None
+        assert (row.nvd_failures, row.nvd_failed_at) == (0, None)
+
+    def test_a_successful_lookup_is_unchanged(self, session) -> None:
+        session.add(ThreatIntelMatch(cve_id="CVE-2026-00001"))
+        session.flush()
+
+        found = threat_intel.refresh_vectors(
+            session, fetch=self._fetch(set(), []), sleep=lambda _: None
+        )
+
+        row = session.get(ThreatIntelMatch, "CVE-2026-00001")
+        assert row is not None
+        assert found == 1 and row.cvss_vector == V31
+        assert (row.nvd_failures, row.nvd_failed_at) == (0, None)
