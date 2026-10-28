@@ -156,8 +156,8 @@ describe("MyKronos Health (TheHub #60883)", () => {
         actor: "agent:test-family:aaaa1111",
         state: "expiring",
         rotate_after: null,
-        expires_at: "2026-10-30T00:00:00Z",
-        days_until_due: 7,
+        expires_at: "2026-10-23T18:00:00Z",
+        days_until_due: 0.75,
         action: "",
       },
     ];
@@ -222,16 +222,22 @@ describe("MyKronos Health (TheHub #60883)", () => {
       expect(due).toContain("5 days overdue");
     });
 
-    it("names a 7-day agent window when nothing needs attention", async () => {
+    it("names a 24-hour agent window when nothing needs attention", async () => {
+      // TheHub #61052: the operator chose 24 hours over the 7 days #1019 shipped.
       const html = await render([]);
-      expect(html).toContain("expires within 7 days");
+      expect(html).toContain("expires within 24 hours");
+      expect(html).not.toContain("7 days");
       expect(html).not.toContain("14 days");
     });
 
     it("lists an expiring agent credential by actor and date", async () => {
       const agent = row(await render(rows), "expiring");
       expect(agent).toContain("agent:test-family:aaaa1111");
-      expect(agent).toContain("2026-10-30");
+      expect(agent).toContain("2026-10-23");
+      // Inside a 24-hour window the whole-day count is always 0 or 1, so the
+      // time left is given in hours.
+      expect(agent).toContain("in 18 hours");
+      expect(agent).not.toMatch(/in [01] days?/);
       expect(agent.toLowerCase()).not.toMatch(/rotat/);
     });
 

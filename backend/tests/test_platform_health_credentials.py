@@ -7,8 +7,9 @@ an expiry (spec 34). Neither reached a page. These tests pin three things:
 - the two ingestion-token states stay apart, and only ``due`` tells anybody
   to rotate - an ``unverified`` token is a reason to check that scans arrive,
   and rotating it is how a repository goes dark (D-097);
-- an agent credential is listed inside a 7-day window and not outside it
-  (the PO's rework decision on #1019: 14 days outran the agent TTL);
+- an agent credential is listed inside a 24-hour window and not outside it
+  (the PO's rework decision on #1019 cut 14 days to 7; the operator's
+  decision on TheHub #61052, 2026-10-27, cut 7 to 24 hours);
 - the page carries state and dates only: no hash, hash prefix or plaintext,
   because it is served on an internet-exposed dashboard.
 """
@@ -118,8 +119,8 @@ class TestIngestionTokens:
 
 
 class TestAgentCredentials:
-    def test_one_expiring_in_6_days_is_listed(self, client, admin_auth) -> None:
-        _agent(client.app.state.db, actor="agent:test-family:aaaa1111", days=6)
+    def test_one_expiring_in_20_hours_is_listed(self, client, admin_auth) -> None:
+        _agent(client.app.state.db, actor="agent:test-family:aaaa1111", days=20 / 24)
 
         rows = [r for r in _credentials(client, admin_auth) if r["kind"] == "agent_credential"]
 
@@ -127,11 +128,11 @@ class TestAgentCredentials:
         assert rows[0]["state"] == "expiring"
         assert rows[0]["expires_at"]
         assert rows[0]["repo_full_name"] is None
-        assert 5.9 < rows[0]["days_until_due"] <= 6
+        assert 0.8 < rows[0]["days_until_due"] <= 20 / 24
 
-    def test_one_expiring_in_8_days_is_not_listed(self, client, admin_auth) -> None:
-        """Outside the 7-day window, though it would have been inside the old 14."""
-        _agent(client.app.state.db, actor="agent:test-family:bbbb2222", days=8)
+    def test_one_expiring_in_30_hours_is_not_listed(self, client, admin_auth) -> None:
+        """Outside the 24-hour window, though it would have been inside the old 7 days."""
+        _agent(client.app.state.db, actor="agent:test-family:bbbb2222", days=30 / 24)
 
         assert _credentials(client, admin_auth) == []
 
@@ -140,7 +141,7 @@ class TestAgentCredentials:
     ) -> None:
         """Neither can be used, so neither needs anything doing."""
         db = client.app.state.db
-        _agent(db, actor="agent:test-family:cccc3333", days=3, revoked=True)
+        _agent(db, actor="agent:test-family:cccc3333", days=0.5, revoked=True)
         _agent(db, actor="agent:test-family:dddd4444", days=-1)
 
         assert _credentials(client, admin_auth) == []
@@ -152,7 +153,7 @@ class TestNothingSecretLeaves:
     ) -> None:
         db = client.app.state.db
         plaintexts = _issue_due_and_unverified(db)
-        agent_digest = _agent(db, actor="agent:test-family:eeee5555", days=2)
+        agent_digest = _agent(db, actor="agent:test-family:eeee5555", days=0.5)
 
         response = client.get("/api/dashboard/platform-health", headers=admin_auth)
         text = response.text
@@ -188,7 +189,7 @@ class TestNoRows:
 
 
 class TestTheWindow:
-    """The 7-day boundary, decided without a clock race."""
+    """The 24-hour boundary, decided without a clock race."""
 
-    def test_the_window_is_seven_days(self) -> None:
-        assert timedelta(days=7) == platform_health.AGENT_EXPIRY_WINDOW
+    def test_the_window_is_24_hours(self) -> None:
+        assert timedelta(hours=24) == platform_health.AGENT_EXPIRY_WINDOW
