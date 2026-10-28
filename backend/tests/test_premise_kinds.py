@@ -12,11 +12,14 @@ Pinned here:
   and is never failed by it;
 * an accepted CVE that joins KEV after the proposal moves the acceptance to
   `premise_failed` and reopens its findings, whether or not it names
-  `not_kev_listed`; one already listed when it was proposed does not.
+  `not_kev_listed`, whatever CISA's `kev_added_at` says; only a CVE the
+  approver was shown as KEV-listed (the frozen `risk_evidence` block) does
+  not, and a record with no frozen block knew of none.
 """
 
 from __future__ import annotations
 
+import copy
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -27,7 +30,13 @@ from mykronos import premise_monitor as pm
 from mykronos import risk_acceptance as ra
 from mykronos import risk_evidence
 from mykronos.approvals.policy import InterimReview
-from mykronos.db.models import ReachabilityReport, RepoOnboarding, RiskAcceptance, ThreatIntelMatch
+from mykronos.db.models import (
+    ApprovalRequest,
+    ReachabilityReport,
+    RepoOnboarding,
+    RiskAcceptance,
+    ThreatIntelMatch,
+)
 from mykronos.schemas import utcnow
 from tests.conftest import REPO
 from tests.test_notify import RecordingNotifier
@@ -170,6 +179,32 @@ def _kev(client, cve: str, added: date | None) -> None:
         )
 
 
+class TestKnownAtProposal:
+    def test_it_reads_the_frozen_threat_intel_block(self) -> None:
+        evidence = {
+            "risk_evidence": {"categories": {"threat_intel": {"kev": ["cve-2026-7"]}}}
+        }
+        assert pm.known_at_proposal(evidence) == {"CVE-2026-7"}
+
+    @pytest.mark.parametrize(
+        "evidence", [None, {}, {"risk_evidence": {}}, {"risk_evidence": {"categories": {}}}]
+    )
+    def test_no_frozen_block_knew_of_nothing(self, evidence: dict[str, Any] | None) -> None:
+        assert pm.known_at_proposal(evidence) == frozenset()
+
+    def test_kev_join_skips_only_a_known_cve(self) -> None:
+        record = RiskAcceptance(covered_finding_ids=["f1", "f2"])
+        old = NOW.date() - timedelta(days=90)
+        kev = {
+            "f1": risk_evidence.ThreatSignal("CVE-2026-1", True, old, None, NOW),
+            "f2": risk_evidence.ThreatSignal("CVE-2026-2", True, old, None, NOW),
+        }
+        check = pm.kev_join(record, kev, frozenset({"CVE-2026-1"}))
+        assert check is not None and check.status == "failed"
+        assert [e["cve"] for e in check.evidence] == ["CVE-2026-2"]
+        assert pm.kev_join(record, kev, frozenset({"CVE-2026-1", "CVE-2026-2"})) is None
+
+
 class TestKevJoinReopensTheAcceptance:
     def test_a_cve_joining_kev_reopens_an_acceptance_that_never_named_the_premise(
         self, client, admin_auth, lake
@@ -197,13 +232,64 @@ class TestKevJoinReopensTheAcceptance:
         [note] = [n for n in notifier.sent if "premise failed" in n.title.lower()]
         assert "CVE-2026-1" in note.detail
 
-    def test_a_cve_already_listed_when_proposed_is_not_news(
+    def test_a_cve_the_feed_learned_of_after_approval_reopens_it_whatever_its_cisa_date(
+        self, client, admin_auth, lake
+    ) -> None:
+        """The reviewer's repro on #1005: CISA's date is before the proposal,
+        but the platform's feed did not know of the listing then."""
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2026-1", in_kev=False, fetched_at=utcnow()))
+        record_id = _accepted(client, admin_auth)
+        with client.app.state.db.session() as session:
+            row = session.get(ThreatIntelMatch, "CVE-2026-1")
+            assert row is not None
+            row.in_kev = True
+            row.kev_added_at = utcnow().date() - timedelta(days=1)
+            row.fetched_at = utcnow()
+
+        assert [f.record_id for f in _run(client).failed] == [record_id]
+        assert _record(client, record_id).status == "premise_failed"
+
+    def test_a_cve_cisa_listed_long_before_the_proposal_still_reopens_it(
         self, client, admin_auth, lake
     ) -> None:
         record_id = _accepted(client, admin_auth)
         _kev(client, "CVE-2026-1", utcnow().date() - timedelta(days=30))
+        assert [f.record_id for f in _run(client).failed] == [record_id]
+        assert _record(client, record_id).status == "premise_failed"
+
+    def test_a_cve_the_approver_was_shown_as_kev_listed_is_not_news(
+        self, client, admin_auth, lake
+    ) -> None:
+        """Where policy lets a KEV-listed CVE be accepted, the frozen evidence
+        names it, and the monitor does not reopen what was signed knowingly."""
+        record_id = _accepted(client, admin_auth)
+        with client.app.state.db.session() as session:
+            record = session.get(RiskAcceptance, record_id)
+            assert record is not None and record.approval_request_id
+            request = session.get(ApprovalRequest, record.approval_request_id)
+            assert request is not None
+            evidence = copy.deepcopy(request.evidence)
+            evidence["risk_evidence"]["categories"]["threat_intel"]["kev"] = ["CVE-2026-1"]
+            request.evidence = evidence
+        _kev(client, "CVE-2026-1", utcnow().date() - timedelta(days=30))
         assert _run(client).failed == []
         assert _record(client, record_id).status == "active"
+
+    def test_a_record_with_no_frozen_evidence_counts_every_listing_as_joined(
+        self, client, admin_auth, lake
+    ) -> None:
+        """Acceptances approved before the evidence model, including GHSA
+        findings whose title CVE was already listed, are reopened."""
+        record_id = _accepted(client, admin_auth)
+        with client.app.state.db.session() as session:
+            record = session.get(RiskAcceptance, record_id)
+            assert record is not None
+            request = session.get(ApprovalRequest, record.approval_request_id)
+            assert request is not None
+            request.evidence = {k: v for k, v in request.evidence.items() if k != "risk_evidence"}
+        _kev(client, "CVE-2026-1", utcnow().date() - timedelta(days=365))
+        assert [f.record_id for f in _run(client).failed] == [record_id]
 
     def test_a_named_not_kev_listed_premise_fails_once(self, client, admin_auth, lake) -> None:
         record_id = _accepted(

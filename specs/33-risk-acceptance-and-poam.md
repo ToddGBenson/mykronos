@@ -474,7 +474,8 @@ Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
 - Built (TheHub #60902, #60903, 2026-10-22): compensating controls cite an observation and only a
   verified one lowers the tier; `not_kev_listed` and `path_unreachable` are monitored and every other
   kind is named unmonitorable; and every live acceptance — whatever its premises — is checked for a
-  covered CVE that joined KEV on or after the day it was proposed, which moves it to
+  covered CVE in KEV that the approver was not shown as listed (the frozen `risk_evidence`
+  `threat_intel.kev`; a record with no frozen block knew of none), which moves it to
   `premise_failed` through §4.2's path (the §13 criterion). Not built: a new toxic combination
   reopening an acceptance.
 - Not built: the POA&M export. No route or command produces OSCAL or CSV, so the §13 criterion on

@@ -69,6 +69,7 @@ from sqlalchemy.orm import Session
 from mykronos import control_observations, risk_evidence
 from mykronos import risk_acceptance as ra
 from mykronos.db.models import (
+    ApprovalRequest,
     AuditLogEntry,
     ControlObservation,
     RepoSurface,
@@ -883,24 +884,51 @@ def kev_by_finding(
     return out
 
 
-def kev_join(
-    record: RiskAcceptance, kev: dict[str, risk_evidence.ThreatSignal]
-) -> PremiseCheck | None:
-    """The implicit premise (spec 33 §13): a covered CVE that joined KEV
-    after this acceptance was proposed fails it, named or not.
+def known_at_proposal(evidence: dict[str, Any] | None) -> frozenset[str]:
+    """The KEV-listed CVEs the approver was shown: the `threat_intel` block
+    of the `risk_evidence` frozen into the approval request's digest.
 
-    "Joined after" is a KEV date on or after the day it was proposed - the
-    day the platform last checked KEV for it. A CVE already listed then was
-    accepted knowingly (where policy allows that), and is not news. A KEV row
-    with no date counts as joined: reopening is the safe direction.
+    Only that block says what the platform knew when the decision was
+    signed. A record with no frozen block - approved before the evidence
+    model, or a legacy import - knew of none.
     """
-    proposed = (record.created_at or record.effective_at or utcnow()).date()
+    block = ((evidence or {}).get("risk_evidence") or {}).get("categories") or {}
+    listed = (block.get("threat_intel") or {}).get("kev") or []
+    return frozenset(str(c).upper() for c in listed if c)
+
+
+def frozen_evidence(session: Session, records: Iterable[RiskAcceptance]) -> dict[str, Any]:
+    """Approval request id -> the evidence the approver signed, for every
+    record that has one. One query for every live acceptance."""
+    ids = {r.approval_request_id for r in records if r.approval_request_id}
+    if not ids:
+        return {}
+    rows = session.execute(
+        select(ApprovalRequest.id, ApprovalRequest.evidence).where(ApprovalRequest.id.in_(ids))
+    ).all()
+    return {str(rid): evidence for rid, evidence in rows}
+
+
+def kev_join(
+    record: RiskAcceptance,
+    kev: dict[str, risk_evidence.ThreatSignal],
+    known: frozenset[str] = frozenset(),
+) -> PremiseCheck | None:
+    """The implicit premise (spec 33 §13): a covered CVE in KEV that the
+    approver was not shown as KEV-listed fails it, named or not.
+
+    `known` is `known_at_proposal` of the record's frozen evidence. A CVE in
+    it was accepted knowingly (where policy allows that) and is not news.
+    Any other listed CVE counts as joined, whatever its `kev_added_at`: the
+    CISA date says when CISA listed it, not when this platform's feed
+    learned of it, and with `refuse_kev_listed` on a CVE the feed knew was
+    listed could not have been accepted at all. Reopening is the safe
+    direction.
+    """
     joined: dict[str, tuple[risk_evidence.ThreatSignal, list[str]]] = {}
     for fid in record.covered_finding_ids or []:
         signal = kev.get(str(fid))
-        if signal is None:
-            continue
-        if signal.kev_added_at is not None and signal.kev_added_at < proposed:
+        if signal is None or signal.cve.upper() in known:
             continue
         joined.setdefault(signal.cve, (signal, []))[1].append(str(fid))
     if not joined:
@@ -909,7 +937,7 @@ def kev_join(
         IMPLICIT_KEV_INDEX,
         "not_kev_listed",
         "failed",
-        "Joined CISA KEV after this acceptance was proposed: "
+        "In CISA KEV, and not known to be when this acceptance was approved: "
         + ", ".join(f"{s.cve} (added {_added(s)})" for s, _ in joined.values())
         + ". A known-exploited CVE cannot stay accepted, only mitigated.",
         [
@@ -932,8 +960,11 @@ def _run(
         kev = kev_by_finding(
             session, catalog, (f for r in records for f in (r.covered_finding_ids or []))
         )
+        signed = frozen_evidence(session, records)
         for record in records:
-            implicit = kev_join(record, kev)
+            implicit = kev_join(
+                record, kev, known_at_proposal(signed.get(record.approval_request_id or ""))
+            )
             if not record.premises and implicit is None:
                 continue
             checks = (
