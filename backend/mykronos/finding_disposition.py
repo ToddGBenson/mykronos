@@ -150,6 +150,7 @@ def governing_severities(
     *,
     catalog: Catalog | None = None,
     db: Any = None,
+    failed: set[str] | None = None,
 ) -> dict[str, tuple[str, list[dict[str, str]]]]:
     """finding id -> (governing severity, the combinations that raised it).
 
@@ -159,7 +160,10 @@ def governing_severities(
     governed route rather than let through on a guess.
 
     `catalog` and `db` default to what `bind` was given; a caller that holds
-    its own (a risk acceptance's proposal) passes them."""
+    its own (a risk acceptance's proposal) passes them. A caller that must
+    tell a failed detection from a finding critical on its own passes
+    `failed`, which receives the id of every finding detection could not
+    judge (review of #1018)."""
     out: dict[str, tuple[str, list[dict[str, str]]]] = {}
     by_repo: dict[str, list[dict[str, Any]] | None] = {}
     for row in rows:
@@ -175,6 +179,8 @@ def governing_severities(
         combos = by_repo.get(repo, []) if repo else []
         if combos is None:
             out[finding_id] = ("critical", [])
+            if failed is not None:
+                failed.add(finding_id)
             continue
         mine = [
             {k: c[k] for k in ("combination_id", "rule_id", "name", "severity")}
