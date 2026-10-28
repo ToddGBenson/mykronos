@@ -226,7 +226,7 @@ duties:
       clean:
         approvers: [{kind: human}, {kind: agent, delegation: required}]
         quorum: 1
-        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context]
+        independence: [distinct_principal, distinct_instance, outside_lineage, fresh_context, different_family]
         cooling_off_hours: 0
 
   delegation_grant:                    # spec 34 §5 - trusting an agent approver
