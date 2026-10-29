@@ -36,11 +36,11 @@ import time as clock
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import httpx2
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import ThreatIntelMatch
@@ -82,9 +82,11 @@ NVD_DELAY_SECONDS = 6.5
 #: Its verdict stays `not_checked`, which is true. Five daily runs is long
 #: enough that a CVE NVD publishes a day late is not given up on.
 NVD_MAX_FAILURES = 5
-#: Answers that describe the feed, not the CVE: rate-limited, refused for
-#: this address, or down. Counting them would retire every row an outage
-#: touched.
+#: Days after its last refusal that a retired CVE is asked once more, so a
+#: retirement that was wrong, or a CVE NVD publishes late, heals itself.
+NVD_RETRY_DAYS = 30
+#: 4xx answers that describe the feed, not the CVE: rate-limited, or refused
+#: for this address. Counting them would retire every row an outage touched.
 _FEED_STATUSES = frozenset({403, 429})
 
 #: Short. A daily refresh job blocking on a slow feed for minutes is worse
@@ -425,13 +427,17 @@ def default_fetch_nvd(cve_id: str) -> object:
 
 
 def _refused(exc: Exception) -> bool:
-    """Did NVD refuse this CVE, rather than fail to answer at all?"""
-    if isinstance(exc, httpx2.TransportError):
+    """Did NVD refuse this CVE, rather than fail to answer at all?
+
+    Only a 4xx NVD chose to send is about the CVE. Anything else -- a transport
+    error, a 5xx, a 200 that is a maintenance page, a parser that broke --
+    would be charged to every row a run asked, and five runs of it would
+    retire the queue (review of #1034).
+    """
+    if not isinstance(exc, httpx2.HTTPStatusError):
         return False
-    if isinstance(exc, httpx2.HTTPStatusError):
-        code = exc.response.status_code
-        return code < 500 and code not in _FEED_STATUSES
-    return True
+    code = exc.response.status_code
+    return 400 <= code < 500 and code not in _FEED_STATUSES
 
 
 def refresh_vectors(
@@ -481,8 +487,9 @@ def refresh_vectors(
     is not stamped, so it used to head its queue on every run; with more of
     them than a batch, nothing behind them was ever asked. Each refusal is
     recorded, refused rows queue after everything else, and after
-    `NVD_MAX_FAILURES` in a row the row is not asked again. A transport
-    error, a 5xx or a rate limit describes the feed, so it charges no row.
+    `NVD_MAX_FAILURES` in a row the row is not asked again until
+    `NVD_RETRY_DAYS` after the last refusal. Only a 4xx NVD chose to send
+    counts; anything else describes the feed, so it charges no row.
     """
     from mykronos.exploitability import store_nvd_refs
 
@@ -490,7 +497,10 @@ def refresh_vectors(
         ThreatIntelMatch.cvss_vector.is_(None),
         ThreatIntelMatch.v4_checked_at.is_(None),
     )
-    askable = ThreatIntelMatch.nvd_failures < NVD_MAX_FAILURES
+    askable = or_(
+        ThreatIntelMatch.nvd_failures < NVD_MAX_FAILURES,
+        ThreatIntelMatch.nvd_failed_at < now() - timedelta(days=NVD_RETRY_DAYS),
+    )
     refused_last = ThreatIntelMatch.nvd_failed_at.is_not(None)
     pending = list(
         session.execute(
