@@ -18,6 +18,10 @@ Whatever the deviation type, the tier is never below the worst open toxic
 combination a covered finding belongs to (review of #1018, PO decision): since
 #1018 an accepted member stops counting, so accepting the low half of a
 critical pair dissolves a critical, and that is approved as a critical.
+It dissolves only the combinations the approver was shown: the frozen
+evidence names them, read with nothing suppressed, and a combination that
+forms later fails the acceptance's premise (TheHub #61013, `toxic`,
+`premise_monitor`).
 
 **The lake still carries the status.** On approval, the covered findings are
 stamped `accepted_risk` with the record's expiry and reason code, so the Oracle,
@@ -549,6 +553,8 @@ def _combination_floor(
         catalog=catalog,
         db=db,
         failed=undetected,
+        # A renewal is floored at what the record it renews suppressed.
+        suppress=False,
     )
     floor: str | None = None
     combinations: dict[str, dict[str, str]] = {}
@@ -689,6 +695,10 @@ def decision_evidence(
         fresh_days=fresh_days or risk_evidence.FRESH_DAYS,
         scored=(*EVIDENCE_SCORED, "verified_controls") if controls_cited else EVIDENCE_SCORED,
         notes=EVIDENCE_NOTES,
+        # Every combination the findings are in, none dissolved by an earlier
+        # acceptance: this block is what later suppresses them (TheHub #61013),
+        # so a renewal must see what the record it renews suppressed.
+        combinations=risk_evidence.toxic_combinations(catalog, session, repo, suppress=False),
     ).as_dict()
 
 

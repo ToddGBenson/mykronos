@@ -475,8 +475,15 @@ Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
   verified one lowers the tier; `not_kev_listed` and `path_unreachable` are monitored and every other
   kind is named unmonitorable; and every live acceptance — whatever its premises — is checked for a
   covered CVE that joined KEV on or after the day it was proposed, which moves it to
-  `premise_failed` through §4.2's path (the §13 criterion). Not built: a new toxic combination
-  reopening an acceptance.
+  `premise_failed` through §4.2's path (the §13 criterion).
+- Built (TheHub #61013): a new toxic combination reopens an acceptance. An `accepted_risk` member
+  dissolves a combination only when that combination (by `combination_id`) is in the evidence frozen
+  into a live acceptance's approval: the `risk_evidence` block's `toxic_combinations` items or the
+  `combinations` the tier was floored at, both read with nothing suppressed so a renewal sees what it
+  renews. A combination that formed later stays formed, names the acceptance in
+  `unanticipated_acceptances`, and fails the implicit `no_unanticipated_toxic_combination` premise,
+  which moves it to `premise_failed` through §4.2's path. Missing or unreadable frozen evidence —
+  a direct disposition with no record, a record proposed before the evidence block — covers nothing.
 - Built (review of #1005): the legacy sweep. Until #1005 the KEV refusal read rule ids only, so an
   acceptance proposed before it (its approval evidence has no `risk_evidence` block) could cover a
   GHSA-keyed finding whose title CVE was already in KEV. On those records a title-only KEV CVE

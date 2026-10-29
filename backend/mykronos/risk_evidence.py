@@ -463,12 +463,22 @@ def verified_controls(
 
 
 def toxic_combinations(
-    catalog: Any, session: Session | None, repo: str, *, escalate_steps: int = 1
+    catalog: Any,
+    session: Session | None,
+    repo: str,
+    *,
+    escalate_steps: int = 1,
+    suppress: bool = True,
 ) -> list[Any]:
-    """`toxic.detect` for one repository: the same combinations either reader sees."""
+    """`toxic.detect` for one repository: the same combinations either reader sees.
+
+    `suppress=False` is what an acceptance's approver is shown: every
+    combination, none dissolved by an earlier acceptance (TheHub #61013)."""
     from mykronos import toxic
 
-    return toxic.detect(catalog, repo=repo, session=session, escalate_steps=escalate_steps)
+    return toxic.detect(
+        catalog, repo=repo, session=session, escalate_steps=escalate_steps, suppress=suppress
+    )
 
 
 # ---------------------------------------------------------------------------
