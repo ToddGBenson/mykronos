@@ -42,6 +42,13 @@ A host-vantage `port_published` alone never fails `port_not_published`: every
 published port answers its own host, and spec 33 §4.1's premise is "publishes
 no host port / binds loopback only" - which `bound_loopback` answers.
 
+**Two implicit premises every live acceptance rests on.** A covered CVE that
+joins KEV after the proposal (`kev_join`), and a toxic combination with a
+covered finding that the approver was not shown (`toxic_join`, TheHub
+#61013). An acceptance dissolves only the combinations its frozen evidence
+named (`toxic.detect`); one that formed later reopens the acceptance's
+premise, so it fails here and is decided again with the combination in view.
+
 **On failure (spec 33 §4.2).** The acceptance moves to `premise_failed`;
 every finding it covers reopens (unless another live record still covers it,
 the rule `risk_acceptance.revoke` keeps) with a `finding.reopened_by_premise`
@@ -131,6 +138,16 @@ FRESH_DAYS = control_observations.FRESH_DAYS
 #: CVE that joins KEV reopens it, whether or not the record names
 #: `not_kev_listed`. Reported with this index.
 IMPLICIT_KEV_INDEX = -1
+
+#: The second implicit premise (TheHub #61013): no toxic combination formed
+#: that the approver was not shown. An acceptance's premise is usually "not
+#: reachable", and a combination with one of its findings is evidence against
+#: that. `toxic.detect` keeps such a combination formed and names the
+#: acceptance in `unanticipated_acceptances`; this fails it. Reported with
+#: this index and type, which no proposal may name (it is not in
+#: `risk_acceptance.PREMISE_TYPES`): every acceptance rests on it.
+IMPLICIT_TOXIC_INDEX = -2
+IMPLICIT_TOXIC_TYPE = "no_unanticipated_toxic_combination"
 
 _EXPOSED_VANTAGES = ("internet", "lan")
 
@@ -823,6 +840,15 @@ def _compact(check: PremiseCheck) -> dict[str, Any]:
             if check.type == "epss_below"
             else {}
         ),
+        **(
+            {
+                "combination_ids": [
+                    e["combination_id"] for e in check.evidence if e.get("source") == "toxic"
+                ]
+            }
+            if check.type == IMPLICIT_TOXIC_TYPE
+            else {}
+        ),
     }
 
 
@@ -993,6 +1019,58 @@ def kev_join(
     )
 
 
+def unanticipated_combinations(
+    session: Session, catalog: Catalog, records: Iterable[RiskAcceptance]
+) -> dict[str, list[Any]]:
+    """Acceptance id -> the formed toxic combinations its approver was not
+    shown, for these records. One detection per repository they cover.
+
+    Raises when detection cannot run; the caller logs it and fails nothing,
+    since the combination stays formed in every reader that can run it and
+    the next run checks again."""
+    from mykronos import toxic
+
+    records = list(records)
+    live = {r.id for r in records}
+    out: dict[str, list[Any]] = {}
+    for repo in sorted({r.repo_full_name for r in records}):
+        for combo in toxic.detect(catalog, repo=repo, session=session):
+            for record_id in combo.unanticipated_acceptances:
+                if record_id in live:
+                    out.setdefault(record_id, []).append(combo)
+    return out
+
+
+def toxic_join(combinations: list[Any]) -> PremiseCheck | None:
+    """The implicit premise (TheHub #61013): a toxic combination with a
+    covered finding formed that the approver was not shown - after the
+    approval, or with no frozen evidence to say otherwise - fails it."""
+    if not combinations:
+        return None
+    return PremiseCheck(
+        IMPLICIT_TOXIC_INDEX,
+        IMPLICIT_TOXIC_TYPE,
+        "failed",
+        "A toxic combination with a covered finding formed that this acceptance's "
+        "approver was not shown: "
+        + ", ".join(f"{c.name} ({c.severity}, {c.combination_id[:12]})" for c in combinations)
+        + ". It is evidence against the premise the finding was accepted on; "
+        "decide it again with the combination in view.",
+        [
+            {
+                "source": "toxic",
+                "implicit": True,
+                "combination_id": c.combination_id,
+                "rule_id": c.rule_id,
+                "name": c.name,
+                "severity": c.severity,
+                "finding_ids": [str(m["finding_id"]) for m in c.members],
+            }
+            for c in combinations
+        ],
+    )
+
+
 def _run(
     db: Any, catalog: Catalog, *, repo: str | None, now: datetime, fresh_days: int
 ) -> MonitorResult:
@@ -1009,13 +1087,19 @@ def _run(
             (f for r in records for f in (r.covered_finding_ids or [])),
             repos={r.repo_full_name for r in records},
         )
+        try:
+            formed = unanticipated_combinations(session, catalog, records)
+        except Exception:  # noqa: BLE001 - every other premise still runs
+            logger.exception("Toxic detection for the premise monitor failed")
+            formed = {}
         for record in records:
             titled = any(
                 kev[str(f)].via_title for f in (record.covered_finding_ids or []) if str(f) in kev
             )
             legacy = titled and proposed_before_the_evidence_block(session, record)
             implicit = kev_join(record, kev, legacy=legacy)
-            if not record.premises and implicit is None:
+            combined = toxic_join(formed.get(record.id, []))
+            if not record.premises and implicit is None and combined is None:
                 continue
             checks = (
                 check_record(session, record, catalog, now=now, fresh_days=fresh_days)
@@ -1026,11 +1110,13 @@ def _run(
                 c.type == "not_kev_listed" and c.status == "failed" for c in checks
             ):
                 checks.append(implicit)
+            if combined is not None:
+                checks.append(combined)
             result.acceptances += 1
             result.premises += len(checks)
             result.holds += sum(1 for c in checks if c.status == "holds")
             result.unverified += sum(1 for c in checks if c.status == "unverified")
-            monitored = [c for c in checks if c.type in MONITORED]
+            monitored = [c for c in checks if c.type in (*MONITORED, IMPLICIT_TOXIC_TYPE)]
             if not monitored:
                 continue
             previous = _last_signature(session, record.id)
@@ -1153,6 +1239,16 @@ def _who(risk_owner: str, approved_by: str | None) -> str:
     return f"risk owner {risk_owner or '(none)'}, approver {approved_by or '(none)'}"
 
 
+def _sources(failure: FailedAcceptance) -> str:
+    """What a failure with no observation rests on, for the notification."""
+    toxic = any(c.type == IMPLICIT_TOXIC_TYPE for c in failure.failed)
+    other = any(c.type != IMPLICIT_TOXIC_TYPE for c in failure.failed)
+    return {
+        (True, False): "(toxic-combination detection)",
+        (True, True): "(threat-intel, toxic-combination detection)",
+    }.get((toxic, other), "(threat-intel)")
+
+
 def notifications(result: MonitorResult) -> list[Notification]:
     notes = []
     for f in result.failed:
@@ -1160,7 +1256,7 @@ def notifications(result: MonitorResult) -> list[Notification]:
             f"Acceptance {f.record_id[:8]} is now premise_failed "
             f"({_who(f.risk_owner, f.approved_by)}).",
             *(f"- {c.type}: {c.reason}" for c in f.failed),
-            f"Evidence: observation(s) {', '.join(f.observation_ids) or '(threat-intel)'}.",
+            f"Evidence: observation(s) {', '.join(f.observation_ids) or _sources(f)}.",
             f"{f.reopened} finding(s) reopened.",
             (
                 f"Tracking item: {f.tracking_ref}."

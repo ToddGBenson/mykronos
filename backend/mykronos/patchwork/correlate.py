@@ -276,6 +276,11 @@ def _evidence_verdict(finding: dict[str, Any]) -> str | None:
 #: combination is what overstated a live critical.
 DISCOUNTED_STATUSES: tuple[str, ...] = ("false_positive", "accepted_risk")
 
+#: What `mykronos.toxic` discounts (TheHub #61013): only a false positive. An
+#: accepted member counts toward detection there, and the combination is then
+#: suppressed only when the acceptance's frozen evidence already named it.
+FALSE_POSITIVE_ONLY: tuple[str, ...] = ("false_positive",)
+
 
 @dataclass(frozen=True)
 class Combination:
@@ -611,12 +616,12 @@ def _matches(requirement: Requirement, finding: dict[str, Any]) -> bool:
     return _qualifies(requirement, finding) is not None
 
 
-def _counts(finding: dict[str, Any]) -> bool:
+def _counts(finding: dict[str, Any], discounted: tuple[str, ...] = DISCOUNTED_STATUSES) -> bool:
     """False for a finding a person has dispositioned out of the risk.
 
     A finding with no `status` counts: Patchwork's candidate pool is open
     findings and does not carry the column."""
-    return str(finding.get("status") or "open") not in DISCOUNTED_STATUSES
+    return str(finding.get("status") or "open") not in discounted
 
 
 def combination_id(rule_id: str, finding_ids: frozenset[str]) -> str:
@@ -627,9 +632,15 @@ def combination_id(rule_id: str, finding_ids: frozenset[str]) -> str:
 
 
 def detect(
-    findings: list[dict[str, Any]], rules: tuple[CombinationRule, ...] = BUILT_IN_RULES
+    findings: list[dict[str, Any]],
+    rules: tuple[CombinationRule, ...] = BUILT_IN_RULES,
+    *,
+    discounted: tuple[str, ...] = DISCOUNTED_STATUSES,
 ) -> list[Combination]:
     """Every toxic combination present in this set of findings.
+
+    `discounted` names the statuses that do not count. `mykronos.toxic`
+    passes `FALSE_POSITIVE_ONLY` and decides about accepted members itself.
 
     A finding may appear in at most one combination — the first rule that
     claims it wins, in rule order. Allowing overlap would mean one finding
@@ -642,7 +653,7 @@ def detect(
     for rule in rules:
         groups: dict[str, list[dict[str, Any]]] = {}
         for finding in findings:
-            if str(finding["finding_id"]) in claimed or not _counts(finding):
+            if str(finding["finding_id"]) in claimed or not _counts(finding, discounted):
                 continue
             key = str(finding.get("file_path") or "") if rule.scope == "file" else "*"
             groups.setdefault(key, []).append(finding)

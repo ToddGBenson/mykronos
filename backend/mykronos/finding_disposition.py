@@ -119,9 +119,10 @@ def _escalate_steps() -> int:
 
 
 def _repo_combinations(
-    repo: str, *, catalog: Catalog | None = None, db: Any = None
+    repo: str, *, catalog: Catalog | None = None, db: Any = None, suppress: bool = True
 ) -> list[dict[str, Any]]:
-    """Every open toxic combination in `repo`, as the risk decision sees it.
+    """Every open toxic combination in `repo`, as the risk decision sees it
+    (`suppress=False`: as an approver is shown it, `toxic.detect`).
     Raises when detection cannot run."""
     from mykronos import toxic
 
@@ -130,9 +131,11 @@ def _repo_combinations(
     steps = _escalate_steps()
     if db is not None:
         with db.session() as session:
-            combos = toxic.detect(catalog, repo=repo, session=session, escalate_steps=steps)
+            combos = toxic.detect(
+                catalog, repo=repo, session=session, escalate_steps=steps, suppress=suppress
+            )
     else:
-        combos = toxic.detect(catalog, repo=repo, escalate_steps=steps)
+        combos = toxic.detect(catalog, repo=repo, escalate_steps=steps, suppress=suppress)
     return [
         {
             "combination_id": c.combination_id,
@@ -151,6 +154,7 @@ def governing_severities(
     catalog: Catalog | None = None,
     db: Any = None,
     failed: set[str] | None = None,
+    suppress: bool = True,
 ) -> dict[str, tuple[str, list[dict[str, str]]]]:
     """finding id -> (governing severity, the combinations that raised it).
 
@@ -163,7 +167,9 @@ def governing_severities(
     its own (a risk acceptance's proposal) passes them. A caller that must
     tell a failed detection from a finding critical on its own passes
     `failed`, which receives the id of every finding detection could not
-    judge (review of #1018)."""
+    judge (review of #1018). A risk acceptance's proposal passes
+    `suppress=False`, so its floor counts a combination an earlier acceptance
+    dissolved (TheHub #61013)."""
     out: dict[str, tuple[str, list[dict[str, str]]]] = {}
     by_repo: dict[str, list[dict[str, Any]] | None] = {}
     for row in rows:
@@ -172,7 +178,9 @@ def governing_severities(
         repo = str(row.get("repo_full_name") or "")
         if repo and repo not in by_repo:
             try:
-                by_repo[repo] = _repo_combinations(repo, catalog=catalog, db=db)
+                by_repo[repo] = _repo_combinations(
+                    repo, catalog=catalog, db=db, suppress=suppress
+                )
             except Exception:  # noqa: BLE001 - fail closed; logged for the operator
                 logger.exception("Toxic detection failed for %s; governing as critical.", repo)
                 by_repo[repo] = None

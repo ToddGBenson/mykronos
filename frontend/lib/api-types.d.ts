@@ -434,8 +434,11 @@ export interface paths {
          * @description Toxic combinations across the estate (spec 08 §5), worst first.
          *
          *     The same detection and severity the Oracle's risk decision uses
-         *     (`mykronos.toxic`). Findings dispositioned `false_positive` or
-         *     `accepted_risk` do not count toward a combination.
+         *     (`mykronos.toxic`). A finding dispositioned `false_positive` does not
+         *     count toward a combination. An `accepted_risk` member dissolves one only
+         *     when the acceptance's frozen evidence named it; a combination formed
+         *     after the acceptance is listed, with `unanticipated_acceptances` naming
+         *     the acceptances whose premise it fails.
          */
         get: operations["toxic_combinations_api_dashboard_toxic_combinations_get"];
         put?: never;
