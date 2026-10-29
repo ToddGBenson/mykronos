@@ -734,6 +734,12 @@ class ThreatIntelMatch(Base):
     #: `vector_checked_at` because rows looked up before #60890 were read for
     #: vectors only, and are eligible for exactly one more lookup.
     nvd_refs_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: NVD refusing this CVE in a row (TheHub #61037): when it last did, and
+    #: how many lookups since the last one that answered. A refused row is
+    #: never stamped as checked, so without these it would head both queues
+    #: on every run. A feed outage is not counted against any row.
+    nvd_failed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    nvd_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

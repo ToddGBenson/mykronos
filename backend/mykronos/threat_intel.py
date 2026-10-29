@@ -36,11 +36,11 @@ import time as clock
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import httpx2
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import ThreatIntelMatch
@@ -78,6 +78,16 @@ NVD_REFS_BATCH = 40
 #: because being rate-limited by a public feed is a way to get an IP blocked
 #: rather than a way to go faster.
 NVD_DELAY_SECONDS = 6.5
+#: Refusals in a row after which a CVE is no longer asked (TheHub #61037).
+#: Its verdict stays `not_checked`, which is true. Five daily runs is long
+#: enough that a CVE NVD publishes a day late is not given up on.
+NVD_MAX_FAILURES = 5
+#: Days after its last refusal that a retired CVE is asked once more, so a
+#: retirement that was wrong, or a CVE NVD publishes late, heals itself.
+NVD_RETRY_DAYS = 30
+#: 4xx answers that describe the feed, not the CVE: rate-limited, or refused
+#: for this address. Counting them would retire every row an outage touched.
+_FEED_STATUSES = frozenset({403, 429})
 
 #: Short. A daily refresh job blocking on a slow feed for minutes is worse
 #: than the job trying again tomorrow (spec 17 §4.3's degrade-not-block rule).
@@ -416,6 +426,20 @@ def default_fetch_nvd(cve_id: str) -> object:
     return response.json()
 
 
+def _refused(exc: Exception) -> bool:
+    """Did NVD refuse this CVE, rather than fail to answer at all?
+
+    Only a 4xx NVD chose to send is about the CVE. Anything else -- a transport
+    error, a 5xx, a 200 that is a maintenance page, a parser that broke --
+    would be charged to every row a run asked, and five runs of it would
+    retire the queue (review of #1034).
+    """
+    if not isinstance(exc, httpx2.HTTPStatusError):
+        return False
+    code = exc.response.status_code
+    return 400 <= code < 500 and code not in _FEED_STATUSES
+
+
 def refresh_vectors(
     session: Session,
     *,
@@ -458,6 +482,14 @@ def refresh_vectors(
     it, asked after the vector lookups, and without touching the row's
     vectors or their stamps. It never counts as found, because found is what
     fans out into an estate-wide environmental rescore.
+
+    **A refused lookup goes to the back** (TheHub #61037). A row NVD refuses
+    is not stamped, so it used to head its queue on every run; with more of
+    them than a batch, nothing behind them was ever asked. Each refusal is
+    recorded, refused rows queue after everything else, and after
+    `NVD_MAX_FAILURES` in a row the row is not asked again until
+    `NVD_RETRY_DAYS` after the last refusal. Only a 4xx NVD chose to send
+    counts; anything else describes the feed, so it charges no row.
     """
     from mykronos.exploitability import store_nvd_refs
 
@@ -465,13 +497,23 @@ def refresh_vectors(
         ThreatIntelMatch.cvss_vector.is_(None),
         ThreatIntelMatch.v4_checked_at.is_(None),
     )
+    askable = or_(
+        ThreatIntelMatch.nvd_failures < NVD_MAX_FAILURES,
+        ThreatIntelMatch.nvd_failed_at < now() - timedelta(days=NVD_RETRY_DAYS),
+    )
+    refused_last = ThreatIntelMatch.nvd_failed_at.is_not(None)
     pending = list(
         session.execute(
             select(ThreatIntelMatch)
-            .where(needs_vector)
+            .where(needs_vector, askable)
             # Never looked at first: a CVE matched today is not queued behind
-            # rows being asked about v4 a second time.
-            .order_by(ThreatIntelMatch.vector_checked_at.is_not(None), ThreatIntelMatch.cve_id)
+            # rows being asked about v4 a second time, or behind refusals.
+            .order_by(
+                refused_last,
+                ThreatIntelMatch.vector_checked_at.is_not(None),
+                ThreatIntelMatch.nvd_failed_at,
+                ThreatIntelMatch.cve_id,
+            )
             .limit(limit)
         ).scalars()
     )
@@ -480,8 +522,8 @@ def refresh_vectors(
         refs_only = list(
             session.execute(
                 select(ThreatIntelMatch)
-                .where(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None))
-                .order_by(ThreatIntelMatch.cve_id)
+                .where(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None), askable)
+                .order_by(refused_last, ThreatIntelMatch.nvd_failed_at, ThreatIntelMatch.cve_id)
                 .limit(refs_limit)
             ).scalars()
         )
@@ -497,10 +539,15 @@ def refresh_vectors(
             vectors = parse_nvd_vectors(payload)
         except Exception as exc:  # noqa: BLE001 - a feed failure degrades
             logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
+            if _refused(exc):
+                row.nvd_failures = (row.nvd_failures or 0) + 1
+                row.nvd_failed_at = now()
             continue
         # Stamped even when nothing was found: that is the record of having
         # looked, and it is what stops this retrying for ever.
         checked = now()
+        row.nvd_failures = 0
+        row.nvd_failed_at = None
         store_nvd_refs(row, payload, checked)
         if index >= len(pending):
             continue
