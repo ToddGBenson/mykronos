@@ -827,15 +827,12 @@ class TestTriggersCallRescore:
     def test_a_vector_refresh_marks_every_repository(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from mykronos import threat_intel, worklist
+        from mykronos import threat_intel
 
         db = _db(tmp_path)
-        monkeypatch.setattr(threat_intel, "refresh", lambda session, relevant: None)
-        monkeypatch.setattr(threat_intel, "apply_kev_due_dates", lambda s, c: 0)
-        monkeypatch.setattr(threat_intel, "refresh_vectors", lambda session: 2)
-        monkeypatch.setattr(worklist, "break_snoozes_on_kev", lambda db, catalog: None)
-        catalog = SimpleNamespace(query=lambda sql, params=None: [])
-        threat_intel.refresh_job(db, catalog)  # type: ignore[arg-type]
+        # Its own job since TheHub #61034, no longer a step of `refresh_job`.
+        monkeypatch.setattr(threat_intel, "refresh_vectors", lambda session, **kwargs: 2)
+        threat_intel.vector_job(db)
         assert environment.ALL in environment.pending()
 
     def test_the_compaction_loop_drains_after_compacting(
