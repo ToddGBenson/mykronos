@@ -90,10 +90,20 @@ class EvaluateResult(BaseModel):
     disclosed: dict[str, int] = Field(
         default_factory=dict,
         description=(
-            "Open container findings this commit's scans saw first in an image "
-            "the previous scan had already seen byte for byte (#734): the "
-            "vulnerability database moved, not the commit. Reported so they "
-            "are not lost, and excluded from `introduced` and the floor."
+            "Open findings this commit's scans saw first that the commit did "
+            "not introduce: a container image the previous scan had already "
+            "seen byte for byte (#734), or a dependency the baseline already "
+            "carried at that version or that this commit's own manifests fix "
+            "(TheHub #61063). The advisory moved, not the commit. Reported so "
+            "they are not lost, and excluded from `introduced` and the floor."
+        ),
+    )
+    remediates: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Of `disclosed`, the findings this commit's own tree fixes, by "
+            "severity: read from an SBOM of what runs, while the commit's "
+            "manifests move the package to the fixed version (TheHub #61063)."
         ),
     )
     introduced_blocking: bool = Field(
@@ -205,6 +215,22 @@ async def evaluate(
     # asked has already exited by the time anyone looks at it. Sent as a
     # background task so a slow webhook cannot add latency to a gate every
     # build waits on (spec 16 §14).
+    # The severity floor. Deliberately a constant rather than policy: a floor
+    # an operator can lower under pressure is a floor that reaches zero.
+    queries = DashboardQueries(request.app.state.catalog)
+    introduced = queries.introduced_by(token.repo_full_name, body.commit_sha)
+    disclosed = queries.disclosed_by(token.repo_full_name, body.commit_sha)
+    remediates = queries.remediated_by(token.repo_full_name, body.commit_sha)
+    introduced_blocking = bool(
+        introduced.get("critical", 0) or introduced.get("high", 0)
+    )
+    # Said in the reasoning the gate job prints and Slack carries, so a
+    # finding kept out of `introduced` is never kept out of sight.
+    reasoning = published.decision.reasoning or ""
+    disclosure = disclosure_sentence(disclosed, remediates)
+    if disclosure:
+        reasoning = f"{reasoning} {disclosure}".strip()
+
     if published.decision.recommendation == "no_go":
         background.add_task(
             request.app.state.notifier.send,
@@ -212,7 +238,7 @@ async def evaluate(
                 title="A risk decision refused a commit",
                 detail=(
                     f"Score {published.decision.overall_risk_score}. "
-                    f"{published.decision.reasoning or 'No reasoning recorded.'}\n"
+                    f"{reasoning or 'No reasoning recorded.'}\n"
                     f"Commit `{body.commit_sha}`. "
                     + (
                         "Blocking is on: the check run is red."
@@ -225,29 +251,43 @@ async def evaluate(
             ),
         )
 
-    # The severity floor. Deliberately a constant rather than policy: a floor
-    # an operator can lower under pressure is a floor that reaches zero.
-    queries = DashboardQueries(request.app.state.catalog)
-    introduced = queries.introduced_by(token.repo_full_name, body.commit_sha)
-    disclosed = queries.disclosed_by(token.repo_full_name, body.commit_sha)
-    introduced_blocking = bool(
-        introduced.get("critical", 0) or introduced.get("high", 0)
-    )
-
     return EvaluateResult(
         decision_id=published.decision.decision_id,
         decision_type=published.decision.decision_type,
         overall_risk_score=published.decision.overall_risk_score,
         recommendation=published.decision.recommendation,
-        reasoning=published.decision.reasoning,
+        reasoning=reasoning,
         policy_version=published.decision.policy_version,
         blocking=published.blocking,
         check_run_id=published.check_run_id,
         check_run_error=published.check_run_error,
         introduced=introduced,
         disclosed=disclosed,
+        remediates=remediates,
         introduced_blocking=introduced_blocking,
     )
+
+
+def disclosure_sentence(disclosed: dict[str, int], remediates: dict[str, int]) -> str:
+    """One sentence naming what was newly disclosed rather than introduced,
+    and how much of it this commit fixes (TheHub #61063). Empty when nothing
+    was."""
+    total = sum(disclosed.values())
+    if not total:
+        return ""
+    order = ("critical", "high", "medium", "low", "info")
+    tally = ", ".join(
+        f"{disclosed[s]} {s}" for s in [*order, *sorted(set(disclosed) - set(order))]
+        if disclosed.get(s)
+    )
+    sentence = (
+        f"Newly disclosed, not introduced by this commit: {tally} - advisories "
+        "published against a version the baseline or production already ran."
+    )
+    fixed = sum(remediates.values())
+    if fixed:
+        sentence += f" This commit remediates {fixed}."
+    return sentence
 
 
 @router.get("/policy")
@@ -426,7 +466,15 @@ class CommitDecisionOut(BaseModel):
     )
     disclosed: dict[str, int] = Field(
         default_factory=dict,
-        description="Newly disclosed in unchanged images; never blocking (#734).",
+        description=(
+            "Newly disclosed in unchanged images (#734) or on dependencies the "
+            "baseline already carried or this commit fixes (TheHub #61063); "
+            "never blocking."
+        ),
+    )
+    remediates: dict[str, int] = Field(
+        default_factory=dict,
+        description="Of `disclosed`, what this commit's own tree fixes (TheHub #61063).",
     )
     introduced_blocking: bool = Field(
         default=False,
@@ -511,6 +559,7 @@ async def decision_for_commit(
         evaluated_at=evaluated_at,
         introduced=introduced,
         disclosed=queries.disclosed_by(repo, filed_sha),
+        remediates=queries.remediated_by(repo, filed_sha),
         # The same floor as `/evaluate`, from the same constant rule.
         introduced_blocking=bool(introduced.get("critical") or introduced.get("high")),
     )

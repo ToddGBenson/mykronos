@@ -61,11 +61,118 @@ from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
-#: The only capability where an unchanged artefact can gain findings between
-#: two commits without either commit changing it. `atlas` has the same shape
-#: in principle, but its artefact is a manifest in the repository, whose
-#: unchanged-ness needs the file's content rather than a digest.
+#: The capability whose unchanged artefact is proven by a digest. `atlas` has
+#: the same shape, but its artefact is a file in the repository, whose
+#: unchanged-ness needs the commit's history - see `atlas_disclosed`.
 CAPABILITY = "containers"
+
+#: Dependency findings (TheHub #61063). The runner writes what the checkout
+#: knows onto the raw record (`mykronos.atlas_baseline`), and this reads it.
+ATLAS = "atlas"
+
+
+class AtlasCandidate(NamedTuple):
+    """One open atlas finding a commit's scans saw first."""
+
+    finding_id: str
+    scan: str
+    #: `raw_finding_json.baseline_commits`: the ancestors whose copy of the
+    #: finding's file already carried this package at this version. None when
+    #: the runner could not tell.
+    baseline_commits: tuple[str, ...] | None
+    #: Whether `raw_finding_json.remediated_by` names a constraint in this
+    #: commit's tree that moves the package to the fixed version.
+    remediated: bool
+
+
+def atlas_candidate(
+    finding_id: str, scan: str, baseline: Any, remedy: Any
+) -> AtlasCandidate:
+    """An `AtlasCandidate` from the two raw JSON values the lake returns."""
+
+    def parsed(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except ValueError:
+                return None
+        return value
+
+    commits = parsed(baseline)
+    remediation = parsed(remedy)
+    return AtlasCandidate(
+        finding_id=str(finding_id),
+        scan=str(scan),
+        baseline_commits=(
+            tuple(str(c) for c in commits) if isinstance(commits, list) else None
+        ),
+        remediated=isinstance(remediation, dict) and bool(remediation.get("file")),
+    )
+
+
+def atlas_disclosed(
+    catalog: Any, candidates: list[AtlasCandidate]
+) -> tuple[set[str], set[str]]:
+    """(disclosed, remediated) finding ids among these atlas findings.
+
+    **Newly disclosed** is a component the baseline already had: the commit of
+    the previous scan of this repository is among the ancestors whose copy of
+    the file carried the package at this version. The advisory moved, not the
+    commit.
+
+    **Remediated** is a finding read from an SBOM - a record of what runs -
+    while this commit's own manifests move the package to the fixed version.
+    TheHub's gate refused 09a6ca31 for three pypdf highs in the committed SBOM
+    of the running backend, in the commit that pinned the fix. A commit is
+    never charged for what it fixes, so a remediated finding is disclosed too.
+
+    No previous scan, no recorded ancestry, a baseline further back than the
+    runner walked: "introduced". Missing evidence never opens the gate.
+    """
+    disclosed: set[str] = set()
+    remediated: set[str] = set()
+    if not candidates:
+        return disclosed, remediated
+    try:
+        repo = _repo_of(catalog, candidates[0].scan)
+        baselines: dict[str, str | None] = {}
+        for row in candidates:
+            if row.remediated:
+                remediated.add(row.finding_id)
+                disclosed.add(row.finding_id)
+                continue
+            if not row.baseline_commits or repo is None:
+                continue
+            if row.scan not in baselines:
+                baselines[row.scan] = _previous_commit(catalog, repo, row.scan)
+            baseline = baselines[row.scan]
+            # The runner writes full shas; a scan run may carry a short one.
+            if baseline and len(baseline) >= 7 and any(
+                commit.startswith(baseline) or baseline.startswith(commit)
+                for commit in row.baseline_commits
+                if len(commit) >= 7
+            ):
+                disclosed.add(row.finding_id)
+    except Exception:  # noqa: BLE001 - no evidence means "introduced"
+        logger.warning(
+            "Could not compare atlas findings with their baseline; every "
+            "candidate counts as introduced.",
+            exc_info=True,
+        )
+        return set(), set()
+    return disclosed, remediated
+
+
+def _previous_commit(catalog: Any, repo_full_name: str, scan_run_id: str) -> str | None:
+    """The commit of the previous successful scan, same capability, different
+    commit - the baseline a dependency finding is compared with."""
+    previous = _previous_scan(catalog, repo_full_name, scan_run_id)
+    if previous is None:
+        return None
+    rows = catalog.query(
+        "SELECT commit_sha FROM scan_runs WHERE scan_run_id = ? LIMIT 1", [previous]
+    )
+    return str(rows[0][0]) if rows and rows[0][0] else None
 
 
 class Image(NamedTuple):
