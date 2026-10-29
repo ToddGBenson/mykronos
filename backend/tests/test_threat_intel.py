@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gzip
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx2
 import pytest
@@ -731,14 +731,53 @@ class TestFailedLookups:
         row = session.get(ThreatIntelMatch, "CVE-2000-00001")
         assert row is not None and row.nvd_refs_checked_at is None
 
+    def test_a_retired_row_is_asked_again_after_the_window(self, session) -> None:
+        """A retirement that was wrong, or a CVE NVD publishes late, heals
+        itself rather than staying unasked for ever."""
+        last = datetime(2026, 10, 1)
+        row = self._known("CVE-2000-00001")
+        row.nvd_failures = threat_intel.NVD_MAX_FAILURES
+        row.nvd_failed_at = last
+        session.add(row)
+        session.flush()
+        window = timedelta(days=threat_intel.NVD_RETRY_DAYS)
+
+        early: list[str] = []
+        threat_intel.refresh_vectors(
+            session,
+            fetch=self._fetch(set(), early),
+            sleep=lambda _: None,
+            now=lambda: last + window - timedelta(hours=1),
+        )
+        later: list[str] = []
+        threat_intel.refresh_vectors(
+            session,
+            fetch=self._fetch(set(), later),
+            sleep=lambda _: None,
+            now=lambda: last + window + timedelta(hours=1),
+        )
+
+        assert (early, later) == ([], ["CVE-2000-00001"])
+        assert (row.nvd_failures, row.nvd_failed_at) == (0, None)
+        assert row.nvd_refs_checked_at is not None
+
     @pytest.mark.parametrize(
         "exc",
-        [httpx2.ConnectError("down"), _status(429), _status(403), _status(503)],
-        ids=["transport", "429", "403", "503"],
+        [
+            httpx2.ConnectError("down"),
+            _status(429),
+            _status(403),
+            _status(503),
+            ValueError("Expecting value: line 1 column 1 (char 0)"),
+            KeyError("vulnerabilities"),
+        ],
+        ids=["transport", "429", "403", "503", "html-body", "parser"],
     )
     def test_a_feed_failure_charges_no_row(self, session, exc: Exception) -> None:
         """NVD being down or rate-limiting this address says nothing about the
-        CVE: counting it would retire the whole estate after a five-day outage."""
+        CVE: counting it would retire the whole estate after a five-day outage.
+        Nor does a 200 that is a maintenance page, or a parser that broke: only
+        a 4xx NVD chose to send is about the CVE."""
         session.add(self._known("CVE-2000-00001"))
         session.flush()
 
