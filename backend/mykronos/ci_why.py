@@ -17,12 +17,11 @@ Concourse. This module keeps the property for everything it *returns*:
   chose to raise (`::error::`, a problem matcher, the runner's "Process
   completed with exit code N"), not its log. No log is downloaded.
 - *Concourse*: the build plan (step names by id) and the build's event
-  stream. From the stream it keeps structural events (which step finished
-  with which exit status, Concourse's own `error` events) and, from log
-  output, only lines that open with `::error` - the same author-chosen
-  annotation convention the pipelines here already use (200-odd of them).
-  Every other log line is discarded as it is parsed: never returned, never
-  logged, never cached.
+  stream, read only to find which step finished non-zero, its exit status,
+  and Concourse's own `error` events. Log events are skipped without their
+  text being looked at: no build log line is ever returned, logged or
+  cached, `::error` lines included (operator decision on #1037). Showing
+  `::error` lines may be revisited once Concourse redacts secrets.
 
 Everything returned passes through `clean`: ANSI escapes stripped, values
 shaped like credentials masked, then `logsafe.scrub` for control characters
@@ -98,9 +97,6 @@ _EXIT_CODE = re.compile(r"exit code (\d+)", re.IGNORECASE)
 #: The runner's own closing annotation. Its exit code is kept; as a message
 #: it repeats what `exit_code` already says.
 _RUNNER_EXIT = re.compile(r"^Process completed with exit code \d+\.?$", re.IGNORECASE)
-#: `::error::msg` and `::error file=x,line=1::msg`, the GitHub workflow-command
-#: syntax this estate's Concourse pipelines also print.
-_ERROR_COMMAND = re.compile(r"^::error(?:\s[^:]*)?::\s*(.*)$")
 
 
 def _mask(match: re.Match[str]) -> str:
@@ -131,8 +127,8 @@ class FailureWhy:
     #: "job: step" for Actions.
     step: str | None = None
     exit_code: int | None = None
-    #: The first error lines (Concourse `::error` lines and `error` events)
-    #: or check annotations, cleaned.
+    #: Concourse's own `error` events, or the failed job's GitHub check
+    #: annotations, cleaned. Never build log text.
     messages: tuple[str, ...] = ()
     url: str | None = None
     #: What the reader should know about what is shown, e.g. that the step
@@ -219,14 +215,13 @@ def why_from_events(
 ) -> FailureWhy:
     """Read a Concourse build's event stream (SSE lines) for its failure.
 
-    Keeps the first step to finish non-zero, Concourse's own `error` events,
-    and log lines that open with `::error`. Every other log line is dropped
-    here, unread past the prefix check.
+    Keeps the first step to finish non-zero, its exit status, and
+    Concourse's own `error` events. `log` events are skipped without their
+    payload being read: no build log text is returned, `::error` lines
+    included (operator decision on #1037, until Concourse redacts secrets).
     """
     failed_origin: str | None = None
     exit_code: int | None = None
-    #: origin -> its `::error` messages, in order.
-    errors_by_origin: dict[str, list[str]] = {}
     platform_errors: list[tuple[str | None, str]] = []
     read_bytes = 0
     read_lines = 0
@@ -260,16 +255,9 @@ def why_from_events(
         )
 
         if kind == "log":
-            payload = data.get("payload")
-            if not isinstance(payload, str) or "::error" not in payload or origin is None:
-                continue
-            for log_line in payload.splitlines():
-                match = _ERROR_COMMAND.match(_ANSI.sub("", log_line).strip())
-                if match and match.group(1).strip():
-                    kept = errors_by_origin.setdefault(origin, [])
-                    if len(kept) < MAX_MESSAGES:
-                        kept.append(clean(match.group(1)))
-        elif kind in ("finish-task", "finish-get", "finish-put"):
+            # Build output: counted against the caps above, never read.
+            continue
+        if kind in ("finish-task", "finish-get", "finish-put"):
             status = data.get("exit_status")
             if isinstance(status, int) and status != 0 and failed_origin is None:
                 failed_origin, exit_code = origin, status
@@ -293,14 +281,8 @@ def why_from_events(
 
     messages: list[str] = []
     if failed_origin is not None:
-        messages.extend(errors_by_origin.get(failed_origin, []))
         messages.extend(m for o, m in platform_errors if o == failed_origin)
     if not messages:
-        # The failed step said nothing itself; an `::error` from a sibling
-        # (an `on_failure` hook, a check that ran first) is still the job
-        # explaining itself, so it is better than nothing.
-        for kept in errors_by_origin.values():
-            messages.extend(kept)
         messages.extend(m for _o, m in platform_errors)
     messages = list(dict.fromkeys(messages))[:MAX_MESSAGES]
 
@@ -317,7 +299,7 @@ def why_from_events(
     note = None
     if not messages:
         note = (
-            "The step raised no ::error line. Its log is not read here (spec 15 §4a); "
+            "Build log lines are not shown here (spec 15 §4a); "
             "open the build for the output."
         )
     elif capped:

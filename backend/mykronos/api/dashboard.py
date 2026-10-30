@@ -2299,9 +2299,8 @@ class CiFailureWhyOut(BaseModel):
         default_factory=list,
         description=(
             "Up to three error lines, trimmed and scrubbed: the GitHub check "
-            "annotations the failed job raised, or the Concourse step's "
-            "'::error' lines and Concourse's own error events. Never other "
-            "log output."
+            "annotations the failed job raised, or Concourse's own error "
+            "events. Never build log output."
         ),
     )
     url: str | None = Field(default=None, description="The failed build, job or run.")

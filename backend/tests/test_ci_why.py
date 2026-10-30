@@ -119,12 +119,12 @@ class TestConcourseEvents:
 
         assert names == {"a1": "source", "a2": "scan", "a3": "upload", "a9": "notify"}
 
-    def test_the_failed_step_its_exit_code_and_its_error_line(self) -> None:
+    def test_the_failed_step_and_its_exit_code(self) -> None:
         why = why_from_events(
             step_names(PLAN),
             _stream(
                 _finish("a1", 0, "finish-get"),
-                _log("a2", "scanning 41 files\n::error::semgrep exited 2: rule pack missing\n"),
+                _log("a2", "scanning 41 files\n"),
                 _finish("a2", 2),
                 _log("a9", "posting to slack\n"),
                 _finish("a9", 0),
@@ -135,9 +135,30 @@ class TestConcourseEvents:
         assert why.source == "concourse"
         assert why.step == "scan"
         assert why.exit_code == 2
-        assert why.messages == ("semgrep exited 2: rule pack missing",)
+        assert why.messages == ()
         assert why.url == BUILD_URL
         assert why.unavailable is None
+
+    def test_an_error_log_line_is_never_returned(self) -> None:
+        """Operator decision on #1037: no build log text leaves this module,
+        `::error` lines included, until Concourse redacts secrets. The step
+        and exit code are still reported."""
+        line = "semgrep exited 2: rule pack missing"
+        why = why_from_events(
+            step_names(PLAN),
+            _stream(
+                _log("a2", f"::error::{line}\n::error file=x.py,line=3::second\n"),
+                _finish("a2", 2),
+            ),
+            url=BUILD_URL,
+        )
+
+        shown = json.dumps([why.step, why.messages, why.note, why.unavailable])
+        assert why.messages == ()
+        assert line not in shown
+        assert "second" not in shown
+        assert why.step == "scan"
+        assert why.exit_code == 2
 
     def test_no_other_log_line_is_ever_returned(self) -> None:
         """Logs here can carry resolved `((var))` values: only `::error`
@@ -155,15 +176,14 @@ class TestConcourseEvents:
         assert why.step == "scan"
         assert why.exit_code == 1
         assert why.messages == ()
-        assert why.note and "::error" in why.note
+        assert why.note and "not shown" in why.note
 
-    def test_an_error_line_is_cleaned(self) -> None:
+    def test_a_concourse_error_event_is_cleaned(self) -> None:
         token = "ghs_" + "Z" * 36
         why = why_from_events(
             step_names(PLAN),
             _stream(
-                _log("a2", f"::error file=x.py,line=3::push with {token} refused\n"),
-                _finish("a2", 1),
+                _event("error", {"origin": {"id": "a2"}, "message": f"push with {token} refused"})
             ),
             url=BUILD_URL,
         )
