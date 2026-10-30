@@ -69,7 +69,8 @@ def test_the_key_is_found_under_either_name(tmp_path: Path, lines: list[str]) ->
     env = tmp_path / ".env"
     env.write_text("\n".join(["OTHER=x", *lines]) + "\n", encoding="utf-8")
 
-    got = _run(_selection(env) + "if ($hubAnthropicKey -eq '%s') { 'MATCH' } else { 'NO' }" % SENTINEL)
+    check = f"if ($hubAnthropicKey -eq '{SENTINEL}') {{ 'MATCH' }} else {{ 'NO' }}"
+    got = _run(_selection(env) + check)
 
     assert got.returncode == 0, got.stderr
     assert got.stdout.strip().splitlines()[-1] == "MATCH"
