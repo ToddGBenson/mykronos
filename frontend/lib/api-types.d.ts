@@ -9323,6 +9323,8 @@ export interface components {
             not_shipped: components["schemas"]["PoDeliveryRowOut"][];
             /** Error */
             error: string | null;
+            /** Commits Error */
+            commits_error?: string | null;
         };
         /** PoDeliveryRowOut */
         PoDeliveryRowOut: {

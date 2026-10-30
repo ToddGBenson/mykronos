@@ -7,14 +7,21 @@ Roles & agents, and the computed retro.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi.testclient import TestClient
 
 from mykronos import deployments
+from mykronos import po_console as pc
 from mykronos.approvals.engine import canonical_digest
-from mykronos.db.models import ApprovalDecision, ApprovalRequest, Delegation
+from mykronos.db.models import (
+    ApprovalDecision,
+    ApprovalRequest,
+    Delegation,
+    RepoOnboarding,
+)
+from mykronos.github.client import CommitInfo
 from mykronos.schemas import utcnow
 from tests.conftest import REPO
 from tests.po_support import audit_entries, connect, onboard, story  # noqa: F401
@@ -168,6 +175,123 @@ class TestDelivery:
         body = client.get(f"{base(repo_id)}/delivery", headers=viewer_auth).json()
         assert body["shipped"] == [] and body["not_shipped"] == []
         assert body["error"] is None
+
+
+#: Subjects shaped like the ones on this repository's main, where only squash
+#: merges land (TheHub #60910).
+SQUASH = "1" * 40
+TWO_REFS = "2" * 40
+REVERT = "3" * 40
+RAW_REVERT = "4" * 40
+DIRECT = "5" * 40
+MERGED_FIX = "6" * 40
+
+
+def commit_info(sha: str, message: str) -> CommitInfo:
+    return CommitInfo(
+        sha=sha,
+        message=message,
+        url=f"https://github.com/{REPO}/commit/{sha}",
+        committed_at=datetime.now(UTC) - timedelta(days=1),
+    )
+
+
+SUBJECTS = {
+    SQUASH: "fix(atlas): read OSV's fixed version under the rule's aliases (#1036)\n\nbody (#3)",
+    TWO_REFS: (
+        "fix(threat-intel): the NVD vector queue drains in days (TheHub #61034) (#1035)"
+    ),
+    REVERT: 'Revert "feat(ci): the CI view says why a failing job failed (#974)" (#980)',
+    RAW_REVERT: 'Revert "feat(ci): the CI view says why a failing job failed (#974)"',
+    DIRECT: "chore: a direct push that names #12 in prose",
+}
+
+
+class TestDeliveryPullRequests:
+    """A squash-merged commit is scanned as a push with no PR number, so its
+    PR comes from the squash subject or a stored merge commit (TheHub #60910)."""
+
+    def test_the_squash_suffix_is_the_last_reference(self) -> None:
+        assert pc.subject_pr(SUBJECTS[SQUASH]) == 1036
+        assert pc.subject_pr(SUBJECTS[TWO_REFS]) == 1035
+        assert pc.subject_pr(SUBJECTS[REVERT]) == 980
+        # `git revert` of a squash commit names the reverted PR, not its own.
+        assert pc.subject_pr(SUBJECTS[RAW_REVERT]) is None
+        assert pc.subject_pr(SUBJECTS[DIRECT]) is None
+        assert pc.subject_pr("") is None
+        # A merge commit, where a repository allows them.
+        assert pc.subject_pr("Merge pull request #399 from example-org/chore/mirror") == 399
+        assert pc.subject_pr("docs: Merge pull request #399 from x is prose") is None
+
+    def test_shipped_commits_carry_their_pull_request(
+        self,
+        client: TestClient,
+        viewer_auth: dict[str, str],
+        github: Any,
+        connect: Callable[..., Any],  # noqa: F811
+        buffer: Any,
+        run_compaction: Callable[[], Any],
+    ) -> None:
+        repo_id, _ = connect([])
+        github.repos[REPO].commits = [commit_info(sha, msg) for sha, msg in SUBJECTS.items()]
+        buffer.append("scan_runs", [scan(sha) for sha in [*SUBJECTS, MERGED_FIX]])
+        # A merged fix whose merge commit the pull_request webhook stored.
+        buffer.append(
+            "remediation_events",
+            [
+                {
+                    "event_id": "ev-1",
+                    "repo_full_name": REPO,
+                    "finding_id": "f-1",
+                    "fix_pr_number": 1031,
+                    "pr_status": "merged",
+                    "verification_commit_sha": MERGED_FIX,
+                    "created_at": utcnow(),
+                    "updated_at": utcnow(),
+                }
+            ],
+        )
+        run_compaction()
+
+        body = client.get(f"{base(repo_id)}/delivery", headers=viewer_auth).json()
+        prs = {row["sha"]: row["pr_numbers"] for row in body["shipped"]}
+        assert prs == {
+            SQUASH: [1036],
+            TWO_REFS: [1035],
+            REVERT: [980],
+            RAW_REVERT: [],
+            DIRECT: [],
+            MERGED_FIX: [1031],
+        }
+        assert body["commits_error"] is None
+
+    def test_unreadable_commits_say_so_and_keep_stored_links(
+        self,
+        client: TestClient,
+        viewer_auth: dict[str, str],
+        github: Any,
+        connect: Callable[..., Any],  # noqa: F811
+        buffer: Any,
+        run_compaction: Callable[[], Any],
+    ) -> None:
+        repo_id, _ = connect([])
+
+        async def broken(*args: Any, **kwargs: Any) -> list[CommitInfo]:
+            raise RuntimeError("secret upstream detail")
+
+        github.list_commits = broken
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            row = session.get(RepoOnboarding, repo_id)
+            row.deployment_lag = {"commits": [{"sha": SQUASH, "subject": SUBJECTS[SQUASH]}]}
+        buffer.append("scan_runs", [scan(SQUASH), scan(DIRECT)])
+        run_compaction()
+
+        body = client.get(f"{base(repo_id)}/delivery", headers=viewer_auth).json()
+        prs = {row["sha"]: row["pr_numbers"] for row in body["shipped"]}
+        # The lag sweep's stored subject still links its commit.
+        assert prs == {SQUASH: [1036], DIRECT: []}
+        assert body["commits_error"] == "Commits on main could not be read from GitHub."
+        assert "secret" not in str(body)
 
 
 # --------------------------------------------------------------------------
