@@ -463,6 +463,14 @@ class TriageItem(BaseModel):
     #: not the version running -- reading one as the other reported four HIGH
     #: advisories against a package no container had installed for months.
     version_basis: str | None = None
+    source_note: str | None = Field(
+        default=None,
+        description=(
+            "For an atlas finding read out of a committed SBOM document: its date, "
+            "its age at the scan and whether the manifests changed after it "
+            "(TheHub #60921). Null otherwise."
+        ),
+    )
     address: str | None = Field(
         default=None,
         description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",
@@ -672,6 +680,23 @@ class FindingOut(BaseModel):
     #: not the version running -- reading one as the other reported four HIGH
     #: advisories against a package no container had installed for months.
     version_basis: str | None = None
+    source_kind: str | None = Field(
+        default=None,
+        description=(
+            "What an atlas finding was read out of (TheHub #60921): `manifest` "
+            "(a requirements file, lockfile or package.json), `sbom_document` (a "
+            "committed CycloneDX or SPDX file) or `other`. Null for other "
+            "capabilities and for findings scanned before it was recorded."
+        ),
+    )
+    source_note: str | None = Field(
+        default=None,
+        description=(
+            "For a finding read out of a committed SBOM document: the document's "
+            "date, its age at the scan and whether the manifests changed after it. "
+            "Null otherwise. Filled on the detail and record routes only."
+        ),
+    )
     address: str | None = Field(
         default=None,
         description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",

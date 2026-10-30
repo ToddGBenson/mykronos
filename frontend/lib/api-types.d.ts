@@ -7850,6 +7850,16 @@ export interface components {
             /** Version Basis */
             version_basis?: string | null;
             /**
+             * Source Kind
+             * @description What an atlas finding was read out of (TheHub #60921): `manifest` (a requirements file, lockfile or package.json), `sbom_document` (a committed CycloneDX or SPDX file) or `other`. Null for other capabilities and for findings scanned before it was recorded.
+             */
+            source_kind?: string | null;
+            /**
+             * Source Note
+             * @description For a finding read out of a committed SBOM document: the document's date, its age at the scan and whether the manifests changed after it. Null otherwise. Filled on the detail and record routes only.
+             */
+            source_note?: string | null;
+            /**
              * Address
              * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.
              */
@@ -12825,6 +12835,11 @@ export interface components {
             package_version?: string | null;
             /** Version Basis */
             version_basis?: string | null;
+            /**
+             * Source Note
+             * @description For an atlas finding read out of a committed SBOM document: its date, its age at the scan and whether the manifests changed after it (TheHub #60921). Null otherwise.
+             */
+            source_note?: string | null;
             /**
              * Address
              * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.

@@ -46,7 +46,7 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Literal
 
-from mykronos import surface_match
+from mykronos import atlas_source, surface_match
 from mykronos.threat_intel import extract_cve
 
 Status = Literal["ok", "partial", "unavailable", "not_available"]
@@ -201,6 +201,17 @@ def _confidence(row: dict[str, Any]) -> tuple[Confidence, str]:
     basis = str(row.get("version_basis") or "")
     if row.get("capability") == "containers":
         return "observed", "read from a scan of the built image"
+    if _raw(row).get("source_kind") == "sbom_document":
+        # Ahead of `resolved`, deliberately. A committed SBOM document is
+        # supplied to the lane as the record of what is installed, so a
+        # finding read out of it is "resolved" against itself -- TheHub's
+        # three pypdf highs were, from a document 7 days older than the scan
+        # and older than the manifest (TheHub #60921).
+        return (
+            "inferred",
+            "the version is read from a committed SBOM document, which may not "
+            "describe what runs",
+        )
     if basis == "resolved":
         return "observed", "the version is the one the lockfile resolves"
     if basis in ("declared_floor", "declared_pin"):
@@ -292,6 +303,11 @@ def _advisories(inputs: Inputs, since: datetime, now: datetime) -> Section:
             parts.append(f"{len(rows)} findings.")
         if orphaned is None and row.get("capability") == "atlas":
             parts.append("Reachability not analysed.")
+        # Said on the line, not left to the file name: a committed SBOM
+        # document can be days older than the manifest (TheHub #60921).
+        origin = atlas_source.note_for(_raw(row))
+        if origin:
+            parts.append(origin)
         fixed = str(_raw(row).get("fixed_version") or "").strip()
         action = (
             f"Upgrade {package or 'the component'} to {fixed} or later."
