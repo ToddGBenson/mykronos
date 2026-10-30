@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -89,10 +90,12 @@ class TestValidation:
 
         assert _post(client, token, phase="end").status_code == 422
 
-    def test_only_success_or_failure(self, client: TestClient) -> None:
+    @pytest.mark.parametrize("conclusion", ["neutral", "skipped", "errored"])
+    def test_only_success_failure_or_cancelled(self, client: TestClient, conclusion: str) -> None:
+        """`neutral` and `skipped` pass a required check on GitHub, so never."""
         token = issue_token(client, REPO)
 
-        assert _post(client, token, phase="end", conclusion="neutral").status_code == 422
+        assert _post(client, token, phase="end", conclusion=conclusion).status_code == 422
 
     def test_a_short_or_symbolic_sha_is_refused(self, client: TestClient) -> None:
         token = issue_token(client, REPO)
@@ -147,6 +150,25 @@ class TestOneCheckRunPerCommit:
         (run,) = _runs(github)
         assert run["conclusion"] == "failure"
         assert "sast" in run["title"]
+
+    def test_a_lane_that_could_not_run_is_cancelled_not_failed(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        """TheHub #61007: an outage before any scan is not a failed commit."""
+        onboard(client, admin_auth)
+        token = issue_token(client, REPO)
+
+        _post(client, token)
+        body = _post(
+            client, token, job="containers", phase="end", conclusion="cancelled"
+        ).json()
+
+        assert body["conclusion"] == "cancelled"
+        (run,) = _runs(github)
+        assert run["conclusion"] == "cancelled"
+        assert "could not run" in run["title"]
+        assert "no scan ran" in run["summary"]
+        assert "not a security failure" in run["summary"]
 
     def test_a_re_run_that_passes_replaces_the_failure(
         self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient

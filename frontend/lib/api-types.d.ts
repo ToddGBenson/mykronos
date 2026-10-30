@@ -5582,7 +5582,7 @@ export interface components {
              */
             phase: "start" | "end";
             /** Conclusion */
-            conclusion?: ("success" | "failure") | null;
+            conclusion?: ("success" | "failure" | "cancelled") | null;
         };
         /** ChecksOut */
         ChecksOut: {

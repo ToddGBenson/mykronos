@@ -869,14 +869,19 @@ class CheckRunReport(BaseModel):
     commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     job: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     phase: Literal["start", "end"]
-    conclusion: Literal["success", "failure"] | None = None
+    #: `cancelled` is a lane that could not run to a verdict at all -- the
+    #: uploader install failing during a GitHub outage (TheHub #61007) -- so
+    #: the check says "nothing was judged" rather than "this commit failed".
+    #: GitHub still treats it as not passing. `neutral` and `skipped` stay
+    #: refused: GitHub counts both as passing a required check.
+    conclusion: Literal["success", "failure", "cancelled"] | None = None
 
     @model_validator(mode="after")
     def _conclusion_matches_phase(self) -> CheckRunReport:
         if self.phase == "start" and self.conclusion is not None:
             raise ValueError("a start has no conclusion yet")
         if self.phase == "end" and self.conclusion is None:
-            raise ValueError("an end must say success or failure")
+            raise ValueError("an end must say success, failure or cancelled")
         return self
 
 
