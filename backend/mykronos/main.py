@@ -135,6 +135,7 @@ from mykronos.patchwork.image_date import RegistryTags
 from mykronos.product_owner import HubClient
 from mykronos.ratelimit import SlidingWindowLimiter
 from mykronos.schemas import utcnow
+from mykronos.threat_intel import NVD_JOB, nvd_api_key, vector_job
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
 logger = logging.getLogger(__name__)
@@ -906,6 +907,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception:  # noqa: BLE001 - logged; premise-monitor reports health
                 logger.exception("Premise monitor after the threat-intel refresh failed")
 
+        async def _nvd_vectors() -> None:
+            # In a thread for the same reason as `_threat_intel`: one run is
+            # minutes of spaced, blocking NVD requests (TheHub #61034).
+            await asyncio.to_thread(
+                vector_job,
+                app.state.db,
+                api_key=nvd_api_key(settings.nvd_api_key),
+            )
+
         async def _premise_monitor() -> None:
             # Spec 33 §4.2: every live acceptance's premises against fresh
             # observations and EPSS. A failed premise moves the acceptance to
@@ -955,6 +965,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
+            (NVD_JOB, settings.nvd_vector_interval_seconds, _nvd_vectors),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             (
                 "premise-monitor",

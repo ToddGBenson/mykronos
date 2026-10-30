@@ -7614,6 +7614,26 @@ async def _ci_stall_now(request: Request) -> CiStallOut:
     )
 
 
+def _annotate_nvd_backlog(
+    db: Any, settings: Any, jobs: list[platform_health.JobHealth]
+) -> None:
+    """Say on the `nvd-vectors` row how many CVEs still wait, and for how long
+    (TheHub #61034). Until a CVE has a vector its environmental score cannot
+    be computed, and a job that is green while 3,603 wait is not saying so."""
+    from mykronos import threat_intel
+
+    for job in jobs:
+        if job.name != threat_intel.NVD_JOB or job.status == "disabled":
+            continue
+        with db.session() as session:
+            backlog = threat_intel.vector_backlog(session)
+        budget = threat_intel.nvd_budget(threat_intel.nvd_api_key(settings.nvd_api_key))
+        job.detail = (
+            f"{job.detail} - "
+            f"{backlog.detail(budget, settings.nvd_vector_interval_seconds)}"
+        )
+
+
 @router.get("/platform-health", response_model=PlatformHealthOut)
 async def platform_health_page(request: Request, principal: PrincipalDep) -> PlatformHealthOut:
     """Is the platform itself working?
@@ -7649,6 +7669,10 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     jobs = [platform_health.assess_job(row, now=now, started_at=started_at) for row in rows]
 
     settings = request.app.state.settings
+    try:
+        await asyncio.to_thread(_annotate_nvd_backlog, request.app.state.db, settings, jobs)
+    except Exception:  # noqa: BLE001 - job health still stands
+        logger.warning("Could not count the NVD vector backlog")
     dependencies: list[platform_health.DependencyHealth] = []
     try:
         for name, result in await jobs_self_check(settings):

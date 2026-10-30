@@ -197,6 +197,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    nvd_vector_interval_seconds: int = Field(
+        default=3_600,
+        ge=60,
+        description=(
+            "The NVD CVSS-vector lookup (TheHub #61034). Hourly, each run a "
+            "bounded batch spaced under NVD's published rate limit, so a "
+            "backlog drains in days instead of the half-year it took as a step "
+            "of the daily threat-intel job."
+        ),
+    )
+
+    nvd_api_key: str = Field(
+        default="",
+        repr=False,
+        description=(
+            "Optional NVD API key, which raises NVD's rate limit from 5 to 50 "
+            "requests per 30 seconds and the lookup's batch with it. Empty "
+            "falls back to NVD_API_KEY; with neither, the unauthenticated "
+            "budget applies."
+        ),
+    )
+
     weekly_digest_interval_seconds: int = Field(
         default=604_800,
         ge=1,

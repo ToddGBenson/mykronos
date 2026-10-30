@@ -181,6 +181,33 @@ class TestTheV4Columns:
             assert row.v4_checked_at is None
 
 
+class TestTheNvdFailureColumns:
+    """TheHub #61037: a failed NVD lookup is counted. Every deployed
+    `threat_intel_matches` row must arrive with no failures on record, or the
+    upgrade would queue the whole estate behind rows that never failed."""
+
+    NEW = ("nvd_failures", "nvd_failed_at")
+
+    def test_they_are_added_with_no_failures_on_record(self, open_db) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+
+        db = open_db()
+        db.create_all()
+        with db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2014-0160"))
+        for column in self.NEW:
+            drop_column(db, "threat_intel_matches", column)
+
+        added = open_db().add_missing_columns()
+
+        assert sorted(added) == sorted(f"threat_intel_matches.{c}" for c in self.NEW)
+        with open_db().session() as session:
+            row = session.get(ThreatIntelMatch, "CVE-2014-0160")
+            assert row is not None
+            assert row.nvd_failures == 0
+            assert row.nvd_failed_at is None
+
+
 class TestItIsSafeToRunEveryTime:
     def test_an_up_to_date_database_is_left_alone(self, open_db) -> None:
         db = open_db()
