@@ -30,7 +30,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from mykronos import atlas_baseline, atlas_constraints, cvss_vectors
+from mykronos import atlas_baseline, atlas_constraints, atlas_source, cvss_vectors
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 
@@ -430,6 +430,11 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     cvss_vectors.attach(outcome.findings, raw_output, source="osv-scanner")
 
     _report_broken_constraints(outcome, context)
+
+    # Whether each finding was read out of a manifest or a committed SBOM
+    # document, and for a document how old it is and whether the manifests
+    # have moved on since (TheHub #60921). Severity is untouched.
+    atlas_source.annotate(outcome.findings, context)
 
     # After the fixed version is known: which commit answers for each
     # finding, and whether this one already fixes it (TheHub #61063).

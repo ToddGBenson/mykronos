@@ -106,6 +106,15 @@ export default async function FindingRecordPage({
               say which machine — this does. */}
           {finding.asset ? ` · host ${finding.asset}` : ""}
         </div>
+        {/* Read out of a committed SBOM document rather than this commit's
+            manifest (TheHub #60921): the version is the document's, on the
+            day it was generated, and may be neither the manifest's nor what
+            runs. Severity is unchanged; the reader just has to know. */}
+        {finding.source_note ? (
+          <p className="max-w-4xl border-l-2 border-warn px-2 text-[13px] leading-relaxed text-ink-2">
+            {finding.source_note}
+          </p>
+        ) : null}
       </header>
 
       {/* Does this matter *here* — starting with what could not be consulted.

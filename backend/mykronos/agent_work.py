@@ -744,6 +744,10 @@ def _finding_caveats(row: dict[str, Any], *, lane_frozen: bool) -> list[Caveat]:
                 "image digests before recommending a pull or a rebuild.",
             )
         )
+    if row.get("source_note"):
+        # A committed SBOM document's version is the version on the day it
+        # was generated, not this commit's or production's (TheHub #60921).
+        caveats.append(Caveat("sbom_document", str(row["source_note"])))
     if row.get("version_basis") in ("declared_floor", "declared_pin"):
         caveats.append(
             Caveat(

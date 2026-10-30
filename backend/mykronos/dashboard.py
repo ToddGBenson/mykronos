@@ -38,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import (
+    atlas_source,
     blast_radius,
     environment_view,
     exploitability,
@@ -2252,9 +2253,15 @@ class DashboardQueries:
             # location when there is no file and no package.
             "address",
             "port",
+            # What an atlas finding was read out of (TheHub #60921): the
+            # work queue says so when it is a committed SBOM document.
+            "source_kind",
+            "source_document",
         ]
         selected = {
             "image": "json_extract_string(raw_finding_json, '$.image') AS image",
+            "source_kind": "json_extract_string(raw_finding_json, '$.source_kind')",
+            "source_document": "json_extract(raw_finding_json, '$.source_document')",
         }
         # Same reasoning as open_findings() (spec 17 §3, #20): a KEV/EPSS filter
         # is applied in Python against a different database, so the SQL
@@ -2292,6 +2299,9 @@ class DashboardQueries:
             decision = decisions.get(repo)
             record["repo_recommendation"] = str(decision[1]) if decision else None
             record["asset"] = asset_label(record.get("address"), record.get("port"))
+            record["source_note"] = atlas_source.note(
+                record.get("source_kind"), record.pop("source_document", None)
+            )
             queue.append(record)
 
         # cve_id/in_kev/epss_score stamped onto every row (spec 17 §4.4, #20) —
@@ -3391,15 +3401,29 @@ class DashboardQueries:
             "address",
             "port",
         ]
+        # What an atlas finding was read out of (TheHub #60921). Selected out
+        # of the raw record for every reader, not only those who may see raw
+        # output: "this came from a nine-day-old SBOM document" is the reading
+        # of the finding, not the scanner's bytes.
+        selected = {
+            "source_kind": "json_extract_string(raw_finding_json, '$.source_kind')",
+            "source_document": "json_extract(raw_finding_json, '$.source_document')",
+        }
+        columns += list(selected)
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
         rows = self.catalog.query(
-            f"SELECT {', '.join(columns)} FROM findings WHERE finding_id = ?", [finding_id]
+            f"SELECT {', '.join(selected.get(c, c) for c in columns)} "
+            "FROM findings WHERE finding_id = ?",
+            [finding_id],
         )
         if not rows:
             return None
         record = dict(zip(columns, rows[0], strict=True))
         record["asset"] = asset_label(record.get("address"), record.get("port"))
+        record["source_note"] = atlas_source.note(
+            record.get("source_kind"), record.pop("source_document", None)
+        )
         if include_raw and record.get("raw_finding_json"):
             # Parsed here as well as in `findings()`, so one finding served two
             # ways is the same shape both times. Unparseable output is returned
