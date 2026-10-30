@@ -5961,9 +5961,16 @@ export interface components {
             };
             /**
              * Disclosed
-             * @description Newly disclosed in unchanged images; never blocking (#734).
+             * @description Newly disclosed in unchanged images (#734) or on dependencies the baseline already carried or this commit fixes (TheHub #61063); never blocking.
              */
             disclosed?: {
+                [key: string]: number;
+            };
+            /**
+             * Remediates
+             * @description Of `disclosed`, what this commit's own tree fixes (TheHub #61063).
+             */
+            remediates?: {
                 [key: string]: number;
             };
             /**
@@ -7324,9 +7331,16 @@ export interface components {
             };
             /**
              * Disclosed
-             * @description Open container findings this commit's scans saw first in an image the previous scan had already seen byte for byte (#734): the vulnerability database moved, not the commit. Reported so they are not lost, and excluded from `introduced` and the floor.
+             * @description Open findings this commit's scans saw first that the commit did not introduce: a container image the previous scan had already seen byte for byte (#734), or a dependency the baseline already carried at that version or that this commit's own manifests fix (TheHub #61063). The advisory moved, not the commit. Reported so they are not lost, and excluded from `introduced` and the floor.
              */
             disclosed?: {
+                [key: string]: number;
+            };
+            /**
+             * Remediates
+             * @description Of `disclosed`, the findings this commit's own tree fixes, by severity: read from an SBOM of what runs, while the commit's manifests move the package to the fixed version (TheHub #61063).
+             */
+            remediates?: {
                 [key: string]: number;
             };
             /**

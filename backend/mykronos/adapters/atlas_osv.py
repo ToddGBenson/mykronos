@@ -30,7 +30,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from mykronos import atlas_constraints, cvss_vectors
+from mykronos import atlas_baseline, atlas_constraints, cvss_vectors
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
 
@@ -352,6 +352,10 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     cvss_vectors.attach(outcome.findings, raw_output, source="osv-scanner")
 
     _report_broken_constraints(outcome, context)
+
+    # After the fixed version is known: which commit answers for each
+    # finding, and whether this one already fixes it (TheHub #61063).
+    atlas_baseline.annotate(outcome.findings, context)
 
     floors = sum(1 for f in outcome.findings if f.version_basis == "declared_floor")
     if floors:

@@ -2572,7 +2572,13 @@ class DashboardQueries:
         repository it already works scan by scan, so grouping cannot change
         its answer. A pair with nothing introduced is present with `{}`.
         """
-        from mykronos.disclosure import CAPABILITY, disclosed_ids
+        from mykronos.disclosure import (
+            ATLAS,
+            CAPABILITY,
+            atlas_candidate,
+            atlas_disclosed,
+            disclosed_ids,
+        )
 
         wanted = {(str(r), str(c)) for r, c in pairs}
         if not wanted:
@@ -2584,7 +2590,9 @@ class DashboardQueries:
             SELECT DISTINCT s.repo_full_name, s.commit_sha, f.finding_id, f.severity,
                    f.capability, f.rule_id, f.first_seen_scan_run_id,
                    json_extract_string(f.raw_finding_json, '$.image'),
-                   f.package_name, f.package_version
+                   f.package_name, f.package_version,
+                   json_extract(f.raw_finding_json, '$.baseline_commits'),
+                   json_extract(f.raw_finding_json, '$.remediated_by')
             FROM findings f
             JOIN scan_runs s
               ON s.scan_run_id = f.first_seen_scan_run_id
@@ -2595,7 +2603,7 @@ class DashboardQueries:
         )
         found: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         for (repo, commit, finding_id, severity, capability, rule_id, scan,
-             image, package, version) in rows:
+             image, package, version, baseline, remedy) in rows:
             key = (str(repo), str(commit))
             if key not in wanted:
                 continue
@@ -2608,6 +2616,8 @@ class DashboardQueries:
                 "_image": None if image is None else str(image),
                 "_package": str(package or ""),
                 "_version": str(version or ""),
+                "_baseline": baseline,
+                "_remedy": remedy,
             }
         disclosed: set[str] = set()
         by_repo: dict[str, list[tuple[str, str, str | None, str, str, str]]] = {}
@@ -2620,6 +2630,13 @@ class DashboardQueries:
                     )
         for candidates in by_repo.values():
             disclosed |= disclosed_ids(self.catalog, candidates)
+        for (_, _), rows_by_id in found.items():
+            atlas = [
+                atlas_candidate(r["finding_id"], r["_scan"], r["_baseline"], r["_remedy"])
+                for r in rows_by_id.values()
+                if r["capability"] == ATLAS
+            ]
+            disclosed |= atlas_disclosed(self.catalog, atlas)[0]
         return {
             key: _by_severity(
                 [r for r in found.get(key, {}).values() if r["finding_id"] not in disclosed]
@@ -2634,10 +2651,19 @@ class DashboardQueries:
         Reported beside `introduced_by`, never inside it: the finding is real
         and open, but the vulnerability database moved, not the commit. Also
         here: findings in an image that was already a tool before this commit,
-        and a renamed tool image's carried-over CVEs (#858).
+        and a renamed tool image's carried-over CVEs (#858); and dependency
+        findings on a component the baseline already carried, or that this
+        commit's own manifests fix (TheHub #61063).
         """
         _, disclosed = self._first_seen_at(repo_full_name, commit_sha)
         return _by_severity(disclosed)
+
+    def remediated_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:
+        """Of the newly disclosed, the ones this commit's own tree fixes, by
+        severity (TheHub #61063): read from an SBOM of what runs, while this
+        commit's manifests move the package to the fixed version."""
+        _, disclosed = self._first_seen_at(repo_full_name, commit_sha)
+        return _by_severity([row for row in disclosed if row.get("_remediated")])
 
     def _first_seen_at(
         self, repo_full_name: str, commit_sha: str
@@ -2645,14 +2671,22 @@ class DashboardQueries:
         """Open findings first seen by a scan of this commit, split into
         (introduced, newly disclosed). The one definition both `introduced_by`
         and `introduced_rows` read, so they cannot disagree."""
-        from mykronos.disclosure import CAPABILITY, disclosed_ids
+        from mykronos.disclosure import (
+            ATLAS,
+            CAPABILITY,
+            atlas_candidate,
+            atlas_disclosed,
+            disclosed_ids,
+        )
 
         rows = self.catalog.query(
             """
             SELECT f.finding_id, f.severity, f.capability, f.rule_id, f.title,
                    f.file_path, f.line_start, f.first_seen_scan_run_id,
                    json_extract_string(f.raw_finding_json, '$.image'),
-                   f.package_name, f.package_version
+                   f.package_name, f.package_version,
+                   json_extract(f.raw_finding_json, '$.baseline_commits'),
+                   json_extract(f.raw_finding_json, '$.remediated_by')
             FROM findings f
             WHERE f.asset_id = ?
               AND f.status = 'open'
@@ -2676,10 +2710,13 @@ class DashboardQueries:
                 "_image": None if image is None else str(image),
                 "_package": str(package or ""),
                 "_version": str(version or ""),
+                "_baseline": baseline,
+                "_remedy": remedy,
             }
             for (
                 finding_id, severity, capability, rule_id, title,
                 file_path, line_start, scan, image, package, version,
+                baseline, remedy,
             ) in rows
         ]
         disclosed = disclosed_ids(
@@ -2697,6 +2734,17 @@ class DashboardQueries:
                 if row["capability"] == CAPABILITY
             ],
         )
+        atlas, remediated = atlas_disclosed(
+            self.catalog,
+            [
+                atlas_candidate(row["finding_id"], row["_scan"], row["_baseline"], row["_remedy"])
+                for row in found
+                if row["capability"] == ATLAS
+            ],
+        )
+        disclosed |= atlas
+        for row in found:
+            row["_remediated"] = row["finding_id"] in remediated
         introduced = [row for row in found if row["finding_id"] not in disclosed]
         return introduced, [row for row in found if row["finding_id"] in disclosed]
 
