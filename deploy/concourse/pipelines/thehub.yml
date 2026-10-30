@@ -4593,14 +4593,32 @@ jobs:
   - name: functional-demo
     public: true
     serial_groups: [dast]
+    # TheHub #61090 (operator decision 2026-10-30: report, not remove). This
+    # lane ran TheHub's HTTP suite against the demo from #872 on and told the
+    # Hub nothing, so a red suite reached Slack and no stage, incident or
+    # lifecycle signal. It reports as its own stage, `functional_demo`, on
+    # demo; that name is deliberately not one of TheHub's POST_SWAP_STAGES,
+    # so a demo run is never read as proof of a production swap.
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional_demo, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, JOB: functional-demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, JOB: functional-demo, STAGE: functional_demo, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
         - <<: *slack_alert
           params: { <<: *slack_params, OUTCOME: errored, JOB: functional-demo }
+        - <<: *hub_report
+          params: { <<: *hub_params, JOB: functional-demo, STAGE: functional_demo, STATUS: errored, TARGET_ENV: demo }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: functional_demo, STATUS: aborted, TARGET_ENV: demo }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -4619,13 +4637,20 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
+          # [#336] hub_log is read by the `hub_report` failure hook: this
+          # task's own output and exit status, so a red suite reports why.
+          outputs: [{ name: results }, { name: hub_log }]
           run:
             path: bash
             args:
               - -ec
               - |
                 set -uo pipefail
+                # [#336] As deploy-demo: tee this task's output and record its
+                # exit status where the failure hook can read them.
+                exec > >(tee hub_log/output.log) 2>&1
+                TEE_PID=$!
+                trap 'rc=$?; echo "$rc" > hub_log/exit_code; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
                 # #59976: IPv4 for apt before it opens a socket (see `anchors:`).
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
