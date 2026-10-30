@@ -51,6 +51,9 @@ _AT_LOCATION = re.compile(r"\s+at\s+(GET|POST|PUT|DELETE|HEAD|PATCH)\s.*$", re.I
 _PACKAGE = re.compile(r"Package:\s*(\S+)")
 _INSTALLED = re.compile(r"Installed Version:\s*(\S+)")
 _FIXED = re.compile(r"Fixed Version:\s*(\S+)")
+#: osv-scanner's message, `Package 'name@version' is vulnerable to 'ID'`. The
+#: name is everything before the *last* `@` (npm scopes start with one).
+_OSV_PACKAGE = re.compile(r"Package '(?P<name>[^']+)@[^'@]*' is vulnerable to")
 
 #: What a group needs from a person, which is not the same as its severity.
 #: The ordering is the useful part: `config` is a few lines and closes many,
@@ -145,15 +148,25 @@ def _dast(raw: dict[str, Any], title: str) -> tuple[str, str, str]:
     return (solution, "scanner", "config" if header_ish else "judgement")
 
 
-def _containers(raw: dict[str, Any]) -> tuple[str, str, str]:
+def _containers(raw: dict[str, Any], capability: str = "containers") -> tuple[str, str, str]:
     """Trivy's `Fixed Version`, and the far commoner absence of one.
 
     The absence is the finding. 231 of 234 open container findings on this
     estate have no published fix, so "upgrade" is advice for three of them and
     misdirection for the rest.
+
+    For a dependency (atlas) finding the absence is only an answer when the
+    adapter recorded it: an empty `fixed_version` is OSV or grype saying no
+    fix is published, while a missing one means nothing established either
+    way. Calling the second "nothing to upgrade to" told the operator to
+    accept risk on findings an upgrade closes, beside a line saying
+    auto-remediation could pin them (TheHub #60909).
     """
     text = message_text(raw)
     package = (_PACKAGE.search(text) or [None, ""])[1] if _PACKAGE.search(text) else ""
+    if not package:
+        osv = _OSV_PACKAGE.search(text)
+        package = osv.group("name") if osv else ""
     installed = _INSTALLED.search(text)
 
     # The adapter-resolved field first. Trivy states its remediation in the
@@ -185,6 +198,15 @@ def _containers(raw: dict[str, Any]) -> tuple[str, str, str]:
             "acceptance: no vendor will ship.",
             "scanner",
             "upgrade",
+        )
+
+    if capability != "containers" and "fixed_version" not in raw:
+        return (
+            f"No fixed version on record for {package or 'this package'} — the "
+            "scan did not establish whether one is published. Check the "
+            "advisory before accepting: it is not known to be unfixable.",
+            "standing",
+            "judgement",
         )
 
     return (
@@ -236,7 +258,7 @@ def _for(capability: str, raw: dict[str, Any], title: str) -> tuple[str, str, st
     if capability == "dast":
         return _dast(raw, title)
     if capability in ("containers", "atlas"):
-        return _containers(raw)
+        return _containers(raw, capability)
     if capability == "sast":
         return _sast(raw)
     if capability == "iac":
@@ -414,6 +436,15 @@ def _header_named_by(solution: str, title: str) -> str:
     return prefixed[-1] if prefixed else candidates[-1]
 
 
+def _fixed_of(raw: dict[str, Any]) -> str:
+    """The fixed version a record names: the adapter's field, else Trivy's text."""
+    version = str(raw.get("fixed_version") or "").strip()
+    if not version:
+        fixed = _FIXED.search(message_text(raw))
+        version = fixed.group(1) if fixed else ""
+    return "" if version.startswith("Link") else version
+
+
 def _fix_key(capability: str, rule: RuleGuidance, raw: dict[str, Any]) -> tuple[str, str]:
     """`(fix_id, action)` — what change closes this rule, said once."""
     if capability == "dast":
@@ -433,10 +464,9 @@ def _fix_key(capability: str, rule: RuleGuidance, raw: dict[str, Any]) -> tuple[
         )
     if capability in ("containers", "atlas"):
         text = message_text(raw)
-        package = _PACKAGE.search(text)
-        fixed = _FIXED.search(text)
-        version = fixed.group(1) if fixed else ""
-        if package and version and not version.startswith("Link"):
+        package = _PACKAGE.search(text) or _OSV_PACKAGE.search(text)
+        version = _fixed_of(raw)
+        if package and version:
             # Keyed on the package, not the package-and-version. Two advisories
             # against `setuptools` fixed in 78.1.1 and 83.0.0 are one upgrade,
             # to 83.0.0 — presenting them as two groups asks somebody to do it
@@ -553,9 +583,9 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
         entry["findings"] += 1
         entry["severities"][str(severity or "unknown")] += 1
         if fix_id.startswith("upgrade:"):
-            fixed = _FIXED.search(message_text(raw))
-            if fixed and not fixed.group(1).startswith("Link"):
-                entry["versions"].add(fixed.group(1))
+            version = _fixed_of(raw)
+            if version:
+                entry["versions"].add(version)
         entry["rules"].add(rule.rule_id)
         entry["repos"].add(str(repo))
         # `config` beats `judgement` for a group somebody can act on in one
