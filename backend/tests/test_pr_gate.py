@@ -257,6 +257,27 @@ class TestMain:
         assert code == 1
         assert calls == []
 
+    @pytest.mark.parametrize(
+        "url",
+        ["", "http://h.test", "file:///etc/passwd", "ftp://h.test", "https://"],
+        ids=["empty", "plain-http", "file", "ftp", "no-host"],
+    )
+    def test_anything_but_an_https_url_fails_without_asking(
+        self, gate: ModuleType, tmp_path: Path, url: str
+    ) -> None:
+        """The URL is a workflow value and the request carries the ingestion
+        token: plain http would send it in the clear, and urlopen reads a
+        `file:` URL off the runner's disk."""
+        calls: list[Any] = []
+        code = gate.main(env(tmp_path, MYKRONOS_URL=url), post=lambda *a: calls.append(a))
+        assert code == 1
+        assert calls == []
+
+    def test_http_post_refuses_a_non_https_url(self, gate: ModuleType) -> None:
+        """The guard holds for a caller that skips main()."""
+        with pytest.raises(ValueError, match="https"):
+            gate.http_post("file:///etc/passwd", "mki_test_value", {})
+
     def test_a_bad_pull_request_number_fails(self, gate: ModuleType, tmp_path: Path) -> None:
         assert gate.main(env(tmp_path, PR_NUMBER=""), post=lambda *a: decision()) == 1
 
