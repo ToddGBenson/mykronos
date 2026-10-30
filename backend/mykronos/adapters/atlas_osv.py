@@ -28,7 +28,7 @@ import json
 import logging
 import re
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from mykronos import atlas_baseline, atlas_constraints, cvss_vectors
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
@@ -237,34 +237,108 @@ def _fixed_versions(raw_output: bytes) -> dict[tuple[str, str], str]:
     cost of missing it is specific and was measured: every atlas finding was
     reported as having no published fix, including a critical unauthenticated
     RCE that had one (mykronos#256).
+
+    **The table's id is usually not the finding's.** osv-scanner 2.x names a
+    rule -- and so the finding's `rule_id` -- after the CVE or PYSEC id of an
+    alias group, and fills the table with the *aliases* that carry the fix
+    (rule `CVE-2026-115572`, row `GHSA-6c7f-9265-g8fw`; rule `PYSEC-2026-4320`,
+    row `GHSA-6q48-6c7w-9gw2`). Keyed on the row id alone -- and 661 of 988 rows in
+    the estate's archived scans name an id other than their rule's -- those
+    findings read as having no published fix while OSV published one (TheHub
+    #60909). So every row is also indexed under its rule's own id and
+    `deprecatedIds`. Where aliases name different fixes the candidates are
+    merged, and `_pick_fix` takes the highest on the installed line -- the
+    one that satisfies every advisory in the group.
     """
+    exact: dict[tuple[str, str], str] = {}
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for rule in _rules(raw_output):
+        rows = _fixed_rows(_markdown(rule))
+        if not rows:
+            continue
+        names = [str(rule.get("id") or "")]
+        deprecated = rule.get("deprecatedIds")
+        if isinstance(deprecated, list):
+            names += [str(alias) for alias in deprecated]
+        for vulnerability, package, fixed in rows:
+            exact[(vulnerability, package)] = fixed
+            for name in filter(None, names):
+                merged = grouped.setdefault((name, package), [])
+                for part in fixed.split(","):
+                    part = part.strip()
+                    if part and part not in merged:
+                        merged.append(part)
+    table = {key: ", ".join(parts) for key, parts in grouped.items() if parts}
+    table.update(exact)
+    return table
+
+
+def _rules(raw_output: bytes) -> list[dict[str, Any]]:
     try:
         document = json.loads(raw_output.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        return {}
-
-    table: dict[tuple[str, str], str] = {}
+        return []
+    rules: list[dict[str, Any]] = []
     for run in document.get("runs") or []:
         driver = (run.get("tool") or {}).get("driver") or {}
-        for rule in driver.get("rules") or []:
-            markdown = ((rule.get("help") or {}).get("markdown") or "")
-            start = markdown.find("### Fixed Versions")
-            if start < 0:
-                continue
-            for line in markdown[start:].splitlines()[1:]:
-                line = line.strip()
-                if not line.startswith("|"):
-                    # The table ends at the first non-row once it has begun.
-                    if table:
-                        break
-                    continue
-                cells = [cell.strip() for cell in line.strip("|").split("|")]
-                if len(cells) < 3:
-                    continue
-                if cells[0] == "Vulnerability ID" or set(cells[0]) <= set("- "):
-                    continue  # header or separator
-                table[(cells[0], cells[1])] = cells[2]
-    return table
+        rules.extend(r for r in driver.get("rules") or [] if isinstance(r, dict))
+    return rules
+
+
+def _markdown(rule: dict[str, Any]) -> str:
+    help_ = rule.get("help")
+    return str(help_.get("markdown") or "") if isinstance(help_, dict) else ""
+
+
+def _fixed_rows(markdown: str) -> list[tuple[str, str, str]]:
+    """(vulnerability id, package, fixed versions) for each row of one rule's table."""
+    start = markdown.find("### Fixed Versions")
+    if start < 0:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    begun = False
+    for line in markdown[start:].splitlines()[1:]:
+        line = line.strip()
+        if not line.startswith("|"):
+            # The table ends at the first non-row once *this* table has begun.
+            # The first version tested the accumulated result instead, so
+            # every rule after the first stopped at the blank line under its
+            # own heading and only one rule per scan was ever read (#60909).
+            if begun:
+                break
+            continue
+        begun = True
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if cells[0] == "Vulnerability ID" or set(cells[0]) <= set("- "):
+            continue  # header or separator
+        rows.append((cells[0], cells[1], cells[2]))
+    return rows
+
+
+def _rules_without_fix(raw_output: bytes) -> set[str]:
+    """Rule ids whose remediation osv-scanner wrote without a fixed version.
+
+    osv-scanner's help text always carries a `## Remediation` section and adds
+    `### Fixed Versions` only when OSV records one, so a Remediation section
+    with no table is OSV saying no fix is published -- the known absence an
+    empty `fixed_version` means. A rule with no help text says nothing either
+    way and stays unrecorded: "not known" and "known to be none" are different
+    answers, and only the second may tell anybody there is nothing to upgrade
+    to (TheHub #60909).
+    """
+    absent: set[str] = set()
+    for rule in _rules(raw_output):
+        markdown = _markdown(rule)
+        if "## Remediation" in markdown and "### Fixed Versions" not in markdown:
+            absent.add(str(rule.get("id") or ""))
+    absent.discard("")
+    return absent
+
+
+def _version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", value))
 
 
 def _pick_fix(installed: str | None, candidates: str) -> str:
@@ -273,7 +347,9 @@ def _pick_fix(installed: str | None, candidates: str) -> str:
     osv-scanner names one fix per affected release line -- `3.15.1, 4.3.1` is
     two answers, not a list to take the first of. Handing a 3.x consumer
     `4.3.1` is a major upgrade wearing a patch's clothes, so the candidate
-    sharing the installed major wins.
+    sharing the installed major wins. Where aliases of one vulnerability named
+    different fixes on the same line, the highest wins: only it satisfies
+    every advisory in the group.
 
     Falls back to the lowest candidate when the installed version is unknown
     or matches no line: the smallest upgrade that could be right is a safer
@@ -284,9 +360,9 @@ def _pick_fix(installed: str | None, candidates: str) -> str:
         return ""
     if installed:
         major = installed.lstrip("v=<>~^ ").split(".")[0]
-        for option in options:
-            if option.lstrip("v").split(".")[0] == major:
-                return option
+        same_line = [o for o in options if o.lstrip("v").split(".")[0] == major]
+        if same_line:
+            return max(same_line, key=_version_key)
     return options[0]
 
 
@@ -327,25 +403,27 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     # an empty one is the meaningful answer "no fix published" rather than
     # "not looked up".
     fixes = _fixed_versions(raw_output)
+    no_fix = _rules_without_fix(raw_output)
     resolved = 0
-    if fixes:
-        for finding in outcome.findings:
-            candidates = fixes.get((finding.rule_id, finding.package_name or ""))
-            if not candidates or not isinstance(finding.raw_finding_json, dict):
-                continue
-            chosen = _pick_fix(finding.package_version, candidates)
-            if chosen:
-                finding.raw_finding_json["fixed_version"] = chosen
-                resolved += 1
-        if not resolved:
-            # The table was there and matched nothing, which means the ids or
-            # package names stopped lining up -- worth saying, because the
-            # symptom downstream is silent: every finding reads as unfixable.
-            outcome.warn(
-                "osv-scanner published fixed versions but none matched a finding "
-                "by rule id and package. Dependency findings will report no "
-                "available fix."
-            )
+    for finding in outcome.findings:
+        candidates = fixes.get((finding.rule_id, finding.package_name or ""))
+        chosen = _pick_fix(finding.package_version, candidates) if candidates else ""
+        if chosen:
+            finding.raw_finding_json["fixed_version"] = chosen
+            resolved += 1
+        elif finding.rule_id in no_fix:
+            # OSV published no fix. The empty value is that answer, as it is
+            # for grype; the key's absence means nobody established one.
+            finding.raw_finding_json["fixed_version"] = ""
+    if fixes and not resolved:
+        # The table was there and matched nothing, which means the ids or
+        # package names stopped lining up -- worth saying, because the
+        # symptom downstream is silent: every finding reads as unfixable.
+        outcome.warn(
+            "osv-scanner published fixed versions but none matched a finding "
+            "by rule id and package. Dependency findings will report no "
+            "available fix."
+        )
 
     # osv-scanner 2.2's SARIF publishes `security-severity` and no vector, so
     # this finds nothing today; it keeps one if that changes (TheHub #60824).
