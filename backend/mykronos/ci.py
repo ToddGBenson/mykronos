@@ -533,6 +533,10 @@ class JobStatus:
     #: the chain stops (#504). Always empty for Concourse, whose `passed:`
     #: blocking is reported by `blocked_jobs_in` instead.
     blocked_by: str = ""
+    #: The CI's own id for `build_name`'s build: Concourse's build id, or the
+    #: Actions run id. What a failure's reason is read and cached by
+    #: (TheHub #60913); None where the CI did not say.
+    build_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -1137,6 +1141,7 @@ class ConcourseClient:
             if isinstance(end, int | float) and end
             else None,
             paused=bool(raw.get("paused")),
+            build_id=str(build["id"]) if isinstance(build.get("id"), int) else None,
         )
 
 
@@ -1788,6 +1793,7 @@ class ActionsClient:
                     or f"{url}/workflows/{workflow.file_name}",
                     finished_at=run.finished_at if run and workflow.enabled else None,
                     blocked_by=block.root if block else "",
+                    build_id=str(run.run_id) if run and run.run_id else None,
                 )
             )
 

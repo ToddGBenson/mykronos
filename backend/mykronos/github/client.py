@@ -94,6 +94,10 @@ METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "dispatch_workflow": (("actions", "write"),),
     "list_workflows": (("actions", "read"),),
     "latest_workflow_runs": (("actions", "read"),),
+    # Why a run failed (TheHub #60913): its jobs and steps, then the failed
+    # job's check-run annotations. Both reads, both already held.
+    "workflow_run_jobs": (("actions", "read"),),
+    "check_run_annotations": (("checks", "read"),),
     "set_workflow_state": (("actions", "write"),),
     "issue_state": (("issues", "read"),),
     "list_issues": (("issues", "read"),),
@@ -123,6 +127,10 @@ OPTIONAL_PERMISSIONS = {
 }
 
 WORKFLOW_PATH_PREFIX = ".github/workflows/"
+
+#: Per-request timeout for the failure-reason reads (TheHub #60913), which run
+#: inside a dashboard request; everything else here keeps the 30s default.
+WHY_TIMEOUT = 5.0
 
 
 class GitHubError(RuntimeError):
@@ -192,6 +200,46 @@ class WorkflowRun:
     #: trigger's `branches:` filter to an upstream's run (#504); None where
     #: GitHub did not say, which that filter treats as "cannot tell".
     head_branch: str | None = None
+    #: GitHub's run id, the key `workflow_run_jobs` takes. Read so a failed
+    #: run can be asked why it failed (TheHub #60913); None where not read.
+    run_id: int | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowStep:
+    """One step of an Actions job, as `/actions/runs/{id}/jobs` lists it."""
+
+    name: str
+    #: GitHub's `conclusion`, verbatim: success, failure, skipped, ...
+    conclusion: str | None
+    number: int = 0
+
+
+@dataclass(frozen=True)
+class WorkflowJob:
+    """One job of a workflow run (TheHub #60913).
+
+    Its `id` is also its check-run id, which is what makes the annotations
+    readable: GitHub files a job's `::error::` lines, and its own "Process
+    completed with exit code N", as annotations on that check run.
+    """
+
+    id: int
+    name: str
+    conclusion: str | None
+    url: str = ""
+    steps: tuple[WorkflowStep, ...] = ()
+
+
+@dataclass(frozen=True)
+class CheckAnnotation:
+    """One check-run annotation: a message the job chose to raise, not a log."""
+
+    level: str
+    message: str
+    title: str = ""
+    path: str = ""
+    line: int | None = None
 
 
 @dataclass
@@ -620,6 +668,25 @@ class GitHubClient(Protocol):
         has merely been quiet, and this is the reason.
         """
 
+    async def workflow_run_jobs(self, repo_full_name: str, run_id: int) -> list[WorkflowJob]:
+        """The jobs of one run, latest attempt, with their steps (TheHub #60913).
+
+        One page of 30. Metadata only: names, conclusions, step names. No
+        logs, for the reason `WorkflowRun` gives.
+        """
+        ...
+
+    async def check_run_annotations(
+        self, repo_full_name: str, check_run_id: int, *, limit: int = 10
+    ) -> list[CheckAnnotation]:
+        """Up to `limit` annotations on one check run (TheHub #60913).
+
+        Annotations are what a job chose to say about itself (`::error::`,
+        a problem matcher, the runner's own exit-code line), which is why
+        they may be shown where the job's log may not.
+        """
+        ...
+
     async def set_workflow_state(
         self, repo_full_name: str, workflow_file: str, *, enabled: bool
     ) -> None:
@@ -708,6 +775,9 @@ class FakeRepo:
     #: the workflow exists and has never finished a run — which is a real
     #: state (`not_run`) and not an error.
     workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
+    #: Run id -> its jobs, and check-run id -> its annotations (TheHub #60913).
+    run_jobs: dict[int, list[WorkflowJob]] = field(default_factory=dict)
+    annotations: dict[int, list[CheckAnnotation]] = field(default_factory=dict)
     #: Commits on the default branch, newest first (spec 35 §8.5).
     commits: list[CommitInfo] = field(default_factory=list)
     #: GitHub's `visibility` (`private`, `internal`, `public`). `None` leaves
@@ -1120,6 +1190,18 @@ class FakeGitHubClient:
             for name, run in sorted(repo.workflow_runs.items())
             if f"{WORKFLOW_PATH_PREFIX}{name}" in repo.files
         ]
+
+    async def workflow_run_jobs(self, repo_full_name: str, run_id: int) -> list[WorkflowJob]:
+        self.calls.append(("workflow_run_jobs", f"{repo_full_name}#{run_id}"))
+        self._require("actions", "read", "Reading a workflow run's jobs")
+        return list(self._repo(repo_full_name).run_jobs.get(run_id, []))
+
+    async def check_run_annotations(
+        self, repo_full_name: str, check_run_id: int, *, limit: int = 10
+    ) -> list[CheckAnnotation]:
+        self.calls.append(("check_run_annotations", f"{repo_full_name}#{check_run_id}"))
+        self._require("checks", "read", "Reading check-run annotations")
+        return list(self._repo(repo_full_name).annotations.get(check_run_id, []))[:limit]
 
     async def set_workflow_state(
         self, repo_full_name: str, workflow_file: str, *, enabled: bool
@@ -1991,8 +2073,66 @@ class RestGitHubClient:
                 url=str(item.get("html_url") or ""),
                 finished_at=_parse_time(item.get("updated_at")),
                 head_branch=str(item["head_branch"]) if item.get("head_branch") else None,
+                run_id=int(item["id"]) if isinstance(item.get("id"), int) else None,
             )
         return list(latest.values())
+
+    async def workflow_run_jobs(self, repo_full_name: str, run_id: int) -> list[WorkflowJob]:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/actions/runs/{int(run_id)}/jobs",
+            params={"per_page": 30, "filter": "latest"},
+            timeout=WHY_TIMEOUT,
+        )
+        out: list[WorkflowJob] = []
+        for item in payload.get("jobs", []) or []:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+                continue
+            out.append(
+                WorkflowJob(
+                    id=int(item["id"]),
+                    name=str(item.get("name") or ""),
+                    conclusion=str(item["conclusion"]) if item.get("conclusion") else None,
+                    url=str(item.get("html_url") or ""),
+                    steps=tuple(
+                        WorkflowStep(
+                            name=str(step.get("name") or ""),
+                            conclusion=str(step["conclusion"])
+                            if step.get("conclusion")
+                            else None,
+                            number=int(step.get("number") or 0),
+                        )
+                        for step in item.get("steps") or []
+                        if isinstance(step, dict)
+                    ),
+                )
+            )
+        return out
+
+    async def check_run_annotations(
+        self, repo_full_name: str, check_run_id: int, *, limit: int = 10
+    ) -> list[CheckAnnotation]:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/check-runs/{int(check_run_id)}/annotations",
+            params={"per_page": max(1, min(int(limit), 50))},
+            timeout=WHY_TIMEOUT,
+        )
+        out: list[CheckAnnotation] = []
+        for item in payload if isinstance(payload, list) else []:
+            if not isinstance(item, dict):
+                continue
+            line = item.get("start_line")
+            out.append(
+                CheckAnnotation(
+                    level=str(item.get("annotation_level") or ""),
+                    message=str(item.get("message") or ""),
+                    title=str(item.get("title") or ""),
+                    path=str(item.get("path") or ""),
+                    line=line if isinstance(line, int) else None,
+                )
+            )
+        return out[:limit]
 
     async def set_workflow_state(
         self, repo_full_name: str, workflow_file: str, *, enabled: bool

@@ -5588,6 +5588,47 @@ export interface components {
             /** Pending */
             pending: number;
         };
+        /**
+         * CiFailureWhyOut
+         * @description Why one failing job failed, as its CI says (TheHub #60913).
+         */
+        CiFailureWhyOut: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "concourse" | "github";
+            /**
+             * Step
+             * @description The step that failed: a Concourse step name, or 'job: step' for a GitHub Actions run.
+             */
+            step?: string | null;
+            /**
+             * Exit Code
+             * @description The step's exit code, if known.
+             */
+            exit_code?: number | null;
+            /**
+             * Messages
+             * @description Up to three error lines, trimmed and scrubbed: the GitHub check annotations the failed job raised, or Concourse's own error events. Never build log output.
+             */
+            messages?: string[];
+            /**
+             * Url
+             * @description The failed build, job or run.
+             */
+            url?: string | null;
+            /**
+             * Note
+             * @description A caveat about what is shown, e.g. that the step raised no error line.
+             */
+            note?: string | null;
+            /**
+             * Unavailable
+             * @description Why no reason could be read, when none could; shown as 'reason unavailable: <this>'.
+             */
+            unavailable?: string | null;
+        };
         /** CiJobOut */
         CiJobOut: {
             /** Name */
@@ -5603,6 +5644,8 @@ export interface components {
             build_url?: string | null;
             /** Finished At */
             finished_at?: string | null;
+            /** @description Why this job's last build failed, for a job whose status is failed; null for every other job (TheHub #60913). */
+            why?: components["schemas"]["CiFailureWhyOut"] | null;
         };
         /**
          * CiLaneOut
