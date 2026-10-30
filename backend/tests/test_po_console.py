@@ -219,6 +219,9 @@ class TestDeliveryPullRequests:
         assert pc.subject_pr(SUBJECTS[RAW_REVERT]) is None
         assert pc.subject_pr(SUBJECTS[DIRECT]) is None
         assert pc.subject_pr("") is None
+        # A merge commit, where a repository allows them.
+        assert pc.subject_pr("Merge pull request #399 from example-org/chore/mirror") == 399
+        assert pc.subject_pr("docs: Merge pull request #399 from x is prose") is None
 
     def test_shipped_commits_carry_their_pull_request(
         self,

@@ -56,6 +56,8 @@ FAILED_DEPLOY = ("failed", "failure", "error")
 #: subject like `fix: x (TheHub #61034) (#1035)` names story 61034 and PR
 #: 1035, and a revert `Revert "fix: x (#974)" (#980)` is PR 980, not 974.
 _PR_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
+#: GitHub's merge-commit subject, where a repository allows merge commits.
+_PR_MERGE = re.compile(r"^Merge pull request #(\d+) from \S")
 
 
 # --------------------------------------------------------------------------
@@ -118,12 +120,13 @@ async def gather_bounded(
 
 
 def subject_pr(message: str) -> int | None:
-    """The pull request a squash-merged commit came from, read from its
-    subject line's `(#N)` suffix. None when the subject has no suffix: a
-    direct push, or a `git revert` of a squash commit, whose subject ends in
-    a quote and names the reverted PR rather than its own."""
+    """The pull request a merged commit came from, read from its subject
+    line: the squash `(#N)` suffix, or GitHub's `Merge pull request #N from`
+    merge-commit subject. None for anything else: a direct push, or a
+    `git revert` of a squash commit, whose subject ends in a quote and names
+    the reverted PR rather than its own."""
     first = (message or "").split("\n", 1)[0].strip()
-    match = _PR_SUFFIX.search(first)
+    match = _PR_SUFFIX.search(first) or _PR_MERGE.match(first)
     return int(match.group(1)) if match else None
 
 
