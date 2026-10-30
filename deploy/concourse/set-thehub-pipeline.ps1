@@ -45,6 +45,14 @@
     deploying TheHub - and it stays opt-in, because the quiet version of this
     is a cloud scan nobody notices never ran.
 
+.PARAMETER AllowMissingAnthropicKey
+    Apply the pipeline without a Claude key in Vault or TheHub's .env. Without
+    it a missing key stops this script (TheHub #61085), because `ai-models`
+    cannot pass without one (#60516) and an empty key baked in is a red lane
+    nobody can see. With it, every other job is applied, `ai-models` fails
+    naming the missing key, and prompt-evals runs its deterministic graders
+    only - so an urgent re-set is never held up by the AI key. Opt-in, and loud.
+
 .PARAMETER TheHubRepo
     Where TheHub is checked out. After a successful `fly set-pipeline` this
     script runs TheHub's `scripts/export_concourse_pipeline.py --pipeline
@@ -166,6 +174,7 @@ param(
     [string]$TimeZone = "America/Phoenix",
 
     [switch]$AllowMissingAzure,
+    [switch]$AllowMissingAnthropicKey,
     # See the guard below, and the .PARAMETER note above. Never the default,
     # and never quiet.
     [switch]$AllowPipelineFromAnyBranch,
@@ -253,12 +262,20 @@ if (-not $azureClientId -or -not $azureSubscriptionId) {
 # Reporting into TheHub is optional. Absent, the report task says it is
 # skipping and exits 0 - which is the right failure mode for telemetry, and
 # the wrong one to discover silently, so it is announced here too.
+# TheHub names its key CLAUDE_API_KEY; ANTHROPIC_API_KEY is the SDK's name and
+# is read second. Reading only ANTHROPIC_API_KEY found nothing in TheHub's .env,
+# and the empty value baked into the pipeline overrode Vault, so `ai-models`
+# failed on every commit from 2026-10-29 (TheHub #61085). Only the NAME is
+# chosen here; the value is never printed.
 $hubAnthropicKey = ""
 if (Test-Path $TheHubEnvPath) {
-    $hubAnthropicKey = Read-EnvValue $TheHubEnvPath "ANTHROPIC_API_KEY" -Optional
+    foreach ($keyName in @("CLAUDE_API_KEY", "ANTHROPIC_API_KEY")) {
+        $hubAnthropicKey = Read-EnvValue $TheHubEnvPath $keyName -Optional
+        if ($hubAnthropicKey) { break }
+    }
 }
 if (-not $hubAnthropicKey) {
-    Write-Host "No Claude key: prompt evals will run the deterministic graders only." -ForegroundColor DarkGray
+    Write-Host "No Claude key in TheHub's .env: Vault must hold anthropic-api-key." -ForegroundColor DarkGray
 }
 
 # Slack is a bot token plus a channel rather than an incoming webhook.
@@ -433,7 +450,22 @@ Add-Secret -Name "thehub-ingestion-token" -Fallback { Read-EnvValue $backendEnv 
 Add-Secret -Name "mykronos-gate-token"    -Fallback { Read-EnvValue $backendEnv 'MYKRONOS_GATE_TOKEN' }
 Add-Secret -Name "hub-deploy-token"       -Fallback { $hubDeployToken }
 Add-Secret -Name "hub-scanner-token"      -Fallback { $hubScannerToken }
-Add-Secret -Name "anthropic-api-key"      -Fallback { $hubAnthropicKey }
+# Required, not optional: `ai-models` fails without it (#60516), so an empty
+# fallback must stop this script rather than bake '' into the pipeline, where it
+# would override Vault and turn a missing key into a red lane nobody can see.
+Add-Secret -Name "anthropic-api-key"      -Fallback {
+    if (-not $hubAnthropicKey -and $AllowMissingAnthropicKey) {
+        Write-Host ("-AllowMissingAnthropicKey: no Claude key anywhere. ai-models " +
+                    "will fail naming it; prompt-evals runs deterministic graders only.") -ForegroundColor Yellow
+        return ""
+    }
+    if (-not $hubAnthropicKey) {
+        throw ("anthropic-api-key is not in Vault and neither CLAUDE_API_KEY nor " +
+               "ANTHROPIC_API_KEY is set in $TheHubEnvPath. Store it in Vault at " +
+               "concourse/main/ (vault-secret.ps1 set) or add it to that .env.")
+    }
+    $hubAnthropicKey
+}
 # TheHub #60803: the Cloudflare Access service token `dast-demo` presents at
 # demo.toddbenson.net (board #60875). No .env holds it, so the fallback is
 # empty, and `dast-demo` fails naming the fix rather than scanning Access's
@@ -537,22 +569,17 @@ try {
         "azure-client-id: $azureClientId",
         "azure-client-secret: $azureClientSecret",
         "azure-tenant-id: $azureTenantId",
-        "azure-subscription-id: $azureSubscriptionId",
+        "azure-subscription-id: $azureSubscriptionId"
         # slack-bot-token and slack-alert-channel used to be written here. They
         # are not any more: both resolve through Vault at team scope, so the
         # value never enters this config and `fly get-pipeline` has nothing to
         # print. Every job's notifier still checks for empty and skips, so a
         # sealed Vault degrades to "no notification" rather than to a second
         # failure on top of the one it was trying to report.
-        # Optional, and the prompt-eval gate is designed around its absence:
-        # without a key the rubric fixtures report as skipped and the
-        # deterministic graders still gate every commit, for free. Supplying
-        # one turns the judged fixtures on and starts costing money per
-        # changed prompt - which is why it is opt-in rather than assumed.
-        #
-        # Read from TheHub's own .env so there is one copy of the key on this
-        # machine rather than two.
-        "anthropic-api-key: '$hubAnthropicKey'"
+        # anthropic-api-key is NOT written here any more (TheHub #61085). It was,
+        # unconditionally, so a key held in Vault was overridden by whatever this
+        # script read - and when it read nothing, by ''. Add-Secret above writes
+        # it only when Vault does not have it, and refuses to write it empty.
     )
 
     $vars = $vars + $secretVars
