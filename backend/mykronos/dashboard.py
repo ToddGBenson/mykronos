@@ -3144,6 +3144,101 @@ class DashboardQueries:
             )
         return health
 
+    def test_lane_outcomes(
+        self,
+        repo_full_name: str,
+        capabilities: Sequence[str],
+        lane_branches: dict[str, str] | None = None,
+        *,
+        window_days: int = 7,
+        now: datetime | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Whether each test lane is passing, not only whether it is running.
+
+        `scan_health` answers "has this lane reported"; a lane whose every run
+        on main failed for a day still had runs, so the test view said the
+        functional lane was evidenced while incident #36403 was open
+        (TheHub #60922). This is the other half: the latest run's status on the
+        lane's branch, the passes and failures inside a recent window, and when
+        the lane last passed.
+
+        Only runs on the lane's branch count where one is given, for the same
+        reason as `scan_health` (B-056): a red pull-request branch must not
+        make main look broken, nor a green one make it look fixed. A capability
+        with no branch given keeps every run rather than none.
+        """
+        if not capabilities:
+            return {}
+        branches = {
+            capability: branch
+            for capability, branch in (lane_branches or {}).items()
+            if capability in capabilities and branch
+        }
+        params: list[Any] = []
+        if branches:
+            whens = " ".join(
+                "WHEN capability = ? THEN coalesce(branch, '') = ?" for _ in branches
+            )
+            on_lane = f"CASE {whens} ELSE true END"
+            for capability, branch in branches.items():
+                params.extend([capability, branch])
+        else:
+            on_lane = "true"
+        since = (now or utcnow()) - timedelta(days=window_days)
+        placeholders = ", ".join("?" for _ in capabilities)
+
+        rows = self.catalog.query(
+            f"""
+            WITH lane AS (
+                SELECT capability, scan_status,
+                       coalesce(completed_at, started_at) AS ran_at,
+                       row_number() OVER (
+                           PARTITION BY capability
+                           ORDER BY coalesce(completed_at, started_at) DESC,
+                                    ingested_at DESC,
+                                    scan_run_id DESC
+                       ) AS rn
+                FROM scan_runs
+                WHERE repo_full_name = ?
+                  AND capability IN ({placeholders})
+                  AND {on_lane}
+            )
+            SELECT capability,
+                   max(scan_status) FILTER (WHERE rn = 1)                   AS latest_status,
+                   max(ran_at) FILTER (WHERE rn = 1)                        AS latest_at,
+                   max(ran_at) FILTER (WHERE scan_status = 'success')       AS last_passed_at,
+                   count(*) FILTER (WHERE ran_at >= ?)                      AS window_runs,
+                   count(*) FILTER (WHERE ran_at >= ? AND scan_status = 'success')
+                                                                            AS window_passed,
+                   count(*) FILTER (WHERE ran_at >= ?
+                                     AND scan_status IN ('failure', 'partial_failure'))
+                                                                            AS window_failed
+            FROM lane
+            GROUP BY capability
+            """,
+            [repo_full_name, *capabilities, *params, since, since, since],
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for (
+            capability,
+            latest_status,
+            latest_at,
+            last_passed_at,
+            window_runs,
+            window_passed,
+            window_failed,
+        ) in rows:
+            out[str(capability)] = {
+                "latest_status": str(latest_status) if latest_status is not None else None,
+                "latest_at": latest_at,
+                "last_passed_at": last_passed_at,
+                "window_runs": int(window_runs or 0),
+                "window_passed": int(window_passed or 0),
+                "window_failed": int(window_failed or 0),
+                "branch": branches.get(str(capability)),
+            }
+        return out
+
     def _recent_scan_runs(
         self, repo_full_name: str, per_capability: int = 2
     ) -> dict[str, list[dict[str, Any]]]:

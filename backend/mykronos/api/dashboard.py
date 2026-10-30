@@ -7294,6 +7294,7 @@ class TestKindOut(BaseModel):
     presence: str
     evidence: list[str]
     how_to_evidence: str
+    outcome: Literal["passing", "failing", "unknown"] | None = None
 
 
 class TestLaneOut(BaseModel):
@@ -7305,6 +7306,15 @@ class TestLaneOut(BaseModel):
     last_run_at: str | None
     coverage_state: str
     line_coverage: float | None
+    outcome: Literal["passing", "failing", "unknown"] = "unknown"
+    outcome_branch: str | None = None
+    latest_status: str | None = None
+    latest_run_at: str | None = None
+    last_passed_at: str | None = None
+    window_days: int
+    window_runs: int
+    window_passed: int
+    window_failed: int
 
 
 class TestEstateOut(BaseModel):
@@ -7339,6 +7349,13 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
     writing a coverage document — and rendering it as zero would have been a
     fabricated measurement of 227 real runs.
 
+    **Running is not passing.** Each lane carries its latest outcome on its
+    branch (normally the default branch) — `passing`, `failing` or `unknown` —
+    with passes and failures over the last `window_days` and when it last
+    passed. A kind stays `observed` while its suite is red, because a failing
+    suite is still a suite, but its evidence sentence says the latest run
+    failed rather than reading as healthy.
+
     No score. The kinds are not equally applicable — a library needs no
     post-deploy smoke test — so a single figure could only ever penalise a
     repository for correctly not doing something.
@@ -7369,11 +7386,21 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
     # covers a finding; this view is about what the platform watched happen.
     demonstrated = regression.coverage(request.app.state.catalog, repo_full_name).demonstrated
 
+    # Presence says a lane is running; this says whether it is passing, on the
+    # branch the lane is about (TheHub #60922). On 2026-10-21 every functional
+    # run on main failed and this view still read as evidenced, full stop.
+    outcomes = queries.test_lane_outcomes(
+        repo_full_name,
+        test_estate.TEST_LANES,
+        _lane_branches(request, repo_full_name),
+        window_days=test_estate.OUTCOME_WINDOW_DAYS,
+    )
+    lanes = test_estate.lane_health(health, enabled, outcomes)
     kinds = test_estate.assess(
         reporting_capabilities=reporting,
         demonstrated_regressions=demonstrated,
+        lanes=lanes,
     )
-    lanes = test_estate.lane_health(health, enabled)
 
     return TestEstateOut(
         repo_full_name=repo_full_name,
@@ -7383,7 +7410,9 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
         note=(
             "Evidenced, not asserted. A lane that is enabled and has never reported "
             "evidences no testing, and a lane with runs but no coverage document is "
-            "reported as never having measured coverage rather than as zero percent."
+            "reported as never having measured coverage rather than as zero percent. "
+            "A lane that reports is evidenced even while it fails; its outcome is "
+            "its latest run on the lane's branch, shown beside it."
         ),
     )
 
