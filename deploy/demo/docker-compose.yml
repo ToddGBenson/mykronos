@@ -176,7 +176,7 @@ services:
     x-mykronos-build:
       context: ../zap
       publish: mykronos-zap:weekly
-      baseline: ghcr.io/toddgbenson/mykronos-zap:weekly-p20261018@sha256:92d01f31a4a2095d66b73b3d1ee3c22771cc67d83eb9cd7a0896f4f2eaa9602f
+      baseline: ghcr.io/toddgbenson/mykronos-zap:weekly-p20261029@sha256:84396f47f319b1806263e0e47bd0e0465ad736e60ed22e6b2882d664d4f46076
     # Loopback only. The API below runs with no key and accepts any caller,
     # and ZAP's API can load and run scripts, so a LAN-reachable port is code
     # execution on this container. The DAST lane (.github/workflows/
