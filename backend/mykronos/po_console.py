@@ -24,6 +24,7 @@ read is not evidence that nothing went wrong.
 from __future__ import annotations
 
 import asyncio
+import re
 import statistics
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -50,6 +51,11 @@ ABORTED = ("aborted_fail", "aborted_timeout", "aborted_cost", "aborted_deny")
 #: `deploy_runs.final_status` values that are a failed deploy. `warned` is a
 #: deploy that went out with a warning, which is not a failure.
 FAILED_DEPLOY = ("failed", "failure", "error")
+#: GitHub's squash-merge subject suffix: `title (#123)`. Anchored to the end
+#: of the subject line, so the pull request is the *last* reference: a
+#: subject like `fix: x (TheHub #61034) (#1035)` names story 61034 and PR
+#: 1035, and a revert `Revert "fix: x (#974)" (#980)` is PR 980, not 974.
+_PR_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
 
 
 # --------------------------------------------------------------------------
@@ -109,6 +115,45 @@ async def gather_bounded(
 # --------------------------------------------------------------------------
 # Delivery (§8.1)
 # --------------------------------------------------------------------------
+
+
+def subject_pr(message: str) -> int | None:
+    """The pull request a squash-merged commit came from, read from its
+    subject line's `(#N)` suffix. None when the subject has no suffix: a
+    direct push, or a `git revert` of a squash commit, whose subject ends in
+    a quote and names the reverted PR rather than its own."""
+    first = (message or "").split("\n", 1)[0].strip()
+    match = _PR_SUFFIX.search(first)
+    return int(match.group(1)) if match else None
+
+
+def subject_links(commits: Iterable[tuple[str, str]]) -> dict[str, int]:
+    """sha -> pull request number, for each `(sha, message)` whose subject
+    carries GitHub's squash suffix."""
+    links: dict[str, int] = {}
+    for sha, message in commits:
+        number = subject_pr(message)
+        key = (sha or "").strip().lower()
+        if number is not None and key:
+            links[key] = number
+    return links
+
+
+def merge_commit_links(catalog: Any, repo_full_name: str) -> dict[str, int]:
+    """Merge commit sha -> pull request number, from what the pull_request
+    webhook already stored: a merged fix's `merge_commit_sha` is kept as its
+    remediation event's verification commit (spec 25 §1)."""
+    rows = catalog.query(
+        """
+        SELECT verification_commit_sha, fix_pr_number
+        FROM remediation_events
+        WHERE repo_full_name = ? AND verification_commit_sha IS NOT NULL
+          AND verification_commit_sha <> '' AND fix_pr_number IS NOT NULL
+          AND fix_pr_number <> 0
+        """,
+        [repo_full_name],
+    )
+    return {str(sha).strip().lower(): int(number) for sha, number in rows}
 
 
 def scan_rows(catalog: Any, repo_full_name: str, since: datetime) -> list[dict[str, Any]]:
@@ -190,7 +235,13 @@ def build_delivery(
     scans: list[dict[str, Any]],
     decisions: list[dict[str, Any]],
     deployed_revision: str | None,
+    pr_links: dict[str, int] | None = None,
 ) -> list[DeliveryRow]:
+    """One row per commit. `pr_links` maps a commit sha to the pull request it
+    was merged from (squash subject, or a stored merge commit). A
+    squash-merged commit's own scans are push scans, which carry no PR
+    number: only the PR's head commit has one (TheHub #60910)."""
+    links = pr_links or {}
     mapping = canonical_shas([r["sha"] for r in scans] + [r["sha"] for r in decisions])
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for row in scans:
@@ -232,6 +283,7 @@ def build_delivery(
                         for r in sha_scans + sha_decisions
                         if r["pr_number"] not in (None, 0)
                     }
+                    | {number for linked, number in links.items() if sha_matches(sha, linked)}
                 ),
                 first_seen=min(seen) if seen else None,
                 last_seen=max(seen) if seen else None,
