@@ -33,6 +33,25 @@ from typing import Any, Literal
 #: produces it. There is deliberately no "probably" between them.
 Presence = Literal["observed", "absent"]
 
+#: Whether a lane's latest run on its branch passed. Presence answers "is this
+#: kind of testing happening"; this answers "is it passing", and the two are
+#: deliberately separate fields. On 2026-10-21 every functional upload on main
+#: failed, and presence said `observed` all day (TheHub #60922). `unknown` is a
+#: lane with no run on its branch, or whose latest run found nothing to test.
+Outcome = Literal["passing", "failing", "unknown"]
+
+#: The window the recent pass/fail counts cover.
+OUTCOME_WINDOW_DAYS = 7
+
+
+def outcome_of(latest_status: str | None) -> Outcome:
+    """A scan status, read as a test outcome."""
+    if latest_status == "success":
+        return "passing"
+    if latest_status in ("failure", "partial_failure"):
+        return "failing"
+    return "unknown"
+
 #: Test lanes, as opposed to security lanes. A failing test is a defect and
 #: never a finding (D-046), which is why these are counted apart.
 TEST_LANES: tuple[str, ...] = ("unit", "functional", "qa")
@@ -169,6 +188,9 @@ class KindResult:
     presence: Presence
     evidence: list[str] = field(default_factory=list)
     how_to_evidence: str = ""
+    #: The worst latest outcome of the lanes evidencing this kind. None for a
+    #: kind no test lane evidences (security regression, or anything absent).
+    outcome: Outcome | None = None
 
 
 @dataclass
@@ -184,16 +206,42 @@ class LaneHealth:
     #: `reported`, `never_reported`, or `no_runs`.
     coverage_state: str
     line_coverage: float | None
+    #: The latest run on `outcome_branch`, read as passing/failing/unknown.
+    outcome: Outcome = "unknown"
+    #: The branch the outcome is about -- the lane's branch, normally the
+    #: default branch. None when no default branch is recorded and every run
+    #: counted.
+    outcome_branch: str | None = None
+    latest_status: str | None = None
+    latest_run_at: str | None = None
+    last_passed_at: str | None = None
+    window_days: int = OUTCOME_WINDOW_DAYS
+    window_runs: int = 0
+    window_passed: int = 0
+    window_failed: int = 0
 
 
-def lane_health(scan_health: list[dict[str, Any]], enabled: set[str]) -> list[LaneHealth]:
+def _text(value: Any) -> str | None:
+    return str(value) if value is not None else None
+
+
+def lane_health(
+    scan_health: list[dict[str, Any]],
+    enabled: set[str],
+    outcomes: dict[str, dict[str, Any]] | None = None,
+) -> list[LaneHealth]:
     """The three test lanes, whether or not they have ever run.
 
     A lane that has never run is a row saying so, not an absence. Today a
     repository with no tests looks identical to one this platform has not been
     pointed at, and those are not the same problem.
+
+    `outcomes` is `DashboardQueries.test_lane_outcomes`: whether each lane's
+    latest run on its branch passed. Without it every lane's outcome is
+    `unknown` -- never `passing` by default.
     """
     by_capability = {str(row.get("capability")): row for row in scan_health}
+    outcomes = outcomes or {}
     lanes: list[LaneHealth] = []
 
     for capability in TEST_LANES:
@@ -220,16 +268,65 @@ def lane_health(scan_health: list[dict[str, Any]], enabled: set[str]) -> list[La
                 ),
                 coverage_state=state,
                 line_coverage=float(coverage) if coverage is not None else None,
+                **_outcome_fields(outcomes.get(capability)),
             )
         )
 
     return lanes
 
 
+def _outcome_fields(record: dict[str, Any] | None) -> dict[str, Any]:
+    if not record:
+        return {}
+    return {
+        "outcome": outcome_of(record.get("latest_status")),
+        "outcome_branch": record.get("branch"),
+        "latest_status": record.get("latest_status"),
+        "latest_run_at": _text(record.get("latest_at")),
+        "last_passed_at": _text(record.get("last_passed_at")),
+        "window_runs": int(record.get("window_runs") or 0),
+        "window_passed": int(record.get("window_passed") or 0),
+        "window_failed": int(record.get("window_failed") or 0),
+    }
+
+
+def _evidence_line(capability: str, lane: LaneHealth | None) -> str:
+    """The sentence a reporting lane contributes to its kind.
+
+    Must not read as healthy when the latest run failed: "the functional lane
+    is reporting runs" was literally true on a day every run on main failed.
+    """
+    if lane is None or lane.outcome == "unknown":
+        return f"the {capability} lane is reporting runs"
+    where = f" on {lane.outcome_branch}" if lane.outcome_branch else ""
+    if lane.outcome == "failing":
+        since = (
+            f"; it last passed {lane.last_passed_at[:10]}"
+            if lane.last_passed_at
+            else "; it has never passed here"
+        )
+        return (
+            f"the {capability} lane is reporting runs, but its latest run{where} "
+            f"failed{since}"
+        )
+    return f"the {capability} lane is reporting runs, and its latest run{where} passed"
+
+
+_OUTCOME_ORDER: dict[Outcome, int] = {"failing": 0, "unknown": 1, "passing": 2}
+
+
+def _worst(outcomes: list[Outcome]) -> Outcome | None:
+    """A kind evidenced by a red lane and a green one is failing."""
+    if not outcomes:
+        return None
+    return min(outcomes, key=lambda outcome: _OUTCOME_ORDER[outcome])
+
+
 def assess(
     *,
     reporting_capabilities: set[str],
     demonstrated_regressions: int = 0,
+    lanes: list[LaneHealth] | None = None,
 ) -> list[KindResult]:
     """Which kinds of testing this repository has evidence of.
 
@@ -242,15 +339,24 @@ def assess(
     fail against the vulnerable code and pass against the fix (spec 31).
     Asserted links deliberately do not count: a link somebody typed is a claim
     about a test, and this view is about evidence.
+
+    `lanes` carries each test lane's latest outcome. Presence does not change
+    with it -- a failing suite is still a suite -- but the evidence sentence
+    and the kind's `outcome` say whether it is passing.
     """
+    by_lane = {lane.capability: lane for lane in lanes or []}
     results: list[KindResult] = []
 
     for kind in KINDS:
         evidence: list[str] = []
+        outcomes: list[Outcome] = []
 
         for capability in kind.capabilities:
             if capability in reporting_capabilities:
-                evidence.append(f"the {capability} lane is reporting runs")
+                lane = by_lane.get(capability)
+                evidence.append(_evidence_line(capability, lane))
+                if lane is not None:
+                    outcomes.append(lane.outcome)
 
         if kind.key == "security_regression" and demonstrated_regressions:
             noun = "test" if demonstrated_regressions == 1 else "tests"
@@ -267,6 +373,7 @@ def assess(
                 presence="observed" if evidence else "absent",
                 evidence=evidence,
                 how_to_evidence=kind.how_to_evidence,
+                outcome=_worst(outcomes),
             )
         )
 

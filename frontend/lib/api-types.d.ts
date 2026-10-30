@@ -1976,6 +1976,13 @@ export interface paths {
          *     writing a coverage document — and rendering it as zero would have been a
          *     fabricated measurement of 227 real runs.
          *
+         *     **Running is not passing.** Each lane carries its latest outcome on its
+         *     branch (normally the default branch) — `passing`, `failing` or `unknown` —
+         *     with passes and failures over the last `window_days` and when it last
+         *     passed. A kind stays `observed` while its suite is red, because a failing
+         *     suite is still a suite, but its evidence sentence says the latest run
+         *     failed rather than reading as healthy.
+         *
          *     No score. The kinds are not equally applicable — a library needs no
          *     post-deploy smoke test — so a single figure could only ever penalise a
          *     repository for correctly not doing something.
@@ -12515,6 +12522,8 @@ export interface components {
             evidence: string[];
             /** How To Evidence */
             how_to_evidence: string;
+            /** Outcome */
+            outcome?: ("passing" | "failing" | "unknown") | null;
         };
         /** TestLaneOut */
         TestLaneOut: {
@@ -12534,6 +12543,28 @@ export interface components {
             coverage_state: string;
             /** Line Coverage */
             line_coverage: number | null;
+            /**
+             * Outcome
+             * @default unknown
+             * @enum {string}
+             */
+            outcome: "passing" | "failing" | "unknown";
+            /** Outcome Branch */
+            outcome_branch?: string | null;
+            /** Latest Status */
+            latest_status?: string | null;
+            /** Latest Run At */
+            latest_run_at?: string | null;
+            /** Last Passed At */
+            last_passed_at?: string | null;
+            /** Window Days */
+            window_days: number;
+            /** Window Runs */
+            window_runs: number;
+            /** Window Passed */
+            window_passed: number;
+            /** Window Failed */
+            window_failed: number;
         };
         /**
          * ThreatIntelEntryOut
