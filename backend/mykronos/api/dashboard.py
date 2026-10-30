@@ -81,6 +81,7 @@ from mykronos.ci import (
 from mykronos.ci import (
     browser_url as ci_browser_url,
 )
+from mykronos.ci_why import ConcourseWhyReader, explain_failures
 from mykronos.dashboard import (
     STRIDE_CATEGORIES,
     DashboardQueries,
@@ -2282,6 +2283,41 @@ async def repo_insider_risk(
     )
 
 
+class CiFailureWhyOut(BaseModel):
+    """Why one failing job failed, as its CI says (TheHub #60913)."""
+
+    source: Literal["concourse", "github"]
+    step: str | None = Field(
+        default=None,
+        description=(
+            "The step that failed: a Concourse step name, or 'job: step' for a "
+            "GitHub Actions run."
+        ),
+    )
+    exit_code: int | None = Field(default=None, description="The step's exit code, if known.")
+    messages: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Up to three error lines, trimmed and scrubbed: the GitHub check "
+            "annotations the failed job raised, or the Concourse step's "
+            "'::error' lines and Concourse's own error events. Never other "
+            "log output."
+        ),
+    )
+    url: str | None = Field(default=None, description="The failed build, job or run.")
+    note: str | None = Field(
+        default=None,
+        description="A caveat about what is shown, e.g. that the step raised no error line.",
+    )
+    unavailable: str | None = Field(
+        default=None,
+        description=(
+            "Why no reason could be read, when none could; shown as "
+            "'reason unavailable: <this>'."
+        ),
+    )
+
+
 class CiJobOut(BaseModel):
     name: str
     status: str | None = Field(
@@ -2295,6 +2331,13 @@ class CiJobOut(BaseModel):
     build_name: str | None = None
     build_url: str | None = None
     finished_at: datetime | None = None
+    why: CiFailureWhyOut | None = Field(
+        default=None,
+        description=(
+            "Why this job's last build failed, for a job whose status is "
+            "failed; null for every other job (TheHub #60913)."
+        ),
+    )
 
 
 class CiReportingOut(BaseModel):
@@ -2558,6 +2601,23 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         pipeline, status.jobs, _queries(request).last_successful_scan_at(repo_full_name)
     )
 
+    # Why each failing job failed (TheHub #60913). Bounded and cached by
+    # build in `ci_why`; never raises, so a CI that will not explain itself
+    # costs this page a "reason unavailable" line and nothing else.
+    settings = request.app.state.settings
+    why_by_job = await explain_failures(
+        repo_full_name,
+        status.jobs,
+        source="github" if scanned_by == "github_actions" else "concourse",
+        cache=request.app.state.ci_why_cache,
+        concourse=ConcourseWhyReader(settings.concourse_url) if settings.concourse_url else None,
+        github=(
+            request.app.state.github_factory.for_installation(installation_id)
+            if scanned_by == "github_actions" and installation_id is not None
+            else None
+        ),
+    )
+
     return CiPage(
         repo_full_name=repo_full_name,
         github_url=f"https://github.com/{repo_full_name}",
@@ -2571,6 +2631,11 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
                 build_name=job.build_name,
                 build_url=job.build_url,
                 finished_at=job.finished_at,
+                why=(
+                    CiFailureWhyOut.model_validate(dataclasses.asdict(why_by_job[job.name]))
+                    if job.name in why_by_job
+                    else None
+                ),
             )
             for job in status.jobs
         ],

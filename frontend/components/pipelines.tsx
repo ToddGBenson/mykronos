@@ -26,6 +26,7 @@ import {
   type IndicatorTone,
 } from "@/components/primitives";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
+import { failuresWithWhy, whyLines } from "@/lib/ci-why";
 
 /** The platform's shared build-status vocabulary, mapped to the palette the
  *  rest of the app uses. Concourse reports these words natively; GitHub's
@@ -180,6 +181,7 @@ export function JobLights({ ci }: { ci: CiPage }) {
           <JobTile key={job.name} job={job} />
         ))}
       </div>
+      <FailureReasons jobs={jobs} />
       <div className="px-3 pb-2">
         <IndicatorLegend
           entries={[
@@ -191,6 +193,53 @@ export function JobLights({ ci }: { ci: CiPage }) {
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * Why each failing job failed (TheHub #60913): the failed step, its exit
+ * code and the error lines the job raised, read by the backend so nobody has
+ * to leave for Concourse or Actions to find out. A reason the CI would not
+ * give is printed as "reason unavailable: …", never left blank.
+ */
+function FailureReasons({ jobs }: { jobs: CiJob[] }) {
+  const failures = failuresWithWhy(jobs);
+  if (failures.length === 0) return null;
+  return (
+    <ul className="flex flex-col gap-px bg-rule-soft">
+      {failures.map((job) => {
+        const lines = whyLines(job.why);
+        return (
+          <li
+            key={job.name}
+            className={`flex flex-col gap-1 border-l-2 bg-paper-2 px-3 py-2 ${INDICATOR.bad.lamp.split(" ")[1]}`}
+          >
+            <span className="font-mono text-[12px] text-ink-2">
+              {job.name} <span className="text-ink-3">· {lines.headline}</span>
+            </span>
+            {lines.messages.map((message, i) => (
+              <code
+                key={i}
+                className="whitespace-pre-wrap break-words font-mono text-[12px] text-ink"
+              >
+                {message}
+              </code>
+            ))}
+            {lines.note ? <span className="text-[12px] text-ink-3">{lines.note}</span> : null}
+            {lines.url ? (
+              <a
+                className="font-mono text-[11px] text-accent underline-offset-2 hover:underline"
+                href={lines.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open in {lines.source}
+              </a>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
