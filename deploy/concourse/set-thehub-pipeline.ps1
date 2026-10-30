@@ -45,6 +45,14 @@
     deploying TheHub - and it stays opt-in, because the quiet version of this
     is a cloud scan nobody notices never ran.
 
+.PARAMETER AllowMissingAnthropicKey
+    Apply the pipeline without a Claude key in Vault or TheHub's .env. Without
+    it a missing key stops this script (TheHub #61085), because `ai-models`
+    cannot pass without one (#60516) and an empty key baked in is a red lane
+    nobody can see. With it, every other job is applied, `ai-models` fails
+    naming the missing key, and prompt-evals runs its deterministic graders
+    only - so an urgent re-set is never held up by the AI key. Opt-in, and loud.
+
 .PARAMETER TheHubRepo
     Where TheHub is checked out. After a successful `fly set-pipeline` this
     script runs TheHub's `scripts/export_concourse_pipeline.py --pipeline
@@ -166,6 +174,7 @@ param(
     [string]$TimeZone = "America/Phoenix",
 
     [switch]$AllowMissingAzure,
+    [switch]$AllowMissingAnthropicKey,
     # See the guard below, and the .PARAMETER note above. Never the default,
     # and never quiet.
     [switch]$AllowPipelineFromAnyBranch,
@@ -266,7 +275,7 @@ if (Test-Path $TheHubEnvPath) {
     }
 }
 if (-not $hubAnthropicKey) {
-    Write-Host "No Claude key: prompt evals will run the deterministic graders only." -ForegroundColor DarkGray
+    Write-Host "No Claude key in TheHub's .env: Vault must hold anthropic-api-key." -ForegroundColor DarkGray
 }
 
 # Slack is a bot token plus a channel rather than an incoming webhook.
@@ -445,6 +454,11 @@ Add-Secret -Name "hub-scanner-token"      -Fallback { $hubScannerToken }
 # fallback must stop this script rather than bake '' into the pipeline, where it
 # would override Vault and turn a missing key into a red lane nobody can see.
 Add-Secret -Name "anthropic-api-key"      -Fallback {
+    if (-not $hubAnthropicKey -and $AllowMissingAnthropicKey) {
+        Write-Host ("-AllowMissingAnthropicKey: no Claude key anywhere. ai-models " +
+                    "will fail naming it; prompt-evals runs deterministic graders only.") -ForegroundColor Yellow
+        return ""
+    }
     if (-not $hubAnthropicKey) {
         throw ("anthropic-api-key is not in Vault and neither CLAUDE_API_KEY nor " +
                "ANTHROPIC_API_KEY is set in $TheHubEnvPath. Store it in Vault at " +

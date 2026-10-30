@@ -92,6 +92,24 @@ def test_a_missing_key_stops_the_script_naming_both_variables(tmp_path: Path) ->
 
 
 @needs_pwsh
+def test_allow_missing_anthropic_key_applies_without_one_and_says_so(tmp_path: Path) -> None:
+    """The opt-out: an urgent re-set is not held up by the AI key, loudly."""
+    env = tmp_path / ".env"
+    env.write_text("OTHER=x\n", encoding="utf-8")
+    fallback = re.search(
+        r'Add-Secret -Name "anthropic-api-key"\s+-Fallback (\{.*?\n\})', _source(), re.S
+    )
+    assert fallback
+    switch = "$AllowMissingAnthropicKey = $true\n"
+
+    got = _run(switch + _selection(env) + f"$v = & {fallback.group(1)}; 'LEN=' + $v.Length")
+
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.strip().splitlines()[-1] == "LEN=0"
+    assert "-AllowMissingAnthropicKey" in got.stdout
+
+
+@needs_pwsh
 def test_a_found_key_is_returned_by_the_fallback_and_not_printed(tmp_path: Path) -> None:
     env = tmp_path / ".env"
     env.write_text(f"CLAUDE_API_KEY={SENTINEL}\n", encoding="utf-8")
