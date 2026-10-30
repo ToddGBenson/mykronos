@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -52,6 +53,15 @@ def request_body(head_sha: str, pr_number: int) -> dict[str, Any]:
 USER_AGENT = "mykronos-pr-gate/1 (+https://github.com/ToddGBenson/mykronos)"
 
 
+def require_https(url: str) -> None:
+    """Refuse anything but an https URL with a host. The request carries the
+    ingestion token, so plain http would send it in the clear, and urlopen
+    would read a `file:` URL off the runner's disk."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError("MYKRONOS_URL must be an https URL with a host.")
+
+
 def build_request(url: str, token: str, body: dict[str, Any]) -> urllib.request.Request:
     return urllib.request.Request(
         url,
@@ -67,8 +77,11 @@ def build_request(url: str, token: str, body: dict[str, Any]) -> urllib.request.
 
 
 def http_post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    require_https(url)
     request = build_request(url, token, body)
     try:
+        # The scheme is fixed to https by require_https above.
+        # nosemgrep: dynamic-urllib-use-detected
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
             loaded: dict[str, Any] = json.loads(response.read().decode("utf-8"))
             return loaded
@@ -165,6 +178,11 @@ def main(environ: Mapping[str, str] | None = None, post: Post = http_post) -> in
         return 1
 
     url = environ.get("MYKRONOS_URL", "").rstrip("/") + EVALUATE_PATH
+    try:
+        require_https(url)
+    except ValueError as exc:
+        print(f"::error::{exc}")
+        return 1
     try:
         decision = post(url, token, request_body(head_sha, pr_number))
     except (OSError, urllib.error.URLError, ValueError) as exc:
