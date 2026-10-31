@@ -2344,6 +2344,16 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "post-merge",
         "grades the develop tip as it landed, reports a verdict rather than findings",
     ),
+    # [TheHub #61102] Runs the deploy's pip-audit gate and the pipeline-shape
+    # tests on open pull request heads, and reports the verdict as the
+    # `Concourse / thehub` check on that head. It uploads nothing: a pull
+    # request head is not a commit the estate runs, and `dependencies` already
+    # uploads the dependency findings for every develop commit.
+    (
+        (THEHUB,),
+        "pr-gates",
+        "judges pull request heads with the deploy's own gates, reports a check, not findings",
+    ),
     # thehub's `deploy-demo` was removed under #59100 and is BACK, because the
     # premise that removed it expired before the change landed.
     #
