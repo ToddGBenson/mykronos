@@ -64,6 +64,14 @@ UNSERIALISED = {"set-pipeline", "oracle-gate", "deploy-demo", "cloud-posture"}
 # change claims.
 MAX_LANES = 3
 
+# TheHub #61106. Not a lane: a second group on the jobs that run TheHub's FULL
+# pytest suite, so two of them never run at once. unit #360 and post-merge
+# #1623 were SIGKILLed for memory ten hours apart with no test failing, because
+# the two suites sat in different lanes. Every job in it stays in exactly one
+# lane, so the group can only make jobs wait and never adds concurrency.
+MEMORY_GROUP = "pytest-memory"
+FULL_SUITES = {"unit", "post-merge"}
+
 
 def _doc() -> dict[str, Any]:
     doc: dict[str, Any] = yaml.safe_load(PIPELINE.read_text(encoding="utf-8"))
@@ -168,12 +176,37 @@ def test_a_commit_is_fully_scanned_in_under_30_minutes() -> None:
     )
 
 
-def test_a_post_merge_grading_the_same_commit_does_not_push_it_past_30() -> None:
+def test_a_post_merge_grading_the_same_commit_delays_it_by_at_most_its_own_run() -> None:
+    """Was "does not push it past 30". Since #61106 post-merge and `unit` may not
+    run at once, so a post-merge already under way when a commit lands holds that
+    commit's unit tier for up to its own run. That is the price of never having
+    two full suites in memory together; what must not happen is any delay
+    BEYOND that run - post-merge must not also queue in front of build,
+    containers or a scanner."""
+    without, _ = _last_scan(with_post_merge=False)
     minutes, last = _last_scan(with_post_merge=True)
-    assert minutes < TARGET_MINUTES, (
+    assert minutes <= without + POST_MERGE_P90 + 1e-9, (
         f"with post-merge's p90 run arriving alongside the commit, the last scan "
-        f"({last}) finishes at {minutes:.1f}m.\n" + _timeline(with_post_merge=True)
+        f"({last}) finishes at {minutes:.1f}m, more than {without:.1f}m plus that "
+        f"run's {POST_MERGE_P90}m.\n" + _timeline(with_post_merge=True)
     )
+
+
+def test_the_full_pytest_suites_never_run_at_once() -> None:
+    """#61106 AC1, replayed: post-merge arriving with the commit, where it overlapped."""
+    start, end = _replay(with_post_merge=True)
+    (a, b) = sorted(FULL_SUITES)
+    assert end[a] <= start[b] or end[b] <= start[a], (
+        f"{a} {start[a]:.1f}->{end[a]:.1f} overlaps {b} {start[b]:.1f}->{end[b]:.1f}\n"
+        + _timeline(with_post_merge=True)
+    )
+
+
+def test_only_the_full_suites_share_the_memory_group() -> None:
+    """A light job in it would queue behind a 19-minute suite for no memory saved."""
+    jobs = _jobs()
+    members = {n for n, j in jobs.items() if MEMORY_GROUP in (j.get("serial_groups") or [])}
+    assert members == FULL_SUITES
 
 
 def test_the_unit_tier_does_not_queue_behind_a_scanner() -> None:
@@ -209,10 +242,12 @@ def test_every_heavy_job_is_still_in_exactly_one_lane() -> None:
     for name, job in _jobs().items():
         if name in UNSERIALISED:
             continue
-        lanes = job.get("serial_groups") or []
-        assert len(lanes) == 1, f"{name} has serial_groups {lanes}; expected exactly one"
+        lanes = [g for g in job.get("serial_groups") or [] if g != MEMORY_GROUP]
+        assert len(lanes) == 1, f"{name} has serial lanes {lanes}; expected exactly one"
 
 
 def test_no_more_than_three_heavy_jobs_can_run_at_once() -> None:
-    lanes = {g for job in _jobs().values() for g in job.get("serial_groups") or []}
+    lanes = {
+        g for job in _jobs().values() for g in job.get("serial_groups") or [] if g != MEMORY_GROUP
+    }
     assert 1 < len(lanes) <= MAX_LANES, f"serial lanes: {sorted(lanes)}"
