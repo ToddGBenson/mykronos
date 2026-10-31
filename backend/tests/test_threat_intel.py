@@ -852,9 +852,18 @@ class TestTheBacklogIsReported:
         )
         session.flush()
 
-        backlog = threat_intel.vector_backlog(session)
+        # The clock is pinned: `checked` is a fixed date, so on the real clock
+        # the retired row came back into the queue on 2026-10-31.
+        soon = checked + timedelta(days=1)
+        backlog = threat_intel.vector_backlog(session, now=lambda: soon)
 
         assert backlog == threat_intel.VectorBacklog(vectors=2, refs=1, given_up=1)
+
+        past = checked + timedelta(days=threat_intel.NVD_RETRY_DAYS, hours=1)
+        later = threat_intel.vector_backlog(session, now=lambda: past)
+
+        # Past its retry date the retired row is queued again, not given up.
+        assert later == threat_intel.VectorBacklog(vectors=3, refs=1, given_up=0)
 
     def test_the_sentence_says_how_many_and_how_long(self) -> None:
         backlog = threat_intel.VectorBacklog(vectors=3_603, refs=1_650, given_up=4)
