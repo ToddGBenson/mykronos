@@ -852,9 +852,32 @@ class TestTheBacklogIsReported:
         )
         session.flush()
 
-        backlog = threat_intel.vector_backlog(session)
+        backlog = threat_intel.vector_backlog(session, now=lambda: checked + timedelta(days=1))
 
         assert backlog == threat_intel.VectorBacklog(vectors=2, refs=1, given_up=1)
+
+    def test_a_given_up_row_is_back_in_the_queue_after_the_retry_days(self, session) -> None:
+        # TheHub #61095: the count above read the real clock against a fixed
+        # refusal date and went red at midnight on 2026-10-31. Both sides of
+        # the boundary, on a fixed clock.
+        failed = datetime(2026, 10, 1)
+        session.add(
+            ThreatIntelMatch(
+                cve_id="CVE-2026-00003",
+                nvd_failures=threat_intel.NVD_MAX_FAILURES,
+                nvd_failed_at=failed,
+            )
+        )
+        session.flush()
+        days = timedelta(days=threat_intel.NVD_RETRY_DAYS)
+
+        inside = threat_intel.vector_backlog(session, now=lambda: failed + days)
+        past = threat_intel.vector_backlog(
+            session, now=lambda: failed + days + timedelta(seconds=1)
+        )
+
+        assert inside == threat_intel.VectorBacklog(vectors=0, refs=0, given_up=1)
+        assert past == threat_intel.VectorBacklog(vectors=1, refs=0, given_up=0)
 
     def test_the_sentence_says_how_many_and_how_long(self) -> None:
         backlog = threat_intel.VectorBacklog(vectors=3_603, refs=1_650, given_up=4)

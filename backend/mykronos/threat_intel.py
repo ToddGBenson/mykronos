@@ -729,8 +729,15 @@ def _days(count: int, per_day: int, noun: str) -> str:
     return f" (about {max(days, 0.1):.1f} days at {rate})"
 
 
-def vector_backlog(session: Session) -> VectorBacklog:
-    """Count both queues `refresh_vectors` reads, and the rows it gave up on."""
+def vector_backlog(
+    session: Session, *, now: Callable[[], datetime] = utcnow
+) -> VectorBacklog:
+    """Count both queues `refresh_vectors` reads, and the rows it gave up on.
+
+    `now` is injectable for the same reason as in `refresh_vectors`: the
+    given-up count turns on `NVD_RETRY_DAYS` since the last refusal, so a
+    test that fixes the refusal date and reads the real clock expires
+    (TheHub #61095: red on main from 2026-10-31)."""
     from sqlalchemy import func
 
     needs_vector = and_(
@@ -745,7 +752,7 @@ def vector_backlog(session: Session) -> VectorBacklog:
             ).scalar_one()
         )
 
-    at = utcnow()
+    at = now()
     askable = _askable(at)
     return VectorBacklog(
         vectors=count(needs_vector, askable),
