@@ -242,7 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     if run.failing and (not url or not token):
         print(
             "::error::time-travel: HUB_URL or HUB_STORY_TOKEN is empty, so these failures "
-            "were not filed. Store hub-story-token in Vault (deploy/concourse/VAULT.md).",
+            "were not filed. Store it: vault-secret.ps1 set hub-story-token -Scope pipeline "
+            "-Pipeline mykronos.",
             file=sys.stderr,
         )
         return 3
