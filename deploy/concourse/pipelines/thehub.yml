@@ -4755,7 +4755,10 @@ jobs:
           inputs: [{ name: source }]
           # [#336] hub_log is read by the `hub_report` failure hook: this
           # task's own output and exit status, so a red suite reports why.
-          outputs: [{ name: results }, { name: hub_log }]
+          # [#61007] `infra`: the uploader install runs before pytest, so an
+          # install outage here judged nothing and reports as one. See
+          # `install_uploader`.
+          outputs: [{ name: results }, { name: hub_log }, { name: infra }]
           run:
             path: bash
             args:

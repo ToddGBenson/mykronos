@@ -51,6 +51,8 @@ CALL_SITES = {"mykronos.yml": 16, "thehub.yml": 17, "personal-soc.yml": 7}
 INFRA_TASKS = {
     ("thehub.yml", "containers", "derive-estate-images"),
     ("thehub.yml", "image-refresh", "plan"),
+    # Since #1045 this job reports to TheHub; the install precedes pytest.
+    ("thehub.yml", "functional-demo", "run-functional"),
 }
 
 
@@ -272,16 +274,16 @@ def _marker(tmp_path: Path) -> str:
     return reason
 
 
-def test_an_install_outage_reports_errored_to_thehub_not_failed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("job", sorted({j for _f, j, _t in INFRA_TASKS}))
+def test_an_install_outage_reports_errored_to_thehub_not_failed(tmp_path: Path, job: str) -> None:
     reason = _marker(tmp_path)
 
-    (body,) = _run_hub_report(tmp_path, _hook("containers", "failed"))
+    (body,) = _run_hub_report(tmp_path, _hook(job, "failed"))
 
-    assert body["stage"] == "trivy"
     assert body["status"] == "errored", body
     assert body["exit_code"] == 75
     assert body["log_tail"].startswith(reason)
-    assert "/teams/main/pipelines/thehub/jobs/containers" in body["log_tail"]
+    assert f"/teams/main/pipelines/thehub/jobs/{job}" in body["log_tail"]
     if "meta" in body:  # the real jq; the fallback stub builds no meta
         assert body["meta"]["infrastructure"] is True
 
