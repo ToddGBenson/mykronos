@@ -489,6 +489,137 @@ anchors:
     done
     exit 75
 
+  # -- A memory budget for the full pytest suites (TheHub #61106) ----------
+  #
+  # thehub/unit #360 (`Killed ... pytest tests/security`) and post-merge #1623
+  # (`PYTEST_RC=137 with no pytest summary`) were the kernel picking a victim
+  # under host memory pressure, with no test failing. Both were reported as
+  # test failures, so the risk gate refused a green commit until somebody
+  # re-ran it by hand.
+  #
+  # `container_limits.memory` is not available for this: on these guardian
+  # workers it makes runc refuse the task container on every run (D-174,
+  # backend/tests/test_thehub_task_limits.py). So the budget is enforced from
+  # inside the task, by this script, around the pytest command:
+  #
+  #   python -c "$MEMORY_GUARD" <command...>
+  #
+  # It starts the command in its own session, samples that session's memory
+  # (Pss, else VmRSS, summed over every process in it) every 2s, and if the
+  # total passes MEMORY_BUDGET_MB it SIGKILLs the session and says so. An exit
+  # of 137 it did not cause -- the worker's 3g cgroup or the kernel OOM killer
+  # reaching the suite first -- is named the same way. Either way it writes
+  # `reason` and `exit_code` (137) into MEMORY_GUARD_DIR and exits 137; the
+  # task then decides whether that reason may reach the job's `infra` output
+  # (only when no tier reached a real verdict). Every run prints its peak, so
+  # the budget can be tuned from measurement rather than guessed again.
+  #
+  # Python, not bash: the task image is python:3.14-slim, which has no procps,
+  # and a session id read from /proc/<pid>/stat is the one handle that holds
+  # every process pytest starts (node, subprocesses) without guessing.
+  memory_guard: &memory_guard |
+    import os, signal, subprocess, sys, time
+    cmd = sys.argv[1:]
+    if not cmd:
+        sys.exit("memory-guard: no command to run")
+    budget_mb = int(os.environ.get("MEMORY_BUDGET_MB") or "0")
+    out_dir = os.environ.get("MEMORY_GUARD_DIR") or ""
+    label = os.environ.get("MEMORY_GUARD_LABEL") or " ".join(cmd)
+    interval = float(os.environ.get("MEMORY_GUARD_INTERVAL_S") or "2")
+
+    def members(sid):
+        """pids in session `sid`, or None when there is no /proc to read."""
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return None
+        found = []
+        for name in names:
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", encoding="utf-8", errors="replace") as fh:
+                    fields = fh.read().rsplit(")", 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            if len(fields) > 3 and fields[3] == str(sid):
+                found.append(int(name))
+        return found
+
+    def kib_of(pid):
+        for path, key in ((f"/proc/{pid}/smaps_rollup", "Pss:"), (f"/proc/{pid}/status", "VmRSS:")):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if line.startswith(key):
+                            return int(line.split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+        return 0
+
+    def kill_session(sid, pids):
+        for pid in pids or []:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            os.killpg(sid, signal.SIGKILL)
+        except (OSError, AttributeError):
+            pass
+
+    child = subprocess.Popen(cmd, start_new_session=True)
+
+    def forward(signum, _frame):
+        try:
+            os.killpg(child.pid, signum)
+        except (OSError, AttributeError):
+            child.send_signal(signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, forward)
+
+    peak_kib, over_kib, measured = 0, 0, False
+    while child.poll() is None:
+        pids = members(child.pid)
+        if pids is not None:
+            measured = True
+            kib = sum(kib_of(p) for p in pids)
+            peak_kib = max(peak_kib, kib)
+            if budget_mb and kib > budget_mb * 1024:
+                over_kib = kib
+                kill_session(child.pid, pids)
+                break
+        time.sleep(interval)
+    rc = child.wait()
+    if rc < 0:
+        rc = 128 - rc
+
+    peak = f"{peak_kib // 1024} MiB" if measured else "unmeasured (no /proc here)"
+    print(f"memory-guard: {label} exited {rc}; peak {peak} of a {budget_mb} MiB budget.", flush=True)
+
+    reason = ""
+    tail = "Nothing was judged; re-run once the host has memory (TheHub #61106)."
+    if over_kib:
+        rc = 137
+        reason = (f"INFRASTRUCTURE, NOT A VERDICT: killed: out of memory - {label} reached "
+                  f"{over_kib // 1024} MiB, over this task's {budget_mb} MiB budget, and "
+                  f"memory-guard stopped it before the kernel picked a victim. {tail}")
+    elif rc == 137:
+        reason = (f"INFRASTRUCTURE, NOT A VERDICT: killed: out of memory - {label} was "
+                  f"SIGKILLed from outside memory-guard (exit 137) at a peak of {peak} of a "
+                  f"{budget_mb} MiB budget, most likely by the worker's memory cgroup or the "
+                  f"kernel OOM killer. {tail}")
+    if reason:
+        print(f"::error:: {reason}", file=sys.stderr, flush=True)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+            with open(os.path.join(out_dir, "reason"), "a", encoding="utf-8") as fh:
+                fh.write(reason + "\n")
+            with open(os.path.join(out_dir, "exit_code"), "w", encoding="utf-8") as fh:
+                fh.write("137\n")
+    sys.exit(rc)
+
   # The notifier's credentials, hoisted into their own anchor for the same
   # reason `hub_params` exists: the `on_error:` path now passes an extra param
   # (OUTCOME below), and a step-level `params:` that named only that would be
@@ -829,6 +960,9 @@ anchors:
         # be installed, and only in a task that runs before its job judges
         # anything. Optional: absent or empty means "no infrastructure fault
         # to report", and the report goes exactly as it did.
+        # [#61106] Also written by `unit` and `post-merge` when memory-guard
+        # killed (or saw the kernel kill) a pytest tier and no tier reached a
+        # real verdict; `infra/exit_code` then carries 137.
         - { name: infra, optional: true }
       run:
         path: bash
@@ -980,8 +1114,16 @@ anchors:
               if [ -n "$RC_FILE" ] && [ "$RC_FILE" != "0" ]; then
                 EXIT_CODE=$((10#$RC_FILE))
               elif [ -n "$INFRA_REASON" ]; then
-                # install_uploader's own exit status (EX_TEMPFAIL).
+                # install_uploader's own exit status (EX_TEMPFAIL), unless the
+                # marker names its own: memory-guard writes 137 (TheHub #61106).
                 EXIT_CODE=75
+                RC_INFRA=""
+                if [ -f infra/exit_code ]; then
+                  RC_INFRA=$(tr -dc '0-9' < infra/exit_code || true)
+                fi
+                if [ -n "$RC_INFRA" ] && [ "$RC_INFRA" != "0" ]; then
+                  EXIT_CODE=$((10#$RC_INFRA))
+                fi
               fi
               JOB_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-thehub}/jobs/${JOB:-}"
               LOG_TAIL="Concourse ${JOB:-<job not passed>} $STATUS (newest build): $JOB_URL"
@@ -1579,7 +1721,10 @@ jobs:
   # anywhere.
   - name: post-merge
     public: true
-    serial_groups: [dast]
+    # `pytest-memory` as well as its lane: this runs the full unit tier, as
+    # `unit` does, and the two must never run at once (TheHub #61106; see the
+    # note above `unit`).
+    serial_groups: [dast, pytest-memory]
     # Reports to TheHub on all four terminal states, per
     # `test_every_job_reports_all_four_terminal_states_per_stage`. This stage
     # is the LANE's own health: a stage that can only ever report success is a
@@ -1627,10 +1772,20 @@ jobs:
         params:
           <<: *hub_params
           PIP_CACHE_DIR: /pipcache
+          # [#61106] The task's memory budget, enforced by memory-guard (see
+          # the anchor: `container_limits.memory` is refused on these
+          # workers). 2560 MiB of a 3g worker: past it, the worker's cgroup
+          # is about to kill something at random, so this is the last point
+          # at which the kill can still be named. Each run prints its peak.
+          MEMORY_GUARD: *memory_guard
+          MEMORY_BUDGET_MB: "2560"
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: notify }]
+          # [#61106] `infra` at a path of its own, written only when a tier
+          # was killed for memory and so nothing was graded; the job's
+          # post_merge_check report then says errored, not failed.
+          outputs: [{ name: notify }, { name: infra, path: memory-infra }]
           # /pipcache for the reason `unit` has one: a cold install of TheHub's
           # dependency set is most of this lane's wall clock. /watermark is the
           # last determinately-graded sha, one line.
@@ -1861,18 +2016,23 @@ jobs:
                 # one of the three decide alone -- the runner's container
                 # command once ended with `tail`, so it exited 0 for a run with
                 # real failures.
+                # [#61106] Each run is wrapped in memory-guard, which writes
+                # <log>.oom/reason when the tier was killed for memory.
                 run_tier() {
+                  rm -rf "${1%.log}.oom"
                   (
                     cd source/backend
                     export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
                     export TEST_DATABASE_URL="$DATABASE_URL"
                     export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
                     export CONFIG_DIR="$HUB_CONFIG_DIR"
+                    export MEMORY_GUARD_DIR="${1%.log}.oom"
+                    export MEMORY_GUARD_LABEL="pytest tests/unit"
                     if command -v timeout >/dev/null 2>&1; then
-                      timeout -s INT "${SOFT_TIMEOUT_S}s" \
+                      python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
                         python -m pytest tests/unit -q -p no:cacheprovider
                     else
-                      python -m pytest tests/unit -q -p no:cacheprovider
+                      python -c "$MEMORY_GUARD" python -m pytest tests/unit -q -p no:cacheprovider
                     fi
                   ) > "$1" 2>&1
                   rc=$?
@@ -1904,6 +2064,7 @@ jobs:
 
                 VERDICT=""
                 DETAIL=""
+                OOM=""
 
                 if [ "$BOOT_RC" -ne 0 ]; then
                   VERDICT="indeterminate"
@@ -1915,7 +2076,16 @@ jobs:
                   ELAPSED=$(( $(date +%s) - STARTED ))
                   tail -25 /tmp/run1.log
 
-                  if [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
+                  # [#61106] A tier killed for memory measured nothing about
+                  # the tree. #1623's "PYTEST_RC=137 with no pytest summary"
+                  # reached the classifier and was filed as a red develop;
+                  # it is caught here first, and becomes INDETERMINATE.
+                  OOM=""
+                  if [ -s /tmp/run1.oom/reason ]; then
+                    OOM="$(head -1 /tmp/run1.oom/reason)"
+                    VERDICT="indeterminate"
+                    DETAIL="${OOM#INFRASTRUCTURE, NOT A VERDICT: }"
+                  elif [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
                     # A partial run that happens to contain no failures reads
                     # as a clean summary, so the timeout must be caught before
                     # the classifier ever sees it. `unit` learned the same
@@ -1954,7 +2124,10 @@ jobs:
                     RC2=$?
                     ELAPSED=$(( $(date +%s) - STARTED ))
                     tail -25 /tmp/run2.log
-                    if [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
+                    if [ -s /tmp/run2.oom/reason ]; then
+                      OOM="$(head -1 /tmp/run2.oom/reason)"
+                      LINE2="indeterminate|${OOM#INFRASTRUCTURE, NOT A VERDICT: }"
+                    elif [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
                       LINE2="indeterminate|the retry did not finish within ${SOFT_TIMEOUT_S}s"
                     else
                       LINE2="$(classify "$RC2" /tmp/run2.log | tail -1)"
@@ -1987,6 +2160,15 @@ jobs:
                   red)   STATUS=failed;  CODE=1 ;;
                   *)     STATUS=errored; CODE=2; VERDICT=indeterminate ;;
                 esac
+
+                # [#61106] Killed for memory and nothing graded: the job's own
+                # post_merge_check report reads `infra` and says errored, with
+                # this reason first, instead of failed.
+                if [ "$VERDICT" = "indeterminate" ] && [ -n "$OOM" ]; then
+                  mkdir -p memory-infra
+                  printf '%s\n' "$OOM" > memory-infra/reason
+                  printf '137\n' > memory-infra/exit_code
+                fi
 
                 if [ -n "${HUB_URL:-}" ] && [ -n "${HUB_DEPLOY_TOKEN:-}" ] && command -v jq >/dev/null 2>&1; then
                   BODY=$(jq -nc \
@@ -2066,11 +2248,23 @@ jobs:
   # commit through these groups with Concourse's own measured durations and
   # fails if the last scan lands later than 30 minutes, or if a fourth lane
   # appears. Rolling back is setting all three names back to `worker`.
+  #
+  # `pytest-memory` is not a fourth lane (TheHub #61106). It is a second group
+  # on the two jobs that run TheHub's full pytest suite -- `unit` and
+  # `post-merge` -- each of which stays in its own lane, so it can only ever
+  # make them wait for each other and never adds a concurrent job. They were
+  # in different lanes, so both suites, each with its own Postgres, ran beside
+  # the prod, staging and demo stacks: unit #360 and post-merge #1623 were
+  # SIGKILLed for memory ten hours apart with no test failing. `qa` is not in
+  # it: it runs check_links.py, stdlib only, with no pytest suite. The price
+  # is that a post-merge run already under way when a commit lands delays that
+  # commit's `unit` by up to its own run (p90 15.4m), which
+  # test_thehub_serial_lanes.py bounds; a kill costs an hour and a hand re-run.
   # == Stage 1: quality =====================================================
 
   - name: unit
     public: true
-    serial_groups: [unit-chain]
+    serial_groups: [unit-chain, pytest-memory]
     on_success:
       do:
         - <<: *hub_report
@@ -2120,6 +2314,11 @@ jobs:
           PIP_CACHE_DIR: /pipcache
           # #358: a missing node is a failure, not a skip (see the install).
           REQUIRE_NODE: "1"
+          # [#61106] The memory budget for each pytest tier, enforced by
+          # memory-guard because `container_limits.memory` is refused on these
+          # workers (see the anchor). Same number and reason as post-merge's.
+          MEMORY_GUARD: *memory_guard
+          MEMORY_BUDGET_MB: "2560"
         # A build that hangs must fail rather than occupy a worker. One ran for
         # 47 minutes and was still going when it was killed by hand; nothing in
         # the pipeline would ever have stopped it, and `unit` gates build,
@@ -2151,6 +2350,12 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
+          # [#61106] `infra` is mounted at memory-infra, a path
+          # install_uploader never writes (it looks for ./infra and ../infra),
+          # so the upload below cannot launder a real failure through it. Only
+          # the OOM block at the end of this script writes it. `notify` carries
+          # the Slack line for that case.
+          outputs: [{ name: infra, path: memory-infra }, { name: notify }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
@@ -2158,6 +2363,7 @@ jobs:
               - -ec
               - |
                 set -euo pipefail
+                TASK_ROOT="$PWD"
                 cd source
 
                 # L0001's three states, applied to a test suite. A repository
@@ -2662,17 +2868,25 @@ jobs:
                 # and WRITES THE REPORT for everything that finished. The
                 # remaining 20 minutes before the hard cap are for the upload.
                 SOFT_TIMEOUT_S=4200   # 70m
+                # [#61106] Both tiers run under memory-guard. A tier it killed,
+                # or saw SIGKILLed, exits 137 and leaves a reason in its own
+                # directory here; the end of this script decides what that
+                # means for the job.
+                MEMGUARD=/tmp/memory-guard
+                rm -rf "$MEMGUARD"
                 rc=0
                 started=$(date +%s)
                 if command -v timeout >/dev/null 2>&1; then
-                  timeout -s INT "${SOFT_TIMEOUT_S}s" \
+                  MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
+                    python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
                     python -m pytest tests/unit -q -p no:cacheprovider \
                     --junitxml=/tmp/results/unit.xml || rc=$?
                 else
                   # Stated rather than silently skipped: without coreutils
                   # there is no soft timeout and the hard cap is all there is.
                   echo "::warning::the timeout command is unavailable - no soft timeout; a slow run will be killed without a verdict"
-                  python -m pytest tests/unit -q -p no:cacheprovider \
+                  MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
+                    python -c "$MEMORY_GUARD" python -m pytest tests/unit -q -p no:cacheprovider \
                     --junitxml=/tmp/results/unit.xml || rc=$?
                 fi
                 elapsed=$(( $(date +%s) - started ))
@@ -2745,12 +2959,15 @@ jobs:
                     export HUB_API_TOKEN
                     export HUB_REQUIRE_ARMED_GATE=1
                     export REDIS_URL=memory://
+                    # unit #360 was killed HERE: "Killed ... pytest tests/security".
+                    export MEMORY_GUARD_DIR="$MEMGUARD/security"
+                    export MEMORY_GUARD_LABEL="pytest tests/security"
                     if command -v timeout >/dev/null 2>&1; then
-                      timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
+                      python -c "$MEMORY_GUARD" timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
                         python -m pytest tests/security -q -p no:cacheprovider -ra \
                         --junitxml=/tmp/results/security.xml
                     else
-                      python -m pytest tests/security -q -p no:cacheprovider -ra \
+                      python -c "$MEMORY_GUARD" python -m pytest tests/security -q -p no:cacheprovider -ra \
                         --junitxml=/tmp/results/security.xml
                     fi
                   ) || sec_rc=$?
@@ -2785,14 +3002,37 @@ jobs:
                   echo "::error::tests/security exceeded its ${SEC_SOFT_TIMEOUT_S}s soft timeout - partial results uploaded"
                   exit 124
                 fi
+                # [#61106] A tier killed for memory reached no verdict. It is
+                # only a tier's OWN 137 with memory-guard's reason beside it.
+                UNIT_OOM=false
+                SEC_OOM=false
+                if [ "$rc" -eq 137 ] && [ -s "$MEMGUARD/unit/reason" ]; then UNIT_OOM=true; fi
+                if [ "$sec_rc" -eq 137 ] && [ -s "$MEMGUARD/security/reason" ]; then SEC_OOM=true; fi
+
                 # [#357] Either tier failing fails the job. The unit verdict is
                 # reported first because it was the job's only verdict until now.
-                if [ "$rc" -ne 0 ]; then
+                # A REAL failure in either tier wins over an OOM in the other:
+                # a verdict is never downgraded to an outage.
+                if [ "$rc" -ne 0 ] && [ "$UNIT_OOM" = false ]; then
                   exit "$rc"
                 fi
-                if [ "$sec_rc" -ne 0 ]; then
-                  echo "::error::tests/security failed (exit ${sec_rc}) - the unit tier passed"
+                if [ "$sec_rc" -ne 0 ] && [ "$SEC_OOM" = false ]; then
+                  echo "::error::tests/security failed (exit ${sec_rc}) - the unit tier passed or was killed for memory"
                   exit "$sec_rc"
+                fi
+
+                # Only now, with no real verdict anywhere, does the reason
+                # reach `infra`: the job's hooks then report `errored` to
+                # TheHub (exit_code 137, reason first) and `cancelled` to the
+                # check, and Slack says re-run rather than "the answer was bad".
+                if [ "$UNIT_OOM" = true ] || [ "$SEC_OOM" = true ]; then
+                  mkdir -p "$TASK_ROOT/memory-infra" "$TASK_ROOT/notify"
+                  cat "$MEMGUARD"/*/reason > "$TASK_ROOT/memory-infra/reason"
+                  printf '137\n' > "$TASK_ROOT/memory-infra/exit_code"
+                  REASON="$(head -1 "$TASK_ROOT/memory-infra/reason")"
+                  echo "::error::${REASON}"
+                  echo "*TheHub*: unit - NO VERDICT for $(git rev-parse --short=12 HEAD): ${REASON#INFRASTRUCTURE, NOT A VERDICT: } This is not a test failure and not a red commit: re-run the job." > "$TASK_ROOT/notify/message.txt"
+                  exit 137
                 fi
                 # The upload's exit code is kept and fails the job AFTER both test tiers' verdicts
                 # (2026-10-21). It ended `|| true`, so a refused token, a schema

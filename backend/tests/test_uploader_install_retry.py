@@ -55,6 +55,17 @@ INFRA_TASKS = {
     ("thehub.yml", "functional-demo", "run-functional"),
 }
 
+#: TheHub #61106. These declare `infra` for a different fault, a pytest tier
+#: killed for memory, and they may follow a verdict (unit uploads after its
+#: tiers). So the output is mounted at a path the installer never writes - it
+#: looks only for ./infra and ../infra - and only the task's own OOM block
+#: fills it. Held by test_an_oom_task_hides_infra_from_the_installer and,
+#: executed, by backend/tests/test_thehub_memory_guard.py.
+OOM_TASKS = {
+    ("thehub.yml", "unit", "pytest"),
+    ("thehub.yml", "post-merge", "grade"),
+}
+
 
 def _text(name: str) -> str:
     return (PIPELINES / name).read_text(encoding="utf-8")
@@ -234,7 +245,16 @@ def test_only_tasks_before_any_verdict_declare_infra() -> None:
         for job, task in _tasks(name)
         if any(o.get("name") == "infra" for o in task["config"].get("outputs") or [])
     }
-    assert declared == INFRA_TASKS
+    assert declared == INFRA_TASKS | OOM_TASKS
+
+
+@pytest.mark.parametrize("name,job,task_name", sorted(OOM_TASKS))
+def test_an_oom_task_hides_infra_from_the_installer(name: str, job: str, task_name: str) -> None:
+    task = next(t for j, t in _tasks(name) if j == job and t["task"] == task_name)
+    (out,) = [o for o in task["config"]["outputs"] if o.get("name") == "infra"]
+    path = str(out.get("path") or "infra").strip("./")
+    assert path not in ("infra", ""), f"{job}/{task_name} mounts infra where the installer writes"
+    assert "/" not in path
 
 
 @pytest.mark.parametrize("name,job,task_name", sorted(INFRA_TASKS))
