@@ -638,6 +638,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    credential_expiry_path: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "credential-expiry-v1.yaml",
+        description=(
+            "Declared expiry dates for credentials MyKronos cannot observe "
+            "(TheHub #61104). Metadata only, no secret values. A setting for "
+            "the same packaging reason as `stride_map_path`."
+        ),
+    )
+
     environment_map_path: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "environment-map-v1.yaml",

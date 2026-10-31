@@ -127,7 +127,7 @@ COPY --chown=mykronos:mykronos workflow-templates /app/workflow-templates
 # cannot name a playbook, and it fails rather than guessing one.
 COPY --chown=mykronos:mykronos oracle-policy-v1.yaml maturity-model-v1.yaml \
      governance-policy-v1.yaml stride-map-v1.yaml approval-policy-v1.yaml \
-     agent-playbooks-v1.yaml environment-map-v1.yaml \
+     agent-playbooks-v1.yaml environment-map-v1.yaml credential-expiry-v1.yaml \
      cwe-vector-templates-v1.yaml /app/
 # The pipeline files the `timeout-audit` job grades (TheHub #60729). Concourse
 # answers 401 to an anonymous config read, so the caps come from the commit
@@ -163,7 +163,7 @@ ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA} \
     MYKRONOS_MATURITY_MODEL_PATH=/app/maturity-model-v1.yaml \
     MYKRONOS_GOVERNANCE_POLICY_PATH=/app/governance-policy-v1.yaml \
     MYKRONOS_STRIDE_MAP_PATH=/app/stride-map-v1.yaml \
-    MYKRONOS_ENVIRONMENT_MAP_PATH=/app/environment-map-v1.yaml \
+    MYKRONOS_ENVIRONMENT_MAP_PATH=/app/environment-map-v1.yaml \n    MYKRONOS_CREDENTIAL_EXPIRY_PATH=/app/credential-expiry-v1.yaml \
     MYKRONOS_CWE_VECTOR_TEMPLATES_PATH=/app/cwe-vector-templates-v1.yaml \
     MYKRONOS_APPROVAL_POLICY_PATH=/app/approval-policy-v1.yaml \
     MYKRONOS_AGENT_PLAYBOOKS_PATH=/app/agent-playbooks-v1.yaml \
