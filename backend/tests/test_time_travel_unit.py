@@ -169,7 +169,10 @@ class FakeHub:
         return 200, story
 
 
-BOMB = "tests.test_threat_intel.TestTheBacklogIsReported::test_it_counts_both_queues_and_the_rows_given_up"
+BOMB = (
+    "tests.test_threat_intel.TestTheBacklogIsReported"
+    "::test_it_counts_both_queues_and_the_rows_given_up"
+)
 OTHER = "tests.test_credentials::test_it_expires_in_thirty_days"
 
 
@@ -180,7 +183,8 @@ class TestTheReport:
         assert run.failing == tuple(sorted([BOMB, OTHER]))
 
     def test_a_missing_report_is_an_error_not_a_green_run(self, tt, tmp_path) -> None:
-        assert tt.main(["--junit", str(tmp_path / "absent.xml"), "--offset", "+45d", "--commit", "abc"]) == 2
+        argv = ["--junit", str(tmp_path / "absent.xml"), "--offset", "+45d", "--commit", "abc"]
+        assert tt.main(argv) == 2
 
     def test_an_empty_report_is_an_error_not_a_green_run(self, tt, tmp_path) -> None:
         path = tmp_path / "unit.xml"
@@ -190,7 +194,8 @@ class TestTheReport:
 
     def test_a_green_run_writes_nothing(self, tt, tmp_path) -> None:
         hub = FakeHub()
-        tt.report(tt.read_report(_junit(tmp_path, passed=4, failed=[])), hub, offset="+45d", commit="abc")
+        run = tt.read_report(_junit(tmp_path, passed=4, failed=[]))
+        tt.report(run, hub, offset="+45d", commit="abc")
         assert hub.writes == []
 
     def test_a_red_run_files_one_backlog_story_naming_each_test(self, tt, tmp_path) -> None:
@@ -215,11 +220,11 @@ class TestTheReport:
 
     def test_changed_failures_rewrite_the_open_story_in_place(self, tt, tmp_path) -> None:
         hub = FakeHub()
-        tt.report(tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB])), hub, offset="+45d", commit="a")
+        first = tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB]))
+        tt.report(first, hub, offset="+45d", commit="a")
         story_id = hub.stories[0]["id"]
-        tt.report(
-            tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB, OTHER])), hub, offset="+45d", commit="b"
-        )
+        second = tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB, OTHER]))
+        tt.report(second, hub, offset="+45d", commit="b")
         assert [(m, p) for m, p, _ in hub.writes][1] == ("PATCH", f"/api/dev/stories/{story_id}")
         assert len(hub.stories) == 1
         assert tt.listed_tests(hub.stories[0]["detail"]) == tuple(sorted([BOMB, OTHER]))
@@ -237,7 +242,8 @@ class TestTheReport:
         run = tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB]))
         hub = FakeHub(
             [{"id": 7, "bucket": "backlog", "closed_at": "2026-10-30T00:00:00Z",
-              "source_ref": tt.SOURCE_REF, "detail": tt.story_detail(run, offset="+45d", commit="x")}]
+              "source_ref": tt.SOURCE_REF,
+              "detail": tt.story_detail(run, offset="+45d", commit="x")}]
         )
         tt.report(run, hub, offset="+45d", commit="y")
         assert [m for m, _, _ in hub.writes] == ["POST"]
@@ -246,10 +252,13 @@ class TestTheReport:
         def refuse(method, path, body):
             return (200, []) if method == "GET" else (422, {"detail": "no"})
 
+        run = tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB]))
         with pytest.raises(tt.HubError):
-            tt.report(tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB])), refuse, offset="+45d", commit="a")
+            tt.report(run, refuse, offset="+45d", commit="a")
 
-    def test_red_with_no_hub_credential_says_so(self, tt, tmp_path, monkeypatch, capsys) -> None:
+    def test_red_with_no_hub_credential_says_so(
+        self, tt, tmp_path, monkeypatch, capsys
+    ) -> None:
         monkeypatch.delenv("HUB_URL", raising=False)
         monkeypatch.delenv("HUB_STORY_TOKEN", raising=False)
         path = _junit(tmp_path, passed=1, failed=[BOMB])

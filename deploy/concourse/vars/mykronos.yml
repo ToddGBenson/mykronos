@@ -2,9 +2,10 @@
 #
 # Every value here is transcribed from the vars array in
 # `deploy/concourse/set-pipeline.ps1`, and a test asserts the two still agree.
-# Nothing in this file is a credential: the four that are
+# Nothing in this file is a credential: the five that are
 # (mykronos-ingestion-token, mykronos-gate-token, minio-access-key,
-# minio-secret-key) and the two Slack values resolve from Vault at build time.
+# minio-secret-key, hub-story-token) and the two Slack values resolve from
+# Vault at build time.
 
 # Host IP, not a Docker name: garden task containers resolve through the public
 # servers set in compose and have never heard of `mykronos` or `minio`.
@@ -26,6 +27,15 @@ scanned-branch: main
 # its window ran in UTC -- "Sunday 04:00" was 21:00 Saturday in Phoenix. The
 # `weekly` resource is the only consumer.
 scan-timezone: America/Phoenix
+
+# How far forward `time-travel` moves the clock (TheHub #61109), in
+# libfaketime's relative form. Longer than the longest window in the code
+# (NVD_RETRY_DAYS=30); grow it with that window, never shrink it below.
+time-travel-offset: +45d
+
+# Where `time-travel` files its story: TheHub's API, through the same host
+# gateway as everything else here (vars/thehub.yml carries the same value).
+thehub-url: http://192.168.65.254:8000
 
 minio-endpoint: http://192.168.65.254:9000
 registry: 192.168.65.254:5000

@@ -33,7 +33,7 @@
 # is in none, and a hidden lane is a lane nobody notices has gone red.
 groups:
   - name: quality
-    jobs: [pin-check, unit, coverage, lint-and-types, qa-spec-links, frontend]
+    jobs: [pin-check, unit, coverage, time-travel, lint-and-types, qa-spec-links, frontend]
   - name: security
     jobs: [secrets, dependencies, sast, ai, iac, insider, containers]
   - name: gate
@@ -967,6 +967,99 @@ jobs:
                   echo "::error::The coverage result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
                   exit "$upload_rc"
                 fi
+
+  # -- Time travel: the suite, with the clock moved forward (TheHub #61109) --
+  #
+  # #1034 added a 30-day NVD retry window, and a test that retired a row at a
+  # fixed 2026-10-01 and then read the backlog on the real clock. It passed
+  # review, passed `unit`, and went red on main at midnight on 2026-10-31 --
+  # the night the window ran out -- holding fourteen lanes and the containers
+  # lane behind it until #1049 pinned the clock. Review cannot see a test that
+  # breaks N days from now. A run where it is already N days from now can.
+  #
+  # So this runs the same suite `unit` runs, nightly, under libfaketime with
+  # the clock at now + ((time-travel-offset)). The offset is a var rather than
+  # a literal so it can grow with the longest window in the code: it must stay
+  # longer than every one of them (NVD_RETRY_DAYS=30 today), and
+  # test_time_travel_unit.py fails if it does not.
+  #
+  # WHAT A RED NIGHT DOES, AND WHAT IT DOES NOT.
+  #
+  # It files one Hub story naming each failing test
+  # (scripts/time_travel_report.py), and keeps that story current in place
+  # while it is open, so a bomb left unfixed for a week is one story and not
+  # seven. It does not turn main red: nothing has `passed: [time-travel]`, and
+  # nothing here uploads to Mykronos -- an upload as `unit` would put next
+  # month's failures on today's lane, which is the exact outage this exists to
+  # get ahead of. The job itself goes red, which is the point; that red is a
+  # warning with weeks of lead time, not a stopped fleet.
+  #
+  # `passed: [unit]` on `source`, for coverage's reason: the commit travelled
+  # is the newest whose suite passed on the real clock, so whatever fails here
+  # failed because of the date and nothing else.
+  #
+  # Only pytest runs under faketime. pip under a moved clock can reject a TLS
+  # certificate that is valid today, and the story should say when it was
+  # really filed. FAKETIME_DONT_FAKE_MONOTONIC keeps the monotonic clock real:
+  # timeouts, xdist's worker handshake and asyncio's loop all read it, and
+  # none of them is what is being tested.
+  - name: time-travel
+    public: true
+    serial_groups: [worker-a]
+    on_failure:
+      <<: *slack_alert
+      params: { <<: *slack_params, JOB: time-travel }
+    on_error:
+      <<: *slack_alert
+      params: { <<: *slack_params, OUTCOME: errored, JOB: time-travel }
+    plan:
+      - get: nightly
+        attempts: *retry_fetch
+        trigger: true
+      - get: source
+        attempts: *retry_fetch
+        passed: [unit]
+      - get: python
+        attempts: *retry_fetch
+      - task: pytest-time-travel
+        # `unit`'s ceiling: the same suite, on the same worker.
+        timeout: 120m
+        image: python
+        params:
+          PIP_CACHE_DIR: /pipcache
+          MYKRONOS_PERF_MULTIPLIER: "3"
+          TIME_TRAVEL_OFFSET: ((time-travel-offset))
+          FAKETIME_DONT_FAKE_MONOTONIC: "1"
+          HUB_URL: ((thehub-url))
+          HUB_STORY_TOKEN: ((hub-story-token))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          caches: [{ path: /pipcache }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git faketime >/dev/null
+                cd source/backend
+                pip install --quiet --require-hashes -r requirements-dev.txt
+                pip install --quiet --no-deps -e .
+
+                echo "Clock moved to now${TIME_TRAVEL_OFFSET} for the suite (TheHub #61109)."
+                mkdir -p ../../results
+                rc=0
+                faketime -f "$TIME_TRAVEL_OFFSET" python -m pytest -q -n 6 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+
+                # On the real clock, and its exit code is its own: a filing
+                # that failed says so in the log and never hides the suite's
+                # verdict, which is what the job reports.
+                python ../scripts/time_travel_report.py --junit ../../results/unit.xml --offset "$TIME_TRAVEL_OFFSET" --commit "$(git -C .. rev-parse --short=12 HEAD)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
+                exit "$rc"
 
   - name: lint-and-types
     public: true
