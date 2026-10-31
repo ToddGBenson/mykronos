@@ -201,6 +201,12 @@ EXPLAINED_DIVERGENCE = {
         "the running demo, behind `deploy-demo` like `api-inventory`. TheHub's "
         "read-only mirror gains it on the next export after set-pipeline"
     ),
+    "pr-gates": (
+        "ours only, added for TheHub #61102: the deploy's pip-audit gate and "
+        "pipeline-shape tests on open pull request heads, gating nothing in "
+        "this file. TheHub's read-only mirror gains it on the next export "
+        "after set-pipeline"
+    ),
     "functional-dast": (
         "retired by #468 and deliberately left retired by #491 -- its only "
         "image resource (`playwright`) went with it and nothing else in the "

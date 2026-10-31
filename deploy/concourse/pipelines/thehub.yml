@@ -94,7 +94,7 @@
 # that claimed otherwise, and it is retired (#59990/#59999/#60063).
 groups:
   - name: quality
-    jobs: [unit, qa, prompt-evals, post-merge]
+    jobs: [unit, qa, prompt-evals, post-merge, pr-gates]
   - name: security
     jobs: [secrets, sast, dependencies, iac, containers, ai-models, cloud-posture, dast-staging]
   - name: build
@@ -282,6 +282,20 @@ resources:
     source:
       location: ((scan-timezone))
       interval: 30m
+
+  # [TheHub #61102] `pr-gates`' clock. The git resource follows one branch, so
+  # nothing here is told when a pull request is opened or pushed; this job asks
+  # every ten minutes instead. Ten, not thirty: the check exists to answer
+  # before a merge, and agents merge within minutes of a green review. A tick
+  # with nothing new costs an apt install of git and one `git ls-remote`; a
+  # head already judged is remembered in the job's cache and not asked about
+  # again.
+  - name: ten-minutes
+    type: time
+    icon: clock-fast
+    source:
+      location: ((scan-timezone))
+      interval: 10m
 
   # Where the memo goes. The same MinIO the SBOMs use, deliberately: a bucket
   # that does not exist yet is an operator action this change does not need,
@@ -634,8 +648,12 @@ anchors:
   # the same shape as `preflight`. Mykronos keeps one check run per commit, so
   # a retried POST updates that run rather than adding another.
   #
-  # Develop commits only. Concourse never sees a pull request's head, so a
-  # pull request never carries this check.
+  # On a develop commit, the lanes above report it. On a pull request's head,
+  # `pr-gates` reports it, start and end, and nothing else does (TheHub
+  # #61102): the head of a same-repository pull request is never a develop
+  # commit, because develop requires linear history and a merge rewrites the
+  # sha. So `Concourse / thehub` on a PR means "the deploy's own gates passed
+  # on this head", and it is the name to require in branch protection.
   check_params: &check_params
     MYKRONOS_URL: ((mykronos-url))
     MYKRONOS_TOKEN: ((thehub-ingestion-token))
@@ -681,6 +699,13 @@ anchors:
               *[!0-9a-f]*) SHA="" ;;
             esac
             if [ "${#SHA}" -ne 40 ]; then
+              # [TheHub #61102] `pr-gates` runs on a clock and most ticks find
+              # no pull request head to judge. That job passes NO_COMMIT_OK on
+              # its success report only: nothing was judged, so nothing is owed.
+              if [ -n "${NO_COMMIT_OK:-}" ]; then
+                echo "No commit was judged on this run, so ${JOB:-this job} has nothing to report."
+                exit 0
+              fi
               echo "No checked-out commit to report on, so ${JOB:-this job} posted nothing."
               echo "The check stays as it was, and one still in progress blocks."
               exit 1
@@ -897,6 +922,14 @@ anchors:
             # back in one family. The build identifier is unique by
             # construction; the applied commit still travels, as git_sha.
             SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo "")
+            # [TheHub #61102] `pr-gates` maps its pull-request checkout onto
+            # `source`, and most of its ticks judge nothing. Without this the
+            # no-`source` branch below would file a self-contained
+            # pipeline-apply run, with a `finish` stage, every ten minutes.
+            if [ -z "$SHA" ] && [ -n "${REQUIRE_SOURCE:-}" ]; then
+              echo "[hub_report] no commit was judged on this run; nothing to report."
+              exit 0
+            fi
             if [ -n "$SHA" ]; then
               DEPLOY_ID="$SHA"
               MSG=$(git -C source log -1 --pretty=%s 2>/dev/null || echo unknown)
@@ -2067,6 +2100,270 @@ jobs:
   # fails if the last scan lands later than 30 minutes, or if a fourth lane
   # appears. Rolling back is setting all three names back to `worker`.
   # == Stage 1: quality =====================================================
+
+  # -- `pr-gates`: the deploy's own gates, on every pull request (TheHub #61102)
+  #
+  # Deploy 6722 failed at harden_pip_audit after merge (pypdf, #61094), and 6719
+  # rolled back 50 minutes in on the pipeline-mirror tests (#61088). Both were
+  # knowable at PR time, and nothing ran either before a merge: TheHub's GitHub
+  # Actions are billing-blocked, and every lane above follows `develop`.
+  #
+  # So this job finds the open pull requests itself and judges one head per
+  # run. What it runs is TheHub's `scripts/pr_deploy_gates.sh`: pip-audit
+  # through the SAME function deploy.sh's harden_pip_audit stage decides with,
+  # and the pipeline-shape tests against the committed mirror and against this
+  # file as set-pipeline applies it. The policy lives in TheHub, beside the
+  # deploy that enforces it, so the two cannot drift; this job only finds the
+  # head and reports the verdict.
+  #
+  # The verdict is `Concourse / thehub` on the PR head (see `check_params`).
+  # That is the check to require on develop. Requiring it is the operator's
+  # call, and it should wait until this job has gone green on a real PR.
+  #
+  # **Which heads.** `refs/pull/N/head` with a `refs/pull/N/merge` beside it:
+  # GitHub keeps the merge ref only while a pull request is open (and
+  # mergeable), so that is "open" without an API token -- the one this pipeline
+  # holds dies an hour after set-pipeline. And only a head that is the tip of a
+  # branch IN TheHub: a fork's head is never judged, because running an
+  # untrusted contributor's code on a worker inside the LAN is what spec 14 §4
+  # and spec 15 §7 refuse. Pushing a branch here takes write access. A head on
+  # ((thehub-branch)) itself is skipped: the lanes above own that commit's check.
+  #
+  # **Once per head.** The pick posts a `start` for the newest unjudged head,
+  # and Mykronos answers `unchanged` with the existing verdict when that head
+  # already has one ("a start never reopens a verdict"). A completed head is
+  # then remembered in the job's cache, so later ticks do not ask again. A
+  # `cancelled` verdict (the run could not reach one) is asked again. To
+  # re-judge a failed head, push to the branch.
+  #
+  # **Credentials.** The pick holds the deploy key and the ingestion token and
+  # runs no pull-request code. The gates task runs the pull request's code and
+  # is given no params but a pip cache path: no key, no token. The reports run
+  # as hooks with the anchors every lane uses.
+  - name: pr-gates
+    public: true
+    # The lane `post-merge` is in, for the same reason: a clock-driven quality
+    # job, kept out of `unit-chain` so a PR verdict does not queue behind a
+    # 90-minute unit run on develop. pip-audit's scratch install makes this a
+    # heavy job, so it is serialised like every other.
+    serial_groups: [dast]
+    on_success:
+      do:
+        - <<: *hub_report
+          input_mapping: { source: pr }
+          params: { <<: *hub_params, STAGE: pr_gates, STATUS: success, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
+    on_failure:
+      do:
+        - <<: *hub_report
+          input_mapping: { source: pr }
+          params: { <<: *hub_params, JOB: pr-gates, STAGE: pr_gates, STATUS: failed, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
+        - <<: *check_run
+          input_mapping: { source: pr }
+          params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: failure }
+    on_error:
+      do:
+        - <<: *slack_alert
+          params: { <<: *slack_params, OUTCOME: errored, JOB: pr-gates }
+        - <<: *hub_report
+          input_mapping: { source: pr }
+          params: { <<: *hub_params, JOB: pr-gates, STAGE: pr_gates, STATUS: errored, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
+        - <<: *check_run
+          input_mapping: { source: pr }
+          params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: failure }
+    on_abort:
+      do:
+        - <<: *hub_report
+          input_mapping: { source: pr }
+          params: { <<: *hub_params, STAGE: pr_gates, STATUS: aborted, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
+    plan:
+      - get: ten-minutes
+        trigger: true
+        attempts: *retry_fetch
+      # The definition set-pipeline applies, for the live shape tests. Not
+      # named `pipelines`: hub_report reads an input of that name as "this job
+      # applied a pipeline" and files a self-contained run for it.
+      - get: live-pipeline
+        resource: pipelines
+        attempts: *retry_fetch
+      - get: python313
+        attempts: *retry_fetch
+      - *preflight
+      - task: pick
+        container_limits: {cpu: 512}
+        image: python313
+        timeout: 10m
+        params:
+          <<: *check_params
+          SOURCE_DEPLOY_KEY: ((source-deploy-key))
+          THEHUB_BRANCH: ((thehub-branch))
+          REPO_URI: git@github.com:ToddGBenson/TheHub.git
+        config:
+          platform: linux
+          outputs: [{ name: pr }]
+          caches: [{ path: memo }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git openssh-client >/dev/null
+
+                # The `secrets` lane's pattern: the read-only deploy key,
+                # checked against GitHub's published host key rather than
+                # trusted on first use, and BatchMode so a prompt is an exit
+                # code rather than a hang.
+                install -d -m 700 /tmp/ssh
+                ( umask 077; printf '%s\n' "$SOURCE_DEPLOY_KEY" > /tmp/ssh/id )
+                echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > /tmp/ssh/known_hosts
+                ssh_cmd="ssh -i /tmp/ssh/id -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/tmp/ssh/known_hosts -o StrictHostKeyChecking=yes"
+                trap 'rm -rf /tmp/ssh' EXIT
+
+                GIT_SSH_COMMAND="$ssh_cmd" git ls-remote "$REPO_URI" 'refs/heads/*' 'refs/pull/*/head' 'refs/pull/*/merge' > /tmp/refs
+
+                python3 - <<'PICK'
+                import json, os, re, time, urllib.error, urllib.request
+
+                refs = {}
+                for line in open(os.environ.get("PR_REFS", "/tmp/refs"), encoding="utf-8"):
+                    sha, ref = line.split()
+                    refs[ref] = sha
+                branch = os.environ["THEHUB_BRANCH"]
+                tips = {}
+                for ref, sha in refs.items():
+                    if ref.startswith("refs/heads/"):
+                        tips.setdefault(sha, ref[len("refs/heads/"):])
+
+                heads = []
+                for ref, sha in refs.items():
+                    m = re.fullmatch(r"refs/pull/(\d+)/head", ref)
+                    if not m:
+                        continue
+                    n = int(m.group(1))
+                    if f"refs/pull/{n}/merge" not in refs:
+                        continue  # closed, merged, or conflicting
+                    if sha not in tips:
+                        print(f"#{n}: head {sha[:12]} is not a branch in TheHub (a fork?) -- not judged")
+                        continue
+                    if tips[sha] == branch or sha == refs.get(f"refs/heads/{branch}"):
+                        continue  # the develop lanes own this commit's check
+                    heads.append((n, sha, tips[sha]))
+                heads.sort(reverse=True)
+                print(f"{len(heads)} open same-repository pull request head(s)")
+
+                memo = "memo/judged"
+                judged = set()
+                if os.path.exists(memo):
+                    judged = set(open(memo, encoding="utf-8").read().split())
+
+                def start(sha):
+                    body = json.dumps({
+                        "repo_full_name": os.environ["REPO_FULL_NAME"], "commit_sha": sha,
+                        "job": "pr-gates", "phase": "start", "conclusion": None,
+                    }).encode()
+                    req = urllib.request.Request(
+                        os.environ["MYKRONOS_URL"] + "/api/ingest/check-runs", data=body,
+                        method="POST", headers={
+                            "Authorization": "Bearer " + os.environ["MYKRONOS_TOKEN"],
+                            "Content-Type": "application/json"})
+                    for attempt in range(3):
+                        try:
+                            with urllib.request.urlopen(req, timeout=45) as resp:
+                                return json.load(resp)
+                        except urllib.error.HTTPError as exc:
+                            # A refusal is an answer: say why and stop. Only a
+                            # 5xx is worth asking again, as curl --retry does.
+                            if exc.code < 500 or attempt == 2:
+                                raise SystemExit(f"Mykronos refused the start for {sha}: "
+                                                 f"HTTP {exc.code} {exc.read()[:300]!r}")
+                        except urllib.error.URLError as exc:
+                            if attempt == 2:
+                                raise SystemExit(f"Mykronos is unreachable: {exc.reason}")
+                        time.sleep(5)
+
+                pick = None
+                for n, sha, br in heads:
+                    if sha in judged:
+                        continue
+                    answer = start(sha)
+                    if (answer.get("outcome") == "unchanged" and answer.get("status") == "completed"
+                            and answer.get("conclusion") != "cancelled"):
+                        print(f"#{n} ({br}) {sha[:12]}: already judged, {answer.get('conclusion')}")
+                        judged.add(sha)
+                        continue
+                    pick = (n, sha, br)
+                    break
+
+                open_shas = {sha for _, sha, _ in heads}
+                with open(memo, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(sorted(judged & open_shas)) + "\n")
+                with open(os.environ.get("PR_PICK", "/tmp/pick"), "w", encoding="utf-8") as fh:
+                    if pick:
+                        print(f"Judging #{pick[0]} ({pick[2]}) at {pick[1]}")
+                        fh.write(f"{pick[0]} {pick[1]}\n")
+                    else:
+                        print("Every open head already has a verdict; nothing to judge.")
+                PICK
+
+                if [ -s /tmp/pick ]; then
+                  read -r NUM SHA < /tmp/pick
+                  # By sha, not by ref: the head may move between ls-remote and
+                  # here, and the check was started on THIS sha. A head pushed
+                  # away since is fetched anyway (GitHub serves reachable
+                  # commits) or fails here, red, on the sha it named.
+                  git init -q pr
+                  GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --depth 1 "$REPO_URI" "$SHA"
+                  git -C pr checkout -q --detach "$SHA"
+                  test "$(git -C pr rev-parse HEAD)" = "$SHA"
+                  echo "$NUM" > pr/.git/pr-number
+                fi
+      - task: gates
+        container_limits: {cpu: 512}
+        image: python313
+        # pip-audit resolves the whole requirements set into a scratch venv:
+        # deploy.sh measured ~100s cold and ~30s warm in the same image. The
+        # shape tests are seconds. 20m is a ceiling for a cold cache on a busy
+        # worker, not a budget.
+        timeout: 20m
+        params:
+          PIP_CACHE_DIR: /pipcache
+        config:
+          platform: linux
+          inputs: [{ name: pr }, { name: live-pipeline }]
+          outputs: [{ name: hub_log }]
+          caches: [{ path: /pipcache }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                # [#336] This task's output and exit status, for the failure hook.
+                exec > >(tee hub_log/output.log) 2>&1
+                TEE_PID=$!
+                trap 'rc=$?; echo "$rc" > hub_log/exit_code; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
+
+                if [ ! -f pr/.git/HEAD ]; then
+                  echo "No pull request head needs judging on this run."
+                  exit 0
+                fi
+                echo "Pull request #$(cat pr/.git/pr-number) at $(cat pr/.git/HEAD)"
+                if [ ! -f pr/scripts/pr_deploy_gates.sh ]; then
+                  echo "::error::This branch predates scripts/pr_deploy_gates.sh (TheHub #61102),"
+                  echo "          so the deploy's gates cannot be run on it. Rebase it onto develop."
+                  exit 1
+                fi
+                bash pr/scripts/pr_deploy_gates.sh --mykronos "$PWD/live-pipeline"
+      # Last, so a refused report is a failed job and the hooks above say so
+      # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
+      # owes no report.
+      - <<: *check_run
+        input_mapping: { source: pr }
+        params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: success, NO_COMMIT_OK: "1" }
 
   - name: unit
     public: true

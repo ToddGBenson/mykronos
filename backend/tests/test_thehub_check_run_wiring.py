@@ -23,6 +23,7 @@ import yaml
 PIPELINE = Path(__file__).resolve().parents[2] / "deploy" / "concourse" / "pipelines" / "thehub.yml"
 TASK = "report-check-run"
 GATE = "oracle-gate"
+PR_GATES = "pr-gates"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -82,8 +83,12 @@ def test_only_the_gate_and_its_upstream_write_the_check() -> None:
     """TheHub#349. The platform keeps the LATEST report per commit, so a job
     beside the gate that reported too would race it: a demo failure landing
     before the gate's success would be overwritten green, one landing after
-    would turn a passed gate red. Only the gate's own chain may report."""
-    allowed = _upstream_of(GATE) | {GATE}
+    would turn a passed gate red. Only the gate's own chain may report.
+
+    `pr-gates` is the one other reporter, and it races nothing: it reports
+    only on a pull request's head, which no develop lane ever checks out
+    (test_pr_gates_never_judges_a_develop_commit)."""
+    allowed = _upstream_of(GATE) | {GATE, PR_GATES}
     for job in _doc()["jobs"]:
         if _reporters(job):
             assert job["name"] in allowed, (
@@ -130,8 +135,9 @@ def test_every_lane_up_to_the_gate_reports_failure(hook: str) -> None:
 def test_the_report_is_never_retried_and_always_bounded() -> None:
     """PS-12 and PS-7: it can fail, so no `attempts:`; it holds the worker, so a timeout."""
     reporters = _reporters(_doc()["jobs"])
-    # 20 since TheHub#349 took `deploy-demo`'s two failure reports out.
-    assert len(reporters) == 20
+    # 20 since TheHub#349 took `deploy-demo`'s two failure reports out; 23
+    # since `pr-gates` (TheHub #61102): its failure, error and success reports.
+    assert len(reporters) == 23
     for step in reporters:
         assert "attempts" not in step
         assert step.get("timeout")
