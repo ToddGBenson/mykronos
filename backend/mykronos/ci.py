@@ -2314,6 +2314,14 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     # GHCR, which is what deploy.ps1 pulls. Two mechanisms, two registries; the
     # acknowledgement here was removed once in error while retiring the other.
     ((MYKRONOS,), "promote", "retags an image that is already built, runs no scanner"),
+    # [TheHub #61109] The unit suite with the clock moved forward. It uploads
+    # nothing on purpose: an upload as `unit` would put next month's failures
+    # on today's lane. Its red files a Hub story instead.
+    (
+        (MYKRONOS,),
+        "time-travel",
+        "runs unit under libfaketime and files a Hub story; uploads no findings by design",
+    ),
     # [#60073] Compares deploy.sh's stages against the GHA workflows' jobs and
     # publishes a memo. It uploads nothing to the lake, so there is no scan
     # record for the cross-check to find absent -- but it CAN go red, and its
