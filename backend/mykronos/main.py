@@ -44,6 +44,7 @@ from mykronos.api.auto_triage import router as auto_triage_router
 from mykronos.api.briefing_daily import router as briefing_daily_router
 from mykronos.api.briefing_weekly import router as briefing_weekly_router
 from mykronos.api.control_observations import router as control_observations_router
+from mykronos.api.credentials import router as credentials_router
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.executive import router as executive_router
 from mykronos.api.exposure import router as exposure_router
@@ -1131,6 +1132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(briefing_daily_router)
     app.include_router(briefing_weekly_router)
     app.include_router(control_observations_router)
+    app.include_router(credentials_router)
     app.include_router(executive_router)
     app.include_router(rule_vectors_router)
     app.include_router(exposure_router)

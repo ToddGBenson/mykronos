@@ -153,6 +153,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list-tokens", help="List tokens and grants (hashes only, never plaintext)")
 
+    creds = sub.add_parser("credentials", help="When each credential expires (TheHub #61104)")
+    creds_sub = creds.add_subparsers(dest="credentials_command", required=True)
+    creds_expiring = creds_sub.add_parser(
+        "expiring", help="Credentials expired or expiring soon, with the renewal step"
+    )
+    creds_expiring.add_argument("--within-hours", type=float, default=48.0)
+    creds_expiring.add_argument("--json", action="store_true", help="Machine-readable output.")
+
     reconcile_grants = sub.add_parser(
         "reconcile-grants",
         help="Where the enabled-capabilities ledger and the grant table disagree (B-062)",
@@ -753,6 +761,38 @@ def main(argv: list[str] | None = None) -> int:
             with db.session() as session:
                 count = registry(session).revoke_repo(args.repo)
             print(f"Offboarded {args.repo}: revoked {count} token(s) and every grant")
+            return 0
+
+        if args.command == "credentials":
+            from mykronos import credential_expiry
+            from mykronos.schemas import utcnow as clock
+
+            now = clock()
+            declared = credential_expiry.load_declared(settings.credential_expiry_path)
+            with db.session() as session:
+                everything = credential_expiry.collect(session, declared, now)
+            listed = credential_expiry.expiring(everything, now, args.within_hours)
+            if args.json:
+                print(json.dumps(listed, default=str, indent=2))
+                return 0
+            _print_table(
+                ["name", "kind", "owner", "expires at", "hours left", "source", "renewal step"],
+                [
+                    [
+                        r["name"],
+                        r["kind"],
+                        r["owner"],
+                        r["expires_at"].isoformat(timespec="minutes"),
+                        ("EXPIRED " if r["expired"] else "") + f"{r['hours_left']:.1f}",
+                        r["source"],
+                        r["renewal_step"],
+                    ]
+                    for r in listed
+                ],
+            )
+            missing = credential_expiry.undated(everything)
+            if missing:
+                print(f"\nNo date declared for: {', '.join(missing)}")
             return 0
 
         if args.command == "list-tokens":

@@ -2195,6 +2195,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/credentials/expiring": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Expiring
+         * @description Credentials expired or expiring within `within_hours`, soonest first.
+         */
+        get: operations["expiring_api_credentials_expiring_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/executive-summary": {
         parameters: {
             query?: never;
@@ -7601,6 +7621,45 @@ export interface components {
             } | null;
             /** Open Total */
             open_total: number | null;
+        };
+        /** ExpiringCredentialOut */
+        ExpiringCredentialOut: {
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Owner */
+            owner: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Hours Left */
+            hours_left: number;
+            /** Expired */
+            expired: boolean;
+            /** Renewal Step */
+            renewal_step: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "observed" | "declared";
+        };
+        /** ExpiringOut */
+        ExpiringOut: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Within Hours */
+            within_hours: number;
+            /** Credentials */
+            credentials: components["schemas"]["ExpiringCredentialOut"][];
+            /** Undated */
+            undated?: string[];
         };
         /** ExploitFixOut */
         ExploitFixOut: {
@@ -16054,6 +16113,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ControlObservationsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    expiring_api_credentials_expiring_get: {
+        parameters: {
+            query?: {
+                within_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExpiringOut"];
                 };
             };
             /** @description Validation Error */
