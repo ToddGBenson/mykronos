@@ -91,7 +91,7 @@ def test_functional_demo_reports_every_outcome_as_its_own_demo_stage():
     task = next(s for s in job["plan"] if s.get("task") == "run-functional")
     assert {"name": "hub_log"} in task["config"]["outputs"]
     script = task["config"]["run"]["args"][-1]
-    assert "tee hub_log/output.log" in script and "hub_log/exit_code" in script
+    assert "tee hub_log/output.log" in script and '"$HUB_LOG_DIR/exit_code"' in script
 
 
 # -- structure ---------------------------------------------------------------
@@ -314,7 +314,7 @@ def _trap_tasks() -> list[tuple[str, dict]]:
             found,
             lambda n: "task" in n
             and "config" in n
-            and "exit_code; exec 1>&-" in json.dumps(n["config"].get("run", {})),
+            and "wait \"$TEE_PID\"" in str(n["config"].get("run", {})),
         )
     assert len(found) >= 3, f"expected the three hub_log EXIT traps, found {len(found)}"
     return found
