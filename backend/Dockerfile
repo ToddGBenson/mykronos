@@ -163,7 +163,8 @@ ENV MYKRONOS_BUILD_SHA=${MYKRONOS_BUILD_SHA} \
     MYKRONOS_MATURITY_MODEL_PATH=/app/maturity-model-v1.yaml \
     MYKRONOS_GOVERNANCE_POLICY_PATH=/app/governance-policy-v1.yaml \
     MYKRONOS_STRIDE_MAP_PATH=/app/stride-map-v1.yaml \
-    MYKRONOS_ENVIRONMENT_MAP_PATH=/app/environment-map-v1.yaml \n    MYKRONOS_CREDENTIAL_EXPIRY_PATH=/app/credential-expiry-v1.yaml \
+    MYKRONOS_ENVIRONMENT_MAP_PATH=/app/environment-map-v1.yaml \
+    MYKRONOS_CREDENTIAL_EXPIRY_PATH=/app/credential-expiry-v1.yaml \
     MYKRONOS_CWE_VECTOR_TEMPLATES_PATH=/app/cwe-vector-templates-v1.yaml \
     MYKRONOS_APPROVAL_POLICY_PATH=/app/approval-policy-v1.yaml \
     MYKRONOS_AGENT_PLAYBOOKS_PATH=/app/agent-playbooks-v1.yaml \
