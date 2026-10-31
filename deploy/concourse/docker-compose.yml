@@ -266,7 +266,7 @@ services:
   # deletes off, so the environment below keeps them off. Its default log
   # level is `debug`; `info` matches what v2 actually logged.
   registry:
-    image: ${REGISTRY:-localhost:5000}/library/registry:3-p20261020
+    image: ${REGISTRY:-localhost:5000}/library/registry:3-p20261026
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better.
