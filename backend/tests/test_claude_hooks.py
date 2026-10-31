@@ -236,6 +236,8 @@ RUFF_FORMAT_BYPASSES = [
     ("pwsh-encoded", "pwsh -EncodedCommand " + _pwsh_encoded("ruff format .")),
     ("pwsh-backtick", "pwsh -c 'r`uff format .'"),
     ("xargs", "echo . | xargs ruff format"),
+    ("name-in-variable", "R=ruff; $R format ."),
+    ("check-flag", "ruff format --check ."),
 ]
 
 RUFF_ALLOWED = [
@@ -356,6 +358,7 @@ GIT_BYPASSES = [
     ("pwsh-c-set-location", "pwsh -c \"Set-Location '<PW>'; git commit -m x\"", "<MYK>"),
     ("pwsh-c-env", "pwsh -c 'git -C $env:USERPROFILE\\" + REL_W + " commit'", "<MYK>"),
     ("pwsh-encoded", "pwsh -EncodedCommand <ENC>", "<MYK>"),
+    ("pwsh-working-directory", 'pwsh -wd <PF> -c "git commit -m x"', "<MYK>"),
     ("heredoc-to-bash", "bash <<'EOF'\ncd <PF>\ngit commit -m x\nEOF", "<MYK>"),
     ("eval", "eval 'git -C <PF> commit -m x'", "<MYK>"),
 ]
@@ -659,3 +662,12 @@ def _commands(event: str, matcher_has: str) -> list[str]:
 def test_the_project_settings_wire_each_guard(event: str, tool: str, hook: str) -> None:
     commands = _commands(event, tool)
     assert any(f"$CLAUDE_PROJECT_DIR/.claude/hooks/{hook}" in c for c in commands), commands
+
+
+@pytest.mark.parametrize(
+    "name", ["guard-bash.sh", "guard-write.sh", "check-ps1.sh", "_guard-common.sh"]
+)
+def test_the_hook_scripts_have_unix_line_endings(name: str) -> None:
+    # A Windows checkout with core.autocrlf turns LF into CRLF unless .gitattributes
+    # says otherwise, and bash then fails on $'\r' before it reaches a rule.
+    assert b"\r" not in (HOOKS / name).read_bytes()
