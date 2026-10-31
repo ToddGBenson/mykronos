@@ -80,13 +80,22 @@ param(
     [string]$Container = 'mykronos-registry',
     [string]$Volume = 'mykronos-concourse_registry-data',
     [string]$RegistryImage,
-    [string]$DeployLockPath = (Join-Path ([string]$env:LOCALAPPDATA) 'Temp\thehub-deploy.lock'),
+    [string]$DeployLockPath,
     [string]$ReportPath,
     [string]$RegistryRoot
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3
+
+# The TheHub deploy takes %LOCALAPPDATA%\Temp\thehub-deploy.lock. LOCALAPPDATA
+# is unset off Windows and Join-Path refuses an empty parent, so a default
+# computed in param() killed every run that did not pass -DeployLockPath
+# before any guard ran. Off Windows the lock is looked for in the temp dir.
+if (-not $PSBoundParameters.ContainsKey('DeployLockPath')) {
+    $lockDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Temp' } else { [IO.Path]::GetTempPath() }
+    $DeployLockPath = Join-Path $lockDir 'thehub-deploy.lock'
+}
 
 $RepoPattern = '^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$'
 $TagPattern = '^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'

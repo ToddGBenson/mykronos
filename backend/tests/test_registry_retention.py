@@ -155,6 +155,7 @@ def run(
     *args: str | list[str],
     docker: dict[str, Any] | None = None,
     use_root: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], dict[str, Any] | None]:
     fx = {
         "exists": True,
@@ -188,6 +189,7 @@ exit $LASTEXITCODE
         capture_output=True,
         text=True,
         timeout=180,
+        env=env,
     )
     logged = [c for c in calls.read_text(encoding="utf-8").splitlines() if c]
     data = json.loads(report.read_text(encoding="utf-8-sig")) if report.exists() else None
@@ -305,7 +307,7 @@ def test_apply_refuses_while_any_container_mounts_the_volume(tmp_path: Path) -> 
 @needs_pwsh
 def test_apply_refuses_a_fixture_root(tmp_path: Path) -> None:
     out, calls, _ = run(tmp_path, "-Apply", "-ConfirmCiQuiet", use_root=tmp_path)
-    assert out.returncode == 3
+    assert out.returncode == 3, out.stdout + out.stderr
     assert "-RegistryRoot is a read-only source" in out.stdout
     assert calls == []
 
@@ -313,8 +315,42 @@ def test_apply_refuses_a_fixture_root(tmp_path: Path) -> None:
 @needs_pwsh
 def test_keep_shas_must_be_a_real_prefix(tmp_path: Path) -> None:
     out, _, _ = run(tmp_path, "-KeepShas", "3", use_root=tmp_path)
-    assert out.returncode == 3
+    assert out.returncode == 3, out.stdout + out.stderr
     assert "is not 7-40 hex characters" in out.stdout
+
+
+def env_without_localappdata(temp: Path) -> dict[str, str]:
+    """The environment of a Linux runner: no LOCALAPPDATA, temp dir pointed
+    at the test's own directory so the deploy-lock fallback is observable."""
+    env = {k: v for k, v in os.environ.items() if k.upper() != "LOCALAPPDATA"}
+    env.update({"TMPDIR": str(temp), "TMP": str(temp), "TEMP": str(temp)})
+    return env
+
+
+@needs_pwsh
+def test_runs_without_localappdata(tmp_path: Path) -> None:
+    # Linux pwsh has no LOCALAPPDATA; the -DeployLockPath default once died
+    # in param() there ("Cannot bind argument to parameter 'Path'") and every
+    # run without -DeployLockPath exited 0 before any guard or report.
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    out, _, _ = run(tmp_path, "-KeepShas", "3", use_root=tmp_path,
+                    env=env_without_localappdata(temp))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "is not 7-40 hex characters" in out.stdout
+
+
+@needs_pwsh
+def test_deploy_lock_is_still_checked_without_localappdata(tmp_path: Path) -> None:
+    temp = tmp_path / "temp"
+    (temp / "thehub-deploy.lock").mkdir(parents=True)
+    out, calls, _ = run(
+        tmp_path, "-Apply", "-ConfirmCiQuiet", "-TheHubCheckout", str(tmp_path),
+        env=env_without_localappdata(temp),
+    )
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "REFUSED: the TheHub deploy lock exists" in out.stdout
+    assert calls == []
 
 
 # ---------------------------------------------------------------- the flow ---
