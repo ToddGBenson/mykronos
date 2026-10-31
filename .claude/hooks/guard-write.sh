@@ -7,6 +7,10 @@
 # working tree. Its .claude/worktrees/<name> folders are separate worktrees and stay
 # allowed.
 #
+# This covers the file tools only. A shell write into the checkout (sed -i, echo >,
+# cp, tee, Set-Content, Out-File) is not seen here, and neither are 8.3 short names,
+# UNC paths, a trailing dot or junctions; those are tracked in TheHub #61108.
+#
 # Contract: the hook payload on stdin; exit 2 blocks and stderr goes to the agent.
 
 set -uo pipefail

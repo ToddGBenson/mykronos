@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Bash and PowerShell (TheHub #61099). After keel's guard-bash.sh.
+# PreToolUse hook for Bash, PowerShell and Monitor (TheHub #61099). After keel's
+# guard-bash.sh.
 #
-# Refuses, in any spelling and through any interpreter:
+# Refuses the tested spellings of:
 #   * `ruff format`: this tree was never formatted with it;
-#   * git commit / reset / checkout / switch / stash / clean / restore whose target is
-#     the live TheHub checkout (MYKRONOS_PROTECTED_CHECKOUTS, by default
-#     <profile>/Documents/Projects/TheHub-main). Its .claude/worktrees/<name> folders
-#     are separate worktrees and stay allowed.
+#   * git that changes the live TheHub checkout (MYKRONOS_PROTECTED_CHECKOUTS, by
+#     default <profile>/Documents/Projects/TheHub-main). Inside it git is
+#     allow-listed: read-only verbs, fetch and merge --ff-only. Its
+#     .claude/worktrees/<name> folders are separate worktrees and are not restricted.
+#
+# It guards against ordinary mistakes, not a determined bypass. The known gaps
+# (shell writes such as sed -i or Set-Content, uncanonicalised paths, commands piped
+# to a shell, unresolvable words) are listed in estate_guard.py and tracked in
+# TheHub #61108.
 #
 # Contract: the hook payload on stdin; exit 2 blocks and stderr goes to the agent.
 # The rules are in estate_guard.py; the tests, which are bypass attempts first, are
@@ -29,7 +35,7 @@ fi
 while IFS= read -r name; do
   [ -n "$name" ] || continue
   if printf '%s' "$lc" | grep -qF -- "$name" \
-    && printf '%s' "$lc" | grep -qE '(^|[^a-z])(commit|reset|checkout|switch|stash|clean|restore)([^a-z]|$)'; then
+    && printf '%s' "$lc" | grep -qE '(^|[^a-z])(commit|reset|checkout|switch|stash|clean|restore|pull|merge|rebase|cherry-pick|revert|am|apply|rm|mv|tag|branch|config|remote|submodule|gc|update-ref)([^a-z]|$)'; then
     fallback_block guard-bash.sh "a git command that names the live checkout $name."
   fi
 done < <(protected_names)

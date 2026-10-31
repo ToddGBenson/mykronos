@@ -183,7 +183,7 @@ def _pwsh_encoded(script: str) -> str:
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
 
-# ── 1. ruff format, in every spelling ───────────────────────────────────────
+# ── 1. ruff format, in the spellings tested here ────────────────────────────
 
 RUFF_FORMAT_BYPASSES = [
     ("bare", "ruff format"),
@@ -461,6 +461,7 @@ PROTECTED_DENIED = [
     ("no-verb", ""),
     ("alias-via-c", "-c alias.x=reset x --hard"),
     ("alias-configured", "ci -m x"),
+    ("c-config-runs-code", "-c core.fsmonitor=evil status"),
 ]
 
 PROTECTED_ALLOWED = [
@@ -487,6 +488,7 @@ PROTECTED_ALLOWED = [
     ("merge-ff-only", "merge --ff-only origin/develop"),
     ("merge-no-ff-then-ff-only", "merge --no-ff --ff-only origin/develop"),
     ("version", "--version"),
+    ("c-display-setting", "-c color.ui=never status"),
 ]
 
 

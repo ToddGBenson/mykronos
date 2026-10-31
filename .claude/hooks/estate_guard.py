@@ -5,24 +5,42 @@ Three mistakes kept recurring because the lesson lived only in an agent's memory
 
   1. `ruff format`. The tree was never formatted with it; one run rewrites over a
      hundred files and buries the real diff.
-  2. git commit, reset, checkout, switch, stash, clean or restore in the live TheHub
-     checkout. The production deploy ships that working tree, so moving it moves
-     production. Its own `.claude/worktrees/<name>` folders are separate worktrees and
-     stay allowed.
-  3. Writing or editing a file inside that live checkout, for the same reason.
+  2. git that changes the live TheHub checkout. The production deploy ships that
+     working tree, so moving it moves production. Inside it git is allow-listed:
+     read-only verbs, `fetch`, and `merge --ff-only`; every other verb, an unknown
+     verb and any alias is refused. Its own `.claude/worktrees/<name>` folders are
+     separate worktrees and are not restricted.
+  3. The Write, Edit, MultiEdit and NotebookEdit tools writing inside that checkout.
   4. (PostToolUse) Saving a PowerShell script that does not parse.
 
-Pattern: keel's .claude/hooks/guard-bash.sh. A prompt is advisory; a PreToolUse hook
-that exits 2 makes the action impossible, and its stderr goes back to the agent.
+Pattern: keel's .claude/hooks/guard-bash.sh. A PreToolUse hook that exits 2 refuses
+the call and its stderr goes back to the agent.
 
-Why Python and not keel's sed: keel and binnacle's selftest passed while four bypasses
-were live, because a regex over the command text cannot tell quoted text from a word.
-This reads the command the way the shell will: it splits on the real separators,
-follows `$(...)`, backticks, subshells and heredocs, removes quoting the way bash (or
-cmd, or PowerShell) does, expands the variables it can see, follows `cd`, and re-reads
-any command handed to `bash -c`, `sh -c`, `eval`, `cmd /c`, `pwsh -c`,
-`pwsh -EncodedCommand` or `Invoke-Expression`. A deny rule may over-block on a reading
-the shell would not take; it must never under-block on one it would.
+What it reads. keel and binnacle's selftest passed while four bypasses were live,
+because a regex over the command text cannot tell quoted text from a word. This splits
+on the real separators; follows `$(...)`, backticks, subshells and heredocs; removes
+quoting the way bash, cmd or PowerShell does; expands the variables it can see
+(environment, `~`, and assignments earlier in the same command); follows `cd`,
+`pushd`, `Set-Location` and the payload's cwd; and re-reads a command passed as an
+argument to `bash -c`, `sh -c`, `eval`, `cmd /c`, `pwsh -c`, `pwsh -EncodedCommand`
+or `Invoke-Expression`. Where a reading is ambiguous it leans towards refusing.
+
+What it does not catch (TheHub #61108). This guards against an agent's ordinary
+mistakes, not a determined bypass. Known gaps:
+  * shell writes into the live checkout (`sed -i`, `echo >`, `cp`, `tee`,
+    `Set-Content`, `Out-File`): only the Write/Edit tools are guarded;
+  * paths it does not canonicalise: 8.3 short names, a trailing dot, UNC paths,
+    `~user`, globs, junctions and symlinks;
+  * a command fed to a shell other than as an argument: piped to `bash` or `iex`,
+    `bash <<<`, `Invoke-Command`/`ForEach-Object` script blocks, `Start-Process`,
+    `find -exec`;
+  * words it cannot resolve, which it treats as plain words: `$(...)` or
+    `${X:-y}` as a command name or path, `$'\\x67it'`, brace expansion, and a
+    PowerShell `$p="..."` written without spaces;
+  * wrapper flags: `env -C dir`, `nice -n 5`, `command -p`, `exec -a name`;
+  * a script run by file name (`bash x.sh`, `pwsh -File x.ps1`).
+The hooks also cannot block when bash is missing or the hook times out: Claude Code
+treats any exit other than 2 as a non-blocking error.
 
 The protected checkouts are MYKRONOS_PROTECTED_CHECKOUTS (separated by ';'), or by
 default <user profile>/Documents/Projects/TheHub-main, the profile read from
@@ -50,8 +68,31 @@ from typing import Any
 IS_WINDOWS = os.name == "nt"
 PROTECTED_ENV = "MYKRONOS_PROTECTED_CHECKOUTS"
 DEFAULT_CHECKOUT = ("Documents", "Projects", "TheHub-main")
-GIT_VERBS = {"commit", "reset", "checkout", "switch", "stash", "clean", "restore"}
-READ_ONLY_STASH = {"list", "show"}
+# Inside a protected checkout git is allow-listed (review of #1051): these verbs, plus
+# the argument-checked ones in git_allowed(). Anything else, an unknown verb or an
+# alias included, is refused. `pull` is not here: it can rebase (--rebase, -r, or a
+# pull.rebase setting), so fetch then merge --ff-only.
+GIT_READ_ONLY = frozenset({
+    "status", "log", "diff", "show", "fetch", "rev-parse", "ls-files", "blame",
+    "describe", "shortlog", "rev-list", "ls-tree", "ls-remote", "cat-file",
+    "for-each-ref", "show-ref", "merge-base", "name-rev", "grep", "help", "version",
+    "check-ignore",
+})
+GIT_INFO_FLAGS = frozenset({"--version", "--help", "-h", "--html-path", "--man-path",
+                            "--info-path"})
+BRANCH_WRITE_FLAGS = frozenset({
+    "--delete", "--move", "--copy", "--force", "--set-upstream-to", "--unset-upstream",
+    "--edit-description", "--track", "--no-track", "--create-reflog", "--recurse-submodules",
+})
+BRANCH_VALUE_FLAGS = frozenset({"--contains", "--no-contains", "--merged", "--no-merged",
+                                "--points-at", "--sort", "--format"})
+CONFIG_READ_FLAGS = frozenset({"--get", "--get-all", "--get-regexp", "--get-urlmatch",
+                               "--list", "-l"})
+CONFIG_WRITE_FLAGS = frozenset({"--unset", "--unset-all", "--add", "--replace-all",
+                                "--rename-section", "--remove-section", "--edit", "-e"})
+# `git -c key=value` in a protected checkout: only display settings. An alias, a
+# hook path, a pager or an fsmonitor can run a command.
+SAFE_CONFIG_PREFIXES = ("color.", "core.quotepath=")
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "busybox"}
 POWERSHELLS = {"pwsh", "powershell", "pwsh-preview"}
 CD_COMMANDS = {"cd", "chdir", "pushd", "set-location", "sl", "push-location"}
@@ -571,6 +612,8 @@ def check_git(words: list[str], ctx: Context, env: dict[str, str]) -> None:
     git_dir = lookup("GIT_DIR", env)
     work_tree = lookup("GIT_WORK_TREE", env)
     i, sub = 1, None
+    config: list[str] = []
+    global_flags: list[str] = []
     while i < len(words):
         w = words[i]
         lw = w.lower()
@@ -578,7 +621,11 @@ def check_git(words: list[str], ctx: Context, env: dict[str, str]) -> None:
             d = norm(words[i + 1], d)
             i += 2
             continue
-        if w == "-c" or lw in ("--namespace", "--exec-path", "--config-env", "--super-prefix"):
+        if w == "-c" or lw == "--config-env":
+            config.append(words[i + 1] if i + 1 < len(words) else "")
+            i += 2
+            continue
+        if lw in ("--namespace", "--exec-path", "--super-prefix") and "=" not in w:
             i += 2
             continue
         if lw.startswith(("--git-dir", "--work-tree")):
@@ -594,30 +641,94 @@ def check_git(words: list[str], ctx: Context, env: dict[str, str]) -> None:
             i += 1
             continue
         if w.startswith("-"):
+            global_flags.append(lw)
             i += 1
             continue
         sub = lw
         break
-    if sub not in GIT_VERBS:
-        return
-    if sub == "stash":
-        nxt = next((x.lower() for x in words[i + 1 :] if not x.startswith("-")), None)
-        if nxt in READ_ONLY_STASH:
-            return
     targets = [d]
     if git_dir:
         targets.append(norm(git_dir, d))
     if work_tree:
         targets.append(norm(work_tree, d))
-    for t in targets:
-        root = protected_root_for(t, for_git=True)
-        if root:
-            raise BlockedError(
-                f"`git {sub}` in the live checkout {root}. The production deploy ships "
-                "that working tree, so moving it moves production. Read it freely "
-                "(status, log, diff, fetch); change it from a worktree under its "
-                ".claude/worktrees/ folder, or ask the operator."
-            )
+    root = next((r for t in targets if (r := protected_root_for(t, for_git=True))), None)
+    if root is None:
+        return
+    rest = words[i + 1 :] if sub is not None else []
+    unsafe_config = [c for c in config if not c.lower().startswith(SAFE_CONFIG_PREFIXES)]
+    if unsafe_config:
+        why = f"git -c {unsafe_config[0]}"  # an alias, a hook path, a pager: it can run code
+    elif sub is None:
+        if global_flags and all(f in GIT_INFO_FLAGS for f in global_flags):
+            return
+        why = "git with no verb"
+    elif git_allowed(sub, rest):
+        return
+    else:
+        why = f"git {sub}"
+    raise BlockedError(
+        f"`{why}` in the live checkout {root}. The production deploy ships that working "
+        "tree, so changing it changes production. Inside it git is limited to read-only "
+        "verbs (status, log, diff, show, branch --list, rev-parse, ls-files, blame, "
+        "describe, stash list/show, config --get, remote -v, worktree list/add/prune), "
+        "fetch, and merge --ff-only. Make the change from a worktree under its "
+        ".claude/worktrees/ folder, or ask the operator."
+    )
+
+
+def _positionals(args: list[str], takes_value: frozenset[str] = frozenset()) -> list[str]:
+    out: list[str] = []
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if a == "--":
+            out += args[k + 1 :]
+            break
+        if a.startswith("-"):
+            k += 2 if (a.lower() in takes_value and "=" not in a) else 1
+            continue
+        out.append(a.lower())
+        k += 1
+    return out
+
+
+def git_allowed(sub: str, rest: list[str]) -> bool:
+    """True if `git <sub> <rest>` may run in a protected checkout. Default: no."""
+    flags = [a.lower() for a in rest if a.startswith("-")]
+    if sub in GIT_READ_ONLY:
+        return True
+    if sub == "branch":
+        for f in flags:
+            name = f.split("=", 1)[0]
+            if name in BRANCH_WRITE_FLAGS:
+                return False
+            if not f.startswith("--") and set(f[1:]) & set("dDmMcCfu"):
+                return False
+        listing = "--list" in flags or "-l" in flags
+        return listing or not _positionals(rest, BRANCH_VALUE_FLAGS)
+    if sub == "stash":
+        pos = _positionals(rest)
+        return bool(pos) and pos[0] in ("list", "show")
+    if sub == "worktree":
+        pos = _positionals(rest)
+        return bool(pos) and pos[0] in ("list", "add", "prune")
+    if sub == "config":
+        if any(f.split("=", 1)[0] in CONFIG_WRITE_FLAGS for f in flags):
+            return False
+        pos = _positionals(rest)
+        return any(f.split("=", 1)[0] in CONFIG_READ_FLAGS for f in flags) or (
+            bool(pos) and pos[0] in ("get", "list")
+        )
+    if sub == "remote":
+        pos = _positionals(rest)
+        return (not pos and all(f in ("-v", "--verbose") for f in flags)) or (
+            bool(pos) and pos[0] in ("show", "get-url")
+        )
+    if sub == "merge":
+        # git takes the last of --ff / --no-ff / --ff-only; --squash writes the index.
+        ff = [f for f in flags if f in ("--ff", "--no-ff", "--ff-only")]
+        return bool(ff) and ff[-1] == "--ff-only" and "--squash" not in flags
+    return False
 
 
 # ── Entry points ────────────────────────────────────────────────────────────
