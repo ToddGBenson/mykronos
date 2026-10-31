@@ -729,7 +729,7 @@ def _days(count: int, per_day: int, noun: str) -> str:
     return f" (about {max(days, 0.1):.1f} days at {rate})"
 
 
-def vector_backlog(session: Session) -> VectorBacklog:
+def vector_backlog(session: Session, *, now: Callable[[], datetime] = utcnow) -> VectorBacklog:
     """Count both queues `refresh_vectors` reads, and the rows it gave up on."""
     from sqlalchemy import func
 
@@ -745,7 +745,7 @@ def vector_backlog(session: Session) -> VectorBacklog:
             ).scalar_one()
         )
 
-    at = utcnow()
+    at = now()
     askable = _askable(at)
     return VectorBacklog(
         vectors=count(needs_vector, askable),
