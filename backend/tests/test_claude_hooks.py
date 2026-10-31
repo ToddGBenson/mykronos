@@ -4,8 +4,10 @@ Three mistakes kept recurring because the lesson lived only in an agent's
 memory: running `ruff format` (the tree was never formatted with it, one run
 rewrites over a hundred files), committing, resetting or switching inside the
 live TheHub checkout that the production deploy ships, and saving a
-PowerShell script that does not parse. The hooks make the first two
-impossible and report the third the moment the file is written.
+PowerShell script that does not parse. The hooks refuse the spellings of the
+first two that are tested here, and report the third the moment the file is
+written. They do not catch every spelling: the known gaps are listed in
+.claude/hooks/estate_guard.py and tracked in TheHub #61108.
 
 Every test pipes a real hook payload into the real hook through bash, the way
 the harness runs it, and reads the exit code: 2 blocks, 0 allows.
@@ -415,6 +417,108 @@ def test_reading_the_live_checkout_and_working_in_worktrees_pass(
     assert_allowed(guard_bash(estate, command, cwd), command)
 
 
+# In a protected checkout git is allow-listed: the read-only verbs, fetch, and a
+# fast-forward-only merge. Everything else is refused, including verbs this file does
+# not name. Review of #1051: pull, rebase, cherry-pick and the rest were outside the
+# first deny-list and walked straight through.
+PROTECTED_DENIED = [
+    ("pull", "pull"),
+    ("pull-ff-only", "pull --ff-only"),  # pull can still rebase (pull.rebase, -r)
+    ("pull-rebase", "pull --rebase origin develop"),
+    ("merge", "merge origin/develop"),
+    ("merge-no-ff", "merge --no-ff origin/develop"),
+    ("merge-ff-only-then-no-ff", "merge --ff-only --no-ff origin/develop"),
+    ("merge-ff-only-squash", "merge --ff-only --squash origin/develop"),
+    ("merge-ff-only-then-ff", "merge --ff-only --ff origin/develop"),
+    ("rebase", "rebase origin/develop"),
+    ("cherry-pick", "cherry-pick abc123"),
+    ("revert", "revert HEAD"),
+    ("am", "am patch.mbox"),
+    ("apply", "apply fix.diff"),
+    ("rm", "rm deploy.sh"),
+    ("mv", "mv a.py b.py"),
+    ("commit", "commit -m x"),
+    ("reset", "reset --hard"),
+    ("checkout", "checkout ."),
+    ("switch", "switch main"),
+    ("restore", "restore ."),
+    ("clean", "clean -fdx"),
+    ("stash-bare", "stash"),
+    ("stash-push", "stash push"),
+    ("stash-drop", "stash drop"),
+    ("branch-create", "branch topic"),
+    ("branch-delete", "branch -D topic"),
+    ("branch-list-then-delete", "branch -D topic --list"),
+    ("tag", "tag v1"),
+    ("config-set", "config core.hooksPath /tmp/x"),
+    ("config-unset", "config --unset user.name"),
+    ("remote-add", "remote add evil https://example.invalid/x.git"),
+    ("worktree-remove", "worktree remove wt1"),
+    ("submodule-update", "submodule update --init"),
+    ("gc", "gc --prune=now"),
+    ("update-ref", "update-ref refs/heads/main HEAD~1"),
+    ("unknown-verb", "frobnicate"),
+    ("no-verb", ""),
+    ("alias-via-c", "-c alias.x=reset x --hard"),
+    ("alias-configured", "ci -m x"),
+]
+
+PROTECTED_ALLOWED = [
+    ("status", "status"),
+    ("log", "log --oneline -5"),
+    ("diff", "diff HEAD~1"),
+    ("show", "show HEAD"),
+    ("fetch", "fetch origin"),
+    ("branch-bare", "branch"),
+    ("branch-list", "branch --list"),
+    ("branch-all-verbose", "branch -a -vv"),
+    ("branch-show-current", "branch --show-current"),
+    ("rev-parse", "rev-parse HEAD"),
+    ("ls-files", "ls-files"),
+    ("blame", "blame deploy.sh"),
+    ("describe", "describe --tags"),
+    ("worktree-list", "worktree list"),
+    ("worktree-add", "worktree add .claude/worktrees/wt2 -b wt2"),
+    ("worktree-prune", "worktree prune"),
+    ("stash-list", "stash list"),
+    ("stash-show", "stash show -p"),
+    ("config-get", "config --get remote.origin.url"),
+    ("remote-v", "remote -v"),
+    ("merge-ff-only", "merge --ff-only origin/develop"),
+    ("merge-no-ff-then-ff-only", "merge --no-ff --ff-only origin/develop"),
+    ("version", "--version"),
+]
+
+
+@pytest.mark.parametrize(("case", "args"), cases(PROTECTED_DENIED))
+def test_in_the_live_checkout_git_is_allow_listed(estate: Estate, case: str, args: str) -> None:
+    command = estate.fill("git -C <PF> " + args).rstrip()
+    r = guard_bash(estate, command)
+    assert_blocked(r, command)
+    # The same command with the live checkout as the working directory.
+    assert_blocked(guard_bash(estate, ("git " + args).rstrip(), str(estate.hub)), args)
+
+
+@pytest.mark.parametrize(("case", "args"), cases(PROTECTED_ALLOWED))
+def test_in_the_live_checkout_read_only_git_passes(estate: Estate, case: str, args: str) -> None:
+    command = estate.fill("git -C <PF> " + args)
+    assert_allowed(guard_bash(estate, command), command)
+    assert_allowed(guard_bash(estate, "git " + args, str(estate.hub)), args)
+
+
+def test_outside_the_live_checkout_git_is_not_restricted(estate: Estate) -> None:
+    for args in ("pull --rebase", "rebase origin/main", "cherry-pick abc", "ci -m x"):
+        assert_allowed(guard_bash(estate, "git " + args), args)
+
+
+def test_monitor_commands_are_guarded_too(estate: Estate) -> None:
+    # Monitor runs a shell command as Bash does, with the same tool_input.command.
+    assert_blocked(guard_bash(estate, "ruff format .", tool="Monitor"), "ruff format")
+    command = estate.fill("git -C <PF> reset --hard")
+    assert_blocked(guard_bash(estate, command, tool="Monitor"), command)
+    assert_allowed(guard_bash(estate, "ruff check .", tool="Monitor"), "ruff check")
+
+
 @pytest.mark.skipif(not IS_WINDOWS, reason="the /c/... spelling is Git Bash's, on a drive path")
 def test_git_with_the_msys_drive_spelling_is_refused(estate: Estate) -> None:
     for command in ("git -C <PM> commit -m x", "cd <PM> && git stash"):
@@ -650,6 +754,7 @@ def _commands(event: str, matcher_has: str) -> list[str]:
     [
         ("PreToolUse", "Bash", "guard-bash.sh"),
         ("PreToolUse", "PowerShell", "guard-bash.sh"),
+        ("PreToolUse", "Monitor", "guard-bash.sh"),
         ("PreToolUse", "Write", "guard-write.sh"),
         ("PreToolUse", "Edit", "guard-write.sh"),
         ("PreToolUse", "MultiEdit", "guard-write.sh"),
