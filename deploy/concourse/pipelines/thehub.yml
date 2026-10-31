@@ -443,6 +443,52 @@ anchors:
   # exact silence PS-12 exists to close. Not worth a third attempt.
   retry_hook: &retry_hook 2
 
+  # -- The uploader install, retried (TheHub #61007) -----------------------
+  #
+  # Every task that runs the mykronos uploader installs it from GitHub at
+  # MYKRONOS_REF, and `pip install git+https://...` is one `git clone` with no
+  # retry of its own. thehub/containers #209 lost that clone to a 21-second
+  # GitHub outage ("Failed to connect to github.com port 443 after 21067 ms"):
+  # no scan ran, yet the job reported `trivy=failed`, TheHub opened "Deploy
+  # stage 'trivy' failed", the check went red and the risk gate stopped for
+  # that commit. A network fault read exactly like a security gate failing.
+  #
+  # So every install runs THIS script, as `bash -c "$MYKRONOS_INSTALL_UPLOADER"`,
+  # instead of its own copy of the pip line: three attempts, 10s then 30s
+  # apart. It travels as a param (an env var holding the script) because an
+  # anchor cannot name part of a block scalar, and TheHub's tasks have no
+  # mykronos checkout to run a script file from. `mykronos_env` carries it;
+  # a task that does not merge that anchor names it itself.
+  # backend/tests/test_uploader_install_retry.py fails on any install that
+  # does not come through here.
+  #
+  # When the last attempt fails it exits 75 (EX_TEMPFAIL) and, if the task
+  # declares an `infra` output, writes the reason to infra/reason. The job's
+  # failure hooks read that and report `errored`, not `failed`, to TheHub and
+  # `cancelled`, not `failure`, to the GitHub check, saying no scan ran.
+  # ONLY a task that runs before anything in its job reaches a verdict may
+  # declare `infra`: a marker left by an upload that follows a real failing
+  # scan would launder that failure into an outage.
+  #
+  # Identical in every pipeline file; the test holds them to one text.
+  install_uploader: &install_uploader |
+    set -u
+    spec="mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+    attempt=1
+    for wait_s in 10 30; do
+      pip install --quiet "$spec" && exit 0
+      echo "uploader install: attempt ${attempt} of 3 failed; retrying in ${wait_s}s (TheHub #61007)." >&2
+      sleep "$wait_s"
+      attempt=$((attempt + 1))
+    done
+    pip install --quiet "$spec" && exit 0
+    reason="INFRASTRUCTURE, NOT A VERDICT: the mykronos uploader could not be installed from GitHub at ${MYKRONOS_REF} after 3 attempts, so no scan ran to a verdict and nothing on this commit was judged. Re-run the job once GitHub is reachable."
+    echo "::error:: ${reason}" >&2
+    for dir in infra ../infra; do
+      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+    done
+    exit 75
+
   # The notifier's credentials, hoisted into their own anchor for the same
   # reason `hub_params` exists: the `on_error:` path now passes an extra param
   # (OUTCOME below), and a step-level `params:` that named only that would be
@@ -480,6 +526,7 @@ anchors:
   # records it on the ScanRun. An env var rather than `--job`, so an uploader
   # pinned at an older MYKRONOS_REF ignores it instead of failing to parse.
   mykronos_env: &mykronos_env
+    MYKRONOS_INSTALL_UPLOADER: *install_uploader
     MYKRONOS_URL: ((mykronos-url))
     MYKRONOS_TOKEN: ((thehub-ingestion-token))
     MYKRONOS_REF: ((mykronos-ref))
@@ -598,6 +645,8 @@ anchors:
     task: report-check-run
     container_limits: {cpu: 512}
     # PS-7. Three attempts of 45s plus two 5s delays is 145s; 5m is twice that.
+    # [#61007] The `cancelled` -> `failure` fallback posts a second time only
+    # after an HTTP refusal (curl 22), which returns in well under 45s.
     timeout: 5m
     config:
       platform: linux
@@ -611,6 +660,9 @@ anchors:
       # runs and says why it could not report.
       inputs:
         - { name: source, optional: true }
+        # [#61007] infra/reason means the job stopped on an outage before it
+        # judged anything (see `install_uploader`). Optional, like `source`.
+        - { name: infra, optional: true }
       params: *check_params
       run:
         path: sh
@@ -634,24 +686,55 @@ anchors:
               exit 1
             fi
 
-            if [ "${PHASE:-}" = "start" ]; then
-              CONCLUSION_JSON=null
-            else
-              CONCLUSION_JSON="\"${CONCLUSION:-}\""
+            # [#61007] A failure that left infra/reason never reached a
+            # verdict: the check says `cancelled` ("could not run, nothing was
+            # judged"), not `failure`. GitHub still counts it as not passing.
+            INFRA=0
+            if [ "${PHASE:-}" = "end" ] && [ "${CONCLUSION:-}" = "failure" ] && [ -s infra/reason ]; then
+              INFRA=1
+              CONCLUSION=cancelled
+              echo "Infrastructure fault, not a verdict: reporting cancelled, not failure."
+              cat infra/reason
             fi
-            # Every value is fixed by this file or is the hex sha checked
-            # above, so nothing here needs escaping.
-            BODY=$(printf '{"repo_full_name":"%s","commit_sha":"%s","job":"%s","phase":"%s","conclusion":%s}' \
-              "$REPO_FULL_NAME" "$SHA" "$JOB" "$PHASE" "$CONCLUSION_JSON")
+            body_for() {
+              if [ "${PHASE:-}" = "start" ]; then
+                CONCLUSION_JSON=null
+              else
+                CONCLUSION_JSON="\"$1\""
+              fi
+              # Every value is fixed by this file or is the hex sha checked
+              # above, so nothing here needs escaping.
+              printf '{"repo_full_name":"%s","commit_sha":"%s","job":"%s","phase":"%s","conclusion":%s}' \
+                "$REPO_FULL_NAME" "$SHA" "$JOB" "$PHASE" "$CONCLUSION_JSON"
+            }
+            post_check() {
+              curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 45 \
+                --retry 2 --retry-delay 5 --retry-connrefused \
+                -X POST \
+                -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$1" "$MYKRONOS_URL/api/ingest/check-runs"
+            }
 
-            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 45 \
-              --retry 2 --retry-delay 5 --retry-connrefused \
-              -X POST \
-              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "$BODY" "$MYKRONOS_URL/api/ingest/check-runs"
+            rc=0
+            post_check "$(body_for "${CONCLUSION:-}")" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              # A Mykronos older than #61007 refuses `cancelled` with a 422
+              # (curl 22). Then say `failure`, as before, rather than leave
+              # the check in progress: a red check is wrong about why, a
+              # pending one is wrong about whether anything is still running.
+              # Any other refusal, or no answer at all, fails the step as it
+              # always did.
+              if [ "$INFRA" != "1" ] || [ "$rc" -ne 22 ]; then
+                exit "$rc"
+              fi
+              echo
+              echo "Mykronos refused 'cancelled'; reporting failure instead."
+              CONCLUSION=failure
+              post_check "$(body_for failure)"
+            fi
             echo
-            echo "Reported ${PHASE} for ${JOB} on ${SHA}."
+            echo "Reported ${PHASE} ${CONCLUSION:-} for ${JOB} on ${SHA}."
 
   # -- Reporting back into TheHub (spec 16 section 13) --------------------
   #
@@ -742,6 +825,11 @@ anchors:
         # `notify/message.txt` already relies on. Optional: most jobs write
         # none, and their failure reports carry the link and exit_code 1.
         - { name: hub_log, optional: true }
+        # [#61007] Written by `install_uploader` when the uploader could not
+        # be installed, and only in a task that runs before its job judges
+        # anything. Optional: absent or empty means "no infrastructure fault
+        # to report", and the report goes exactly as it did.
+        - { name: infra, optional: true }
       run:
         path: bash
         args:
@@ -757,6 +845,22 @@ anchors:
             # note at the top of `anchors:`.
             echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
             apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null 2>&1
+
+            # [#61007] AN OUTAGE IS NOT A FAILED GATE. containers #209 reported
+            # `trivy=failed` because a 21-second GitHub outage stopped the
+            # uploader install before any scan ran, and TheHub filed it as a
+            # failed security stage. When the task that died left
+            # infra/reason, this job never reached a verdict: report
+            # `errored` -- Concourse's "the build could not run", which TheHub
+            # already accepts -- with that reason first in log_tail and
+            # meta.infrastructure set, so TheHub can tell the two apart.
+            # Only `failed` is downgraded; every other status is untouched.
+            INFRA_REASON=""
+            if [ "$STATUS" = "failed" ] && [ -s infra/reason ]; then
+              INFRA_REASON=$(head -c 1000 infra/reason)
+              STATUS=errored
+              echo "[hub_report] infrastructure fault, not a verdict: reporting errored, not failed."
+            fi
 
             # Guarded, because the early failures are the ones worth reporting
             # and they are exactly the ones with no `source` on disk. An
@@ -845,11 +949,12 @@ anchors:
             BODY=$(jq -nc \
               --arg d "$DEPLOY_ID" --arg s "$STAGE" --arg st "$STATUS" \
               --arg sha "$SHA" --arg br "$SCANNED_BRANCH" --arg msg "$MSG" \
-              --arg env "${TARGET_ENV:-prod}" \
+              --arg env "${TARGET_ENV:-prod}" --arg infra "$INFRA_REASON" \
               '{deploy_id: $d, stage: $s, status: $st, git_sha: $sha,
                 git_branch: $br, commit_message: $msg, actor: "concourse",
                 target_env: $env,
-                meta: {source: "concourse", pipeline: "thehub"}}')
+                meta: ({source: "concourse", pipeline: "thehub"}
+                       + (if $infra == "" then {} else {infrastructure: true} end))}')
 
             # [#336] A FAILURE REPORT SAYS WHY, OR AT LEAST WHERE TO LOOK.
             # This reporter never sent `log_tail` or `exit_code` for any stage:
@@ -874,9 +979,16 @@ anchors:
               fi
               if [ -n "$RC_FILE" ] && [ "$RC_FILE" != "0" ]; then
                 EXIT_CODE=$((10#$RC_FILE))
+              elif [ -n "$INFRA_REASON" ]; then
+                # install_uploader's own exit status (EX_TEMPFAIL).
+                EXIT_CODE=75
               fi
               JOB_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-thehub}/jobs/${JOB:-}"
               LOG_TAIL="Concourse ${JOB:-<job not passed>} $STATUS (newest build): $JOB_URL"
+              if [ -n "$INFRA_REASON" ]; then
+                LOG_TAIL="$INFRA_REASON
+            $LOG_TAIL"
+              fi
               if [ -s hub_log/output.log ]; then
                 LOG_TAIL="$LOG_TAIL
             --- last 60 lines of the failing task's output ---
@@ -2648,7 +2760,7 @@ jobs:
                   fi
                 fi
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 upload_rc=0
                 MYKRONOS_JOB=unit python -m mykronos.upload \
@@ -2785,7 +2897,7 @@ jobs:
                 rc=0
                 python /tmp/check_links.py . --junit-xml=../results/qa.xml || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 upload_rc=0
                 MYKRONOS_JOB=qa python -m mykronos.upload \
                   --capability qa --tool junit \
@@ -3007,6 +3119,7 @@ jobs:
           MYKRONOS_REF: ((mykronos-ref))
           SCANNED_BRANCH: ((thehub-branch))
           SOURCE_DEPLOY_KEY: ((source-deploy-key))
+          MYKRONOS_INSTALL_UPLOADER: *install_uploader
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -3067,7 +3180,7 @@ jobs:
                 /tmp/gitleaks detect --source . --log-opts="--full-history --all" --report-format json \
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=secrets python -m mykronos.upload \
                   --capability secrets --tool gitleaks \
@@ -3193,7 +3306,7 @@ jobs:
                   exit "$rc"
                 fi
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=sast python -m mykronos.upload \
                   --capability sast --tool semgrep \
@@ -3278,7 +3391,7 @@ jobs:
                     # #59976: apt must use IPv4 on this host (see semgrep above).
                     echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                     apt-get update -qq && apt-get install -y -qq git >/dev/null
-                    pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
                     cd source
                     MYKRONOS_JOB=sast python -m mykronos.upload \
                       --capability sast --tool psscriptanalyzer \
@@ -3517,7 +3630,7 @@ jobs:
                 # ScanRun's `failure` status is what says the picture is
                 # incomplete.
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=dependencies python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
@@ -3581,7 +3694,7 @@ jobs:
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 SHA=$(git -C source rev-parse HEAD 2>/dev/null || echo unknown)
@@ -3770,7 +3883,10 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: estate }]
+          # [#61007] `infra`: the uploader install below runs before this job
+          # judges anything, so its failure is an outage, not a verdict, and
+          # the job's failure hooks report it that way. See `install_uploader`.
+          outputs: [{ name: estate }, { name: infra }]
           run:
             path: bash
             args:
@@ -3782,7 +3898,7 @@ jobs:
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 # --set, not the params alone: estate_images ignores the process
                 # environment unless told otherwise, so REGISTRY above reached
                 # nothing and containers 189 (2026-10-15) asked for localhost.
@@ -3949,7 +4065,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   # TheHub #60929: stamp the thehub image's report with the
                   # build SHA it records, so the adapter reports an image that
@@ -4546,7 +4662,7 @@ jobs:
                   echo "The committed inventory matches the deployed API."
                 fi
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -m mykronos.junit_stage \
                   --out ../results/api-inventory.xml --suite api-inventory \
                   --case "inventory:${rc}:/tmp/inventory.txt"
@@ -4639,7 +4755,10 @@ jobs:
           inputs: [{ name: source }]
           # [#336] hub_log is read by the `hub_report` failure hook: this
           # task's own output and exit status, so a red suite reports why.
-          outputs: [{ name: results }, { name: hub_log }]
+          # [#61007] `infra`: the uploader install runs before pytest, so an
+          # install outage here judged nothing and reports as one. See
+          # `install_uploader`.
+          outputs: [{ name: results }, { name: hub_log }, { name: infra }]
           run:
             path: bash
             args:
@@ -4663,7 +4782,8 @@ jobs:
                   exit 0
                 fi
 
-                pip install --quiet pytest "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                pip install --quiet pytest
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
 
                 # `set +e`: pytest's exit code is the verdict and must survive
                 # to the upload below (see `dependencies` for the pipefail trap).
@@ -5231,7 +5351,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
@@ -5375,7 +5495,7 @@ jobs:
                 # failure on top of a real one.
                 (
                   set +e
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   mkdir -p ../results
                   python -m mykronos.junit_stage \
                     --out ../results/prompt-evals.xml --suite prompt-evals \
@@ -6567,7 +6687,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                   # Cloud findings attach to a resource in a subscription, not to
@@ -6655,12 +6775,16 @@ jobs:
         timeout: 10m
         image: python
         params:
+          MYKRONOS_INSTALL_UPLOADER: *install_uploader
           MYKRONOS_REF: ((mykronos-ref))
           REGISTRY: ((registry))
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: refresh }]
+          # [#61007] `infra`: the uploader install below runs before this job
+          # judges anything, so its failure is an outage, not a verdict, and
+          # the job's failure hooks report it that way. See `install_uploader`.
+          outputs: [{ name: refresh }, { name: infra }]
           run:
             path: bash
             args:
@@ -6669,7 +6793,7 @@ jobs:
                 # #59976: apt resolves deb.debian.org to IPv6 only on this host.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 DATE=$(date -u +%Y%m%d)
                 printf '%s' "$DATE" > refresh/date
                 python -m mykronos.image_refresh plan --root source --date "$DATE" \
@@ -6749,6 +6873,7 @@ jobs:
         timeout: 10m
         image: python
         params:
+          MYKRONOS_INSTALL_UPLOADER: *install_uploader
           MYKRONOS_REF: ((mykronos-ref))
         config:
           platform: linux
@@ -6761,7 +6886,7 @@ jobs:
               - |
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -m mykronos.image_refresh decide --plan refresh/plan.tsv \
                   --reports reports --output verdict/verdict.json
                 cp refresh/date refresh/plan.tsv verdict/
@@ -7240,7 +7365,7 @@ jobs:
                 mkdir -p results
                 python check_ai.py source --sarif results/ai.sarif
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 upload_rc=0
                 MYKRONOS_JOB=ai-models python -m mykronos.upload \

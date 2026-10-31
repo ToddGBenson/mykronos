@@ -278,6 +278,52 @@ anchors:
   # exact silence PS-12 exists to close. Not worth a third attempt.
   retry_hook: &retry_hook 2
 
+  # -- The uploader install, retried (TheHub #61007) -----------------------
+  #
+  # Every task that runs the mykronos uploader installs it from GitHub at
+  # MYKRONOS_REF, and `pip install git+https://...` is one `git clone` with no
+  # retry of its own. thehub/containers #209 lost that clone to a 21-second
+  # GitHub outage ("Failed to connect to github.com port 443 after 21067 ms"):
+  # no scan ran, yet the job reported `trivy=failed`, TheHub opened "Deploy
+  # stage 'trivy' failed", the check went red and the risk gate stopped for
+  # that commit. A network fault read exactly like a security gate failing.
+  #
+  # So every install runs THIS script, as `bash -c "$MYKRONOS_INSTALL_UPLOADER"`,
+  # instead of its own copy of the pip line: three attempts, 10s then 30s
+  # apart. It travels as a param (an env var holding the script) because an
+  # anchor cannot name part of a block scalar, and TheHub's tasks have no
+  # mykronos checkout to run a script file from. `mykronos_env` carries it;
+  # a task that does not merge that anchor names it itself.
+  # backend/tests/test_uploader_install_retry.py fails on any install that
+  # does not come through here.
+  #
+  # When the last attempt fails it exits 75 (EX_TEMPFAIL) and, if the task
+  # declares an `infra` output, writes the reason to infra/reason. The job's
+  # failure hooks read that and report `errored`, not `failed`, to TheHub and
+  # `cancelled`, not `failure`, to the GitHub check, saying no scan ran.
+  # ONLY a task that runs before anything in its job reaches a verdict may
+  # declare `infra`: a marker left by an upload that follows a real failing
+  # scan would launder that failure into an outage.
+  #
+  # Identical in every pipeline file; the test holds them to one text.
+  install_uploader: &install_uploader |
+    set -u
+    spec="mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+    attempt=1
+    for wait_s in 10 30; do
+      pip install --quiet "$spec" && exit 0
+      echo "uploader install: attempt ${attempt} of 3 failed; retrying in ${wait_s}s (TheHub #61007)." >&2
+      sleep "$wait_s"
+      attempt=$((attempt + 1))
+    done
+    pip install --quiet "$spec" && exit 0
+    reason="INFRASTRUCTURE, NOT A VERDICT: the mykronos uploader could not be installed from GitHub at ${MYKRONOS_REF} after 3 attempts, so no scan ran to a verdict and nothing on this commit was judged. Re-run the job once GitHub is reachable."
+    echo "::error:: ${reason}" >&2
+    for dir in infra ../infra; do
+      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+    done
+    exit 75
+
   # The notifier's credentials, hoisted into their own anchor for the same
   # reason `hub_params` exists: the `on_error:` path now passes an extra param
   # (OUTCOME below), and a step-level `params:` that named only that would be
@@ -444,6 +490,7 @@ anchors:
   # records it on the ScanRun. An env var rather than `--job`, so an uploader
   # pinned at an older MYKRONOS_REF ignores it instead of failing to parse.
   mykronos_env: &mykronos_env
+    MYKRONOS_INSTALL_UPLOADER: *install_uploader
     MYKRONOS_URL: ((mykronos-url))
     MYKRONOS_TOKEN: ((mykronos-ingestion-token))
     MYKRONOS_REF: ((mykronos-ref))
@@ -695,7 +742,7 @@ jobs:
                 # The pinned package, installed exactly as every scanning task
                 # installs it -- then introspected from this checkout, which is
                 # the only place the two versions can be compared.
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python scripts/check_pinned_ref.py
 
   - name: unit
@@ -788,7 +835,7 @@ jobs:
                 # (It was on the Actions unit lane until D-118 retired that lane.)
                 python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 # `git -C ..`: this shell is in source/backend, so the repo
                 # root is one level up, not two. `../..` reached the task
@@ -896,7 +943,7 @@ jobs:
                   --cov-report=xml:../../results/coverage.xml \
                   --junitxml=../../results/unit.xml || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 # Uploaded as `unit`, because that is the capability whose
                 # coverage this is. The adapter rglobs the results directory
                 # and merges both files into one run (spec 31 §4), so the
@@ -1010,7 +1057,7 @@ jobs:
                   --case "ruff:${rc_ruff}:/tmp/ruff.txt" \
                   --case "mypy:${rc_mypy}:/tmp/mypy.txt"
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 upload_rc=0
                 MYKRONOS_JOB=lint-and-types python -m mykronos.upload \
                   --capability qa --tool junit \
@@ -1075,7 +1122,7 @@ jobs:
                 rc=0
                 python scripts/check_links.py . --junit-xml=../results/qa.xml || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 upload_rc=0
                 MYKRONOS_JOB=qa-spec-links python -m mykronos.upload                   --capability qa --tool junit                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || upload_rc=$?
@@ -1242,7 +1289,7 @@ jobs:
                     --case "test:$(rc_of test):verdict/test.txt" \
                     --case "build:$(rc_of build):verdict/build.txt"
 
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   MYKRONOS_JOB=frontend python -m mykronos.upload \
                     --capability qa --tool junit \
                     --results-path results \
@@ -1342,7 +1389,7 @@ jobs:
                 /tmp/gitleaks detect --source . --log-opts="--full-history --all" --report-format json \
                   --report-path /tmp/results/gitleaks.json --redact --exit-code 0 --no-banner || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=secrets python -m mykronos.upload \
                   --capability secrets --tool gitleaks \
@@ -1512,7 +1559,7 @@ jobs:
                     sys.exit(1)
                 PY
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=dependencies python -m mykronos.upload \
                   --capability atlas --tool osv-scanner \
@@ -1562,7 +1609,7 @@ jobs:
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 SHA=$(git -C source rev-parse HEAD)
@@ -1750,7 +1797,7 @@ jobs:
                 rc=0
                 python scripts/check_ai.py . --sarif=../results/ai.sarif || rc=$?
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=ai python -m mykronos.upload                   --capability ai --tool mykronos-ai-checks                   --results-path ../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git rev-parse HEAD)" --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false
 
@@ -1831,7 +1878,7 @@ jobs:
                   exit "$rc"
                 fi
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                 MYKRONOS_JOB=sast python -m mykronos.upload \
                   --capability sast --tool semgrep \
@@ -1988,7 +2035,7 @@ jobs:
                     # #59976: see the note at the top of `anchors:`.
                     echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                     apt-get update -qq && apt-get install -y -qq git >/dev/null
-                    pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
                     python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                     cd source
                     MYKRONOS_JOB=sast python -m mykronos.upload \
@@ -2183,7 +2230,7 @@ jobs:
                 # conformance test rather than by a second outage.
                 GIT_SSH_COMMAND='ssh -o BatchMode=yes'                   git fetch --quiet origin "$BASE" || true
 
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 # TheHub #60851: whether the pull request merged, for the
@@ -2362,7 +2409,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
@@ -3306,7 +3353,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   # #666: stamp each report with the role its compose file
                   # declared, from this commit's source, so a tool image's
@@ -3855,7 +3902,7 @@ jobs:
                 fi
 
                 echo "== Uploading =="
-                pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
                 func_upload_rc=0
