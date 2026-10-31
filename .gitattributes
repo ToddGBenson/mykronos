@@ -7,3 +7,6 @@
 # queue reads the result back (scripts/approval_queue.py check-decisions)
 # before it pushes anything.
 docs/DECISIONS.md merge=union
+
+# The harness hooks run under bash, which fails on a CRLF line ending (TheHub #61099).
+.claude/hooks/*.sh text eol=lf
