@@ -865,6 +865,27 @@ class TestTheBacklogIsReported:
         # Past its retry date the retired row is queued again, not given up.
         assert later == threat_intel.VectorBacklog(vectors=3, refs=1, given_up=0)
 
+    def test_the_retry_boundary_is_strict(self, session) -> None:
+        # _askable is `nvd_failed_at < now - NVD_RETRY_DAYS`: at exactly the
+        # retry date the row is still given up, and one second later it is not.
+        failed = datetime(2026, 10, 1)
+        session.add(
+            ThreatIntelMatch(
+                cve_id="CVE-2026-00003",
+                nvd_failures=threat_intel.NVD_MAX_FAILURES,
+                nvd_failed_at=failed,
+            )
+        )
+        session.flush()
+        edge = failed + timedelta(days=threat_intel.NVD_RETRY_DAYS)
+        after = edge + timedelta(seconds=1)
+
+        inside = threat_intel.vector_backlog(session, now=lambda: edge)
+        past = threat_intel.vector_backlog(session, now=lambda: after)
+
+        assert inside == threat_intel.VectorBacklog(vectors=0, refs=0, given_up=1)
+        assert past == threat_intel.VectorBacklog(vectors=1, refs=0, given_up=0)
+
     def test_the_sentence_says_how_many_and_how_long(self) -> None:
         backlog = threat_intel.VectorBacklog(vectors=3_603, refs=1_650, given_up=4)
 
