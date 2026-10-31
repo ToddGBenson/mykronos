@@ -57,6 +57,9 @@ MUST_BE_PASSABLE = (
     # TheHub #60918: the probe's per-origin tokens never reached the
     # container, so no configured probe could read build.sha.
     "MYKRONOS_DEPLOYMENT_PROBE_TOKENS",
+    # TheHub #61034: unpassed, a key set in backend/.env would leave the
+    # vector lookup on the unauthenticated budget in the container.
+    "MYKRONOS_NVD_API_KEY",
 )
 
 EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"

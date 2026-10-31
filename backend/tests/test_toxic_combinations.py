@@ -2,7 +2,9 @@
 
 Operator decisions (2026-09-28) these pin:
 - a critical combination forces `no_go`; high and medium ones add points;
-- accepted findings still count, so accepting half a pair cannot hide it;
+- (superseded by TheHub #60965, 2026-10-23) a member dispositioned
+  `false_positive` stops counting; an `accepted_risk` one stops counting only
+  for a combination its acceptance's frozen evidence named (TheHub #61013);
 - a combination is worse than its worst member, and critical when KEV-listed;
 - "none found" names the rules that could not have fired.
 """
@@ -103,7 +105,7 @@ class TestTheRiskDecision:
         )
         assert "Critical toxic combination" in render_reasoning(decision.inputs_snapshot)
 
-    def test_accepting_half_the_pair_does_not_hide_it(
+    def test_accepting_half_the_pair_directly_does_not_close_it(
         self, client, auth, admin_auth, run_compaction, catalog, policy
     ) -> None:
         _seed(client, auth, run_compaction, _pair("medium", "medium"))
@@ -125,8 +127,13 @@ class TestTheRiskDecision:
 
         decision = OracleEngine(catalog, policy).evaluate(REPO)
 
-        combo = decision.inputs_snapshot["toxic_combinations"]["combinations"][0]
-        assert combo["partly_accepted"] is True
+        # TheHub #61013: an accepted member dissolves a combination only when
+        # its acceptance's frozen evidence named it. A direct disposition has
+        # no record and no evidence, so the pair stays (fail closed); the
+        # governed path is `tests/test_toxic_acceptance_premise.py`.
+        snap = decision.inputs_snapshot["toxic_combinations"]
+        assert snap["count"] == 1
+        assert snap["combinations"][0]["severity"] == "high"
         assert _terms(decision)["toxic_combinations"] == pytest.approx(25)
 
     def test_the_policy_can_keep_it_reported_but_out_of_the_score(

@@ -15,12 +15,12 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import premise_monitor
+from mykronos import premise_monitor, risk_evidence
 from mykronos import risk_acceptance as ra
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.approvals.engine import ApprovalError
 from mykronos.approvals.policy import cached_policy
-from mykronos.db.models import EnvironmentalScore, RiskAcceptance
+from mykronos.db.models import ApprovalRequest, RiskAcceptance
 
 router = APIRouter(prefix="/api/risk-acceptances", tags=["risk-acceptance"])
 
@@ -105,15 +105,9 @@ def environmental_scores(session: Any, finding_ids: list[str]) -> dict[str, Any]
     a row among the ones shown.
     """
     shown = sorted(finding_ids)[:SCORES_SHOWN]
-    rows = (
-        session.scalars(
-            select(EnvironmentalScore)
-            .where(EnvironmentalScore.finding_id.in_(shown))
-            .order_by(EnvironmentalScore.finding_id)
-        ).all()
-        if shown
-        else []
-    )
+    # The shared evidence model's read (TheHub #60901), as the Oracle makes it.
+    by_id = risk_evidence.environmental_scores(session, finding_ids=shown)
+    rows = [by_id[fid] for fid in sorted(by_id)]
     items = [
         {
             "finding_id": row.finding_id,
@@ -140,6 +134,18 @@ def environmental_scores(session: Any, finding_ids: list[str]) -> dict[str, Any]
         "scored": len(items),
         "items": items,
     }
+
+
+def _decided_on(session: Any, record: RiskAcceptance) -> dict[str, Any] | None:
+    """The `risk_evidence` block the approver signed, or None for a record
+    proposed before the block existed."""
+    if not record.approval_request_id:
+        return None
+    request = session.get(ApprovalRequest, record.approval_request_id)
+    if request is None:
+        return None
+    block = (request.evidence or {}).get("risk_evidence")
+    return dict(block) if isinstance(block, dict) else None
 
 
 def _writer(principal: Any) -> None:
@@ -245,7 +251,18 @@ async def get_acceptance(
             # holds / failed / unverified per premise, with the evidence.
             "premise_checks": [c.as_dict() for c in checks],
             "premise_fresh_days": fresh_days,
+            # Each compensating control as the observations read it today
+            # (TheHub #60902): verified / contradicted / unverified.
+            "control_checks": ra.check_controls(
+                session,
+                record.repo_full_name,
+                list(record.compensating_controls or []),
+                fresh_days=fresh_days,
+            ),
             "scores": environmental_scores(session, list(record.covered_finding_ids or [])),
+            # What this decision was approved on (TheHub #60901): the shared
+            # evidence model's block, frozen into the approval's evidence.
+            "risk_evidence": _decided_on(session, record),
         }
 
 

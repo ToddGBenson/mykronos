@@ -197,6 +197,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    nvd_vector_interval_seconds: int = Field(
+        default=3_600,
+        ge=60,
+        description=(
+            "The NVD CVSS-vector lookup (TheHub #61034). Hourly, each run a "
+            "bounded batch spaced under NVD's published rate limit, so a "
+            "backlog drains in days instead of the half-year it took as a step "
+            "of the daily threat-intel job."
+        ),
+    )
+
+    nvd_api_key: str = Field(
+        default="",
+        repr=False,
+        description=(
+            "Optional NVD API key, which raises NVD's rate limit from 5 to 50 "
+            "requests per 30 seconds and the lookup's batch with it. Empty "
+            "falls back to NVD_API_KEY; with neither, the unauthenticated "
+            "budget applies."
+        ),
+    )
+
     weekly_digest_interval_seconds: int = Field(
         default=604_800,
         ge=1,
@@ -451,6 +473,26 @@ class Settings(BaseSettings):
             "is re-read and its rows synced (TheHub #60825, spec 28 §8). Six "
             "hours, like governance: the file changes by pull request, and "
             "`POST /repos/{id}/threat-model/sync` re-reads one on demand."
+        ),
+    )
+    threat_model_draft_prs_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the `threat-model-draft` job opens pull requests (TheHub "
+            "#60900): a drafted `.sdlc/threat-model.yaml` for a repository with "
+            "none, and drift as additions to one that exists. Off unless opted "
+            "in, because it writes to every onboarded repository; "
+            "`POST /repos/{id}/threat-model/draft/pull-request` proposes one on "
+            "demand either way."
+        ),
+    )
+    threat_model_draft_interval_seconds: int = Field(
+        default=604_800,
+        ge=3_600,
+        description=(
+            "How often the `threat-model-draft` job compares each repository's "
+            "evidence with its declared threat model (TheHub #60900). Weekly: "
+            "drift is a review, not an alert."
         ),
     )
     environment_rescore_interval_seconds: int = Field(
@@ -749,12 +791,60 @@ class Settings(BaseSettings):
         ),
     )
 
+    ci_stall_interval_seconds: int = Field(
+        default=600,
+        ge=60,
+        description=(
+            "How often the ci-stall job (mykronos.ci_stall) reads Concourse's "
+            "job summaries for many lanes erroring together, the shape of a "
+            "dead worker after a restart (TheHub #60975). It notifies once per "
+            "stall. Scheduled only when concourse_url is set."
+        ),
+    )
+
     dormant_lanes_threshold_hours: float = Field(
         default=72.0,
         gt=0,
         description=(
             "How long a Concourse job may be paused, or red on its last "
             "build, before the daily dormant-lanes notice lists it."
+        ),
+    )
+
+    red_main_interval_seconds: int = Field(
+        default=300,
+        ge=60,
+        description=(
+            "How often the red-main poll (mykronos.red_main) reads each gating "
+            "lane's latest build and announces a lane that went red on main, or "
+            "came back green, once (TheHub #60973). One anonymous job-list read "
+            "per configured pipeline per poll; commits are resolved only on a "
+            "transition. Scheduled only when concourse_url is set."
+        ),
+    )
+
+    red_main_gating_lanes: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "ToddGBenson/mykronos": ["unit", "lint-and-types", "pin-check"],
+        },
+        description=(
+            "Per repository, the Concourse jobs whose red build on main is "
+            "announced by the red-main poll. The pipeline is the repository "
+            "name lower-cased. A JSON object in the environment, for example "
+            '{"owner/repo": ["unit", "lint"]}; an empty object turns the '
+            "announcements off."
+        ),
+    )
+
+    oracle_read_coverage_threshold: float = Field(
+        default=0.8,
+        ge=0,
+        le=1,
+        description=(
+            "The share of a repository's application source (0 to 1) its SAST "
+            "analysers must read before an Oracle verdict stops carrying a "
+            "read-coverage confidence note (TheHub #60962). The note never "
+            "changes the verdict; coverage that cannot be read is always noted."
         ),
     )
 
@@ -940,7 +1030,9 @@ class Settings(BaseSettings):
             "Where a browser reaches this dashboard, e.g. `https://mykronos."
             "example`. The briefing DM links to `<dashboard_url>/briefing`; a "
             "DM with no link to the page it summarises is skipped rather than "
-            "sent."
+            "sent. The library-allowlist check run links each reported library "
+            "to `<dashboard_url>/libraries/request`; unset, it carries no links "
+            "and says so."
         ),
     )
 

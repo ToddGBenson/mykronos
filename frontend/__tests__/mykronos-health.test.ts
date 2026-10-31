@@ -54,4 +54,199 @@ describe("MyKronos Health (TheHub #60883)", () => {
     expect(html).not.toContain("Unreachable");
     expect(html).toContain("Healthy");
   });
+
+  const stallJobs = [
+    { pipeline: "keel", job: "sast", build: "7", started_at: "2026-10-23T17:20:00Z", url: null },
+    { pipeline: "keel", job: "sca", build: "7", started_at: "2026-10-23T17:21:00Z", url: null },
+    { pipeline: "keel", job: "iac", build: "7", started_at: "2026-10-23T17:22:00Z", url: null },
+  ];
+  const checklist = [
+    "Restart the Concourse workers",
+    "Check Vault is unsealed",
+    "Re-trigger the errored jobs",
+  ];
+
+  it("shows a Concourse stall as the first row, with its lanes and checklist (TheHub #60975)", async () => {
+    getPlatformHealth.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        degraded: true,
+        jobs: [{ name: "absences", status: "ok", detail: "fine", last_succeeded_at: null, consecutive_failures: 0 }],
+        dependencies: [{ name: "concourse", reachable: true, detail: "ok", configured: true }],
+        ci_stall: {
+          status: "red",
+          detail: "Concourse is stalled: 3 lanes errored within 60 minutes of each other.",
+          jobs: stallJobs,
+          checklist,
+          threshold: 3,
+          window_minutes: 60,
+          jobs_inspected: 79,
+          notified_at: null,
+        },
+        note: null,
+      },
+    });
+    const { default: PlatformHealthPage } = await import("../app/platform-health/page");
+    const html = renderToStaticMarkup(await PlatformHealthPage());
+    const stall = html.indexOf('data-testid="ci-stall"');
+    expect(stall).toBeGreaterThan(-1);
+    expect(stall).toBeLessThan(html.indexOf("Scheduled work"));
+    expect(html).toContain("Stalled");
+    expect(html).toContain("keel/sast");
+    expect(html).toContain("2026-10-23 17:20 UTC");
+    for (const step of checklist) expect(html).toContain(step);
+  });
+
+  it("keeps a green ci_stall out of the first row", async () => {
+    getPlatformHealth.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        degraded: false,
+        jobs: [],
+        dependencies: [{ name: "concourse", reachable: true, detail: "ok", configured: true }],
+        ci_stall: {
+          status: "green",
+          detail: "1 unpaused lane(s) errored.",
+          jobs: stallJobs.slice(0, 1),
+          checklist,
+          threshold: 3,
+          window_minutes: 60,
+          jobs_inspected: 79,
+          notified_at: null,
+        },
+        note: null,
+      },
+    });
+    const { default: PlatformHealthPage } = await import("../app/platform-health/page");
+    const html = renderToStaticMarkup(await PlatformHealthPage());
+    const stall = html.indexOf('data-testid="ci-stall"');
+    expect(stall).toBeGreaterThan(html.indexOf("Scheduled work"));
+    expect(html).toContain("Not stalled");
+    expect(html).not.toContain("Restart the Concourse workers");
+  });
+
+  describe("Credentials (TheHub #60974)", () => {
+    const now = "2026-10-23T00:00:00Z";
+    const rows = [
+      {
+        kind: "ingestion_token",
+        repo_full_name: "example-org/due-service",
+        actor: null,
+        state: "due",
+        rotate_after: "2026-10-18T00:00:00Z",
+        expires_at: null,
+        days_until_due: -5,
+        action: "ignored by the page",
+      },
+      {
+        kind: "ingestion_token",
+        repo_full_name: "example-org/unverified-service",
+        actor: null,
+        state: "unverified",
+        rotate_after: "2027-01-19T00:00:00Z",
+        expires_at: null,
+        days_until_due: 88,
+        // The page's own wording wins: a backend that sent the wrong
+        // instruction must not get it rendered on an unverified row.
+        action: "rotate now",
+      },
+      {
+        kind: "agent_credential",
+        repo_full_name: null,
+        actor: "agent:test-family:aaaa1111",
+        state: "expiring",
+        rotate_after: null,
+        expires_at: "2026-10-23T18:00:00Z",
+        days_until_due: 0.75,
+        action: "",
+      },
+    ];
+
+    async function render(credentials: unknown) {
+      getPlatformHealth.mockResolvedValueOnce({
+        ok: true,
+        data: { degraded: false, jobs: [], dependencies: [], credentials, note: now },
+      });
+      const { default: PlatformHealthPage } = await import("../app/platform-health/page");
+      return renderToStaticMarkup(await PlatformHealthPage());
+    }
+
+    function row(html: string, state: string): string {
+      const match = html.match(
+        new RegExp(`<li data-credential-state="${state}"[^>]*>([\\s\\S]*?)</li>`),
+      );
+      expect(match, `no ${state} row rendered`).not.toBeNull();
+      return match![1];
+    }
+
+    it("renders a Credentials section", async () => {
+      const html = await render(rows);
+      expect(html).toContain("Credentials");
+      expect(html).toContain("3 credentials need attention");
+    });
+
+    it("tells the operator to rotate a due token by hand", async () => {
+      const due = row(await render(rows), "due");
+      expect(due).toContain("example-org/due-service");
+      expect(due).toContain(
+        "rotate by hand (Concourse-scanned repos cannot receive a rotated token, D-086)",
+      );
+    });
+
+    it("never tells the operator to rotate an unverified token (D-097)", async () => {
+      const unverified = row(await render(rows), "unverified");
+      expect(unverified).toContain("example-org/unverified-service");
+      expect(unverified).toContain("check that scans are arriving - do not rotate (D-097)");
+      // "rotate" may appear only as the thing not to do.
+      expect(unverified.replaceAll("do not rotate", "").toLowerCase()).not.toMatch(/rotat/);
+    });
+
+    it("shows no due date or overdue count on an unverified row (D-097, #1019 review)", async () => {
+      // An unverified token past its rotate_after date: "due 2026-10-01 (22
+      // days overdue)" reads as a prompt to rotate, which D-097 forbids.
+      const overdueUnverified = {
+        ...rows[1],
+        rotate_after: "2026-10-01T00:00:00Z",
+        days_until_due: -22,
+      };
+      const unverified = row(await render([overdueUnverified]), "unverified");
+      expect(unverified).toContain("example-org/unverified-service");
+      expect(unverified).not.toContain("2026-10-01");
+      expect(unverified.toLowerCase()).not.toMatch(/overdue|\bdue\b/);
+      expect(unverified).toContain("check that scans are arriving - do not rotate (D-097)");
+    });
+
+    it("keeps the due date and overdue count on a due row", async () => {
+      const due = row(await render(rows), "due");
+      expect(due).toContain("2026-10-18");
+      expect(due).toContain("5 days overdue");
+    });
+
+    it("names a 24-hour agent window when nothing needs attention", async () => {
+      // TheHub #61052: the operator chose 24 hours over the 7 days #1019 shipped.
+      const html = await render([]);
+      expect(html).toContain("expires within 24 hours");
+      expect(html).not.toContain("7 days");
+      expect(html).not.toContain("14 days");
+    });
+
+    it("lists an expiring agent credential by actor and date", async () => {
+      const agent = row(await render(rows), "expiring");
+      expect(agent).toContain("agent:test-family:aaaa1111");
+      expect(agent).toContain("2026-10-23");
+      // Inside a 24-hour window the whole-day count is always 0 or 1, so the
+      // time left is given in hours.
+      expect(agent).toContain("in 18 hours");
+      expect(agent).not.toMatch(/in [01] days?/);
+      expect(agent.toLowerCase()).not.toMatch(/rotat/);
+    });
+
+    it("reads 0 credentials need attention when there are none", async () => {
+      expect(await render([])).toContain("0 credentials need attention");
+    });
+
+    it("reads 0 credentials need attention against a backend without the field", async () => {
+      expect(await render(undefined)).toContain("0 credentials need attention");
+    });
+  });
 });

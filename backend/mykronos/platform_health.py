@@ -28,8 +28,10 @@ without it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+
+from mykronos import ci_stall
 
 #: How far past its interval a job may drift before it is called late. Two
 #: whole intervals, not one: a job that runs on a timer inside a process which
@@ -63,6 +65,9 @@ class DependencyHealth:
 class PlatformHealth:
     jobs: list[JobHealth] = field(default_factory=list)
     dependencies: list[DependencyHealth] = field(default_factory=list)
+    #: Many Concourse lanes errored together (`ci_stall`, TheHub #60975). A
+    #: reachable Concourse whose builds all error is not a healthy one.
+    ci_stalled: bool = False
 
     @property
     def degraded(self) -> bool:
@@ -73,10 +78,25 @@ class PlatformHealth:
         not a problem, and the first minutes after every deploy would otherwise
         be red.
         """
-        return any(job.status in ("failing", "late") for job in self.jobs) or any(
-            dependency.configured and not dependency.reachable
-            for dependency in self.dependencies
+        return (
+            self.ci_stalled
+            or any(job.status in ("failing", "late") for job in self.jobs)
+            or any(
+                dependency.configured and not dependency.reachable
+                for dependency in self.dependencies
+            )
         )
+
+
+def assess_ci_stall(
+    payload: list[dict[str, Any]] | None, *, link: ci_stall.Link | None = None
+) -> ci_stall.CiStall:
+    """The `ci_stall` check (TheHub #60975), from the anonymous `/api/v1/jobs`
+    summaries. `None` - Concourse unreadable - is `unknown`, never green.
+    The rule and its reasons live in `mykronos.ci_stall`."""
+    if payload is None:
+        return ci_stall.unknown("Concourse's job list could not be read.")
+    return ci_stall.assess(payload, link=link)
 
 
 def assess_ingestion(
@@ -239,3 +259,108 @@ def _duration(seconds: int) -> str:
 
 def _ago(delta: timedelta) -> str:
     return _duration(int(delta.total_seconds()))
+
+
+#: How far ahead an agent credential's expiry is shown (TheHub #60974). 24
+#: hours, the operator's decision on TheHub #61052 (2026-10-27). #1019 shipped
+#: seven days, but the maximum agent TTL is also seven days
+#: (`agents.MAX_TTL_HOURS`), so a full-length credential was listed the moment
+#: it was issued; 24 hours lists only the ones about to stop working.
+AGENT_EXPIRY_WINDOW = timedelta(hours=24)
+
+CredentialState = Literal["due", "unverified", "expiring"]
+
+#: What each state asks of a person. Two ingestion-token states, kept apart as
+#: `briefing.TokenDelivery` requires: only `due` is a reason to rotate. An
+#: `unverified` token is a reason to check that scans arrive, and rotating one
+#: whose stored copy works is how a repository goes dark (D-097).
+CREDENTIAL_ACTIONS: dict[str, str] = {
+    "due": "rotate by hand (Concourse-scanned repos cannot receive a rotated token, D-086)",
+    "unverified": "check that scans are arriving - do not rotate (D-097)",
+    "expiring": "expires on its own; mint a new credential for the next run if one is needed",
+}
+
+
+@dataclass
+class CredentialAttention:
+    """One credential a person may need to act on: state and dates only.
+
+    Served on an internet-exposed dashboard, so nothing here identifies the
+    credential itself - no hash, no hash prefix, no token id, no label. A repo
+    name or an agent's actor name says *whose* credential it is, which is all
+    the action needs.
+    """
+
+    #: "ingestion_token" | "agent_credential"
+    kind: str
+    state: CredentialState
+    days_until_due: float
+    repo_full_name: str | None = None
+    actor: str | None = None
+    rotate_after: datetime | None = None
+    expires_at: datetime | None = None
+
+    @property
+    def action(self) -> str:
+        return CREDENTIAL_ACTIONS[self.state]
+
+
+def _days_between(now: datetime, then: datetime) -> float:
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    return (then - now).total_seconds() / 86400
+
+
+def credentials_needing_attention(db: Any, *, now: datetime) -> list[CredentialAttention]:
+    """Ingestion tokens left for a person, then agent credentials about to expire.
+
+    The ingestion-token half is the rotation sweep's own answer
+    (`jobs.deliveries_awaiting_operator`, #263), not a second opinion: a page
+    that recomputed "due" its own way could disagree with the job that acts on
+    it. The agent half lists credentials that still work and stop working
+    within `AGENT_EXPIRY_WINDOW`; a revoked or expired one needs nothing done.
+
+    Only the columns that are shown are read for agents, so the stored hash
+    never enters this function's result at all.
+    """
+    from sqlalchemy import select
+
+    from mykronos.db.models import AgentCredential
+    from mykronos.jobs import deliveries_awaiting_operator
+
+    rows: list[CredentialAttention] = []
+    tokens = deliveries_awaiting_operator(db)
+    # `due` first: an expired token stops working on a date.
+    for token in sorted(tokens, key=lambda t: (t.state != "due", t.repo_full_name)):
+        rows.append(
+            CredentialAttention(
+                kind="ingestion_token",
+                state="due" if token.state == "due" else "unverified",
+                days_until_due=_days_between(now, token.rotate_after),
+                repo_full_name=token.repo_full_name,
+                rotate_after=token.rotate_after,
+            )
+        )
+
+    horizon = now + AGENT_EXPIRY_WINDOW
+    with db.session() as session:
+        agents = session.execute(
+            select(AgentCredential.actor, AgentCredential.expires_at)
+            .where(AgentCredential.revoked_at.is_(None))
+            .where(AgentCredential.expires_at > now)
+            .where(AgentCredential.expires_at <= horizon)
+            .order_by(AgentCredential.expires_at, AgentCredential.actor)
+        ).all()
+    for actor, expires_at in agents:
+        rows.append(
+            CredentialAttention(
+                kind="agent_credential",
+                state="expiring",
+                days_until_due=_days_between(now, expires_at),
+                actor=actor,
+                expires_at=expires_at,
+            )
+        )
+    return rows

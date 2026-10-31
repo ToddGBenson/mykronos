@@ -13,7 +13,7 @@ import dataclasses
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -25,12 +25,14 @@ from sqlalchemy.orm import Session
 from mykronos import (
     briefing,
     briefing_sources,
+    ci_stall,
     composition,
     consult,
     control_observations,
     controls,
     cvss,
     environment,
+    exploitability,
     finding_disposition,
     finding_record,
     findings_export,
@@ -39,8 +41,10 @@ from mykronos import (
     incident,
     inventory,
     platform_health,
+    read_coverage,
     regression,
     reown,
+    rescore_panel,
     risk_profile_builder,
     ssdf,
     supply_chain,
@@ -77,6 +81,7 @@ from mykronos.ci import (
 from mykronos.ci import (
     browser_url as ci_browser_url,
 )
+from mykronos.ci_why import ConcourseWhyReader, explain_failures
 from mykronos.dashboard import (
     STRIDE_CATEGORIES,
     DashboardQueries,
@@ -88,11 +93,13 @@ from mykronos.db.models import (
     AutoTriageAction,
     CapabilityGrant,
     EnvironmentalScore,
+    GatingLaneState,
     JobRun,
     RepoControl,
     RepoOnboarding,
     RepoSurface,
     RiskProfile,
+    ThreatIntelMatch,
     capability_config_for,
 )
 from mykronos.deployments import (
@@ -113,8 +120,10 @@ from mykronos.logsafe import scrub
 from mykronos.maturity import assess as maturity_assess
 from mykronos.maturity import mean_time_to_fix, throughput, trend_series
 from mykronos.pull_requests import open_pull_requests
+from mykronos.read_coverage import ReadCoverage
 from mykronos.scan_run_report import ScanRunReport
 from mykronos.schemas import Capability, FindingStatus, Severity, utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +433,17 @@ class RankTermOut(BaseModel):
     detail: str
 
 
+ExploitVerdict = Literal[
+    "exploited",
+    "weaponized",
+    "public_poc",
+    "elevated_epss",
+    "no_known_exploit",
+    "not_checked",
+    "no_cve",
+]
+
+
 class TriageItem(BaseModel):
     """One row of the cross-portfolio work queue."""
 
@@ -443,6 +463,14 @@ class TriageItem(BaseModel):
     #: not the version running -- reading one as the other reported four HIGH
     #: advisories against a package no container had installed for months.
     version_basis: str | None = None
+    source_note: str | None = Field(
+        default=None,
+        description=(
+            "For an atlas finding read out of a committed SBOM document: its date, "
+            "its age at the scan and whether the manifests changed after it "
+            "(TheHub #60921). Null otherwise."
+        ),
+    )
     address: str | None = Field(
         default=None,
         description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",
@@ -491,6 +519,14 @@ class TriageItem(BaseModel):
         description="Null when cve_id is null — see FindingGroupOut's field for the same rule.",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
+    exploit_verdict: ExploitVerdict | None = Field(
+        default=None,
+        description=(
+            "The exploitability ladder (TheHub #60890): exploited (KEV), weaponized "
+            "(Metasploit), public_poc, elevated_epss, no_known_exploit, not_checked, "
+            "or no_cve. The finding record lists the sources behind it."
+        ),
+    )
     owner: str | None = Field(
         default=None, description="From CODEOWNERS or the risk profile (spec 24 §1)."
     )
@@ -644,6 +680,23 @@ class FindingOut(BaseModel):
     #: not the version running -- reading one as the other reported four HIGH
     #: advisories against a package no container had installed for months.
     version_basis: str | None = None
+    source_kind: str | None = Field(
+        default=None,
+        description=(
+            "What an atlas finding was read out of (TheHub #60921): `manifest` "
+            "(a requirements file, lockfile or package.json), `sbom_document` (a "
+            "committed CycloneDX or SPDX file) or `other`. Null for other "
+            "capabilities and for findings scanned before it was recorded."
+        ),
+    )
+    source_note: str | None = Field(
+        default=None,
+        description=(
+            "For a finding read out of a committed SBOM document: the document's "
+            "date, its age at the scan and whether the manifests changed after it. "
+            "Null otherwise. Filled on the detail and record routes only."
+        ),
+    )
     address: str | None = Field(
         default=None,
         description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",
@@ -790,6 +843,22 @@ def _split_commas(value: Any) -> Any:
 #: value is still validated against the list's item type, so a typo is a 422
 #: naming the allowed values rather than a silently empty list.
 CommaList = BeforeValidator(_split_commas)
+
+
+def _blank_is_unset(value: Any) -> Any:
+    """`?min_epss=` means the same as leaving `min_epss` out (TheHub #60964).
+
+    A form, a bookmark or a scanner sends every filter with nothing in it;
+    that is no filter, not a value to parse and refuse."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+#: Marks a single-valued query parameter as unset when it is blank. The
+#: parameter's own bounds go on its inner type (`Annotated[int, Field(ge=1)]
+#: | None`), where they apply to a value and never to the unset `None`.
+BlankIsUnset = BeforeValidator(_blank_is_unset)
 
 
 class PriorDispositionOut(BaseModel):
@@ -942,9 +1011,15 @@ class ToxicCombinationMemberOut(BaseModel):
     rule_id: str
     title: str
     severity: Severity
-    #: `accepted_risk` members count: accepting half a pair must not hide it.
+    #: Always a counting status: `false_positive` and `accepted_risk`
+    #: members no longer count toward a combination (TheHub #60965).
     status: str | None = None
     file_path: str | None = None
+    qualifies: str = Field(
+        default="",
+        description="Which half of the rule this member satisfies, and why: "
+        "the pattern it matched or the listed alert it is, and any severity floor.",
+    )
 
 
 class ToxicCombinationOut(BaseModel):
@@ -1691,7 +1766,11 @@ async def toxic_combinations(
     """Toxic combinations across the estate (spec 08 §5), worst first.
 
     The same detection and severity the Oracle's risk decision uses
-    (`mykronos.toxic`), including combinations with an accepted member.
+    (`mykronos.toxic`). A finding dispositioned `false_positive` does not
+    count toward a combination. An `accepted_risk` member dissolves one only
+    when the acceptance's frozen evidence named it; a combination formed
+    after the acceptance is listed, with `unanticipated_acceptances` naming
+    the acceptances whose premise it fails.
     """
     from mykronos import toxic
     from mykronos.oracle.policy import load_policy
@@ -2229,6 +2308,40 @@ async def repo_insider_risk(
     )
 
 
+class CiFailureWhyOut(BaseModel):
+    """Why one failing job failed, as its CI says (TheHub #60913)."""
+
+    source: Literal["concourse", "github"]
+    step: str | None = Field(
+        default=None,
+        description=(
+            "The step that failed: a Concourse step name, or 'job: step' for a "
+            "GitHub Actions run."
+        ),
+    )
+    exit_code: int | None = Field(default=None, description="The step's exit code, if known.")
+    messages: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Up to three error lines, trimmed and scrubbed: the GitHub check "
+            "annotations the failed job raised, or Concourse's own error "
+            "events. Never build log output."
+        ),
+    )
+    url: str | None = Field(default=None, description="The failed build, job or run.")
+    note: str | None = Field(
+        default=None,
+        description="A caveat about what is shown, e.g. that the step raised no error line.",
+    )
+    unavailable: str | None = Field(
+        default=None,
+        description=(
+            "Why no reason could be read, when none could; shown as "
+            "'reason unavailable: <this>'."
+        ),
+    )
+
+
 class CiJobOut(BaseModel):
     name: str
     status: str | None = Field(
@@ -2242,6 +2355,13 @@ class CiJobOut(BaseModel):
     build_name: str | None = None
     build_url: str | None = None
     finished_at: datetime | None = None
+    why: CiFailureWhyOut | None = Field(
+        default=None,
+        description=(
+            "Why this job's last build failed, for a job whose status is "
+            "failed; null for every other job (TheHub #60913)."
+        ),
+    )
 
 
 class CiReportingOut(BaseModel):
@@ -2283,6 +2403,29 @@ class StageCoverageOut(BaseModel):
     problem: bool
 
 
+class RedGatingLaneOut(BaseModel):
+    """A gating lane recorded red on main by the red-main poll (TheHub #60973)."""
+
+    job: str
+    status: str | None = Field(
+        default=None, description="Concourse's word for the latest finished build."
+    )
+    build: str | None = None
+    red_since: datetime | None = Field(
+        default=None,
+        description="When the first failing build of this red run finished (UTC).",
+    )
+    first_bad_build: str | None = None
+    first_bad_sha: str | None = Field(
+        default=None,
+        description=(
+            "The commit the first failing build ran. Null when Concourse's "
+            "recent source versions did not include it: unknown, not absent."
+        ),
+    )
+    last_green_sha: str | None = None
+
+
 class CiPage(BaseModel):
     """Where this repository is built and scanned (spec 10 §2.2, spec 15 §4a)."""
 
@@ -2318,6 +2461,14 @@ class CiPage(BaseModel):
             "for this repo' and 'Concourse did not answer' are different "
             "facts, and a panel that conflates them teaches people to ignore "
             "it."
+        ),
+    )
+    red_gating_lanes: list[RedGatingLaneOut] = Field(
+        default_factory=list,
+        description=(
+            "Each configured gating lane the red-main poll last recorded red "
+            "on main, with when it went red and the first failing commit. "
+            "Empty when none is red or none is configured for this repository."
         ),
     )
 
@@ -2420,6 +2571,25 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         enabled = set(row.enabled_capabilities or []) if row else set()
         scanned_by = row.scanned_by if row else "concourse"
         installation_id = row.github_installation_id if row else None
+        red_lanes = [
+            RedGatingLaneOut(
+                job=lane.job,
+                status=lane.status,
+                build=lane.build,
+                red_since=lane.red_since.replace(tzinfo=UTC) if lane.red_since else None,
+                first_bad_build=lane.first_bad_build,
+                first_bad_sha=lane.first_bad_sha,
+                last_green_sha=lane.last_green_sha,
+            )
+            for lane in session.execute(
+                select(GatingLaneState)
+                .where(
+                    GatingLaneState.repo_full_name == repo_full_name,
+                    GatingLaneState.state == "red",
+                )
+                .order_by(GatingLaneState.job)
+            ).scalars()
+        ]
 
         if row and row.scanned_by != "github_actions":
             # `enabled_capabilities` is the installer's ledger: capabilities
@@ -2455,6 +2625,23 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
         pipeline, status.jobs, _queries(request).last_successful_scan_at(repo_full_name)
     )
 
+    # Why each failing job failed (TheHub #60913). Bounded and cached by
+    # build in `ci_why`; never raises, so a CI that will not explain itself
+    # costs this page a "reason unavailable" line and nothing else.
+    settings = request.app.state.settings
+    why_by_job = await explain_failures(
+        repo_full_name,
+        status.jobs,
+        source="github" if scanned_by == "github_actions" else "concourse",
+        cache=request.app.state.ci_why_cache,
+        concourse=ConcourseWhyReader(settings.concourse_url) if settings.concourse_url else None,
+        github=(
+            request.app.state.github_factory.for_installation(installation_id)
+            if scanned_by == "github_actions" and installation_id is not None
+            else None
+        ),
+    )
+
     return CiPage(
         repo_full_name=repo_full_name,
         github_url=f"https://github.com/{repo_full_name}",
@@ -2468,6 +2655,11 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
                 build_name=job.build_name,
                 build_url=job.build_url,
                 finished_at=job.finished_at,
+                why=(
+                    CiFailureWhyOut.model_validate(dataclasses.asdict(why_by_job[job.name]))
+                    if job.name in why_by_job
+                    else None
+                ),
             )
             for job in status.jobs
         ],
@@ -2489,6 +2681,7 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
             for r in reported
         ],
         unavailable=status.unavailable,
+        red_gating_lanes=red_lanes,
     )
 
 
@@ -2688,6 +2881,123 @@ async def regression_coverage(
             regression.coverage(request.app.state.catalog, repo_full_name)
         ),
     }
+
+
+class UnreadLanguageOut(BaseModel):
+    """One language no analyser here reads, with its size."""
+
+    language: str
+    bytes: int
+
+
+class AnalyserCoverageOut(BaseModel):
+    """How much of the application source the SAST analysers read (B-051)."""
+
+    available: bool = Field(
+        description=(
+            "Whether the share was measured. False when GitHub's language "
+            "breakdown could not be read or reports no source; `reason` says "
+            "which. Never read an unavailable share as fully read."
+        )
+    )
+    reason: str = ""
+    tools: list[str] = Field(
+        default_factory=list,
+        description="The analysers that have reported SAST here, or the configured one.",
+    )
+    source_bytes: int = 0
+    share_read: float | None = Field(default=None, description="0.0 to 1.0, or null.")
+    share_unread: float | None = Field(default=None, description="0.0 to 1.0, or null.")
+    unread_languages: list[UnreadLanguageOut] = Field(
+        default_factory=list, description="Up to five languages nothing reads, largest first."
+    )
+
+
+class CoverageUnknownOut(BaseModel):
+    """A source the coverage route could not read, and why."""
+
+    source: Literal["analysers", "regression"]
+    detail: str
+
+
+class RepoCoverageOut(BaseModel):
+    """What the scanners cannot read in one repository (TheHub #60795)."""
+
+    repo_id: str
+    repo_full_name: str
+    analysers: AnalyserCoverageOut | None
+    regression: dict[str, Any] | None = Field(
+        description="Regression coverage (spec 31 §3); null when it could not be read."
+    )
+    unknown: list[CoverageUnknownOut] = Field(
+        default_factory=list,
+        description="Sources that could not be read. An entry here means could not ask, not none.",
+    )
+
+
+@router.get("/repos/{repo_id}/coverage", response_model=RepoCoverageOut)
+async def repo_coverage(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> RepoCoverageOut:
+    """What the scanners cannot read in one repository (TheHub #60795, #318).
+
+    Two halves: the share of application source no SAST analyser implements
+    (B-051), and how many fixed findings have a test pinned (spec 31 §3). A
+    half that could not be read is listed in `unknown` with the reason.
+
+    Any authenticated principal may read it; it is never public. It is a map
+    of what is not looked at, so it is not registered as a public endpoint and
+    no anonymous probe asks for it.
+    """
+    with request.app.state.db.session() as session:
+        onboarding = session.get(RepoOnboarding, repo_id)
+        found = (
+            None
+            if onboarding is None
+            else (str(onboarding.github_repo_full_name), onboarding.github_installation_id)
+        )
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No repo {repo_id!r}. This takes the onboarding id from "
+                "/api/dashboard/portfolio, not an owner/repo name."
+            ),
+        )
+    repo_full_name, installation_id = found
+    unknown: list[CoverageUnknownOut] = []
+
+    try:
+        measured = await _repo_read_coverage(request, repo_full_name, installation_id)
+    except Exception:  # noqa: BLE001
+        # The analysers half degrades to "unknown"; it never takes the route with it.
+        logger.warning("Could not measure read coverage for %s", scrub(repo_full_name))
+        measured = read_coverage.measure(repo_full_name, None, ())
+    if not measured.available:
+        unknown.append(CoverageUnknownOut(source="analysers", detail=measured.reason))
+    analysers = AnalyserCoverageOut.model_validate(read_coverage.as_dict(measured))
+
+    pinned: dict[str, Any] | None
+    try:
+        pinned = regression.as_dict(
+            regression.coverage(request.app.state.catalog, repo_full_name)
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read regression coverage for %s", scrub(repo_full_name))
+        pinned = None
+        unknown.append(
+            CoverageUnknownOut(
+                source="regression", detail="Regression coverage could not be read from the lake."
+            )
+        )
+
+    return RepoCoverageOut(
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        analysers=analysers,
+        regression=pinned,
+        unknown=unknown,
+    )
 
 
 class AffectedRepoOut(BaseModel):
@@ -4163,6 +4473,202 @@ async def sync_threat_model(
     )
 
 
+class DraftEvidenceOut(BaseModel):
+    source: str = Field(
+        description=(
+            "exposure | dast | compose | containers | sbom | iac | observation | finding."
+        )
+    )
+    detail: str
+    ref: str = Field(
+        description="A path in the repository or an https URL; empty when not citable."
+    )
+    observed_at: datetime | None = None
+
+
+class DraftElementOut(BaseModel):
+    section: Literal["assets", "entry_points", "trust_boundaries", "controls"]
+    id: str
+    body: dict[str, Any] = Field(description="The element exactly as the file would hold it.")
+    evidence: list[DraftEvidenceOut]
+
+
+class DraftThreatOut(BaseModel):
+    stride: list[str]
+    resolution: Literal["cwe", "capability"]
+    weakness: str
+    title: str
+    capability: str
+    severity: str
+    findings: int
+    element_id: str | None
+    ref: str
+
+
+class DraftUncitedOut(BaseModel):
+    label: str
+    evidence: list[DraftEvidenceOut]
+
+
+class ThreatModelDraftOut(BaseModel):
+    """A threat model drafted from MyKronos's own evidence (TheHub #60899)."""
+
+    repo_full_name: str
+    path: str = Field(description="Always `.sdlc/threat-model.yaml`.")
+    generated_at: datetime | None
+    yaml: str = Field(
+        description="The draft as file text; parses as a valid schema-v1 manifest."
+    )
+    elements: list[DraftElementOut]
+    threats: list[DraftThreatOut]
+    uncited: list[DraftUncitedOut] = Field(
+        description="Seen, but not drafted: none of the evidence is citable."
+    )
+    unread: list[str] = Field(
+        description="Sources that could not be read; absent here, not proven absent."
+    )
+
+
+def _draft_out(built: Any) -> ThreatModelDraftOut:
+    def evidence(items: Any) -> list[DraftEvidenceOut]:
+        return [DraftEvidenceOut.model_validate(dataclasses.asdict(e)) for e in items]
+
+    return ThreatModelDraftOut(
+        repo_full_name=built.repo_full_name,
+        path=".sdlc/threat-model.yaml",
+        generated_at=built.generated_at,
+        yaml=built.render(),
+        elements=[
+            DraftElementOut(
+                section=e.section, id=e.id, body=e.body, evidence=evidence(e.evidence)
+            )
+            for e in built.elements
+        ],
+        threats=[
+            DraftThreatOut.model_validate({**dataclasses.asdict(t), "stride": list(t.stride)})
+            for t in built.threats
+        ],
+        uncited=[
+            DraftUncitedOut(label=label, evidence=evidence(items))
+            for label, items in built.uncited
+        ],
+        unread=built.unread,
+    )
+
+
+def _repo_github(request: Request, repo_id: str) -> tuple[Any, str]:
+    with request.app.state.db.session() as session:
+        onboarding = session.get(RepoOnboarding, repo_id)
+        branch = (onboarding.default_branch if onboarding else None) or "main"
+        installation = onboarding.github_installation_id if onboarding else None
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:
+        return None, branch
+    return factory.for_installation(installation), branch
+
+
+@router.get("/repos/{repo_id}/threat-model/draft", response_model=ThreatModelDraftOut)
+async def draft_threat_model(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ThreatModelDraftOut:
+    """Draft `.sdlc/threat-model.yaml` from what MyKronos already holds about
+    this repository (TheHub #60899): entry points from public endpoints, DAST
+    routes and hostnames; assets from images, the SBOM and infrastructure
+    files; boundaries from exposure; controls from collector observations;
+    open findings mapped CWE to STRIDE. Every element cites its evidence. A
+    read: nothing is written anywhere.
+    """
+    repo_full_name = _resolve_repo(request, repo_id)
+    from mykronos import threat_model_draft as tmd
+
+    github, branch = _repo_github(request, repo_id)
+    if github is None:
+        from mykronos.github import FakeGitHubClient
+
+        github = FakeGitHubClient()
+    state = request.app.state
+    bundle = await tmd.gather(state.db, state.catalog, github, repo_full_name, branch)
+    return _draft_out(tmd.draft(bundle, now=utcnow()))
+
+
+class ThreatModelProposalOut(BaseModel):
+    """What proposing the drafted threat model did (TheHub #60900)."""
+
+    repo_full_name: str
+    state: Literal[
+        "opened",
+        "updated",
+        "unchanged",
+        "kept",
+        "no_drift",
+        "invalid",
+        "unreadable",
+        "refused",
+        "failed",
+    ] = Field(
+        description=(
+            "`opened`/`updated`: a pull request carries the proposal. `unchanged`: "
+            "the open one already does. `kept`: a person edited the open one's "
+            "branch, and their edits stand. `no_drift`: the declared file covers "
+            "everything drafted. `invalid`/`unreadable`: the declared file could "
+            "not be used, so nothing was proposed. `refused`: the repository is "
+            "not known to be private, so no threat-model detail is written to it."
+        )
+    )
+    reason: str
+    pull_request_url: str | None
+    pull_request_number: int | None
+    added: dict[str, int] = Field(description="Elements proposed, per section.")
+    covered: int = Field(description="Drafted elements the declared file already covers.")
+
+
+@router.post(
+    "/repos/{repo_id}/threat-model/draft/pull-request",
+    response_model=ThreatModelProposalOut,
+)
+async def propose_threat_model(
+    request: Request, repo_id: str, principal: PrincipalDep
+) -> ThreatModelProposalOut:
+    """Propose the drafted threat model as a pull request now (TheHub #60900).
+
+    With no `.sdlc/threat-model.yaml`, the whole draft is proposed. With a
+    valid one, only drift is: drafted elements the file does not cover, added
+    to its sections without changing a declared row. One open pull request per
+    repository, updated in place unless a person has edited its branch.
+    Written only to a repository GitHub reports as private; anything else is
+    `refused` before a branch, file or description exists. Audited as
+    `threat_model.propose`.
+    """
+    _require_writer(principal, "Proposing a threat-model pull request")
+    repo_full_name = _resolve_repo(request, repo_id)
+    from mykronos import threat_model_pr
+
+    github, branch = _repo_github(request, repo_id)
+    if github is None:
+        return ThreatModelProposalOut(
+            repo_full_name=repo_full_name,
+            state="unreadable",
+            reason="No GitHub installation to open a pull request with.",
+            pull_request_url=None,
+            pull_request_number=None,
+            added={},
+            covered=0,
+        )
+    state = request.app.state
+    _, proposal = await threat_model_pr.propose_for_repo(
+        state.db, state.catalog, github, repo_full_name, branch, actor=principal.actor
+    )
+    return ThreatModelProposalOut(
+        repo_full_name=repo_full_name,
+        state=proposal.state,
+        reason=proposal.reason,
+        pull_request_url=proposal.pull_request.url if proposal.pull_request else None,
+        pull_request_number=proposal.pull_request.number if proposal.pull_request else None,
+        added=proposal.added,
+        covered=proposal.covered,
+    )
+
+
 @router.get("/repos/{repo_id}/findings", response_model=FindingsPage)
 async def repo_findings(
     request: Request,
@@ -4340,44 +4846,57 @@ async def repo_open_findings(
     capability: Annotated[list[Capability] | None, CommaList, Query()] = None,
     severity: Annotated[list[Severity] | None, CommaList, Query()] = None,
     finding_status: Annotated[list[FindingStatus] | None, CommaList, Query()] = None,
-    rule_id: Annotated[str | None, Query(max_length=200)] = None,
-    kev_only: Annotated[bool, Query()] = False,
-    min_epss: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    rule_id: Annotated[
+        Annotated[str, Field(max_length=200)] | None, BlankIsUnset, Query()
+    ] = None,
+    kev_only: Annotated[bool | None, BlankIsUnset, Query()] = False,
+    min_epss: Annotated[
+        Annotated[float, Field(ge=0.0, le=1.0)] | None, BlankIsUnset, Query()
+    ] = None,
     triage: Annotated[list[TriageFilter] | None, CommaList, Query()] = None,
-    fixable: Annotated[bool | None, Query()] = None,
+    fixable: Annotated[bool | None, BlankIsUnset, Query()] = None,
     due: Annotated[list[DueFilter] | None, CommaList, Query()] = None,
+    # The list bounds sit on the list, not on Query(): a blank value is
+    # `None`, and a bound applied to `None` raised a 500 (TheHub #60964).
     owner: Annotated[
-        list[Annotated[str, Field(max_length=255)]] | None,
+        Annotated[list[Annotated[str, Field(max_length=255)]], Field(max_length=20)]
+        | None,
         CommaList,
-        Query(max_length=20),
+        Query(),
     ] = None,
     effective: Annotated[list[Severity] | None, CommaList, Query()] = None,
     rescored: Annotated[list[RescoredFilter] | None, CommaList, Query()] = None,
     component: Annotated[
-        list[Annotated[str, Field(max_length=64)]] | None,
+        Annotated[list[Annotated[str, Field(max_length=64)]], Field(max_length=50)]
+        | None,
         CommaList,
         Query(
-            max_length=50,
             description="`none` (no declared surface places the finding) or a "
             "surface id from `by_component`.",
         ),
     ] = None,
     exposure: Annotated[list[ExposureFilter] | None, CommaList, Query()] = None,
     path: Annotated[
-        str | None,
+        Annotated[str, Field(max_length=255)] | None,
+        BlankIsUnset,
         Query(
-            max_length=255,
             description="File path or package name: a glob when it has `*` or "
             "`?` (`web/**`, `*.tf`), otherwise a case-insensitive substring.",
         ),
     ] = None,
     older_than_days: Annotated[
-        int | None, Query(ge=0, le=3650, description="First seen at least N days ago.")
+        Annotated[int, Field(ge=0, le=3650)] | None,
+        BlankIsUnset,
+        Query(description="First seen at least N days ago."),
     ] = None,
     newer_than_days: Annotated[
-        int | None, Query(ge=0, le=3650, description="First seen within the last N days.")
+        Annotated[int, Field(ge=0, le=3650)] | None,
+        BlankIsUnset,
+        Query(description="First seen within the last N days."),
     ] = None,
-    limit: Annotated[int, Query(ge=1, le=2000)] = 400,
+    limit: Annotated[
+        Annotated[int, Field(ge=1, le=2000)] | None, BlankIsUnset, Query()
+    ] = 400,
 ) -> OpenFindingsPage:
     """What is outstanding here, deduplicated, triaged and correlated.
 
@@ -4394,6 +4913,9 @@ async def repo_open_findings(
 
     Every category filter takes several values, comma-separated or repeated
     (`severity=critical,high`); one value means what it always did.
+
+    A filter sent blank (`?min_epss=&severity=`) is the same as one left
+    out. A value that is present and invalid is a 422 naming the field.
     """
     repo_full_name = _resolve_repo(request, repo_id)
     with request.app.state.db.session() as session:
@@ -4404,9 +4926,9 @@ async def repo_open_findings(
             severity=[s.value for s in severity or []],
             rule_id=rule_id,
             finding_status=[s.value for s in finding_status or []] or "open",
-            limit=limit,
+            limit=400 if limit is None else limit,
             session=session,
-            kev_only=kev_only,
+            kev_only=bool(kev_only),
             min_epss=min_epss,
             triage=triage,
             fixable=fixable,
@@ -4491,19 +5013,37 @@ async def _languages(
             .scalars()
             .all()
         ]
+    tools = _sast_tools(request, [name for name, _ in rows])
+
+    async def one(name: str, installation_id: int | None) -> tuple[str, dict[str, int] | None]:
+        return name, await _cached_languages(request, name, installation_id)
+
+    languages: dict[str, dict[str, int]] = {}
+    for name, counts in await asyncio.gather(*(one(n, i) for n, i in rows)):
+        if counts is not None:
+            languages[name] = counts
+    return languages, tools
+
+
+def _sast_tools(request: Request, names: list[str]) -> dict[str, str | list[str]]:
+    """The analysers that read each repository's code (B-051).
+
+    What has actually reported, not what is configured. A repository running
+    a shell analyser beside CodeQL has two lanes on one capability, and the
+    config field holds one name — so reading it would report `keel` as 70%
+    unread on the day it stopped being. Evidence over intent, the same rule
+    the SSDF view holds itself to. A repository nothing has reported for falls
+    back to its configured tool.
+    """
+    with request.app.state.db.session() as session:
         configured = {
             name: str(
                 capability_config_for(session, name, "sast").get("enabled_tool")
                 or default_tool("sast")
             )
-            for name, _ in rows
+            for name in names
         }
 
-    # What has actually reported, not what is configured. A repository running
-    # a shell analyser beside CodeQL has two lanes on one capability, and the
-    # config field holds one name — so reading it would report `keel` as 70%
-    # unread on the day it stopped being (B-051). Evidence over intent, the
-    # same rule the SSDF view holds itself to.
     reported: dict[str, list[str]] = {}
     catalog = request.app.state.catalog
     if catalog.all_files("scan_runs"):
@@ -4513,45 +5053,57 @@ async def _languages(
             "AND tool_name IS NOT NULL AND tool_name <> ''"
         ):
             reported.setdefault(str(repo), []).append(str(tool))
-    tools: dict[str, str | list[str]] = {
+    return {
         name: sorted(reported[name]) if name in reported else configured[name]
         for name in configured
     }
 
-    # Concurrent, and cached per repository for LANGUAGES_TTL (#730). One
-    # sequential GitHub call per repository - each minting its own installation
-    # token - made this endpoint 11 s, and the Vulnerability Management page
-    # waits on it. A language mix moves on the scale of weeks; six hours old is
-    # still "live" for the question this answers. A failed read is never
-    # cached, so "could not look" is retried rather than remembered.
+
+async def _cached_languages(
+    request: Request, name: str, installation_id: int | None
+) -> dict[str, int] | None:
+    """One repository's language mix, or None when GitHub could not be read.
+
+    Cached per repository for LANGUAGES_TTL (#730). One sequential GitHub call
+    per repository - each minting its own installation token - made the
+    briefing 11 s, and the Vulnerability Management page waits on it. A
+    language mix moves on the scale of weeks; six hours old is still "live"
+    for the question this answers. A failed read is never cached, so "could
+    not look" is retried rather than remembered.
+    """
     cache: dict[str, tuple[float, dict[str, int]]] = getattr(
         request.app.state, "languages_cache", None
     ) or {}
     request.app.state.languages_cache = cache
     now = time.monotonic()
+    hit = cache.get(name)
+    if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
+        return hit[1]
+    try:
+        # Migration DDL moves to `SCHEMA` here (D-138), before the cache,
+        # so the SQL files are read once per TTL rather than per load.
+        counts = await read_languages(
+            request.app.state.github_factory.for_installation(installation_id), name
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read languages for %s", scrub(name))
+        return None
+    if counts is not None:
+        cache[name] = (now, counts)
+    return counts
 
-    async def one(name: str, installation_id: int | None) -> tuple[str, dict[str, int] | None]:
-        hit = cache.get(name)
-        if hit is not None and now - hit[0] < LANGUAGES_TTL_SECONDS:
-            return name, hit[1]
-        try:
-            # Migration DDL moves to `SCHEMA` here (D-138), before the cache,
-            # so the SQL files are read once per TTL rather than per load.
-            counts = await read_languages(
-                request.app.state.github_factory.for_installation(installation_id), name
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("Could not read languages for %s", scrub(name))
-            return name, None
-        if counts is not None:
-            cache[name] = (now, counts)
-        return name, counts
 
-    languages: dict[str, dict[str, int]] = {}
-    for name, counts in await asyncio.gather(*(one(n, i) for n, i in rows)):
-        if counts is not None:
-            languages[name] = counts
-    return languages, tools
+async def _repo_read_coverage(
+    request: Request, name: str, installation_id: int | None
+) -> ReadCoverage:
+    """How much of one onboarded repository its analysers read (TheHub #60795).
+
+    The per-repository form of what the briefing's unread-code section reads
+    for the estate, from the same cache, so the two cannot disagree.
+    """
+    tools = _sast_tools(request, [name])[name]
+    languages = await _cached_languages(request, name, installation_id)
+    return read_coverage.measure(name, languages, tools)
 
 
 def _default_branches(request: Request) -> dict[str, str]:
@@ -5095,8 +5647,9 @@ async def request_finding_disposition(
 
     The finding stays open. The platform freezes the finding row, its raw scanner
     record and the reason into an approval request under the `finding_disposition`
-    duty, tiered by the finding's own severity, and applies the disposition only
-    when an approver the policy admits says yes.
+    duty, tiered by the finding's governing severity - its own, raised to that of
+    any high or critical toxic combination it is a member of - and applies the
+    disposition only when an approver the policy admits says yes.
     """
     if not principal.may_write:
         raise HTTPException(
@@ -5277,17 +5830,27 @@ async def apply_finding_status(
 
     # #713: an agent may not close a critical or high finding on its own word.
     # A false positive or a suppression goes through the governed duty; an
-    # acceptance already has one. A person's direct call is unchanged.
-    if finding_disposition.governed(principal, existing.get("severity")):
+    # acceptance already has one. A person's direct call is unchanged. A
+    # member of a high or critical toxic combination is governed at the
+    # combination's severity: dispositioning it dissolves the combination
+    # (review of #1018).
+    if finding_disposition.governed_finding(principal, {**existing, "finding_id": finding_id}):
         governed_route = (
             "POST /api/risk-acceptances"
             if body.status is FindingStatus.ACCEPTED_RISK
             else f"POST /api/dashboard/findings/{finding_id}/disposition-requests"
         )
+        own = str(existing.get("severity") or "").lower()
+        what = (
+            f"a {own} finding"
+            if own in finding_disposition.GOVERNED_SEVERITIES
+            else f"a {own} finding that is a member of a high or critical toxic "
+            "combination (dispositioning it dissolves the combination)"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"An agent may not set a {existing.get('severity')} finding to "
+                f"An agent may not set {what} to "
                 f"'{body.status.value}' directly: closing a serious finding is a "
                 f"governed decision (#713). Use {governed_route}; someone independent "
                 "approves it, and the finding stays open until they do."
@@ -5704,6 +6267,43 @@ class EnvironmentalFactOut(BaseModel):
     scope: str | None = None
     #: The control observation that verified it, when one did (#60828).
     evidence_id: str | None = None
+    #: fresh | expiring | lapsed | undated, read against now (TheHub #60889).
+    freshness: Literal["fresh", "expiring", "lapsed", "undated"] = "undated"
+    #: Days since it was verified or confirmed; null when undated.
+    age_days: int | None = None
+    #: Days until it stops counting; negative once lapsed, null when it never does.
+    expires_in_days: int | None = None
+
+
+class RescoreStepFactOut(BaseModel):
+    """One fact on a rescore step: the metric it set, from what to what."""
+
+    metric: str
+    from_value: str
+    to_value: str
+    applied: bool
+    direction: str
+    because: str = ""
+    not_applied_reason: str | None = None
+    source_kind: str
+    source_id: str
+    tier: str
+    freshness: Literal["fresh", "expiring", "lapsed", "undated"]
+    age_days: int | None = None
+    expires_in_days: int | None = None
+
+
+class RescoreStepOut(BaseModel):
+    """One step from the base score to the effective severity (TheHub #60889)."""
+
+    key: Literal["base", "environmental", "effective"]
+    label: str
+    #: The CVSS score at this step; null for the effective step, which is a word.
+    score: float | None = None
+    severity: str | None = None
+    detail: str
+    facts: list[RescoreStepFactOut] = []
+    notes: list[str] = []
 
 
 class SeverityHereOut(BaseModel):
@@ -5750,6 +6350,41 @@ class SeverityHereOut(BaseModel):
     #: When the stored score was computed; null when it was computed on read
     #: because no rescore has reached this finding yet.
     computed_at: datetime | None = None
+    #: The working, in order: base, environmental, effective, each with the
+    #: facts it rested on and their freshness (TheHub #60889).
+    steps: list[RescoreStepOut] = []
+    #: Why the stored score was not shown and this was computed on read
+    #: instead; null when the stored score is current.
+    recomputed_because: str | None = None
+
+
+class ExploitSourceOut(BaseModel):
+    """One source behind an exploitability verdict, with where to check it."""
+
+    source: str
+    label: str
+    detail: str
+    url: str
+    observed_at: datetime | None = None
+
+
+class ExploitFixOut(BaseModel):
+    state: Literal["fix_available", "no_fix_published", "not_a_package"]
+    fixed_version: str | None = None
+    detail: str
+
+
+class ExploitabilityOut(BaseModel):
+    """Can somebody exploit this today, and on whose word (TheHub #60890)."""
+
+    cve_id: str | None = None
+    verdict: ExploitVerdict
+    summary: str
+    #: Every source that spoke, whatever the verdict.
+    sources: list[ExploitSourceOut] = []
+    #: When the exploit catalogs last answered for this CVE; null if never.
+    checked_at: datetime | None = None
+    fix: ExploitFixOut
 
 
 class FindingRecordOut(BaseModel):
@@ -5775,6 +6410,10 @@ class FindingRecordOut(BaseModel):
     #: See PriorDispositionOut. Null when this finding re-asks nothing.
     prior_disposition: PriorDispositionOut | None = None
     missing_context: list[RecordGap]
+    #: KEV, EPSS, public exploits and fix availability, with a verdict and
+    #: its sources (TheHub #60890). Present on every finding: one with no CVE
+    #: says so rather than leaving the block out.
+    exploitability: ExploitabilityOut | None = None
 
 
 def _severity_here(
@@ -5801,6 +6440,7 @@ def _severity_here(
         "asset_id": row.get("repo_full_name"),
     }
 
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
     with request.app.state.db.session() as session:
         # NVD 3.x > advisory 3.x > v4.0 shown only (TheHub #60824, D1), chosen
         # in one place for the record page and the stored scores alike.
@@ -5810,6 +6450,8 @@ def _severity_here(
             if choice is not None and choice.rescored
             else None
         )
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        in_kev = bool(intel is not None and intel.in_kev)
     if choice is None:
         return None
     if not choice.rescored:
@@ -5825,13 +6467,32 @@ def _severity_here(
             rescored=False,
         )
 
-    if stored is not None and stored.vector == choice.vector:
+    # The stored score only while it still describes the evidence (TheHub
+    # #60889): a lapsed lowering fact, a changed scanner word or a pending
+    # rescore after a fact was written all mean the store is behind, and the
+    # page recomputes rather than showing yesterday's answer as today's.
+    now = utcnow()
+    stale = rescore_panel.stale_reason(
+        stored,
+        vector=choice.vector,
+        scanner_severity=str(row.get("severity") or ""),
+        repo_full_name=str(row.get("repo_full_name") or ""),
+        onboarding_id=(
+            str(profile.repo_onboarding_id)
+            if profile is not None and getattr(profile, "repo_onboarding_id", None)
+            else None
+        ),
+        pending=environment.pending(),
+        now=now,
+        monotonic_now=time.monotonic(),
+    )
+    if stored is not None and stale is None:
         facts = [environment.Fact.from_dict(raw) for raw in stored.facts_json or []]
         base, env_score = stored.base, stored.environmental
         effective, computed_at = stored.effective_severity, stored.computed_at
     else:
         on_read = environment.score_on_read(
-            request.app.state.db, request.app.state.catalog, finding
+            request.app.state.db, request.app.state.catalog, finding, now=now
         )
         if on_read is None:
             logger.warning("Stored vector for %s is unscoreable", scrub(finding_id[:12]))
@@ -5876,11 +6537,30 @@ def _severity_here(
                 because=f.because,
                 scope=f.scope,
                 evidence_id=f.evidence_id,
+                **rescore_panel.freshness(f, now),
             )
             for f in facts
         ],
         effective_severity=effective or None,
         computed_at=computed_at,
+        steps=[
+            RescoreStepOut.model_validate(step)
+            for step in rescore_panel.steps(
+                vector=choice.vector,
+                vector_source=choice.source,
+                vector_version=choice.version,
+                base=base,
+                environmental=env_score,
+                scanner_severity=str(row.get("severity") or ""),
+                effective=effective or None,
+                facts=facts,
+                now=now,
+                in_kev=in_kev,
+            )
+        ],
+        recomputed_because=(
+            rescore_panel.STALE_REASONS[stale] if stale is not None else None
+        ),
     )
 
 
@@ -5949,6 +6629,21 @@ async def whole_finding_record(
     ) if catalog.all_files("reachability") else []
     analysed = bool(reach_rows and reach_rows[0][0])
 
+    pkg_found = finding_record.package_for(
+        catalog,
+        repo_full_name=repo_full_name,
+        package_name=row.get("package_name"),
+    )
+    cve_id = extract_cve(str(row.get("rule_id") or ""), str(row.get("title") or ""))
+    with request.app.state.db.session() as session:
+        intel = session.get(ThreatIntelMatch, cve_id) if cve_id else None
+        exploit = exploitability.assess(
+            cve_id,
+            intel,
+            package_name=row.get("package_name"),
+            fixed_version=(pkg_found or {}).get("fixed_version"),
+        )
+
     return FindingRecordOut(
         finding=FindingOut.model_validate(row),
         repo_full_name=repo_full_name,
@@ -5978,17 +6673,8 @@ async def whole_finding_record(
             )
             else None
         ),
-        package=(
-            PackageOut(**pkg)
-            if (
-                pkg := finding_record.package_for(
-                    catalog,
-                    repo_full_name=repo_full_name,
-                    package_name=row.get("package_name"),
-                )
-            )
-            else None
-        ),
+        package=PackageOut(**pkg_found) if pkg_found else None,
+        exploitability=ExploitabilityOut.model_validate(exploit),
         missing_context=[
             RecordGap(**gap)
             for gap in finding_record.missing_context(
@@ -6633,6 +7319,7 @@ class TestKindOut(BaseModel):
     presence: str
     evidence: list[str]
     how_to_evidence: str
+    outcome: Literal["passing", "failing", "unknown"] | None = None
 
 
 class TestLaneOut(BaseModel):
@@ -6644,6 +7331,15 @@ class TestLaneOut(BaseModel):
     last_run_at: str | None
     coverage_state: str
     line_coverage: float | None
+    outcome: Literal["passing", "failing", "unknown"] = "unknown"
+    outcome_branch: str | None = None
+    latest_status: str | None = None
+    latest_run_at: str | None = None
+    last_passed_at: str | None = None
+    window_days: int
+    window_runs: int
+    window_passed: int
+    window_failed: int
 
 
 class TestEstateOut(BaseModel):
@@ -6678,6 +7374,13 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
     writing a coverage document — and rendering it as zero would have been a
     fabricated measurement of 227 real runs.
 
+    **Running is not passing.** Each lane carries its latest outcome on its
+    branch (normally the default branch) — `passing`, `failing` or `unknown` —
+    with passes and failures over the last `window_days` and when it last
+    passed. A kind stays `observed` while its suite is red, because a failing
+    suite is still a suite, but its evidence sentence says the latest run
+    failed rather than reading as healthy.
+
     No score. The kinds are not equally applicable — a library needs no
     post-deploy smoke test — so a single figure could only ever penalise a
     repository for correctly not doing something.
@@ -6708,11 +7411,21 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
     # covers a finding; this view is about what the platform watched happen.
     demonstrated = regression.coverage(request.app.state.catalog, repo_full_name).demonstrated
 
+    # Presence says a lane is running; this says whether it is passing, on the
+    # branch the lane is about (TheHub #60922). On 2026-10-21 every functional
+    # run on main failed and this view still read as evidenced, full stop.
+    outcomes = queries.test_lane_outcomes(
+        repo_full_name,
+        test_estate.TEST_LANES,
+        _lane_branches(request, repo_full_name),
+        window_days=test_estate.OUTCOME_WINDOW_DAYS,
+    )
+    lanes = test_estate.lane_health(health, enabled, outcomes)
     kinds = test_estate.assess(
         reporting_capabilities=reporting,
         demonstrated_regressions=demonstrated,
+        lanes=lanes,
     )
-    lanes = test_estate.lane_health(health, enabled)
 
     return TestEstateOut(
         repo_full_name=repo_full_name,
@@ -6722,7 +7435,9 @@ async def repo_tests(request: Request, repo_id: str, principal: PrincipalDep) ->
         note=(
             "Evidenced, not asserted. A lane that is enabled and has never reported "
             "evidences no testing, and a lane with runs but no coverage document is "
-            "reported as never having measured coverage rather than as zero percent."
+            "reported as never having measured coverage rather than as zero percent. "
+            "A lane that reports is evidenced even while it fails; its outcome is "
+            "its latest run on the lane's branch, shown beside it."
         ),
     )
 
@@ -6919,6 +7634,57 @@ class DependencyHealthOut(BaseModel):
     configured: bool = True
 
 
+class CiStallJobOut(BaseModel):
+    """One lane whose latest finished build errored (`ci_stall.ErroredJob`)."""
+
+    pipeline: str
+    job: str
+    build: str | None = None
+    started_at: datetime
+    #: A browser link, or null: never a loopback address (TheHub #60924).
+    url: str | None = None
+
+
+class CiStallOut(BaseModel):
+    """Is Concourse stalled - many lanes erroring together (TheHub #60975)?"""
+
+    #: red | green | unknown. Unknown is "could not ask", never green.
+    status: str
+    detail: str
+    #: Red: the lanes in the window. Otherwise every unpaused errored lane.
+    jobs: list[CiStallJobOut]
+    #: The fixed order of repair, the same every time.
+    checklist: list[str]
+    threshold: int
+    window_minutes: int
+    jobs_inspected: int = 0
+    #: When this stall's notice was delivered; null if it has not been.
+    notified_at: datetime | None = None
+
+
+class CredentialOut(BaseModel):
+    """A credential a person may need to act on (TheHub #60974).
+
+    State and dates only. This page is served on an internet-exposed
+    dashboard, so no hash, hash prefix, token id or label is carried, and
+    `extra="forbid"` keeps one from being added in passing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: "ingestion_token" | "agent_credential"
+    kind: str
+    repo_full_name: str | None = None
+    actor: str | None = None
+    #: "due" | "unverified" | "expiring". Only `due` is a reason to rotate.
+    state: str
+    rotate_after: datetime | None = None
+    expires_at: datetime | None = None
+    #: Negative once the date has passed.
+    days_until_due: float
+    action: str
+
+
 class PlatformHealthOut(BaseModel):
     """Whether this platform is itself working."""
 
@@ -6927,7 +7693,63 @@ class PlatformHealthOut(BaseModel):
     degraded: bool
     jobs: list[JobHealthOut]
     dependencies: list[DependencyHealthOut]
+    ci_stall: CiStallOut
+    #: Ingestion tokens left for a person and agent credentials expiring within
+    #: 7 days. Not part of `degraded`: a token awaiting rotation is work to do,
+    #: not the platform failing.
+    credentials: list[CredentialOut] = Field(default_factory=list)
     note: str
+
+
+async def _ci_stall_now(request: Request) -> CiStallOut:
+    """The stall assessment, read live: a cached "is CI stalled" is worth
+    nothing for the reason a cached Vault probe is not."""
+    settings = request.app.state.settings
+    if not settings.concourse_url:
+        stall = ci_stall.unknown("No Concourse is configured for this deployment.")
+    else:
+        client = ConcourseClient(
+            settings.concourse_url,
+            team=settings.concourse_team,
+            external_url=settings.concourse_external_url,
+        )
+        payload = await asyncio.to_thread(client.all_jobs)
+        stall = platform_health.assess_ci_stall(payload, link=client.build_url)
+    notified_at = None
+    if stall.red:
+        with request.app.state.db.session() as session:
+            episode = ci_stall.open_episode(session)
+            notified_at = episode.notified_at if episode is not None else None
+    return CiStallOut(
+        status=stall.status,
+        detail=stall.detail,
+        jobs=[CiStallJobOut(**vars(job)) for job in stall.jobs],
+        checklist=list(ci_stall.CHECKLIST),
+        threshold=ci_stall.STALL_THRESHOLD,
+        window_minutes=int(ci_stall.STALL_WINDOW.total_seconds() // 60),
+        jobs_inspected=stall.jobs_inspected,
+        notified_at=notified_at,
+    )
+
+
+def _annotate_nvd_backlog(
+    db: Any, settings: Any, jobs: list[platform_health.JobHealth]
+) -> None:
+    """Say on the `nvd-vectors` row how many CVEs still wait, and for how long
+    (TheHub #61034). Until a CVE has a vector its environmental score cannot
+    be computed, and a job that is green while 3,603 wait is not saying so."""
+    from mykronos import threat_intel
+
+    for job in jobs:
+        if job.name != threat_intel.NVD_JOB or job.status == "disabled":
+            continue
+        with db.session() as session:
+            backlog = threat_intel.vector_backlog(session)
+        budget = threat_intel.nvd_budget(threat_intel.nvd_api_key(settings.nvd_api_key))
+        job.detail = (
+            f"{job.detail} - "
+            f"{backlog.detail(budget, settings.nvd_vector_interval_seconds)}"
+        )
 
 
 @router.get("/platform-health", response_model=PlatformHealthOut)
@@ -6965,6 +7787,10 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     jobs = [platform_health.assess_job(row, now=now, started_at=started_at) for row in rows]
 
     settings = request.app.state.settings
+    try:
+        await asyncio.to_thread(_annotate_nvd_backlog, request.app.state.db, settings, jobs)
+    except Exception:  # noqa: BLE001 - job health still stands
+        logger.warning("Could not count the NVD vector backlog")
     dependencies: list[platform_health.DependencyHealth] = []
     try:
         for name, result in await jobs_self_check(settings):
@@ -6996,12 +7822,32 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     except Exception:  # noqa: BLE001 — job health still stands
         logger.warning("Self-check failed while rendering platform health")
 
-    health = platform_health.PlatformHealth(jobs=jobs, dependencies=dependencies)
+    stall = await _ci_stall_now(request)
+    health = platform_health.PlatformHealth(
+        jobs=jobs, dependencies=dependencies, ci_stalled=stall.status == "red"
+    )
+    credentials = await asyncio.to_thread(
+        platform_health.credentials_needing_attention, request.app.state.db, now=now
+    )
 
     return PlatformHealthOut(
         degraded=health.degraded,
         jobs=[JobHealthOut(**vars(job)) for job in jobs],
         dependencies=[DependencyHealthOut(**vars(dep)) for dep in dependencies],
+        ci_stall=stall,
+        credentials=[
+            CredentialOut(
+                kind=c.kind,
+                repo_full_name=c.repo_full_name,
+                actor=c.actor,
+                state=c.state,
+                rotate_after=c.rotate_after,
+                expires_at=c.expires_at,
+                days_until_due=c.days_until_due,
+                action=c.action,
+            )
+            for c in credentials
+        ],
         note=(
             "A job that fails is caught, logged and retried, which is right and is "
             "also what makes it invisible. These rows are the record that log line "

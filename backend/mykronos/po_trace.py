@@ -26,8 +26,6 @@ from mykronos import po_console as pc
 #: these" mid-sentence is not one.
 _TRAILER = re.compile(r"(?im)^stories:[ \t]*(.*?)[ \t]*$")
 _REF = re.compile(r"#(\d+)\b")
-#: GitHub's squash-merge subject suffix: `title (#123)`.
-_PR_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
 
 #: Deploy statuses that mean it went out. `warned` went out with a warning.
 DEPLOYED = ("success", "succeeded", "warned", "ok")
@@ -61,8 +59,8 @@ def subject(message: str) -> str:
 
 
 def subject_pr(message: str) -> int | None:
-    match = _PR_SUFFIX.search(subject(message))
-    return int(match.group(1)) if match else None
+    """The squash suffix's PR, read the way Delivery reads it."""
+    return pc.subject_pr(message)
 
 
 @dataclass

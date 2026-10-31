@@ -434,7 +434,11 @@ export interface paths {
          * @description Toxic combinations across the estate (spec 08 §5), worst first.
          *
          *     The same detection and severity the Oracle's risk decision uses
-         *     (`mykronos.toxic`), including combinations with an accepted member.
+         *     (`mykronos.toxic`). A finding dispositioned `false_positive` does not
+         *     count toward a combination. An `accepted_risk` member dissolves one only
+         *     when the acceptance's frozen evidence named it; a combination formed
+         *     after the acceptance is listed, with `unanticipated_acceptances` naming
+         *     the acceptances whose premise it fails.
          */
         get: operations["toxic_combinations_api_dashboard_toxic_combinations_get"];
         put?: never;
@@ -838,6 +842,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Coverage
+         * @description What the scanners cannot read in one repository (TheHub #60795, #318).
+         *
+         *     Two halves: the share of application source no SAST analyser implements
+         *     (B-051), and how many fixed findings have a test pinned (spec 31 §3). A
+         *     half that could not be read is listed in `unknown` with the reason.
+         *
+         *     Any authenticated principal may read it; it is never public. It is a map
+         *     of what is not looked at, so it is not registered as a public endpoint and
+         *     no anonymous probe asks for it.
+         */
+        get: operations["repo_coverage_api_dashboard_repos__repo_id__coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/governance": {
         parameters: {
             query?: never;
@@ -1195,6 +1227,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/threat-model/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Draft Threat Model
+         * @description Draft `.sdlc/threat-model.yaml` from what MyKronos already holds about
+         *     this repository (TheHub #60899): entry points from public endpoints, DAST
+         *     routes and hostnames; assets from images, the SBOM and infrastructure
+         *     files; boundaries from exposure; controls from collector observations;
+         *     open findings mapped CWE to STRIDE. Every element cites its evidence. A
+         *     read: nothing is written anywhere.
+         */
+        get: operations["draft_threat_model_api_dashboard_repos__repo_id__threat_model_draft_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/repos/{repo_id}/threat-model/draft/pull-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose Threat Model
+         * @description Propose the drafted threat model as a pull request now (TheHub #60900).
+         *
+         *     With no `.sdlc/threat-model.yaml`, the whole draft is proposed. With a
+         *     valid one, only drift is: drafted elements the file does not cover, added
+         *     to its sections without changing a declared row. One open pull request per
+         *     repository, updated in place unless a person has edited its branch.
+         *     Written only to a repository GitHub reports as private; anything else is
+         *     `refused` before a branch, file or description exists. Audited as
+         *     `threat_model.propose`.
+         */
+        post: operations["propose_threat_model_api_dashboard_repos__repo_id__threat_model_draft_pull_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/findings": {
         parameters: {
             query?: never;
@@ -1284,6 +1369,9 @@ export interface paths {
          *
          *     Every category filter takes several values, comma-separated or repeated
          *     (`severity=critical,high`); one value means what it always did.
+         *
+         *     A filter sent blank (`?min_epss=&severity=`) is the same as one left
+         *     out. A value that is present and invalid is a 422 naming the field.
          */
         get: operations["repo_open_findings_api_dashboard_repos__repo_id__open_findings_get"];
         put?: never;
@@ -1523,8 +1611,9 @@ export interface paths {
          *
          *     The finding stays open. The platform freezes the finding row, its raw scanner
          *     record and the reason into an approval request under the `finding_disposition`
-         *     duty, tiered by the finding's own severity, and applies the disposition only
-         *     when an approver the policy admits says yes.
+         *     duty, tiered by the finding's governing severity - its own, raised to that of
+         *     any high or critical toxic combination it is a member of - and applies the
+         *     disposition only when an approver the policy admits says yes.
          */
         post: operations["request_finding_disposition_api_dashboard_findings__finding_id__disposition_requests_post"];
         delete?: never;
@@ -1887,6 +1976,13 @@ export interface paths {
          *     writing a coverage document — and rendering it as zero would have been a
          *     fabricated measurement of 227 real runs.
          *
+         *     **Running is not passing.** Each lane carries its latest outcome on its
+         *     branch (normally the default branch) — `passing`, `failing` or `unknown` —
+         *     with passes and failures over the last `window_days` and when it last
+         *     passed. A kind stays `observed` while its suite is red, because a failing
+         *     suite is still a suite, but its evidence sentence says the latest run
+         *     failed rather than reading as healthy.
+         *
          *     No score. The kinds are not equally applicable — a library needs no
          *     post-deploy smoke test — so a single figure could only ever penalise a
          *     repository for correctly not doing something.
@@ -2037,8 +2133,40 @@ export interface paths {
          *     TheHub's board and GitHub (TheHub #60861), cached for a few minutes; an
          *     earlier answer standing in for a failed read makes its section
          *     `partial`. A read.
+         *
+         *     Each operator action in "Needs you" carries a `verification` from a
+         *     read-only GitHub probe where one is registered (TheHub #60972); one
+         *     observed done is listed in `data.board.operator_actions` only, not as a
+         *     line, so it is not counted as needing you.
          */
         get: operations["daily_briefing_route_api_briefing_daily_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/briefing/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Weekly Briefing Route
+         * @description The Monday intelligence page per application (TheHub #60865).
+         *
+         *     Sections: advisories matched to what ships (KEV, EPSS, severity here,
+         *     reachability), threats fitted to the declared threat model, end-of-life
+         *     images, malicious packages, external exposure, vendor changes and
+         *     standards. Every item carries so-what, action, confidence and source; a
+         *     section that could not be read, or has no feed, says so. An item is
+         *     `flash` only when it is known exploited or critical and shipped. A read.
+         */
+        get: operations["weekly_briefing_route_api_briefing_weekly_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2647,6 +2775,12 @@ export interface paths {
         /**
          * Decisions For Repo
          * @description Decision history for one repo, newest first (spec 09 §7).
+         *
+         *     `confidence_note` qualifies the newest verdict with how much of the code
+         *     the analysers read (TheHub #60962, decision 60814 option 2): "go - read
+         *     31% of the code" under the configured threshold, "go - read coverage
+         *     unknown" when it could not be measured, null otherwise. It is computed
+         *     when the history is read and never changes a recorded verdict.
          */
         get: operations["decisions_for_repo_api_oracle_decisions__repo_id__get"];
         put?: never;
@@ -3592,6 +3726,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/dossier": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Finding Dossier
+         * @description Location, owner, history, similar past dispositions, the cluster, and
+         *     shadow model proposals with their grades - for one finding.
+         */
+        get: operations["finding_dossier_api_dashboard_findings__finding_id__dossier_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/model-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Model Proposal
+         * @description Record a model's proposed verdict, in shadow.
+         *
+         *     Never applied: the finding's status does not change and no approval is
+         *     requested. The proposal is graded later against the verdict a person
+         *     records (`GET /api/dashboard/triage/model-proposals/grade`).
+         */
+        post: operations["record_model_proposal_api_dashboard_findings__finding_id__model_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/triage/model-proposals/grade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Grade Model Proposals
+         * @description How often each model's shadow proposals matched what a person decided.
+         */
+        get: operations["grade_model_proposals_api_dashboard_triage_model_proposals_grade_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/auto-triage/digest": {
         parameters: {
             query?: never;
@@ -4391,6 +4590,194 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/libraries/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Requests
+         * @description Library requests, newest first, with decisions copied back.
+         */
+        get: operations["list_requests_api_libraries_requests_get"];
+        put?: never;
+        /**
+         * Request Library
+         * @description Request a library: the platform vets it and opens its approval.
+         *
+         *     The vetting report reads OSV, deps.dev and OpenSSF Scorecard, and runs
+         *     typosquat and new-package checks; each check names its source, and one
+         *     that could not be read says so. The report is the evidence of a
+         *     `library_approval` request whose tier it decides.
+         */
+        post: operations["request_library_api_libraries_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/requests/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Request
+         * @description One library request and its vetting report.
+         */
+        get: operations["get_request_api_libraries_requests__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/managed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Managed Libraries
+         * @description Every library in use, with its status, owner, version policy and flags.
+         *
+         *     A library nobody has recorded reads `tolerated` with `status_source:
+         *     default`. EOL and abandonment come from registry facts; until the
+         *     `library-facts` job has read a library, those flags are null.
+         */
+        get: operations["managed_libraries_api_libraries_managed_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Library
+         * @description Record a library as tolerated or banned, or set its owner or policy.
+         *
+         *     Approving is refused here: a library is approved through a vetted request.
+         *     Tolerated is refused for a library no repository's SBOM has. Banning,
+         *     lifting a ban and loosening an approved library need a person.
+         */
+        patch: operations["update_library_api_libraries_managed_patch"];
+        trace?: never;
+    };
+    "/api/libraries/baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Baseline
+         * @description Record every in-use library with no entry as tolerated.
+         */
+        post: operations["baseline_api_libraries_baseline_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/facts/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Facts
+         * @description Read registry facts (latest release, licenses, deprecations) for the
+         *     libraries in use, least recently read first.
+         */
+        post: operations["refresh_facts_api_libraries_facts_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Coverage
+         * @description Whether the allowlist covers a repository's current dependencies.
+         */
+        get: operations["repo_coverage_api_libraries_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/repo-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Repo Mode
+         * @description Switch a repository's library check between report and blocking.
+         *
+         *     A person's decision. Blocking is refused until every library in the
+         *     repository's SBOM has an approved or tolerated entry.
+         */
+        put: operations["set_repo_mode_api_libraries_repo_mode_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/libraries/pr-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Pr Check
+         * @description Run the library-allowlist check on one pull request's head now.
+         *
+         *     The `library-checks` job does this for every open pull request; this is
+         *     for not waiting.
+         */
+        post: operations["run_pr_check_api_libraries_pr_checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -4568,6 +4955,47 @@ export interface components {
             revoked_at: string | null;
             /** Active */
             active: boolean;
+        };
+        /**
+         * AnalyserCoverageOut
+         * @description How much of the application source the SAST analysers read (B-051).
+         */
+        AnalyserCoverageOut: {
+            /**
+             * Available
+             * @description Whether the share was measured. False when GitHub's language breakdown could not be read or reports no source; `reason` says which. Never read an unavailable share as fully read.
+             */
+            available: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Tools
+             * @description The analysers that have reported SAST here, or the configured one.
+             */
+            tools?: string[];
+            /**
+             * Source Bytes
+             * @default 0
+             */
+            source_bytes: number;
+            /**
+             * Share Read
+             * @description 0.0 to 1.0, or null.
+             */
+            share_read?: number | null;
+            /**
+             * Share Unread
+             * @description 0.0 to 1.0, or null.
+             */
+            share_unread?: number | null;
+            /**
+             * Unread Languages
+             * @description Up to five languages nothing reads, largest first.
+             */
+            unread_languages?: components["schemas"]["UnreadLanguageOut"][];
         };
         /** AtlasAccepted */
         AtlasAccepted: {
@@ -4855,6 +5283,13 @@ export interface components {
              * @default
              */
             ref: string;
+            /**
+             * Verification
+             * @description On an operator action: observed_done, observed_not_done, unprobed (no probe registered) or probe_error (the probe could not read GitHub; never counted as done). Empty on every other line.
+             * @default
+             * @enum {string}
+             */
+            verification: "" | "observed_done" | "observed_not_done" | "unprobed" | "probe_error";
         };
         /** BriefingOut */
         BriefingOut: {
@@ -5147,7 +5582,7 @@ export interface components {
              */
             phase: "start" | "end";
             /** Conclusion */
-            conclusion?: ("success" | "failure") | null;
+            conclusion?: ("success" | "failure" | "cancelled") | null;
         };
         /** ChecksOut */
         ChecksOut: {
@@ -5159,6 +5594,47 @@ export interface components {
             failed: number;
             /** Pending */
             pending: number;
+        };
+        /**
+         * CiFailureWhyOut
+         * @description Why one failing job failed, as its CI says (TheHub #60913).
+         */
+        CiFailureWhyOut: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "concourse" | "github";
+            /**
+             * Step
+             * @description The step that failed: a Concourse step name, or 'job: step' for a GitHub Actions run.
+             */
+            step?: string | null;
+            /**
+             * Exit Code
+             * @description The step's exit code, if known.
+             */
+            exit_code?: number | null;
+            /**
+             * Messages
+             * @description Up to three error lines, trimmed and scrubbed: the GitHub check annotations the failed job raised, or Concourse's own error events. Never build log output.
+             */
+            messages?: string[];
+            /**
+             * Url
+             * @description The failed build, job or run.
+             */
+            url?: string | null;
+            /**
+             * Note
+             * @description A caveat about what is shown, e.g. that the step raised no error line.
+             */
+            note?: string | null;
+            /**
+             * Unavailable
+             * @description Why no reason could be read, when none could; shown as 'reason unavailable: <this>'.
+             */
+            unavailable?: string | null;
         };
         /** CiJobOut */
         CiJobOut: {
@@ -5175,6 +5651,8 @@ export interface components {
             build_url?: string | null;
             /** Finished At */
             finished_at?: string | null;
+            /** @description Why this job's last build failed, for a job whose status is failed; null for every other job (TheHub #60913). */
+            why?: components["schemas"]["CiFailureWhyOut"] | null;
         };
         /**
          * CiLaneOut
@@ -5227,6 +5705,11 @@ export interface components {
              * @description Why there is no pipeline state, when there is none. 'No pipeline for this repo' and 'Concourse did not answer' are different facts, and a panel that conflates them teaches people to ignore it.
              */
             unavailable?: string | null;
+            /**
+             * Red Gating Lanes
+             * @description Each configured gating lane the red-main poll last recorded red on main, with when it went red and the first failing commit. Empty when none is red or none is configured for this repository.
+             */
+            red_gating_lanes?: components["schemas"]["RedGatingLaneOut"][];
         };
         /** CiReportingOut */
         CiReportingOut: {
@@ -5243,6 +5726,50 @@ export interface components {
              * @description reporting: results arrived. silent: the job succeeded and its capability's newest scan run is older than that build, so something ran and did not report. never_reported: the job has succeeded and the lake has no successful run for it at all. failed: the lane ran and its last build did not succeed, so there is no successful build to measure the lake against - distinct from not_run, which used to absorb it and reads as 'nobody has triggered this yet'. not_run: the job exists and has never run. unknown: the pipeline runs this job and nothing records what it produces, so no claim can be made about it - it is neither mapped to a capability nor written down as producing none, and until one of those is true nothing is watching it (B-59330). `capability` reads 'unknown' on these rows.
              */
             state: string;
+        };
+        /**
+         * CiStallJobOut
+         * @description One lane whose latest finished build errored (`ci_stall.ErroredJob`).
+         */
+        CiStallJobOut: {
+            /** Pipeline */
+            pipeline: string;
+            /** Job */
+            job: string;
+            /** Build */
+            build?: string | null;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * CiStallOut
+         * @description Is Concourse stalled - many lanes erroring together (TheHub #60975)?
+         */
+        CiStallOut: {
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /** Jobs */
+            jobs: components["schemas"]["CiStallJobOut"][];
+            /** Checklist */
+            checklist: string[];
+            /** Threshold */
+            threshold: number;
+            /** Window Minutes */
+            window_minutes: number;
+            /**
+             * Jobs Inspected
+             * @default 0
+             */
+            jobs_inspected: number;
+            /** Notified At */
+            notified_at?: string | null;
         };
         /**
          * CisGapOut
@@ -5484,9 +6011,16 @@ export interface components {
             };
             /**
              * Disclosed
-             * @description Newly disclosed in unchanged images; never blocking (#734).
+             * @description Newly disclosed in unchanged images (#734) or on dependencies the baseline already carried or this commit fixes (TheHub #61063); never blocking.
              */
             disclosed?: {
+                [key: string]: number;
+            };
+            /**
+             * Remediates
+             * @description Of `disclosed`, what this commit's own tree fixes (TheHub #61063).
+             */
+            remediates?: {
                 [key: string]: number;
             };
             /**
@@ -5880,6 +6414,19 @@ export interface components {
              */
             kinds: string[];
         };
+        /**
+         * CoverageUnknownOut
+         * @description A source the coverage route could not read, and why.
+         */
+        CoverageUnknownOut: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "analysers" | "regression";
+            /** Detail */
+            detail: string;
+        };
         /** CoveredFindingOut */
         CoveredFindingOut: {
             /** Finding Id */
@@ -5926,6 +6473,32 @@ export interface components {
             context?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * CredentialOut
+         * @description A credential a person may need to act on (TheHub #60974).
+         *
+         *     State and dates only. This page is served on an internet-exposed
+         *     dashboard, so no hash, hash prefix, token id or label is carried, and
+         *     `extra="forbid"` keeps one from being added in passing.
+         */
+        CredentialOut: {
+            /** Kind */
+            kind: string;
+            /** Repo Full Name */
+            repo_full_name?: string | null;
+            /** Actor */
+            actor?: string | null;
+            /** State */
+            state: string;
+            /** Rotate After */
+            rotate_after?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Days Until Due */
+            days_until_due: number;
+            /** Action */
+            action: string;
         };
         /** DailyBriefingOut */
         DailyBriefingOut: {
@@ -6212,6 +6785,160 @@ export interface components {
             /** Evidence Digest */
             evidence_digest: string;
         };
+        /** DossierClusterOut */
+        DossierClusterOut: {
+            /** Cluster Id */
+            cluster_id: string;
+            /** Kind */
+            kind: string;
+            /** Reason */
+            reason: string;
+            /** Count */
+            count: number;
+            /** Member Ids */
+            member_ids: string[];
+        };
+        /** DossierEventOut */
+        DossierEventOut: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Event */
+            event: string;
+            /** Actor */
+            actor: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /** DossierLocationOut */
+        DossierLocationOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Capability */
+            capability: string;
+            /** File Path */
+            file_path?: string | null;
+            /** Line Start */
+            line_start?: number | null;
+            /** Line End */
+            line_end?: number | null;
+            /** Symbol */
+            symbol?: string | null;
+            /** Package Name */
+            package_name?: string | null;
+            /** Package Version */
+            package_version?: string | null;
+            /** Asset */
+            asset?: string | null;
+        };
+        /**
+         * DossierOut
+         * @description What somebody reads before deciding (TheHub #60893).
+         */
+        DossierOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Status */
+            status: string;
+            /** Severity */
+            severity: string;
+            /** Title */
+            title: string;
+            location: components["schemas"]["DossierLocationOut"];
+            owner: components["schemas"]["DossierOwnerOut"];
+            /** History */
+            history: components["schemas"]["DossierEventOut"][];
+            /** Similar Dispositions */
+            similar_dispositions: components["schemas"]["SimilarDispositionOut"][];
+            cluster?: components["schemas"]["DossierClusterOut"] | null;
+            /** Proposals */
+            proposals: components["schemas"]["mykronos__api__triage_dossier__ProposalOut"][];
+            /**
+             * Proposals Mode
+             * @default shadow
+             * @constant
+             */
+            proposals_mode: "shadow";
+        };
+        /** DossierOwnerOut */
+        DossierOwnerOut: {
+            /** Owner */
+            owner?: string | null;
+            /** Owner Source */
+            owner_source?: string | null;
+        };
+        /** DraftElementOut */
+        DraftElementOut: {
+            /**
+             * Section
+             * @enum {string}
+             */
+            section: "assets" | "entry_points" | "trust_boundaries" | "controls";
+            /** Id */
+            id: string;
+            /**
+             * Body
+             * @description The element exactly as the file would hold it.
+             */
+            body: {
+                [key: string]: unknown;
+            };
+            /** Evidence */
+            evidence: components["schemas"]["DraftEvidenceOut"][];
+        };
+        /** DraftEvidenceOut */
+        DraftEvidenceOut: {
+            /**
+             * Source
+             * @description exposure | dast | compose | containers | sbom | iac | observation | finding.
+             */
+            source: string;
+            /** Detail */
+            detail: string;
+            /**
+             * Ref
+             * @description A path in the repository or an https URL; empty when not citable.
+             */
+            ref: string;
+            /** Observed At */
+            observed_at?: string | null;
+        };
+        /** DraftThreatOut */
+        DraftThreatOut: {
+            /** Stride */
+            stride: string[];
+            /**
+             * Resolution
+             * @enum {string}
+             */
+            resolution: "cwe" | "capability";
+            /** Weakness */
+            weakness: string;
+            /** Title */
+            title: string;
+            /** Capability */
+            capability: string;
+            /** Severity */
+            severity: string;
+            /** Findings */
+            findings: number;
+            /** Element Id */
+            element_id: string | null;
+            /** Ref */
+            ref: string;
+        };
+        /** DraftUncitedOut */
+        DraftUncitedOut: {
+            /** Label */
+            label: string;
+            /** Evidence */
+            evidence: components["schemas"]["DraftEvidenceOut"][];
+        };
         /**
          * EcosystemEvidence
          * @description Per-ecosystem detail for one repo.
@@ -6477,6 +7204,16 @@ export interface components {
             scope?: string | null;
             /** Evidence Id */
             evidence_id?: string | null;
+            /**
+             * Freshness
+             * @default undated
+             * @enum {string}
+             */
+            freshness: "fresh" | "expiring" | "lapsed" | "undated";
+            /** Age Days */
+            age_days?: number | null;
+            /** Expires In Days */
+            expires_in_days?: number | null;
         };
         /**
          * EnvironmentalRankOut
@@ -6644,9 +7381,16 @@ export interface components {
             };
             /**
              * Disclosed
-             * @description Open container findings this commit's scans saw first in an image the previous scan had already seen byte for byte (#734): the vulnerability database moved, not the commit. Reported so they are not lost, and excluded from `introduced` and the floor.
+             * @description Open findings this commit's scans saw first that the commit did not introduce: a container image the previous scan had already seen byte for byte (#734), or a dependency the baseline already carried at that version or that this commit's own manifests fix (TheHub #61063). The advisory moved, not the commit. Reported so they are not lost, and excluded from `introduced` and the floor.
              */
             disclosed?: {
+                [key: string]: number;
+            };
+            /**
+             * Remediates
+             * @description Of `disclosed`, the findings this commit's own tree fixes, by severity: read from an SBOM of what runs, while the commit's manifests move the package to the fixed version (TheHub #61063).
+             */
+            remediates?: {
                 [key: string]: number;
             };
             /**
@@ -6858,6 +7602,57 @@ export interface components {
             /** Open Total */
             open_total: number | null;
         };
+        /** ExploitFixOut */
+        ExploitFixOut: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fix_available" | "no_fix_published" | "not_a_package";
+            /** Fixed Version */
+            fixed_version?: string | null;
+            /** Detail */
+            detail: string;
+        };
+        /**
+         * ExploitSourceOut
+         * @description One source behind an exploitability verdict, with where to check it.
+         */
+        ExploitSourceOut: {
+            /** Source */
+            source: string;
+            /** Label */
+            label: string;
+            /** Detail */
+            detail: string;
+            /** Url */
+            url: string;
+            /** Observed At */
+            observed_at?: string | null;
+        };
+        /**
+         * ExploitabilityOut
+         * @description Can somebody exploit this today, and on whose word (TheHub #60890).
+         */
+        ExploitabilityOut: {
+            /** Cve Id */
+            cve_id?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "exploited" | "weaponized" | "public_poc" | "elevated_epss" | "no_known_exploit" | "not_checked" | "no_cve";
+            /** Summary */
+            summary: string;
+            /**
+             * Sources
+             * @default []
+             */
+            sources: components["schemas"]["ExploitSourceOut"][];
+            /** Checked At */
+            checked_at?: string | null;
+            fix: components["schemas"]["ExploitFixOut"];
+        };
         /**
          * FindingBatch
          * @description A batch of findings for one scan run.
@@ -7062,6 +7857,16 @@ export interface components {
             /** Version Basis */
             version_basis?: string | null;
             /**
+             * Source Kind
+             * @description What an atlas finding was read out of (TheHub #60921): `manifest` (a requirements file, lockfile or package.json), `sbom_document` (a committed CycloneDX or SPDX file) or `other`. Null for other capabilities and for findings scanned before it was recorded.
+             */
+            source_kind?: string | null;
+            /**
+             * Source Note
+             * @description For a finding read out of a committed SBOM document: the document's date, its age at the scan and whether the manifests changed after it. Null otherwise. Filled on the detail and record routes only.
+             */
+            source_note?: string | null;
+            /**
              * Address
              * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.
              */
@@ -7128,6 +7933,7 @@ export interface components {
             prior_disposition?: components["schemas"]["PriorDispositionOut"] | null;
             /** Missing Context */
             missing_context: components["schemas"]["RecordGap"][];
+            exploitability?: components["schemas"]["ExploitabilityOut"] | null;
         };
         /**
          * FindingStatus
@@ -7320,6 +8126,22 @@ export interface components {
              * @default
              */
             note: string;
+        };
+        /** GradeReportOut */
+        GradeReportOut: {
+            /** Duty */
+            duty: string;
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "shadow";
+            /** Applied */
+            applied: number;
+            /** Models */
+            models: components["schemas"]["ModelGradeOut"][];
+            /** Interpretation */
+            interpretation: string;
         };
         /** GroomResult */
         GroomResult: {
@@ -7642,6 +8464,105 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** LibraryBaselineOut */
+        LibraryBaselineOut: {
+            /** Recorded */
+            recorded: number;
+            /** Libraries */
+            libraries: string[];
+        };
+        /** LibraryCoverageOut */
+        LibraryCoverageOut: {
+            /** Repo */
+            repo: string;
+            /** Mode */
+            mode: string;
+            /** Libraries */
+            libraries: number;
+            /** Missing */
+            missing: string[];
+            /** Covered */
+            covered: boolean;
+        };
+        /** LibraryEntryIn */
+        LibraryEntryIn: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Status */
+            status?: string | null;
+            /** Owner */
+            owner?: string | null;
+            /** Version Policy */
+            version_policy?: string | null;
+            /** Version Ref */
+            version_ref?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /** LibraryEntryOut */
+        LibraryEntryOut: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Status */
+            status: string;
+            /** Owner */
+            owner: string;
+            /** Version Policy */
+            version_policy: string;
+            /** Version Ref */
+            version_ref: string;
+            /** Source */
+            source: string;
+            /** Approval Request Id */
+            approval_request_id: string | null;
+            /** Note */
+            note: string;
+            /** Updated By */
+            updated_by: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** LibraryFactsOut */
+        LibraryFactsOut: {
+            /** Read */
+            read: number;
+            /** Failed */
+            failed: number;
+            /** Libraries */
+            libraries: number;
+        };
+        /**
+         * LibraryFlagsOut
+         * @description `null` means the platform holds no data to decide, never "fine".
+         */
+        LibraryFlagsOut: {
+            /** Divergent */
+            divergent: boolean;
+            /** Eol */
+            eol: boolean | null;
+            /** Abandoned */
+            abandoned: boolean | null;
+            /** License Changed */
+            license_changed: boolean | null;
+            /** Version Policy Violation */
+            version_policy_violation: boolean | null;
+            /** Banned In Use */
+            banned_in_use: boolean;
+        };
+        /** LibraryModeIn */
+        LibraryModeIn: {
+            /** Repo */
+            repo: string;
+            /** Mode */
+            mode: string;
+        };
         /**
          * LibraryOut
          * @description One library across the estate.
@@ -7659,6 +8580,140 @@ export interface components {
             divergent: boolean;
             /** Direct Anywhere */
             direct_anywhere: boolean;
+        };
+        /** LibraryPrCheckIn */
+        LibraryPrCheckIn: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+        };
+        /** LibraryPrCheckOut */
+        LibraryPrCheckOut: {
+            /** Repo */
+            repo: string;
+            /** Number */
+            number: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Mode */
+            mode: string;
+            /** Conclusion */
+            conclusion: string;
+            /** Results */
+            results: {
+                [key: string]: unknown;
+            }[];
+            /** Error */
+            error: string | null;
+        };
+        /** LibraryRequestIn */
+        LibraryRequestIn: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Version */
+            version: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Owner
+             * @default
+             */
+            owner: string;
+            /**
+             * Version Policy
+             * @default minimum
+             */
+            version_policy: string;
+        };
+        /** LibraryRequestList */
+        LibraryRequestList: {
+            /** Requests */
+            requests: components["schemas"]["LibraryRequestOut"][];
+        };
+        /** LibraryRequestOut */
+        LibraryRequestOut: {
+            /** Id */
+            id: string;
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Version */
+            version: string;
+            /** Reason */
+            reason: string;
+            /** Owner */
+            owner: string;
+            /** Version Policy */
+            version_policy: string;
+            /** Requested By */
+            requested_by: string;
+            /** State */
+            state: string;
+            /** Tier */
+            tier: string;
+            /** Vetting */
+            vetting: {
+                [key: string]: unknown;
+            };
+            /** Approval Request Id */
+            approval_request_id: string | null;
+            /** Decision Reason */
+            decision_reason: string;
+            /** Decided By */
+            decided_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ManagedLibrariesOut */
+        ManagedLibrariesOut: {
+            /** Libraries */
+            libraries: components["schemas"]["ManagedLibraryOut"][];
+            /** By Status */
+            by_status: {
+                [key: string]: number;
+            };
+            /** Unrecorded */
+            unrecorded: number;
+            /** Flagged */
+            flagged: number;
+            /** Without Owner */
+            without_owner: number;
+        };
+        /** ManagedLibraryOut */
+        ManagedLibraryOut: {
+            /** Ecosystem */
+            ecosystem: string;
+            /** Package Name */
+            package_name: string;
+            /** Repos */
+            repos: string[];
+            /** Versions */
+            versions: string[];
+            /** Status */
+            status: string;
+            /** Status Source */
+            status_source: string;
+            /** Owner */
+            owner: string;
+            /** Version Policy */
+            version_policy: string;
+            /** Version Ref */
+            version_ref: string;
+            flags: components["schemas"]["LibraryFlagsOut"];
+            /** Facts Read At */
+            facts_read_at: string | null;
         };
         /** ManifestOut */
         ManifestOut: {
@@ -7767,6 +8822,32 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
+        };
+        /** ModelGradeOut */
+        ModelGradeOut: {
+            /** Model */
+            model: string;
+            /** Proposals */
+            proposals: number;
+            /** Graded */
+            graded: number;
+            /** Agree */
+            agree: number;
+            /** Disagree */
+            disagree: number;
+            /** Pending */
+            pending: number;
+            /** Ineligible */
+            ineligible: number;
+            /** Agreement Rate */
+            agreement_rate?: number | null;
+            /**
+             * Pairs
+             * @default {}
+             */
+            pairs: {
+                [key: string]: number;
+            };
         };
         /** NeedsHumanOut */
         NeedsHumanOut: {
@@ -8099,6 +9180,9 @@ export interface components {
             jobs: components["schemas"]["JobHealthOut"][];
             /** Dependencies */
             dependencies: components["schemas"]["DependencyHealthOut"][];
+            ci_stall: components["schemas"]["CiStallOut"];
+            /** Credentials */
+            credentials?: components["schemas"]["CredentialOut"][];
             /** Note */
             note: string;
         };
@@ -8249,6 +9333,8 @@ export interface components {
             not_shipped: components["schemas"]["PoDeliveryRowOut"][];
             /** Error */
             error: string | null;
+            /** Commits Error */
+            commits_error?: string | null;
         };
         /** PoDeliveryRowOut */
         PoDeliveryRowOut: {
@@ -8285,6 +9371,13 @@ export interface components {
             /** Observed At */
             observed_at: string | null;
             lag?: components["schemas"]["DeployLagOut"] | null;
+            /**
+             * Probe Source
+             * @default
+             */
+            probe_source: string;
+            /** Missing */
+            missing?: string[];
         };
         /** PoEnforcedTierOut */
         PoEnforcedTierOut: {
@@ -9267,6 +10360,30 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** ProposalIn */
+        ProposalIn: {
+            /**
+             * Proposed Status
+             * @enum {string}
+             */
+            proposed_status: "true_positive" | "false_positive" | "suppressed" | "accepted_risk";
+            /** Rationale */
+            rationale: string;
+            /**
+             * Model
+             * @description The exact model id that read the code; grades are per model.
+             */
+            model: string;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Evidence
+             * @description What was read: files and line ranges, as the proposer reports them. At most 16384 bytes as JSON.
+             */
+            evidence?: {
+                [key: string]: unknown;
+            };
+        };
         /** ProposeIn */
         ProposeIn: {
             /** Repo */
@@ -9607,6 +10724,35 @@ export interface components {
             reason: string;
         };
         /**
+         * RedGatingLaneOut
+         * @description A gating lane recorded red on main by the red-main poll (TheHub #60973).
+         */
+        RedGatingLaneOut: {
+            /** Job */
+            job: string;
+            /**
+             * Status
+             * @description Concourse's word for the latest finished build.
+             */
+            status?: string | null;
+            /** Build */
+            build?: string | null;
+            /**
+             * Red Since
+             * @description When the first failing build of this red run finished (UTC).
+             */
+            red_since?: string | null;
+            /** First Bad Build */
+            first_bad_build?: string | null;
+            /**
+             * First Bad Sha
+             * @description The commit the first failing build ran. Null when Concourse's recent source versions did not include it: unknown, not absent.
+             */
+            first_bad_sha?: string | null;
+            /** Last Green Sha */
+            last_green_sha?: string | null;
+        };
+        /**
          * RegressionLinkRequest
          * @description Pin a test to a finding (spec 31 §2).
          */
@@ -9808,6 +10954,29 @@ export interface components {
             /** Dry Run */
             dry_run: boolean;
         };
+        /**
+         * RepoCoverageOut
+         * @description What the scanners cannot read in one repository (TheHub #60795).
+         */
+        RepoCoverageOut: {
+            /** Repo Id */
+            repo_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            analysers: components["schemas"]["AnalyserCoverageOut"] | null;
+            /**
+             * Regression
+             * @description Regression coverage (spec 31 §3); null when it could not be read.
+             */
+            regression: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Unknown
+             * @description Sources that could not be read. An entry here means could not ask, not none.
+             */
+            unknown?: components["schemas"]["CoverageUnknownOut"][];
+        };
         /** RepoDetail */
         RepoDetail: {
             /** Id */
@@ -9966,6 +11135,73 @@ export interface components {
             decided_at: string | null;
             /** Decisions */
             decisions?: components["schemas"]["DecisionOut"][];
+        };
+        /**
+         * RescoreStepFactOut
+         * @description One fact on a rescore step: the metric it set, from what to what.
+         */
+        RescoreStepFactOut: {
+            /** Metric */
+            metric: string;
+            /** From Value */
+            from_value: string;
+            /** To Value */
+            to_value: string;
+            /** Applied */
+            applied: boolean;
+            /** Direction */
+            direction: string;
+            /**
+             * Because
+             * @default
+             */
+            because: string;
+            /** Not Applied Reason */
+            not_applied_reason?: string | null;
+            /** Source Kind */
+            source_kind: string;
+            /** Source Id */
+            source_id: string;
+            /** Tier */
+            tier: string;
+            /**
+             * Freshness
+             * @enum {string}
+             */
+            freshness: "fresh" | "expiring" | "lapsed" | "undated";
+            /** Age Days */
+            age_days?: number | null;
+            /** Expires In Days */
+            expires_in_days?: number | null;
+        };
+        /**
+         * RescoreStepOut
+         * @description One step from the base score to the effective severity (TheHub #60889).
+         */
+        RescoreStepOut: {
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "base" | "environmental" | "effective";
+            /** Label */
+            label: string;
+            /** Score */
+            score?: number | null;
+            /** Severity */
+            severity?: string | null;
+            /** Detail */
+            detail: string;
+            /**
+             * Facts
+             * @default []
+             */
+            facts: components["schemas"]["RescoreStepFactOut"][];
+            /**
+             * Notes
+             * @default []
+             */
+            notes: string[];
         };
         /** RetireRequest */
         RetireRequest: {
@@ -10711,6 +11947,36 @@ export interface components {
             effective_severity?: string | null;
             /** Computed At */
             computed_at?: string | null;
+            /**
+             * Steps
+             * @default []
+             */
+            steps: components["schemas"]["RescoreStepOut"][];
+            /** Recomputed Because */
+            recomputed_because?: string | null;
+        };
+        /** SimilarDispositionOut */
+        SimilarDispositionOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Repo Id */
+            repo_id?: string | null;
+            /** Capability */
+            capability: string;
+            /** Status */
+            status: string;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Accepted Reason Code */
+            accepted_reason_code?: string | null;
+            /** Where */
+            where?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Decided By */
+            decided_by?: string | null;
         };
         /** SnoozeRequest */
         SnoozeRequest: {
@@ -11268,6 +12534,8 @@ export interface components {
             evidence: string[];
             /** How To Evidence */
             how_to_evidence: string;
+            /** Outcome */
+            outcome?: ("passing" | "failing" | "unknown") | null;
         };
         /** TestLaneOut */
         TestLaneOut: {
@@ -11287,6 +12555,28 @@ export interface components {
             coverage_state: string;
             /** Line Coverage */
             line_coverage: number | null;
+            /**
+             * Outcome
+             * @default unknown
+             * @enum {string}
+             */
+            outcome: "passing" | "failing" | "unknown";
+            /** Outcome Branch */
+            outcome_branch?: string | null;
+            /** Latest Status */
+            latest_status?: string | null;
+            /** Latest Run At */
+            latest_run_at?: string | null;
+            /** Last Passed At */
+            last_passed_at?: string | null;
+            /** Window Days */
+            window_days: number;
+            /** Window Runs */
+            window_runs: number;
+            /** Window Passed */
+            window_passed: number;
+            /** Window Failed */
+            window_failed: number;
         };
         /**
          * ThreatIntelEntryOut
@@ -11344,6 +12634,40 @@ export interface components {
             reason: string;
         };
         /**
+         * ThreatModelDraftOut
+         * @description A threat model drafted from MyKronos's own evidence (TheHub #60899).
+         */
+        ThreatModelDraftOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Path
+             * @description Always `.sdlc/threat-model.yaml`.
+             */
+            path: string;
+            /** Generated At */
+            generated_at: string | null;
+            /**
+             * Yaml
+             * @description The draft as file text; parses as a valid schema-v1 manifest.
+             */
+            yaml: string;
+            /** Elements */
+            elements: components["schemas"]["DraftElementOut"][];
+            /** Threats */
+            threats: components["schemas"]["DraftThreatOut"][];
+            /**
+             * Uncited
+             * @description Seen, but not drafted: none of the evidence is citable.
+             */
+            uncited: components["schemas"]["DraftUncitedOut"][];
+            /**
+             * Unread
+             * @description Sources that could not be read; absent here, not proven absent.
+             */
+            unread: string[];
+        };
+        /**
          * ThreatModelOut
          * @description A STRIDE-categorized attack-surface inventory (spec 18 §6).
          */
@@ -11370,6 +12694,38 @@ export interface components {
             nothing_scanned: boolean;
             supply_chain?: components["schemas"]["ThreatModelSupplyChainOut"] | null;
             component_coverage?: components["schemas"]["ComponentCoverageOut"] | null;
+        };
+        /**
+         * ThreatModelProposalOut
+         * @description What proposing the drafted threat model did (TheHub #60900).
+         */
+        ThreatModelProposalOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * State
+             * @description `opened`/`updated`: a pull request carries the proposal. `unchanged`: the open one already does. `kept`: a person edited the open one's branch, and their edits stand. `no_drift`: the declared file covers everything drafted. `invalid`/`unreadable`: the declared file could not be used, so nothing was proposed. `refused`: the repository is not known to be private, so no threat-model detail is written to it.
+             * @enum {string}
+             */
+            state: "opened" | "updated" | "unchanged" | "kept" | "no_drift" | "invalid" | "unreadable" | "refused" | "failed";
+            /** Reason */
+            reason: string;
+            /** Pull Request Url */
+            pull_request_url: string | null;
+            /** Pull Request Number */
+            pull_request_number: number | null;
+            /**
+             * Added
+             * @description Elements proposed, per section.
+             */
+            added: {
+                [key: string]: number;
+            };
+            /**
+             * Covered
+             * @description Drafted elements the declared file already covers.
+             */
+            covered: number;
         };
         /**
          * ThreatModelSupplyChainOut
@@ -11454,6 +12810,12 @@ export interface components {
             status?: string | null;
             /** File Path */
             file_path?: string | null;
+            /**
+             * Qualifies
+             * @description Which half of the rule this member satisfies, and why: the pattern it matched or the listed alert it is, and any severity floor.
+             * @default
+             */
+            qualifies: string;
         };
         /**
          * ToxicCombinationOut
@@ -11507,6 +12869,11 @@ export interface components {
             /** Version Basis */
             version_basis?: string | null;
             /**
+             * Source Note
+             * @description For an atlas finding read out of a committed SBOM document: its date, its age at the scan and whether the manifests changed after it (TheHub #60921). Null otherwise.
+             */
+            source_note?: string | null;
+            /**
              * Address
              * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.
              */
@@ -11552,6 +12919,11 @@ export interface components {
              * @description 0-1, null if not scored yet.
              */
             epss_score?: number | null;
+            /**
+             * Exploit Verdict
+             * @description The exploitability ladder (TheHub #60890): exploited (KEV), weaponized (Metasploit), public_poc, elevated_epss, no_known_exploit, not_checked, or no_cve. The finding record lists the sources behind it.
+             */
+            exploit_verdict?: ("exploited" | "weaponized" | "public_poc" | "elevated_epss" | "no_known_exploit" | "not_checked" | "no_cve") | null;
             /**
              * Owner
              * @description From CODEOWNERS or the risk profile (spec 24 §1).
@@ -11713,6 +13085,16 @@ export interface components {
             path_refusal: string;
             action?: components["schemas"]["BriefingActionOut"] | null;
         };
+        /**
+         * UnreadLanguageOut
+         * @description One language no analyser here reads, with its size.
+         */
+        UnreadLanguageOut: {
+            /** Language */
+            language: string;
+            /** Bytes */
+            bytes: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -11824,6 +13206,108 @@ export interface components {
             kev_count: number;
             /** Cves */
             cves: string[];
+        };
+        /** WeeklyBriefingOut */
+        WeeklyBriefingOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /**
+             * Week Of
+             * Format: date
+             */
+            week_of: string;
+            /** Pages */
+            pages: components["schemas"]["WeeklyPageOut"][];
+        };
+        /** WeeklyItemOut */
+        WeeklyItemOut: {
+            /** What */
+            what: string;
+            /**
+             * So What
+             * @description Why it matters to this application.
+             */
+            so_what: string;
+            /** Action */
+            action: string;
+            /**
+             * Confidence
+             * @enum {string}
+             */
+            confidence: "observed" | "inferred";
+            /**
+             * Confidence Reason
+             * @description What the confidence rests on.
+             */
+            confidence_reason: string;
+            /**
+             * Source
+             * @description The advisory's public page or the MyKronos page.
+             */
+            source: string;
+            /** Severity */
+            severity: string;
+            /** New This Week */
+            new_this_week: boolean;
+            /**
+             * Flash
+             * @description Known exploited or critical, and shipped: DMed the same day.
+             */
+            flash: boolean;
+            /** Flash Reason */
+            flash_reason: string;
+            /** Key */
+            key: string;
+        };
+        /** WeeklyPageOut */
+        WeeklyPageOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Repo Id */
+            repo_id: string;
+            /**
+             * Week Of
+             * Format: date
+             * @description The Monday the week starts on, local time.
+             */
+            week_of: string;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Sections */
+            sections: components["schemas"]["WeeklySectionOut"][];
+        };
+        /** WeeklySectionOut */
+        WeeklySectionOut: {
+            /** Key */
+            key: string;
+            /** Title */
+            title: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "unavailable" | "not_available";
+            /** Source */
+            source: string;
+            /** As Of */
+            as_of: string | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Items */
+            items?: components["schemas"]["WeeklyItemOut"][];
+            /** Data */
+            data?: {
+                [key: string]: unknown;
+            };
         };
         /** WhoAmI */
         WhoAmI: {
@@ -12056,6 +13540,56 @@ export interface components {
             base_score: number;
             /** Rationale */
             rationale: string;
+        };
+        /**
+         * ProposalOut
+         * @description One shadow proposal and how it graded. `applied` is always false.
+         */
+        mykronos__api__triage_dossier__ProposalOut: {
+            /** Id */
+            id: string;
+            /** Model */
+            model: string;
+            /**
+             * Proposed Status
+             * @enum {string}
+             */
+            proposed_status: "true_positive" | "false_positive" | "suppressed" | "accepted_risk";
+            /** Confidence */
+            confidence?: number | null;
+            /** Rationale */
+            rationale: string;
+            /**
+             * Evidence
+             * @default {}
+             */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Proposed By */
+            proposed_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Applied
+             * @default false
+             * @constant
+             */
+            applied: false;
+            /**
+             * Grade
+             * @enum {string}
+             */
+            grade: "agree" | "disagree" | "pending" | "ineligible";
+            /** Human Verdict */
+            human_verdict?: string | null;
+            /** Human Actor */
+            human_actor?: string | null;
+            /** Verdict At */
+            verdict_at?: string | null;
         };
     };
     responses: never;
@@ -13069,6 +14603,37 @@ export interface operations {
             };
         };
     };
+    repo_coverage_api_dashboard_repos__repo_id__coverage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoCoverageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     repo_governance_api_dashboard_repos__repo_id__governance_get: {
         parameters: {
             query?: never;
@@ -13511,6 +15076,68 @@ export interface operations {
             };
         };
     };
+    draft_threat_model_api_dashboard_repos__repo_id__threat_model_draft_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatModelDraftOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    propose_threat_model_api_dashboard_repos__repo_id__threat_model_draft_pull_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreatModelProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     repo_findings_api_dashboard_repos__repo_id__findings_get: {
         parameters: {
             query?: {
@@ -13605,7 +15232,7 @@ export interface operations {
                 severity?: components["schemas"]["Severity"][] | null;
                 finding_status?: components["schemas"]["FindingStatus"][] | null;
                 rule_id?: string | null;
-                kev_only?: boolean;
+                kev_only?: boolean | null;
                 min_epss?: number | null;
                 triage?: ("true_positive" | "likely_false_positive" | "needs_human_judgment" | "toxic_combination")[] | null;
                 fixable?: boolean | null;
@@ -13622,7 +15249,7 @@ export interface operations {
                 older_than_days?: number | null;
                 /** @description First seen within the last N days. */
                 newer_than_days?: number | null;
-                limit?: number;
+                limit?: number | null;
             };
             header?: never;
             path: {
@@ -14364,6 +15991,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DailyBriefingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    weekly_briefing_route_api_briefing_weekly_get: {
+        parameters: {
+            query?: {
+                /** @description One application's page, by onboarding id. Omit for every one. */
+                repo_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WeeklyBriefingOut"];
                 };
             };
             /** @description Validation Error */
@@ -16506,6 +18165,92 @@ export interface operations {
             };
         };
     };
+    finding_dossier_api_dashboard_findings__finding_id__dossier_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DossierOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_model_proposal_api_dashboard_findings__finding_id__model_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposalIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["mykronos__api__triage_dossier__ProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grade_model_proposals_api_dashboard_triage_model_proposals_grade_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradeReportOut"];
+                };
+            };
+        };
+    };
     auto_triage_digest_api_dashboard_auto_triage_digest_get: {
         parameters: {
             query?: {
@@ -17941,6 +19686,313 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetiredLaneOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_requests_api_libraries_requests_get: {
+        parameters: {
+            query?: {
+                state?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryRequestList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_library_api_libraries_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryRequestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_request_api_libraries_requests__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    managed_libraries_api_libraries_managed_get: {
+        parameters: {
+            query?: {
+                ecosystem?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManagedLibrariesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_library_api_libraries_managed_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryEntryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    baseline_api_libraries_baseline_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryBaselineOut"];
+                };
+            };
+        };
+    };
+    refresh_facts_api_libraries_facts_refresh_post: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryFactsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_coverage_api_libraries_coverage_get: {
+        parameters: {
+            query: {
+                repo: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryCoverageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_repo_mode_api_libraries_repo_mode_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryModeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryCoverageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_pr_check_api_libraries_pr_checks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryPrCheckIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryPrCheckOut"];
                 };
             };
             /** @description Validation Error */

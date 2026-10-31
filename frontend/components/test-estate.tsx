@@ -1,5 +1,6 @@
 import { Label, Pill, Section } from "@/components/primitives";
 import type { components } from "@/lib/api-types";
+import { outcomeText } from "@/lib/test-outcome";
 
 type Estate = components["schemas"]["TestEstateOut"];
 type Kind = components["schemas"]["TestKindOut"];
@@ -34,6 +35,21 @@ function Coverage({ lane }: { lane: Lane }) {
   return <span className="font-mono text-[12px] text-ink-3">&mdash;</span>;
 }
 
+/**
+ * Whether the lane's latest run on its branch passed (TheHub #60922).
+ *
+ * Shown first in the row, because "is it running" was being read as "is it
+ * passing" on a day every functional run on main failed.
+ */
+function OutcomePill({ lane }: { lane: Lane }) {
+  const text = outcomeText(lane);
+  return (
+    <Pill tone={text.tone} title={text.detail}>
+      {text.word}
+    </Pill>
+  );
+}
+
 function LaneRow({ lane }: { lane: Lane }) {
   const rate = lane.runs > 0 ? Math.round((lane.succeeded / lane.runs) * 100) : null;
   return (
@@ -51,6 +67,7 @@ function LaneRow({ lane }: { lane: Lane }) {
         </span>
       ) : (
         <>
+          <OutcomePill lane={lane} />
           <span className="tabular font-mono text-[12px] text-ink-2">
             {lane.succeeded}/{lane.runs} runs green
             {rate !== null ? ` (${rate}%)` : ""}
@@ -60,6 +77,10 @@ function LaneRow({ lane }: { lane: Lane }) {
               {lane.failed} failed
             </span>
           ) : null}
+          <span className="tabular font-mono text-[11px] text-ink-3">
+            {lane.window_days}d: {lane.window_passed} passed, {lane.window_failed} failed
+            {lane.last_passed_at ? ` · last passed ${lane.last_passed_at.slice(0, 10)}` : ""}
+          </span>
           <span className="ml-auto flex items-baseline gap-2">
             <Coverage lane={lane} />
             {lane.last_run_at ? (
@@ -93,12 +114,21 @@ function KindRow({ kind }: { kind: Kind }) {
 
       {kind.evidence.length > 0 ? (
         <ul className="mt-1 flex flex-col gap-0.5">
-          {kind.evidence.map((line) => (
-            <li key={line} className="text-[12px] text-pass">
-              <span aria-hidden="true">✓ </span>
-              {line}
-            </li>
-          ))}
+          {kind.evidence.map((line) =>
+            // Evidenced is not passing: a red suite is still a suite, and its
+            // line must not render as a green tick (TheHub #60922).
+            kind.outcome === "failing" ? (
+              <li key={line} className="text-[12px] text-high">
+                <span aria-hidden="true">✗ </span>
+                {line}
+              </li>
+            ) : (
+              <li key={line} className="text-[12px] text-pass">
+                <span aria-hidden="true">✓ </span>
+                {line}
+              </li>
+            ),
+          )}
         </ul>
       ) : (
         <p className="mt-1 max-w-prose text-[12px] text-ink-2">

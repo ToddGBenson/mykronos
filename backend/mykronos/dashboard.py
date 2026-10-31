@@ -37,7 +37,15 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import blast_radius, environment_view, prior_disposition, toxic, worklist
+from mykronos import (
+    atlas_source,
+    blast_radius,
+    environment_view,
+    exploitability,
+    prior_disposition,
+    toxic,
+    worklist,
+)
 from mykronos.ci import LaneResult
 from mykronos.config import get_settings
 from mykronos.controls import category_states
@@ -308,6 +316,7 @@ RANK_INPUTS: dict[str, str] = {
     "repo_is_no_go": "the repository's own risk decision",
     "fixable": "whether a fix already exists",
     "environmental": "environmental severity (exposure, data and criticality, from stored scores)",
+    "public_exploit": "public exploits (Metasploit, Exploit-DB, GitHub PoC via NVD)",
 }
 """Every term `rank_terms` can produce, and the input each one discloses.
 
@@ -375,6 +384,22 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             "epss",
             rank.epss_at_1_0 * float(epss),
             f"EPSS {float(epss):.2f} — probability of exploitation in 30 days",
+        )
+    # The exploitability verdict (TheHub #60890). Only the two rungs that mean
+    # "an exploit can be picked up today", and never on top of KEV, which
+    # already carries the larger term for the worse fact.
+    verdict = item.get("exploit_verdict")
+    if not item.get("in_kev") and verdict == "weaponized":
+        add(
+            "public_exploit",
+            rank.public_exploit_weaponized,
+            "a Metasploit module exploits it - weaponised, not yet KEV-listed",
+        )
+    elif not item.get("in_kev") and verdict == "public_poc":
+        add(
+            "public_exploit",
+            rank.public_exploit_poc,
+            "public exploit code is published - not yet KEV-listed",
         )
     due = item.get("due_state")
     if due == "overdue":
@@ -1271,16 +1296,16 @@ class DashboardQueries:
         # another scanner, so a view filtered to `critical` would report no
         # combinations at exactly the moment somebody is looking at the worst
         # row.
-        # Accepted findings join the open view's pool (operator decision
-        # 2026-09-28, `mykronos.toxic`): accepting half of a toxic pair is a
-        # decision about that half alone, and must not hide the pair here
-        # while the risk decision still counts it.
-        pool_statuses = statuses
-        if "open" in statuses and "accepted_risk" not in statuses:
-            pool_statuses = (*statuses, "accepted_risk")
+        # Dispositioned findings (`false_positive`, `accepted_risk`) never
+        # count toward a combination, whichever status this view shows:
+        # `correlate.detect` drops them, as the risk decision does (TheHub
+        # #60965, superseding the 2026-09-28 decision).
         pool = self._finding_rows(
-            repo_full_name, columns, pool_statuses, capabilities=CORRELATION_CAPABILITIES
+            repo_full_name, columns, statuses, capabilities=CORRELATION_CAPABILITIES
         )
+        # A 90022 counts only on its evidence (TheHub #61014); the verdict is
+        # read without putting raw output on the rows.
+        correlate.attach_disclosure_evidence(pool, self.catalog.query)
         combinations = correlate.detect(pool)
         by_id = {str(f["finding_id"]): f for f in pool}
         kev_cves: set[str] = set()
@@ -2103,6 +2128,7 @@ class DashboardQueries:
         severity = toxic.combination_severity(
             [str(m["severity"]) for m in members], kev=bool(member_kev), escalate_steps=1
         )
+        why = dict(combination.qualifications)
         return {
             "combination_id": combination.combination_id,
             "rule_id": combination.rule_id,
@@ -2119,6 +2145,7 @@ class DashboardQueries:
                     "severity": str(member["severity"]),
                     "status": str(member.get("status") or ""),
                     "file_path": member.get("file_path"),
+                    "qualifies": why.get(str(member["finding_id"]), ""),
                 }
                 for member in members
             ],
@@ -2226,9 +2253,15 @@ class DashboardQueries:
             # location when there is no file and no package.
             "address",
             "port",
+            # What an atlas finding was read out of (TheHub #60921): the
+            # work queue says so when it is a committed SBOM document.
+            "source_kind",
+            "source_document",
         ]
         selected = {
             "image": "json_extract_string(raw_finding_json, '$.image') AS image",
+            "source_kind": "json_extract_string(raw_finding_json, '$.source_kind')",
+            "source_document": "json_extract(raw_finding_json, '$.source_document')",
         }
         # Same reasoning as open_findings() (spec 17 §3, #20): a KEV/EPSS filter
         # is applied in Python against a different database, so the SQL
@@ -2266,6 +2299,9 @@ class DashboardQueries:
             decision = decisions.get(repo)
             record["repo_recommendation"] = str(decision[1]) if decision else None
             record["asset"] = asset_label(record.get("address"), record.get("port"))
+            record["source_note"] = atlas_source.note(
+                record.get("source_kind"), record.pop("source_document", None)
+            )
             queue.append(record)
 
         # cve_id/in_kev/epss_score stamped onto every row (spec 17 §4.4, #20) —
@@ -2546,7 +2582,13 @@ class DashboardQueries:
         repository it already works scan by scan, so grouping cannot change
         its answer. A pair with nothing introduced is present with `{}`.
         """
-        from mykronos.disclosure import CAPABILITY, disclosed_ids
+        from mykronos.disclosure import (
+            ATLAS,
+            CAPABILITY,
+            atlas_candidate,
+            atlas_disclosed,
+            disclosed_ids,
+        )
 
         wanted = {(str(r), str(c)) for r, c in pairs}
         if not wanted:
@@ -2558,7 +2600,9 @@ class DashboardQueries:
             SELECT DISTINCT s.repo_full_name, s.commit_sha, f.finding_id, f.severity,
                    f.capability, f.rule_id, f.first_seen_scan_run_id,
                    json_extract_string(f.raw_finding_json, '$.image'),
-                   f.package_name, f.package_version
+                   f.package_name, f.package_version,
+                   json_extract(f.raw_finding_json, '$.baseline_commits'),
+                   json_extract(f.raw_finding_json, '$.remediated_by')
             FROM findings f
             JOIN scan_runs s
               ON s.scan_run_id = f.first_seen_scan_run_id
@@ -2569,7 +2613,7 @@ class DashboardQueries:
         )
         found: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         for (repo, commit, finding_id, severity, capability, rule_id, scan,
-             image, package, version) in rows:
+             image, package, version, baseline, remedy) in rows:
             key = (str(repo), str(commit))
             if key not in wanted:
                 continue
@@ -2582,6 +2626,8 @@ class DashboardQueries:
                 "_image": None if image is None else str(image),
                 "_package": str(package or ""),
                 "_version": str(version or ""),
+                "_baseline": baseline,
+                "_remedy": remedy,
             }
         disclosed: set[str] = set()
         by_repo: dict[str, list[tuple[str, str, str | None, str, str, str]]] = {}
@@ -2594,6 +2640,13 @@ class DashboardQueries:
                     )
         for candidates in by_repo.values():
             disclosed |= disclosed_ids(self.catalog, candidates)
+        for (_, _), rows_by_id in found.items():
+            atlas = [
+                atlas_candidate(r["finding_id"], r["_scan"], r["_baseline"], r["_remedy"])
+                for r in rows_by_id.values()
+                if r["capability"] == ATLAS
+            ]
+            disclosed |= atlas_disclosed(self.catalog, atlas)[0]
         return {
             key: _by_severity(
                 [r for r in found.get(key, {}).values() if r["finding_id"] not in disclosed]
@@ -2608,10 +2661,19 @@ class DashboardQueries:
         Reported beside `introduced_by`, never inside it: the finding is real
         and open, but the vulnerability database moved, not the commit. Also
         here: findings in an image that was already a tool before this commit,
-        and a renamed tool image's carried-over CVEs (#858).
+        and a renamed tool image's carried-over CVEs (#858); and dependency
+        findings on a component the baseline already carried, or that this
+        commit's own manifests fix (TheHub #61063).
         """
         _, disclosed = self._first_seen_at(repo_full_name, commit_sha)
         return _by_severity(disclosed)
+
+    def remediated_by(self, repo_full_name: str, commit_sha: str) -> dict[str, int]:
+        """Of the newly disclosed, the ones this commit's own tree fixes, by
+        severity (TheHub #61063): read from an SBOM of what runs, while this
+        commit's manifests move the package to the fixed version."""
+        _, disclosed = self._first_seen_at(repo_full_name, commit_sha)
+        return _by_severity([row for row in disclosed if row.get("_remediated")])
 
     def _first_seen_at(
         self, repo_full_name: str, commit_sha: str
@@ -2619,14 +2681,22 @@ class DashboardQueries:
         """Open findings first seen by a scan of this commit, split into
         (introduced, newly disclosed). The one definition both `introduced_by`
         and `introduced_rows` read, so they cannot disagree."""
-        from mykronos.disclosure import CAPABILITY, disclosed_ids
+        from mykronos.disclosure import (
+            ATLAS,
+            CAPABILITY,
+            atlas_candidate,
+            atlas_disclosed,
+            disclosed_ids,
+        )
 
         rows = self.catalog.query(
             """
             SELECT f.finding_id, f.severity, f.capability, f.rule_id, f.title,
                    f.file_path, f.line_start, f.first_seen_scan_run_id,
                    json_extract_string(f.raw_finding_json, '$.image'),
-                   f.package_name, f.package_version
+                   f.package_name, f.package_version,
+                   json_extract(f.raw_finding_json, '$.baseline_commits'),
+                   json_extract(f.raw_finding_json, '$.remediated_by')
             FROM findings f
             WHERE f.asset_id = ?
               AND f.status = 'open'
@@ -2650,10 +2720,13 @@ class DashboardQueries:
                 "_image": None if image is None else str(image),
                 "_package": str(package or ""),
                 "_version": str(version or ""),
+                "_baseline": baseline,
+                "_remedy": remedy,
             }
             for (
                 finding_id, severity, capability, rule_id, title,
                 file_path, line_start, scan, image, package, version,
+                baseline, remedy,
             ) in rows
         ]
         disclosed = disclosed_ids(
@@ -2671,6 +2744,17 @@ class DashboardQueries:
                 if row["capability"] == CAPABILITY
             ],
         )
+        atlas, remediated = atlas_disclosed(
+            self.catalog,
+            [
+                atlas_candidate(row["finding_id"], row["_scan"], row["_baseline"], row["_remedy"])
+                for row in found
+                if row["capability"] == ATLAS
+            ],
+        )
+        disclosed |= atlas
+        for row in found:
+            row["_remediated"] = row["finding_id"] in remediated
         introduced = [row for row in found if row["finding_id"] not in disclosed]
         return introduced, [row for row in found if row["finding_id"] in disclosed]
 
@@ -3070,6 +3154,101 @@ class DashboardQueries:
             )
         return health
 
+    def test_lane_outcomes(
+        self,
+        repo_full_name: str,
+        capabilities: Sequence[str],
+        lane_branches: dict[str, str] | None = None,
+        *,
+        window_days: int = 7,
+        now: datetime | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Whether each test lane is passing, not only whether it is running.
+
+        `scan_health` answers "has this lane reported"; a lane whose every run
+        on main failed for a day still had runs, so the test view said the
+        functional lane was evidenced while incident #36403 was open
+        (TheHub #60922). This is the other half: the latest run's status on the
+        lane's branch, the passes and failures inside a recent window, and when
+        the lane last passed.
+
+        Only runs on the lane's branch count where one is given, for the same
+        reason as `scan_health` (B-056): a red pull-request branch must not
+        make main look broken, nor a green one make it look fixed. A capability
+        with no branch given keeps every run rather than none.
+        """
+        if not capabilities:
+            return {}
+        branches = {
+            capability: branch
+            for capability, branch in (lane_branches or {}).items()
+            if capability in capabilities and branch
+        }
+        params: list[Any] = []
+        if branches:
+            whens = " ".join(
+                "WHEN capability = ? THEN coalesce(branch, '') = ?" for _ in branches
+            )
+            on_lane = f"CASE {whens} ELSE true END"
+            for capability, branch in branches.items():
+                params.extend([capability, branch])
+        else:
+            on_lane = "true"
+        since = (now or utcnow()) - timedelta(days=window_days)
+        placeholders = ", ".join("?" for _ in capabilities)
+
+        rows = self.catalog.query(
+            f"""
+            WITH lane AS (
+                SELECT capability, scan_status,
+                       coalesce(completed_at, started_at) AS ran_at,
+                       row_number() OVER (
+                           PARTITION BY capability
+                           ORDER BY coalesce(completed_at, started_at) DESC,
+                                    ingested_at DESC,
+                                    scan_run_id DESC
+                       ) AS rn
+                FROM scan_runs
+                WHERE repo_full_name = ?
+                  AND capability IN ({placeholders})
+                  AND {on_lane}
+            )
+            SELECT capability,
+                   max(scan_status) FILTER (WHERE rn = 1)                   AS latest_status,
+                   max(ran_at) FILTER (WHERE rn = 1)                        AS latest_at,
+                   max(ran_at) FILTER (WHERE scan_status = 'success')       AS last_passed_at,
+                   count(*) FILTER (WHERE ran_at >= ?)                      AS window_runs,
+                   count(*) FILTER (WHERE ran_at >= ? AND scan_status = 'success')
+                                                                            AS window_passed,
+                   count(*) FILTER (WHERE ran_at >= ?
+                                     AND scan_status IN ('failure', 'partial_failure'))
+                                                                            AS window_failed
+            FROM lane
+            GROUP BY capability
+            """,
+            [repo_full_name, *capabilities, *params, since, since, since],
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for (
+            capability,
+            latest_status,
+            latest_at,
+            last_passed_at,
+            window_runs,
+            window_passed,
+            window_failed,
+        ) in rows:
+            out[str(capability)] = {
+                "latest_status": str(latest_status) if latest_status is not None else None,
+                "latest_at": latest_at,
+                "last_passed_at": last_passed_at,
+                "window_runs": int(window_runs or 0),
+                "window_passed": int(window_passed or 0),
+                "window_failed": int(window_failed or 0),
+                "branch": branches.get(str(capability)),
+            }
+        return out
+
     def _recent_scan_runs(
         self, repo_full_name: str, per_capability: int = 2
     ) -> dict[str, list[dict[str, Any]]]:
@@ -3222,15 +3401,29 @@ class DashboardQueries:
             "address",
             "port",
         ]
+        # What an atlas finding was read out of (TheHub #60921). Selected out
+        # of the raw record for every reader, not only those who may see raw
+        # output: "this came from a nine-day-old SBOM document" is the reading
+        # of the finding, not the scanner's bytes.
+        selected = {
+            "source_kind": "json_extract_string(raw_finding_json, '$.source_kind')",
+            "source_document": "json_extract(raw_finding_json, '$.source_document')",
+        }
+        columns += list(selected)
         if include_raw:
             columns += ["code_snippet", "raw_finding_json"]
         rows = self.catalog.query(
-            f"SELECT {', '.join(columns)} FROM findings WHERE finding_id = ?", [finding_id]
+            f"SELECT {', '.join(selected.get(c, c) for c in columns)} "
+            "FROM findings WHERE finding_id = ?",
+            [finding_id],
         )
         if not rows:
             return None
         record = dict(zip(columns, rows[0], strict=True))
         record["asset"] = asset_label(record.get("address"), record.get("port"))
+        record["source_note"] = atlas_source.note(
+            record.get("source_kind"), record.pop("source_document", None)
+        )
         if include_raw and record.get("raw_finding_json"):
             # Parsed here as well as in `findings()`, so one finding served two
             # ways is the same shape both times. Unparseable output is returned
@@ -3298,6 +3491,8 @@ class DashboardQueries:
             row["cve_id"] = cve_id
             row["in_kev"] = None
             row["epss_score"] = None
+            # The verdict ladder (TheHub #60890): `no_cve` here, refined below.
+            row["exploit_verdict"] = exploitability.verdict_for(None, None)
             if cve_id:
                 cve_by_key[id(row)] = cve_id
 
@@ -3323,6 +3518,7 @@ class DashboardQueries:
             # — only once one was found to check.
             row["in_kev"] = bool(match and match.in_kev)
             row["epss_score"] = match.epss_score if match else None
+            row["exploit_verdict"] = exploitability.verdict_for(cve_id, match)
 
     def threat_intel(self, session: Session) -> list[dict[str, Any]]:
         """Every CVE currently matched to an open finding somewhere in the

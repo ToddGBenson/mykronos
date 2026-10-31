@@ -20,6 +20,7 @@ from mykronos import (
     __version__,
     auto_triage,
     briefing_dm,
+    briefing_flash,
     environment,
     finding_disposition,
     logsafe,
@@ -41,6 +42,7 @@ from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
 from mykronos.api.auto_triage import router as auto_triage_router
 from mykronos.api.briefing_daily import router as briefing_daily_router
+from mykronos.api.briefing_weekly import router as briefing_weekly_router
 from mykronos.api.control_observations import router as control_observations_router
 from mykronos.api.dashboard import router as dashboard_router
 from mykronos.api.executive import router as executive_router
@@ -48,6 +50,7 @@ from mykronos.api.exposure import router as exposure_router
 from mykronos.api.ingest import router as ingest_router
 from mykronos.api.knowledge import router as knowledge_router
 from mykronos.api.lanes import router as lanes_router
+from mykronos.api.libraries import router as libraries_router
 from mykronos.api.oracle import router as oracle_router
 from mykronos.api.patchwork import router as patchwork_router
 from mykronos.api.po_console import router as po_console_router
@@ -61,6 +64,7 @@ from mykronos.api.risk_acceptances import router as risk_acceptances_router
 from mykronos.api.rule_vectors import router as rule_vectors_router
 from mykronos.api.triage import router as triage_router
 from mykronos.api.triage_clusters import router as triage_clusters_router
+from mykronos.api.triage_dossier import router as triage_dossier_router
 from mykronos.api.webhooks import router as webhooks_router
 from mykronos.approvals import pull_requests as approval_pull_requests
 from mykronos.approvals import reviewer as approval_reviewer
@@ -68,6 +72,7 @@ from mykronos.approvals import sampling as approval_sampling
 from mykronos.approvals.policy import PolicyError as ApprovalPolicyError
 from mykronos.approvals.policy import cached_policy as cached_approval_policy
 from mykronos.ci import ConcourseClient, StatusCache
+from mykronos.ci_why import WhyCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
 from mykronos.db.models import JobRun
@@ -84,15 +89,21 @@ from mykronos.headers import SecurityHeaders
 from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     BRIEFING_DM_JOB,
+    BRIEFING_FLASH_JOB,
+    CI_STALL_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
+    RED_MAIN_JOB,
     SIGNAL_FILING_JOB,
     AcceptanceSweepResult,
     JobNotDue,
     JobSkipped,
+    announce_red_main,
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
+    junit_totals_lookup,
+    notify_ci_stall,
     notify_dormant_lanes,
     purge_expired_insider_risk,
     purge_orphaned_learnings,
@@ -114,6 +125,7 @@ from mykronos.lake.maintenance import (
     carry_forward_exclusively,
     reconcile_after_linking,
 )
+from mykronos.libraries import http_fetch as http_library_fetch
 from mykronos.logsafe import scrub
 from mykronos.maturity import load_model as load_maturity_model
 from mykronos.notify import SlackNotifier
@@ -124,6 +136,7 @@ from mykronos.patchwork.image_date import RegistryTags
 from mykronos.product_owner import HubClient
 from mykronos.ratelimit import SlidingWindowLimiter
 from mykronos.schemas import utcnow
+from mykronos.threat_intel import NVD_JOB, nvd_api_key, vector_job
 from mykronos.threat_intel import refresh_job as refresh_threat_intel
 
 logger = logging.getLogger(__name__)
@@ -395,7 +408,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Spec 33: the risk-acceptance duty stamps findings in the lake when an
     # approval lands, and reads its limits from the approval policy.
     risk_acceptance.bind(app.state.catalog)
-    finding_disposition.bind(app.state.catalog)
+    # The guard reads toxic combinations as the risk decision does: KEV from
+    # the database, escalation from the Oracle policy (review of #1018).
+    finding_disposition.bind(
+        app.state.catalog,
+        db=app.state.db,
+        oracle_policy_path=settings.oracle_policy_path,
+    )
+    # TheHub #60895: library vetting reads OSV and deps.dev; tests replace it.
+    app.state.library_fetch = http_library_fetch
     try:
         risk_acceptance.bind_policy(cached_approval_policy(settings.approval_policy_path))
     except ApprovalPolicyError as exc:
@@ -414,6 +435,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Patchwork, and a repository page refreshed in a loop must not be what
     # stops a token rotating. Per-process, and successes only.
     app.state.ci_status_cache = StatusCache(settings.ci_status_cache_seconds)
+    # Failure reasons by build id (TheHub #60913). A finished build's reason
+    # cannot change, so this has no TTL, only a size bound.
+    app.state.ci_why_cache = WhyCache()
     # Loaded once at startup and held: spec 09 §10 requires an evaluation
     # to use whichever version was active when it began, so the file
     # changing under a running request must not change its result.
@@ -633,6 +657,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db, policy, app.state.github_factory
             )
 
+        async def _library_checks() -> None:
+            # The library-allowlist check on every open pull request head that
+            # has none yet (TheHub #60898). Reports unless a person switched
+            # the repository to blocking once its allowlist covered it.
+            from mykronos import library_check
+
+            posted = await library_check.sweep(
+                app.state.db,
+                app.state.catalog,
+                app.state.github_factory,
+                dashboard_url=settings.dashboard_url,
+            )
+            if posted:
+                logger.info("Library checks posted: %s", ", ".join(posted))
+
+        async def _library_facts() -> None:
+            # Registry facts behind the EOL, abandoned and license-change
+            # flags on the managed Libraries view (TheHub #60897).
+            from mykronos import libraries
+
+            result = await libraries.refresh_facts(
+                app.state.db, app.state.catalog, fetch=app.state.library_fetch
+            )
+            logger.info("Library facts: %s", result)
+
         async def _shadow_reviews() -> None:
             # spec 34 §4.3 shadow mode: the reviewer reads pending requests and
             # its verdict is recorded, never counted. A no-op unless the mode is
@@ -688,6 +737,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db, app.state.github_factory
             )
             logger.info("Threat-model sync: %s", result.summary())
+
+        async def _threat_model_draft() -> None:
+            # Drafts and drift as pull requests (TheHub #60900). Scheduled
+            # only when opted in: it writes to every onboarded repository.
+            from mykronos import threat_model_pr
+
+            result = await threat_model_pr.sweep(
+                app.state.db, app.state.catalog, app.state.github_factory
+            )
+            logger.info("Threat-model draft: %s", result.summary())
 
         async def _environment() -> None:
             # Every repository's environmental CVSS from scratch (TheHub
@@ -761,12 +820,58 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 threshold_hours=settings.dormant_lanes_threshold_hours,
             )
 
+        async def _red_main() -> None:
+            # A gating lane on main that went red, or came back green, is
+            # announced once, on the next poll (TheHub #60973). The recorded
+            # state is the de-duplication key and lives in the database, so a
+            # restart does not announce the same red twice.
+            client = ConcourseClient(
+                settings.concourse_url,
+                team=settings.concourse_team,
+                external_url=settings.concourse_external_url,
+            )
+            await announce_red_main(
+                settings.concourse_url,
+                db=app.state.db,
+                gating=settings.red_main_gating_lanes,
+                tests=junit_totals_lookup(app.state.catalog),
+                team=settings.concourse_team,
+                link_base=(
+                    f"{client.external_url}/teams/{settings.concourse_team}"
+                    if client.external_url
+                    else ""
+                ),
+                notifier=app.state.notifier,
+            )
+
+        async def _ci_stall() -> None:
+            # Many lanes erroring together - a dead worker after a restart
+            # (TheHub #60975). Once per stall episode; an undelivered notice
+            # raises, so the next tick retries it.
+            await notify_ci_stall(
+                ConcourseClient(
+                    settings.concourse_url,
+                    team=settings.concourse_team,
+                    external_url=settings.concourse_external_url,
+                ),
+                db=app.state.db,
+                notifier=app.state.notifier,
+            )
+
         async def _briefing_dm() -> None:
             # The 07:00 DM (TheHub #60864): due once a local day, read through
             # the briefing route so it says what the page says. Not due raises
             # JobNotDue and records nothing; no Slack for it raises JobSkipped.
             await briefing_dm.send_briefing_dm(
                 settings, db=app.state.db, read=briefing_dm.route_reader(app)
+            )
+
+        async def _briefing_flash() -> None:
+            # Same-day flash DM (TheHub #60865): only an exploited or critical
+            # match to something shipped, each item once. Read through the
+            # weekly route so the DM says what the Monday page says.
+            await briefing_flash.send_flashes(
+                settings, db=app.state.db, read=briefing_flash.route_reader(app)
             )
 
         async def _signal_filing() -> None:
@@ -805,6 +910,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
             except Exception:  # noqa: BLE001 - logged; premise-monitor reports health
                 logger.exception("Premise monitor after the threat-intel refresh failed")
+
+        async def _nvd_vectors() -> None:
+            # In a thread for the same reason as `_threat_intel`: one run is
+            # minutes of spaced, blocking NVD requests (TheHub #61034).
+            await asyncio.to_thread(
+                vector_job,
+                app.state.db,
+                api_key=nvd_api_key(settings.nvd_api_key),
+            )
 
         async def _premise_monitor() -> None:
             # Spec 33 §4.2: every live acceptance's premises against fresh
@@ -855,6 +969,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("portfolio", settings.portfolio_scoring_interval_seconds, _portfolio),
             ("retention", settings.insider_risk_purge_interval_seconds, _retention),
             ("threat-intel", settings.threat_intel_refresh_interval_seconds, _threat_intel),
+            (NVD_JOB, settings.nvd_vector_interval_seconds, _nvd_vectors),
             ("acceptances", settings.acceptance_sweep_interval_seconds, _acceptances),
             (
                 "premise-monitor",
@@ -875,7 +990,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     )
                 ]
             ),
+            *(
+                [
+                    (
+                        "threat-model-draft",
+                        settings.threat_model_draft_interval_seconds,
+                        _threat_model_draft,
+                    )
+                ]
+                if settings.threat_model_draft_prs_enabled
+                and not isinstance(app.state.github_factory, FakeGitHubClientFactory)
+                else []
+            ),
             ("pull-request-stamps", 120, _pull_request_stamps),
+            # Against a real GitHub and the real registries only, for the
+            # reason `installations` is: the demo's placeholders answer nothing.
+            *(
+                []
+                if isinstance(app.state.github_factory, FakeGitHubClientFactory)
+                else [
+                    ("library-checks", 300, _library_checks),
+                    ("library-facts", 86_400, _library_facts),
+                ]
+            ),
             ("exposure", settings.exposure_probe_interval_seconds, _exposure),
             ("environment", settings.environment_rescore_interval_seconds, _environment),
             # Only with a Concourse to read. Without one the job would fail
@@ -896,10 +1033,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 if settings.concourse_url
                 else []
             ),
+            *(
+                [(RED_MAIN_JOB, settings.red_main_interval_seconds, _red_main)]
+                if settings.concourse_url and settings.red_main_gating_lanes
+                else []
+            ),
+            *(
+                [(CI_STALL_JOB, settings.ci_stall_interval_seconds, _ci_stall)]
+                if settings.concourse_url
+                else []
+            ),
             # Always scheduled: with no Slack configured for it, it records
             # `skipped` with the missing setting, rather than being absent
             # from platform health and reading as "nothing to say".
             (BRIEFING_DM_JOB, briefing_dm.TICK_SECONDS, _briefing_dm),
+            (BRIEFING_FLASH_JOB, briefing_flash.TICK_SECONDS, _briefing_flash),
             # Always scheduled, for the same reason: without TheHub it records
             # `skipped` and says so.
             (SIGNAL_FILING_JOB, sprint_signal.TICK_SECONDS, _signal_filing),
@@ -981,6 +1129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(dashboard_router)
     app.include_router(briefing_daily_router)
+    app.include_router(briefing_weekly_router)
     app.include_router(control_observations_router)
     app.include_router(executive_router)
     app.include_router(rule_vectors_router)
@@ -995,6 +1144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repos_router)
     app.include_router(triage_router)
     app.include_router(triage_clusters_router)
+    app.include_router(triage_dossier_router)
     app.include_router(auto_triage_router)
     app.include_router(webhooks_router)
     app.include_router(agents_router)
@@ -1004,6 +1154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(repo_risk_acceptances_router)
     app.include_router(repo_read_router)
     app.include_router(lanes_router)
+    app.include_router(libraries_router)
     # A refused upload is a 403 and a notification (B-062).
     refusals.install(app)
     # A body with NaN in a constrained float is a 422, not a 500.

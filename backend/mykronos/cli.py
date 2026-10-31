@@ -36,11 +36,12 @@ import asyncio
 import dataclasses
 import json
 import logging
+import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from mykronos import briefing as briefing_report
@@ -201,6 +202,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "self-check",
         help="Ask the internet whether this platform is reachable (spec 32 §8)",
+    )
+    sub.add_parser(
+        "notify-test",
+        help="Post one test message through the configured Slack notifier (B-035)",
     )
 
     host_controls = sub.add_parser(
@@ -567,6 +572,100 @@ def _hours_since_an_actions_upload(settings: object) -> float | None:
     )
 
 
+#: Commands that create the operational schema rather than read it. Everything
+#: else expects a database that already exists.
+SCHEMA_CREATING_COMMANDS = frozenset({"init-lake", "mint-token"})
+
+#: Tables whose absence means "this is not a Mykronos database", not "this is
+#: an old one". Every version since onboarding shipped has had both.
+CORE_TABLES = ("repo_onboardings", "ingestion_tokens")
+
+
+class DatabaseUnavailable(BaseException):  # noqa: N818 - it is a condition, not an error class hierarchy
+    """The configured SQLite database is missing or has no schema (TheHub #60907).
+
+    A `BaseException`, deliberately. Several commands degrade gracefully with
+    `except Exception` around a database read ("the briefing still prints"),
+    and against an empty database that degradation is the lie this exists to
+    stop: the command would report an estate with nothing onboarded. It is
+    caught once, in `main`, and becomes exit 2 with one sentence.
+    """
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+def sqlite_database_problem(url: str) -> tuple[Path, str] | None:
+    """Why the SQLite file `url` names is not a usable Mykronos database.
+
+    None for anything that is not a SQLite file (Postgres, in-memory), and for
+    a file that has the core tables. Reads the file read-only, so checking
+    never creates it.
+    """
+    if not url.startswith("sqlite"):
+        return None
+    raw = url.split(":///", 1)[1] if ":///" in url else ""
+    raw = raw.split("?", 1)[0]
+    if not raw or raw == ":memory:" or raw.startswith("file::memory:"):
+        return None
+    path = Path(raw).resolve()
+    if not path.is_file():
+        return path, "the file does not exist"
+    try:
+        con = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            names = {
+                str(row[0])
+                for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+        finally:
+            con.close()
+    except sqlite3.DatabaseError as exc:
+        return path, f"it could not be read as SQLite ({exc})"
+    missing = [table for table in CORE_TABLES if table not in names]
+    if missing:
+        return path, f"it has no Mykronos schema (no {missing[0]} table)"
+    return None
+
+
+def guard_database(db: Database, url: str) -> None:
+    """Refuse the first connection to a missing or empty SQLite database.
+
+    Checked at connect time rather than up front, so a command that never
+    touches the database (`query`, `host-controls`, `notify-test`) is
+    unaffected, and checked *before* SQLite opens the file, because opening it
+    is what used to create an empty `mykronos.db` in whatever directory the
+    CLI was run from.
+    """
+    if not url.startswith("sqlite"):
+        return
+    checked = False
+
+    def before_connect(*_: object) -> None:
+        nonlocal checked
+        if checked:
+            return
+        problem = sqlite_database_problem(url)
+        if problem is not None:
+            raise DatabaseUnavailable(*problem)
+        checked = True
+
+    event.listen(db.engine, "do_connect", before_connect)
+
+
+def database_unavailable_message(error: DatabaseUnavailable, command: str) -> str:
+    return (
+        f"mykronos: no usable database at {error.path}: {error.reason}.\n"
+        "The platform CLI runs inside the container, against its database:\n"
+        f"    docker exec mykronos-backend mykronos {command}\n"
+        "To use another database, set MYKRONOS_DATABASE_URL "
+        "(for example sqlite:///path/to/mykronos.db); `mykronos init-lake` "
+        "creates an empty one."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     # One INFO line per HTTP request buried everything else `mykronos
@@ -580,6 +679,11 @@ def main(argv: list[str] | None = None) -> int:
     catalog = Catalog(settings.datalake_dir)
     buffer = WriteAheadBuffer(settings.buffer_dir)
     db = Database(settings.database_url)
+    if args.command not in SCHEMA_CREATING_COMMANDS:
+        # Run from a checkout, the default `sqlite:///mykronos.db` names a
+        # file that is not there, SQLite created it empty, and the first
+        # query died 100 lines into a traceback (TheHub #60907).
+        guard_database(db, settings.database_url)
 
     def registry(session: Session) -> TokenRegistry:
         return TokenRegistry(session, overlap_hours=settings.token_overlap_hours)
@@ -867,6 +971,55 @@ def main(argv: list[str] | None = None) -> int:
             # here would be a second place for App credential handling to
             # drift from the one the platform actually uses.
             print(asyncio.run(minter()))
+            return 0
+
+        if args.command == "notify-test":
+            # TheHub #60573 (B-035). The token and channel arrive from Vault
+            # (D-137) and the log can show nothing was refused, but only a
+            # person can see that a message landed. This posts one, through
+            # the same notifier the server builds, and prints the transport
+            # and the outcome -- never the token or the channel.
+            from mykronos.notify import Notification
+            from mykronos.schemas import utcnow
+
+            test_notifier = SlackNotifier(
+                settings.slack_webhook_url,
+                bot_token=settings.slack_bot_token,
+                channel=settings.slack_channel,
+            )
+            if not test_notifier.enabled:
+                print(
+                    "Slack notification is not configured, so nothing was sent. "
+                    "Set MYKRONOS_SLACK_BOT_TOKEN and MYKRONOS_SLACK_CHANNEL "
+                    "(D-137: from Vault at deploy), or MYKRONOS_SLACK_WEBHOOK_URL."
+                )
+                return 1
+            sent_at = utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            delivered = asyncio.run(
+                test_notifier.send(
+                    Notification(
+                        title="MyKronos test notification",
+                        detail="",
+                        repo_full_name="",
+                        level="info",
+                        lines=(
+                            f"Sent by `mykronos notify-test` at {sent_at}.",
+                            "If this is visible, alerts from this platform reach "
+                            "this channel (B-035).",
+                        ),
+                    )
+                )
+            )
+            if not delivered:
+                print(
+                    f"Not delivered ({test_notifier.transport}). The warning above "
+                    "names Slack's answer, e.g. channel_not_found or invalid_auth."
+                )
+                return 1
+            print(
+                f"Posted a test notification via {test_notifier.transport} at "
+                f"{sent_at}. Confirm it in the channel and record the date on B-035."
+            )
             return 0
 
         if args.command == "self-check":
@@ -1660,6 +1813,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         parser.error(f"Unhandled command {args.command!r}")  # exits non-zero
+    except DatabaseUnavailable as error:
+        print(database_unavailable_message(error, args.command), file=sys.stderr)
+        return 2
     finally:
         db.close()
 

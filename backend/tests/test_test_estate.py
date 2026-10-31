@@ -117,3 +117,58 @@ class TestSummary:
 
         assert set(counts) == {"observed", "absent"}
         assert sum(counts.values()) == len(test_estate.KINDS)
+
+
+class TestRunningIsNotPassing:
+    """TheHub #60922: presence said `observed` on a day every run failed."""
+
+    def _lanes(
+        self, latest_status: str | None, last_passed_at: str | None = None
+    ) -> list[test_estate.LaneHealth]:
+        return test_estate.lane_health(
+            [{"capability": "functional", "runs": 10, "succeeded": 3, "failed": 7}],
+            enabled={"functional"},
+            outcomes={
+                "functional": {
+                    "latest_status": latest_status,
+                    "latest_at": "2026-10-21 20:00:00",
+                    "last_passed_at": last_passed_at,
+                    "window_runs": 7,
+                    "window_passed": 0,
+                    "window_failed": 7,
+                    "branch": "main",
+                }
+            },
+        )
+
+    def test_a_failing_lane_stays_observed_but_does_not_read_as_healthy(self) -> None:
+        lanes = self._lanes("failure", last_passed_at="2026-10-20 09:00:00")
+        results = _by_key(
+            test_estate.assess(reporting_capabilities={"functional"}, lanes=lanes)
+        )
+
+        assert results["functional"].presence == "observed"
+        assert results["functional"].outcome == "failing"
+        assert results["functional"].evidence == [
+            "the functional lane is reporting runs, but its latest run on main "
+            "failed; it last passed 2026-10-20"
+        ]
+
+    def test_a_lane_that_never_passed_says_so(self) -> None:
+        lanes = self._lanes("partial_failure")
+        (line,) = _by_key(
+            test_estate.assess(reporting_capabilities={"functional"}, lanes=lanes)
+        )["functional"].evidence
+
+        assert line.endswith("it has never passed here")
+
+    def test_outcome_states(self) -> None:
+        assert test_estate.outcome_of("success") == "passing"
+        assert test_estate.outcome_of("failure") == "failing"
+        assert test_estate.outcome_of("partial_failure") == "failing"
+        assert test_estate.outcome_of("no_applicable_targets") == "unknown"
+        assert test_estate.outcome_of(None) == "unknown"
+
+    def test_without_outcomes_nothing_defaults_to_passing(self) -> None:
+        for lane in test_estate.lane_health([], enabled=set()):
+            assert lane.outcome == "unknown"

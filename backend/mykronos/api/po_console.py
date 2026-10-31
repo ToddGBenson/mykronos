@@ -30,6 +30,7 @@ from mykronos.approvals import pull_requests
 from mykronos.approvals.engine import ApprovalError, decide
 from mykronos.approvals.policy import PolicyError, cached_policy
 from mykronos.db.models import ApprovalDecision, ApprovalRequest, Delegation, RepoOnboarding
+from mykronos.deployments import NOT_CONFIGURED, probe_setup_for
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -122,13 +123,49 @@ class PoDeliveryRowOut(BaseModel):
     deployed: str
 
 
+#: A probe that is configured (stored or derived, TheHub #60918) and that no
+#: sweep has answered yet. Not `not_configured`: that would tell the Product
+#: Owner to set up a probe that already exists (TheHub #60942).
+AWAITING_FIRST_ANSWER = "awaiting_first_answer"
+
+
 class PoDeploymentOut(BaseModel):
-    #: The probe's status: not_configured | ok | unreachable | unparsed.
+    #: The probe's status: not_configured | awaiting_first_answer | ok |
+    #: unreachable | unparsed.
     probe_status: str
     running_revision: str | None
     observed_at: str | None
     #: How far the running revision is behind the default branch (#452).
     lag: DeployLagOut | None = None
+    #: Where the probe comes from, as /api/dashboard/deployments says it; "" is none.
+    probe_source: str = ""
+    #: What the probe is missing, by setting or route name, never a value.
+    missing: list[str] = Field(default_factory=list)
+
+
+def _deployment_out(onboarding: RepoOnboarding | None, settings: Any) -> PoDeploymentOut:
+    """The running revision and its probe, read the way the deployments page reads it.
+
+    The console read only the stored status, so a probe derived from what the
+    platform already knows (TheHub, and this platform itself) said
+    `not_configured` until a sweep answered, and its lag was dropped as if it
+    had no probe at all (TheHub #60942).
+    """
+    if onboarding is None:
+        return PoDeploymentOut(
+            probe_status=NOT_CONFIGURED, running_revision=None, observed_at=None
+        )
+    setup = probe_setup_for(onboarding, settings)
+    stored = str(onboarding.deployment_probe_status or NOT_CONFIGURED)
+    status_ = AWAITING_FIRST_ANSWER if stored == NOT_CONFIGURED and setup.configured else stored
+    return PoDeploymentOut(
+        probe_status=status_,
+        running_revision=onboarding.deployed_revision,
+        observed_at=pc.iso(onboarding.deployed_revision_at),
+        lag=deploy_lag_out(unrecorded_lag(onboarding, probed=setup.configured)),
+        probe_source=setup.source,
+        missing=list(setup.missing),
+    )
 
 
 class PoDeliveryOut(BaseModel):
@@ -140,6 +177,48 @@ class PoDeliveryOut(BaseModel):
     not_shipped: list[PoDeliveryRowOut]
     #: Why the lists are empty, when they are empty for a reason.
     error: str | None
+    #: Why a squash-merged commit may lack its pull request number: GitHub's
+    #: commit subjects could not be read. None when they were.
+    commits_error: str | None = None
+
+
+#: The most commits one Delivery view reads from GitHub for squash subjects:
+#: five pages, the same ceiling the trace uses.
+DELIVERY_COMMIT_LIMIT = 500
+
+
+def _lag_subjects(onboarding: RepoOnboarding | None) -> list[tuple[str, str]]:
+    """The commit subjects the deployment-lag sweep already stored: the
+    undeployed range, read with no GitHub call."""
+    lag = onboarding.deployment_lag if onboarding else None
+    commits = lag.get("commits") if isinstance(lag, dict) else None
+    return [
+        (str(c.get("sha") or ""), str(c.get("subject") or ""))
+        for c in commits or []
+        if isinstance(c, dict)
+    ]
+
+
+async def _subject_links(
+    request: Request,
+    repo_full_name: str,
+    branch: str,
+    installation: int | None,
+    since: datetime,
+) -> tuple[dict[str, int], str | None]:
+    """sha -> PR number from the squash subjects of the branch's commits, and
+    the sentence saying why they could not be read, if they could not."""
+    factory = getattr(request.app.state, "github_factory", None)
+    if factory is None or installation is None:
+        return {}, "No GitHub installation to read commit subjects with."
+    try:
+        commits = await factory.for_installation(installation).list_commits(
+            repo_full_name, branch, since=since, limit=DELIVERY_COMMIT_LIMIT
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Delivery: commits could not be read for %s", repo_full_name)
+        return {}, f"Commits on {branch} could not be read from GitHub."
+    return pc.subject_links((c.sha, c.message) for c in commits), None
 
 
 def _row_out(repo_full_name: str, row: pc.DeliveryRow) -> PoDeliveryRowOut:
@@ -168,18 +247,12 @@ async def delivery(
 ) -> PoDeliveryOut:
     """What shipped, by sha, joined to the Oracle decision and the running
     revision (spec 35 §8.1)."""
-    repo_full_name, branch, _ = phase1._onboarding(request, repo_id)
+    repo_full_name, branch, installation = phase1._onboarding(request, repo_id)
     with request.app.state.db.session() as session:
         onboarding = session.get(RepoOnboarding, repo_id)
         revision = onboarding.deployed_revision if onboarding else None
-        deployment = PoDeploymentOut(
-            probe_status=str(onboarding.deployment_probe_status or "not_configured")
-            if onboarding
-            else "not_configured",
-            running_revision=revision,
-            observed_at=pc.iso(onboarding.deployed_revision_at) if onboarding else None,
-            lag=deploy_lag_out(unrecorded_lag(onboarding)) if onboarding else None,
-        )
+        deployment = _deployment_out(onboarding, request.app.state.settings)
+        stored_subjects = _lag_subjects(onboarding)
     since = pc.window_start(days)
     catalog = request.app.state.catalog
     error = None
@@ -191,7 +264,20 @@ async def delivery(
     except Exception:  # noqa: BLE001
         logger.warning("Delivery: the lake could not be read for %s", repo_full_name)
         scans, decisions, error = [], [], "The scan and decision record could not be read."
-    rows = pc.build_delivery(repo_full_name, branch, scans, decisions, revision)
+    # A squash-merged commit is scanned as a push, with no PR number: its PR
+    # is read from what is stored first (merge commits the webhook kept, the
+    # lag sweep's subjects), then from the branch's commit subjects.
+    try:
+        links = await asyncio.to_thread(pc.merge_commit_links, catalog, repo_full_name)
+    except Exception:  # noqa: BLE001
+        logger.warning("Delivery: stored merge commits could not be read for %s", repo_full_name)
+        links = {}
+    links.update(pc.subject_links(stored_subjects))
+    read, commits_error = await _subject_links(
+        request, repo_full_name, branch, installation, since
+    )
+    links.update(read)
+    rows = pc.build_delivery(repo_full_name, branch, scans, decisions, revision, links)
     return PoDeliveryOut(
         repo_full_name=repo_full_name,
         default_branch=branch,
@@ -200,6 +286,7 @@ async def delivery(
         shipped=[_row_out(repo_full_name, r) for r in rows if r.shipped][:100],
         not_shipped=[_row_out(repo_full_name, r) for r in rows if not r.shipped][:50],
         error=error,
+        commits_error=commits_error,
     )
 
 

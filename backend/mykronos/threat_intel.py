@@ -28,6 +28,7 @@ from __future__ import annotations
 import csv
 import gzip
 import logging
+import os
 import re
 
 # `time` is already bound to `datetime.time` in this module, so the standard
@@ -36,11 +37,11 @@ import time as clock
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import httpx2
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from mykronos.db.models import ThreatIntelMatch
@@ -58,16 +59,70 @@ KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulner
 EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
-#: CVEs to look up per sweep. NVD rate-limits unauthenticated callers to five
-#: requests per thirty seconds, so this is a deliberate trickle rather than a
-#: backfill: the lookup fills in over a few days and never holds the job open
-#: for half an hour. Every CVE this platform has an open finding for is a
-#: finite set that only grows when a scanner finds something new.
-NVD_BATCH = 20
+#: CVEs to look up per run of the `nvd-vectors` job (TheHub #61034). It used to
+#: be 20 a day, inside the daily KEV/EPSS job: measured 2026-10-27, 3,603 rows
+#: had never been asked and the queue would have taken ~180 days to drain,
+#: growing with every new CVE, while no environmental score could be computed
+#: for any of them. The lookup now has its own hourly job
+#: (`nvd_vector_interval_seconds`), and 80 an hour is 1,920 a day: that
+#: backlog in about two days.
+#:
+#: **The rate.** NVD's published limit for a caller without a key is five
+#: requests in any thirty seconds. `NVD_DELAY_SECONDS` spaces requests 6.5 s
+#: apart -- 30 / 6.5 = 4.6 per window, below five before any response time
+#: is counted -- so the batch size sets how long a run takes, never how fast
+#: it asks. 80 vectors + `NVD_REFS_BATCH` = 120 requests = 13 minutes of an
+#: hour, inside `NVD_RUN_SECONDS`.
+NVD_BATCH = 80
+#: Beside that budget, not out of it: at most this many requests per run
+#: read NVD's exploit references for rows whose vector was looked up before
+#: #60890. Every such row is eligible at once after the upgrade, so without
+#: a cap the backfill would be one estate-wide wave of NVD load. It is not
+#: carved from `NVD_BATCH` because the vector queue is itself backlogged
+#: (TheHub #61034): a share of whatever the vectors leave would be zero for
+#: as long as it is, and until a row's references are read its verdict
+#: cannot say "no known exploit". 40 an hour is 960 a day.
+NVD_REFS_BATCH = 40
 #: Between requests. Above NVD's published unauthenticated floor with margin,
 #: because being rate-limited by a public feed is a way to get an IP blocked
 #: rather than a way to go faster.
 NVD_DELAY_SECONDS = 6.5
+#: Refusals in a row after which a CVE is no longer asked (TheHub #61037).
+#: Its verdict stays `not_checked`, which is true. Five daily runs is long
+#: enough that a CVE NVD publishes a day late is not given up on.
+NVD_MAX_FAILURES = 5
+#: Days after its last refusal that a retired CVE is asked once more, so a
+#: retirement that was wrong, or a CVE NVD publishes late, heals itself.
+NVD_RETRY_DAYS = 30
+#: 4xx answers that describe the feed, not the CVE: rate-limited, or refused
+#: for this address. Counting them would retire every row an outage touched.
+_FEED_STATUSES = frozenset({403, 429})
+
+#: With an NVD API key (`nvd_api_key`, or `NVD_API_KEY` in the environment)
+#: the published limit is fifty requests in thirty seconds. 0.7 s apart is
+#: 30 / 0.7 = 42.9 per window. 500 + 250 requests is 525 s a run, and 12,000
+#: vectors a day.
+NVD_KEYED_BATCH = 500
+NVD_KEYED_REFS_BATCH = 250
+NVD_KEYED_DELAY_SECONDS = 0.7
+
+#: The wall-clock ceiling on one run, whatever the batch sizes say. A run
+#: stops asking when the next request would start past it and leaves the
+#: rest unstamped, so the next run resumes exactly where this one stopped:
+#: the queue is the table's own stamps, not a cursor this job keeps. Only
+#: reached when NVD answers slowly -- a full batch at the spacing above is 13
+#: minutes unauthenticated and under 9 with a key.
+NVD_RUN_SECONDS = 900.0
+
+#: Responses that say NVD itself is unavailable or is rate-limiting this
+#: caller (it answers 403 for the latter) rather than anything about one CVE.
+#: The run stops at the first: the rows behind it would fail the same way,
+#: and asking faster than a limit NVD is enforcing is how an address gets
+#: blocked.
+_NVD_UNAVAILABLE_STATUS = frozenset({403, 429, 502, 503, 504})
+
+#: The scheduled job's name, as platform health and `job_runs` record it.
+NVD_JOB = "nvd-vectors"
 
 #: Short. A daily refresh job blocking on a slow feed for minutes is worse
 #: than the job trying again tomorrow (spec 17 §4.3's degrade-not-block rule).
@@ -395,15 +450,84 @@ def parse_nvd_vector(payload: object) -> str | None:
     return None
 
 
-def default_fetch_nvd(cve_id: str) -> object:
-    """One CVE from NVD. No API key: this is a public endpoint and a key is a
-    credential this repository must not hold (spec 12 §2). The cost is the
-    slower rate limit, which `NVD_BATCH` already accounts for."""
+def default_fetch_nvd(cve_id: str, *, api_key: str = "") -> object:
+    """One CVE from NVD. A public endpoint that needs no key; one only raises
+    the rate limit. When a deployment supplies one it comes from that
+    deployment's environment and is sent as NVD's `apiKey` header -- never
+    stored, logged, or held in this repository (spec 12 §2)."""
     response = httpx2.get(
-        NVD_URL, params={"cveId": cve_id}, timeout=TIMEOUT, follow_redirects=True
+        NVD_URL,
+        params={"cveId": cve_id},
+        headers={"apiKey": api_key} if api_key else None,
+        timeout=TIMEOUT,
+        follow_redirects=True,
     )
     response.raise_for_status()
     return response.json()
+
+
+def _refused(exc: Exception) -> bool:
+    """Did NVD refuse this CVE, rather than fail to answer at all?
+
+    Only a 4xx NVD chose to send is about the CVE. Anything else -- a transport
+    error, a 5xx, a 200 that is a maintenance page, a parser that broke --
+    would be charged to every row a run asked, and five runs of it would
+    retire the queue (review of #1034).
+    """
+    if not isinstance(exc, httpx2.HTTPStatusError):
+        return False
+    code = exc.response.status_code
+    return 400 <= code < 500 and code not in _FEED_STATUSES
+
+
+@dataclass(frozen=True)
+class NvdBudget:
+    """How much one `nvd-vectors` run may ask of NVD, and how fast."""
+
+    vectors: int
+    refs: int
+    delay_seconds: float
+    seconds: float = NVD_RUN_SECONDS
+
+    def per_day(self, interval_seconds: int) -> int:
+        """Vector lookups a day at this budget, run every `interval_seconds`."""
+        return int(self.vectors * 86_400 / max(interval_seconds, 1))
+
+
+def nvd_budget(api_key: str = "") -> NvdBudget:
+    """The budget for a caller with or without an NVD API key (TheHub #61034)."""
+    if api_key:
+        return NvdBudget(
+            vectors=NVD_KEYED_BATCH,
+            refs=NVD_KEYED_REFS_BATCH,
+            delay_seconds=NVD_KEYED_DELAY_SECONDS,
+        )
+    return NvdBudget(vectors=NVD_BATCH, refs=NVD_REFS_BATCH, delay_seconds=NVD_DELAY_SECONDS)
+
+
+def nvd_api_key(configured: str = "") -> str:
+    """`nvd_api_key` from settings, else NVD's own conventional `NVD_API_KEY`."""
+    return configured or os.environ.get("NVD_API_KEY", "")
+
+
+def _nvd_unavailable(exc: Exception) -> bool:
+    """Whether a failed fetch says NVD is down or limiting us, not this CVE."""
+    if isinstance(exc, httpx2.TransportError):
+        return True
+    if isinstance(exc, httpx2.HTTPStatusError):
+        return exc.response.status_code in _NVD_UNAVAILABLE_STATUS
+    return False
+
+
+
+def _askable(at: datetime) -> Any:
+    """Rows NVD may be asked about: fewer than `NVD_MAX_FAILURES` refusals,
+    or `NVD_RETRY_DAYS` since the last one. The queue and its backlog count
+    read the same rule."""
+    return or_(
+        ThreatIntelMatch.nvd_failures < NVD_MAX_FAILURES,
+        ThreatIntelMatch.nvd_failed_at < at - timedelta(days=NVD_RETRY_DAYS),
+    )
 
 
 def refresh_vectors(
@@ -412,7 +536,11 @@ def refresh_vectors(
     fetch: Callable[[str], object] = default_fetch_nvd,
     sleep: Callable[[float], None] = clock.sleep,
     limit: int = NVD_BATCH,
+    refs_limit: int = NVD_REFS_BATCH,
     now: Callable[[], datetime] = utcnow,
+    delay: float = NVD_DELAY_SECONDS,
+    budget_seconds: float = NVD_RUN_SECONDS,
+    monotonic: Callable[[], float] = clock.monotonic,
 ) -> int:
     """Look up base vectors for CVEs that do not have one yet.
 
@@ -436,46 +564,233 @@ def refresh_vectors(
     `v4_checked_at` null and may have had a v4 it dropped, so it is eligible
     once more; this lookup stamps both, so the once-only rule still holds.
 
-    Degrades rather than raises: a failed lookup leaves the row untouched and
-    the next sweep tries again.
+    Degrades rather than raises: a failed lookup stamps none of the checked
+    columns, so a later run tries again. A failure that says NVD itself is
+    unavailable or limiting this caller ends the run there.
+
+    **Bounded and resumable** (TheHub #61034). `budget_seconds` caps the run:
+    no request starts past it. The vector lookups get the share of it their
+    queue is of the whole, so the references are never starved by a slow
+    vector queue. Whatever is not reached is still unstamped, which is all a
+    later run needs to resume.
+
+    **References are a backfill, not a second vector lookup** (TheHub
+    #60890). NVD's exploit-tagged references arrive in the same response, so
+    a row whose vector was looked up before they were read is eligible once
+    more -- but only for them: at most `refs_limit` per run, beside the
+    vector budget rather than out of it so a full vector queue cannot starve
+    it, asked after the vector lookups, and without touching the row's
+    vectors or their stamps. It never counts as found, because found is what
+    fans out into an estate-wide environmental rescore.
+
+    **A refused lookup goes to the back** (TheHub #61037). A row NVD refuses
+    is not stamped, so it used to head its queue on every run; with more of
+    them than a batch, nothing behind them was ever asked. Each refusal is
+    recorded, refused rows queue after everything else, and after
+    `NVD_MAX_FAILURES` in a row the row is not asked again until
+    `NVD_RETRY_DAYS` after the last refusal. Only a 4xx NVD chose to send
+    counts; anything else describes the feed, so it charges no row.
     """
+    from mykronos.exploitability import store_nvd_refs
+
+    needs_vector = and_(
+        ThreatIntelMatch.cvss_vector.is_(None),
+        ThreatIntelMatch.v4_checked_at.is_(None),
+    )
+    askable = _askable(now())
+    refused_last = ThreatIntelMatch.nvd_failed_at.is_not(None)
     pending = list(
         session.execute(
             select(ThreatIntelMatch)
-            .where(
-                ThreatIntelMatch.cvss_vector.is_(None),
-                ThreatIntelMatch.v4_checked_at.is_(None),
+            .where(needs_vector, askable)
+            # Never looked at first: a CVE matched today is not queued behind
+            # rows being asked about v4 a second time, or behind refusals.
+            .order_by(
+                refused_last,
+                ThreatIntelMatch.vector_checked_at.is_not(None),
+                ThreatIntelMatch.nvd_failed_at,
+                ThreatIntelMatch.cve_id,
             )
-            .order_by(ThreatIntelMatch.cve_id)
             .limit(limit)
         ).scalars()
     )
-    if not pending:
+    refs_only: list[ThreatIntelMatch] = []
+    if refs_limit > 0:
+        refs_only = list(
+            session.execute(
+                select(ThreatIntelMatch)
+                .where(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None), askable)
+                .order_by(refused_last, ThreatIntelMatch.nvd_failed_at, ThreatIntelMatch.cve_id)
+                .limit(refs_limit)
+            ).scalars()
+        )
+    if not pending and not refs_only:
         return 0
 
+    started = monotonic()
+    share = len(pending) / (len(pending) + len(refs_only))
     found = 0
-    for index, row in enumerate(pending):
-        if index:
-            sleep(NVD_DELAY_SECONDS)
-        try:
-            vectors = parse_nvd_vectors(fetch(row.cve_id))
-        except Exception as exc:  # noqa: BLE001 - a feed failure degrades
-            logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
-            continue
-        # Stamped even when nothing was found: that is the record of having
-        # looked, and it is what stops this retrying for ever.
-        checked = now()
-        row.vector_checked_at = checked
-        row.v4_checked_at = checked
-        if vectors.v3:
-            row.cvss_vector = vectors.v3
-        if vectors.v4:
-            row.cvss_v4_vector = vectors.v4
-            row.cvss_v4_base_score = vectors.v4_base_score
-        if vectors.v3 or vectors.v4:
-            found += 1
+    asked = 0
+    failed = 0
+    unavailable = False
+    for rows, deadline, is_vector in (
+        (pending, started + budget_seconds * share, True),
+        (refs_only, started + budget_seconds, False),
+    ):
+        for row in rows:
+            wait = delay if asked else 0.0
+            if monotonic() + wait > deadline:
+                # Out of time for this queue. The rows not reached are still
+                # unstamped, so the next run starts with them.
+                break
+            if wait:
+                sleep(wait)
+            asked += 1
+            try:
+                payload = fetch(row.cve_id)
+                vectors = parse_nvd_vectors(payload)
+            except Exception as exc:  # noqa: BLE001 - a feed failure degrades
+                failed += 1
+                logger.warning("NVD lookup failed for %s: %s", row.cve_id, scrub(str(exc)))
+                if _refused(exc):
+                    row.nvd_failures = (row.nvd_failures or 0) + 1
+                    row.nvd_failed_at = now()
+                if _nvd_unavailable(exc):
+                    unavailable = True
+                    break
+                continue
+            # A lookup that answered clears the failure count whatever it
+            # found: the CVE is readable.
+            row.nvd_failures = 0
+            row.nvd_failed_at = None
+            # Stamped even when nothing was found: that is the record of having
+            # looked, and it is what stops this retrying for ever.
+            checked = now()
+            store_nvd_refs(row, payload, checked)
+            if not is_vector:
+                continue
+            row.vector_checked_at = checked
+            row.v4_checked_at = checked
+            if vectors.v3:
+                row.cvss_vector = vectors.v3
+            if vectors.v4:
+                row.cvss_v4_vector = vectors.v4
+                row.cvss_v4_base_score = vectors.v4_base_score
+            if vectors.v3 or vectors.v4:
+                found += 1
+        if unavailable:
+            logger.warning("NVD unavailable or rate-limiting; this run stops here.")
+            break
 
+    logger.info(
+        "NVD lookups: %d asked of %d queued, %d failed, %d new vector(s).",
+        asked,
+        len(pending) + len(refs_only),
+        failed,
+        found,
+    )
     session.flush()
+    return found
+
+
+@dataclass(frozen=True)
+class VectorBacklog:
+    """What the `nvd-vectors` queue still holds (TheHub #61034)."""
+
+    #: CVEs that still wait for a vector lookup and will be asked.
+    vectors: int
+    #: CVEs whose vector is settled and whose NVD references are not read.
+    refs: int
+    #: CVEs not asked after `NVD_MAX_FAILURES` refusals, until `NVD_RETRY_DAYS`.
+    given_up: int
+
+    def detail(self, budget: NvdBudget, interval_seconds: int) -> str:
+        """One sentence for the platform-health row: how much, and how long."""
+        per_day = budget.per_day(interval_seconds)
+        refs_per_day = int(budget.refs * 86_400 / max(interval_seconds, 1))
+        parts = [
+            f"{self.vectors:,} CVE{'s' if self.vectors != 1 else ''} wait for a "
+            f"CVSS vector{_days(self.vectors, per_day, 'vector')}",
+            f"{self.refs:,} for exploit references{_days(self.refs, refs_per_day, '')}",
+        ]
+        if self.given_up:
+            parts.append(
+                f"{self.given_up:,} not asked for {NVD_RETRY_DAYS} days after "
+                f"{NVD_MAX_FAILURES} refusals"
+            )
+        return "; ".join(parts)
+
+
+def _days(count: int, per_day: int, noun: str) -> str:
+    if not count or per_day <= 0:
+        return ""
+    days = count / per_day
+    rate = f"{per_day:,} {noun + 's ' if noun else ''}a day"
+    return f" (about {max(days, 0.1):.1f} days at {rate})"
+
+
+def vector_backlog(session: Session, *, now: Callable[[], datetime] = utcnow) -> VectorBacklog:
+    """Count both queues `refresh_vectors` reads, and the rows it gave up on."""
+    from sqlalchemy import func
+
+    needs_vector = and_(
+        ThreatIntelMatch.cvss_vector.is_(None),
+        ThreatIntelMatch.v4_checked_at.is_(None),
+    )
+
+    def count(*where: Any) -> int:
+        return int(
+            session.execute(
+                select(func.count()).select_from(ThreatIntelMatch).where(*where)
+            ).scalar_one()
+        )
+
+    at = now()
+    askable = _askable(at)
+    return VectorBacklog(
+        vectors=count(needs_vector, askable),
+        refs=count(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None), askable),
+        # Retired until their retry date; a row past it is back in a queue.
+        given_up=count(
+            ThreatIntelMatch.nvd_failures >= NVD_MAX_FAILURES,
+            or_(
+                ThreatIntelMatch.nvd_failed_at.is_(None),
+                ThreatIntelMatch.nvd_failed_at >= at - timedelta(days=NVD_RETRY_DAYS),
+            ),
+        ),
+    )
+
+
+def vector_job(db: Database, *, api_key: str = "") -> int:
+    """The `nvd-vectors` scheduled job (TheHub #61034): one bounded run.
+
+    Its own job, hourly, rather than a step at the end of the daily KEV/EPSS
+    refresh, so the lookup can drain a backlog in days without holding that
+    job open for hours. Raises rather than degrading: unlike the KEV/EPSS
+    work it once rode on, nothing else depends on this run finishing, and a
+    failure belongs on the platform-health page as this job failing.
+    """
+    budget = nvd_budget(api_key)
+
+    def fetch(cve_id: str) -> object:
+        return default_fetch_nvd(cve_id, api_key=api_key)
+
+    with db.session() as session:
+        found = refresh_vectors(
+            session,
+            fetch=fetch,
+            limit=budget.vectors,
+            refs_limit=budget.refs,
+            delay=budget.delay_seconds,
+            budget_seconds=budget.seconds,
+        )
+    if found:
+        logger.info("Fetched %s new CVSS vector(s) from NVD", found)
+        # A new vector is a finding that can now be scored, in any
+        # repository that has it (TheHub #60827).
+        from mykronos import environment
+
+        environment.mark_all_dirty("vector refresh")
     return found
 
 
@@ -514,21 +829,26 @@ def refresh_job(db: Database, catalog: Catalog) -> RefreshResult:
         break_snoozes_on_kev(db, catalog)
     except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
         logger.warning("Could not break snoozes on KEV: %s", scrub(str(exc)))
-    with db.session() as session:
-        # After the upsert, so a CVE that arrived on this run is eligible
-        # immediately rather than a day later.
-        try:
-            found = refresh_vectors(session)
-        except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
-            logger.warning("Vector lookup degraded: %s", scrub(str(exc)))
-        else:
-            if found:
-                logger.info("Fetched %s new CVSS vector(s) from NVD", found)
-                # A new vector is a finding that can now be scored, in any
-                # repository that has it (TheHub #60827).
-                from mykronos import environment
+    # The NVD vector lookup is no longer a step here: it has its own hourly
+    # job, `vector_job` (TheHub #61034), which picks up a CVE this run
+    # matched within the hour.
+    #
+    # Public exploit catalogs (TheHub #60890), after the upsert so a CVE that
+    # arrived on this run is matched today. Degrades like the feeds above.
+    from mykronos.exploitability import refresh_exploits
 
-                environment.mark_all_dirty("vector refresh")
+    with db.session() as session:
+        try:
+            exploits = refresh_exploits(session)
+        except Exception as exc:  # noqa: BLE001 - never fails the KEV/EPSS work
+            logger.warning("Exploit lookup degraded: %s", scrub(str(exc)))
+        else:
+            if exploits.exploitdb_error or exploits.metasploit_error:
+                logger.warning(
+                    "Exploit feeds partly unavailable: exploit-db=%s metasploit=%s",
+                    exploits.exploitdb_error,
+                    exploits.metasploit_error,
+                )
     return result
 
 

@@ -63,6 +63,14 @@ export type RuleVectorsPage =
   paths["/api/dashboard/repos/{repo_id}/rule-vectors"]["get"]["responses"]["200"]["content"]["application/json"];
 export type RuleVectorRule = RuleVectorsPage["rules"][number];
 export type RuleVectorTemplate = RuleVectorsPage["templates"][number];
+/** Every library in use with its status, owner, version policy and flags (TheHub #60897). */
+export type ManagedLibraries =
+  paths["/api/libraries/managed"]["get"]["responses"]["200"]["content"]["application/json"];
+export type ManagedLibrary = ManagedLibraries["libraries"][number];
+/** Library requests and their vetting reports (TheHub #60895, #60896). */
+export type LibraryRequestList =
+  paths["/api/libraries/requests"]["get"]["responses"]["200"]["content"]["application/json"];
+export type LibraryRequest = LibraryRequestList["requests"][number];
 /** One repository's risk acceptances, each with what it rests on (Risk management tab). */
 export type RepoRiskAcceptances =
   paths["/api/dashboard/repos/{repo_id}/risk-acceptances"]["get"]["responses"]["200"]["content"]["application/json"];
@@ -330,6 +338,8 @@ export type VulnerabilityManagement = {
       severity: string;
       status: string;
       file_path: string | null;
+      /** Which half of the rule this member satisfies, and why (TheHub #60965). */
+      qualifies?: string;
     }[];
   }[];
   /** Auto-remediation's lifetime log of combinations: history, not current. */

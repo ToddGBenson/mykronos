@@ -14,6 +14,15 @@ the risk. Only `risk_adjustment`, which must name a premise the platform can
 check, may rate the residual below the scanner. A requester cannot choose a low
 tier to get an easier approver.
 
+Whatever the deviation type, the tier is never below the worst open toxic
+combination a covered finding belongs to (review of #1018, PO decision): since
+#1018 an accepted member stops counting, so accepting the low half of a
+critical pair dissolves a critical, and that is approved as a critical.
+It dissolves only the combinations the approver was shown: the frozen
+evidence names them, read with nothing suppressed, and a combination that
+forms later fails the acceptance's premise (TheHub #61013, `toxic`,
+`premise_monitor`).
+
 **The lake still carries the status.** On approval, the covered findings are
 stamped `accepted_risk` with the record's expiry and reason code, so the Oracle,
 the dashboard and `sweep_acceptances` keep working unchanged.
@@ -30,6 +39,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mykronos import risk_evidence
 from mykronos.adminauth import Principal
 from mykronos.approvals.engine import (
     ApprovalError,
@@ -46,13 +56,13 @@ from mykronos.db.models import (
     ApprovalRequest,
     AuditLogEntry,
     RiskAcceptance,
-    ThreatIntelMatch,
     new_id,
 )
 from mykronos.fingerprint import image_repository
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
 from mykronos.schemas import utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +72,9 @@ DEVIATION_TYPES = ("vendor_dependency", "risk_adjustment", "operational_requirem
 RESPONSES = ("accept", "transfer")
 #: spec 33 §4.1. Phase 1 requires that a `risk_adjustment` names at least one,
 #: so the premise is checkable the day its monitor ships rather than prose that
-#: can never be re-evaluated. `premise_monitor` evaluates port_not_published,
-#: firewall_scope, not_internet_facing and epss_below (TheHub #60831); the rest
-#: read as `unverified` until theirs ship.
+#: can never be re-evaluated. `premise_monitor.MONITORED` lists the types it
+#: evaluates and `premise_monitor.UNMONITORED` every other one, with the reason
+#: (TheHub #60831, #60903).
 PREMISE_TYPES = (
     "no_fixed_version",
     "port_not_published",
@@ -156,13 +166,13 @@ def interim_review_owed(
     run to their severity cap with nobody looking, so they are reviewed at
     `rule.days`.
     """
-    from mykronos.premise_monitor import MONITORED
+    from mykronos.premise_monitor import REOPENS
 
     if reason_code_for(deviation_type, compensating_controls) not in rule.reason_codes:
         return False
     return not (
         rule.unless_monitored_premise
-        and any(isinstance(p, dict) and p.get("type") in MONITORED for p in premises)
+        and any(isinstance(p, dict) and p.get("type") in REOPENS for p in premises)
     )
 
 
@@ -216,6 +226,16 @@ class MatchedFinding:
     #: `"debian 10.13"` where the containers adapter tagged the finding
     #: `base_os_eol` (#712), else empty.
     base_os_eol: str = ""
+    #: Where an OSV-derived Atlas finding carries its CVE: its rule id is the
+    #: GHSA id (`threat_intel.extract_cve` reads both, as the Oracle does).
+    title: str = ""
+
+    @property
+    def cve(self) -> str | None:
+        """The rule id when it is a CVE, as before; else the CVE the title names."""
+        if self.rule_id.upper().startswith("CVE-"):
+            return self.rule_id.upper()
+        return extract_cve(None, self.title)
 
 
 def validate_scope(scope: dict[str, Any]) -> None:
@@ -279,7 +299,8 @@ def match_scope(
         "       status, "
         "       CASE WHEN json_extract_string(raw_finding_json, '$.base_os_eol') = 'true' "
         "            THEN coalesce(json_extract_string(raw_finding_json, '$.base_os'), "
-        "                          'an end-of-life OS') ELSE '' END "
+        "                          'an end-of-life OS') ELSE '' END, "
+        "       coalesce(title, '') "
         "FROM findings WHERE repo_full_name = ? AND capability = ? "
         f"AND status IN ({placeholders})",
         [repo, scope["capability"], *statuses],
@@ -291,7 +312,7 @@ def match_scope(
     paths = tuple(scope.get("file_paths") or [])
     fixed = scope.get("fixed_version", "any")
     out: list[MatchedFinding] = []
-    for fid, rule, pkg, sev, path, image, fixed_version, status, eol in rows:
+    for fid, rule, pkg, sev, path, image, fixed_version, status, eol, title in rows:
         if want_images is not None and (not image or image_repository(image) not in want_images):
             continue
         if "*" not in rules and rule not in rules:
@@ -316,6 +337,7 @@ def match_scope(
                 fixed_version=str(fixed_version),
                 status=str(status),
                 base_os_eol=str(eol or ""),
+                title=str(title or ""),
             )
         )
     return out
@@ -377,16 +399,10 @@ def premise_flags(deviation_type: str, matched: list[MatchedFinding]) -> list[di
 # -- Validation ----------------------------------------------------------------
 
 
-def _kev_listed(session: Session, rule_ids: set[str]) -> list[str]:
-    cves = [r for r in rule_ids if r.upper().startswith("CVE-")]
-    if not cves:
-        return []
-    rows = session.execute(
-        select(ThreatIntelMatch.cve_id).where(
-            ThreatIntelMatch.cve_id.in_(cves), ThreatIntelMatch.in_kev.is_(True)
-        )
-    ).scalars()
-    return sorted(rows)
+def _kev_listed(session: Session, matched: list[MatchedFinding]) -> list[str]:
+    # The one KEV read every risk decision shares, over the CVEs the Oracle
+    # reads: the rule id's, else the title's (TheHub #60901).
+    return risk_evidence.kev_listed(session, {c for m in matched if (c := m.cve)})
 
 
 def _validate(
@@ -463,6 +479,9 @@ def _snapshot(
     matched: list[MatchedFinding],
     flags: list[dict[str, Any]] | None = None,
     premise_checks: list[dict[str, Any]] | None = None,
+    evidence: dict[str, Any] | None = None,
+    control_checks: list[dict[str, Any]] | None = None,
+    combinations: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """The evidence an approver sees, frozen into the request's digest."""
     snapshot = {
@@ -497,7 +516,113 @@ def _snapshot(
     # there are premises, for the same reason as the flags.
     if premise_checks:
         snapshot["premise_checks"] = premise_checks
+    # The shared evidence model (TheHub #60901): the categories the Oracle
+    # reads, read the same way, for the findings this decision covers.
+    if evidence:
+        snapshot["risk_evidence"] = evidence
+    # Each compensating control as the observations read it (TheHub #60902).
+    if control_checks:
+        snapshot["control_checks"] = control_checks
+    # The toxic combinations this acceptance would dissolve, which set its
+    # floor (review of #1018). Only when present, as above.
+    if combinations:
+        snapshot["combinations"] = combinations
     return snapshot
+
+
+def _combination_floor(
+    db: Any, catalog: Catalog, repo: str, matched: list[MatchedFinding]
+) -> tuple[str | None, list[dict[str, str]], bool]:
+    """(the worst combination severity over the covered findings, those
+    combinations, whether detection failed).
+
+    Read as the disposition guard reads it (`finding_disposition.
+    governing_severities`): the combinations the risk decision sees, KEV
+    included. Detection that cannot run floors at `critical` (fail closed)
+    whatever the finding's own severity: a critical finding governs at
+    `critical` either way, so failure is read from `failed`, never inferred
+    from a raised severity (review of #1018)."""
+    from mykronos import finding_disposition
+
+    undetected: set[str] = set()
+    governing = finding_disposition.governing_severities(
+        [
+            {"finding_id": m.finding_id, "severity": m.severity, "repo_full_name": repo}
+            for m in matched
+        ],
+        catalog=catalog,
+        db=db,
+        failed=undetected,
+        # A renewal is floored at what the record it renews suppressed.
+        suppress=False,
+    )
+    floor: str | None = None
+    combinations: dict[str, dict[str, str]] = {}
+    failed = False
+    for m in matched:
+        severity, combos = governing.get(m.finding_id, (m.severity, []))
+        if m.finding_id in undetected:
+            failed = True
+            severity = "critical"
+        elif combos:
+            combinations.update({c["combination_id"]: c for c in combos})
+        else:
+            continue
+        if severity in SEVERITIES and (
+            floor is None or SEVERITIES.index(severity) > SEVERITIES.index(floor)
+        ):
+            floor = severity
+    return floor, list(combinations.values()), failed
+
+
+def check_controls(
+    session: Session,
+    repo: str,
+    controls: list[dict[str, Any]],
+    *,
+    fresh_days: int | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Each compensating control: verified | contradicted | unverified, with
+    the observation behind it (TheHub #60902).
+
+    A control names `observation_id` (a `ControlObservation`, read as the
+    newest of its subject and assertion) or `control_id` (a declared
+    `RepoControl`, read against the observations tied to it). One that names
+    neither is free text, and free text is unverified.
+    """
+    when = now or utcnow()
+    days = fresh_days or risk_evidence.FRESH_DAYS
+    out = []
+    for index, control in enumerate(controls):
+        control = control if isinstance(control, dict) else {}
+        if control.get("observation_id"):
+            status = risk_evidence.observation_verification(
+                session, repo, str(control["observation_id"]), now=when, fresh_days=days
+            )
+        elif control.get("control_id"):
+            status = risk_evidence.control_verification(
+                session, repo, str(control["control_id"]), now=when, fresh_days=days
+            )
+        else:
+            status = risk_evidence.ControlStatus(
+                status="unverified",
+                reason="Cites no observation or declared control; free text cannot be checked.",
+            )
+        out.append({"index": index, **status.as_dict()})
+    return out
+
+
+def _refuse_uncited(controls: list[dict[str, Any]], checks: list[dict[str, Any]]) -> None:
+    for control, check in zip(controls, checks, strict=True):
+        if not (control.get("observation_id") or control.get("control_id")):
+            raise RiskAcceptanceError(
+                "A compensating control cites the observation or the declared control that "
+                "shows it (observation_id or control_id); free text cannot be checked "
+                "(TheHub #60902)."
+            )
+        if check["missing"]:
+            raise RiskAcceptanceError(f"Compensating control {check['index']}: {check['reason']}")
 
 
 def _premise_checks(
@@ -525,6 +650,56 @@ def _premise_checks(
             fresh_days=fresh_days or premise_monitor.FRESH_DAYS,
         )
     ]
+
+
+#: The categories an acceptance's tier reads (`risk_evidence.CATEGORIES`):
+#: a KEV-listed CVE is refused. The rest are shown to the approver.
+EVIDENCE_SCORED: tuple[str, ...] = ("threat_intel",)
+EVIDENCE_NOTES = {
+    "environmental": (
+        "Shown to the approver. The tier is residual likelihood x impact, floored at "
+        "the scanner's severity for every deviation type but risk_adjustment."
+    ),
+}
+
+
+def decision_evidence(
+    session: Session,
+    catalog: Catalog,
+    repo: str,
+    matched: list[MatchedFinding],
+    *,
+    fresh_days: int | None = None,
+    now: datetime | None = None,
+    controls_cited: bool = False,
+) -> dict[str, Any]:
+    """The `risk_evidence` block for the findings one acceptance covers.
+
+    Verified controls are scored when the acceptance cites compensating
+    controls: only a verified one may lower its tier (TheHub #60902).
+    """
+    return risk_evidence.gather(
+        session,
+        catalog,
+        repo=repo,
+        findings=[
+            {
+                "finding_id": m.finding_id,
+                "rule_id": m.rule_id,
+                "title": m.title,
+                "file_path": m.location,
+            }
+            for m in matched
+        ],
+        as_of=now or utcnow(),
+        fresh_days=fresh_days or risk_evidence.FRESH_DAYS,
+        scored=(*EVIDENCE_SCORED, "verified_controls") if controls_cited else EVIDENCE_SCORED,
+        notes=EVIDENCE_NOTES,
+        # Every combination the findings are in, none dissolved by an earlier
+        # acceptance: this block is what later suppresses them (TheHub #61013),
+        # so a renewal must see what the record it renews suppressed.
+        combinations=risk_evidence.toxic_combinations(catalog, session, repo, suppress=False),
+    ).as_dict()
 
 
 def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
@@ -573,9 +748,35 @@ def propose(
     if not matched:
         raise RiskAcceptanceError("The scope matches no findings; there is nothing to accept.")
 
+    # TheHub #60902: a compensating control cites what observes it, and only
+    # a verified one may lower the tier.
+    with db.session() as session:
+        control_checks = check_controls(session, repo, controls, fresh_days=fresh_days)
+    if renews is None and not legacy:
+        _refuse_uncited(controls, control_checks)
+    controls = [
+        {**c, "status_at_proposal": check["status"]}
+        for c, check in zip(controls, control_checks, strict=True)
+    ]
+
     residual = residual_severity(residual_likelihood, residual_impact)
+    worst = _worst([m.severity for m in matched])
+    floored_by_unverified = False
     if deviation_type != "risk_adjustment":
-        residual = max(residual, _worst([m.severity for m in matched]), key=SEVERITIES.index)
+        residual = max(residual, worst, key=SEVERITIES.index)
+    elif controls and not any(c["status"] == "verified" for c in control_checks):
+        floored_by_unverified = SEVERITIES.index(residual) < SEVERITIES.index(worst)
+        residual = max(residual, worst, key=SEVERITIES.index)
+    # Never below a combination a covered finding is in, whatever the type:
+    # accepting a member dissolves the combination (review of #1018).
+    combo_floor, combinations, detection_failed = _combination_floor(
+        db, catalog, repo, matched
+    )
+    floored_by_combination = combo_floor is not None and SEVERITIES.index(
+        combo_floor
+    ) > SEVERITIES.index(residual)
+    if combo_floor is not None:
+        residual = max(residual, combo_floor, key=SEVERITIES.index)
     renewal_count = (renews.renewal_count + 1) if renews else 0
     _validate(
         policy=policy,
@@ -595,8 +796,11 @@ def propose(
             "Narrow the scope with fixed_version: absent, or choose another response."
         )
     with db.session() as session:
-        kev = _kev_listed(session, {m.rule_id for m in matched})
+        kev = _kev_listed(session, matched)
         checks = _premise_checks(session, catalog, repo, scope, premises, matched, fresh_days)
+        evidence = decision_evidence(
+            session, catalog, repo, matched, fresh_days=fresh_days, controls_cited=bool(controls)
+        )
         claimed = covered_by(
             session,
             {m.finding_id for m in matched},
@@ -618,6 +822,35 @@ def propose(
             f"KEV-listed CVEs cannot be accepted, only mitigated: {', '.join(kev[:10])}."
         )
     flags = premise_flags(deviation_type, matched)
+    if floored_by_unverified:
+        flags.append(
+            {
+                "code": "unverified_controls",
+                "controls": [c["index"] for c in control_checks if c["status"] != "verified"],
+                "reason": (
+                    "The residual was rated below the scanner's severity on the strength of "
+                    "compensating controls, and none of them is verified by a fresh "
+                    f"observation. The tier stays at {worst} until one is (TheHub #60902)."
+                ),
+            }
+        )
+    if combinations or detection_failed:
+        names = ", ".join(sorted({c["name"] for c in combinations})) or "unknown"
+        flags.append(
+            {
+                "code": "toxic_combination_member",
+                "combinations": sorted(c["combination_id"] for c in combinations),
+                "floored": floored_by_combination,
+                "reason": (
+                    "Toxic combination detection could not run, so the tier is "
+                    "critical until it can (fail closed)."
+                    if detection_failed and not combinations
+                    else f"A covered finding is a member of {names}. Accepting it dissolves "
+                    f"the combination, so the tier is at least {combo_floor} "
+                    "(review of #1018)."
+                ),
+            }
+        )
     for flag in flags:
         logger.warning("risk acceptance on %s flagged: %s", repo, flag["reason"])
 
@@ -651,7 +884,11 @@ def propose(
         subject_ref=record.id,
         requested_by=requested_by,
         statement=justification.strip(),
-        context={"snapshot": _snapshot(record, matched, flags, checks)},
+        context={
+            "snapshot": _snapshot(
+                record, matched, flags, checks, evidence, control_checks, combinations
+            )
+        },
     )
     record.approval_request_id = approval.id
     with db.session() as session:

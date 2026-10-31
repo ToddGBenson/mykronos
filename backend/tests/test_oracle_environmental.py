@@ -110,6 +110,9 @@ def _evaluate(catalog, policy, client, **kwargs):
 def _without_environmental(snapshot: dict[str, Any]) -> dict[str, Any]:
     clone = copy.deepcopy(snapshot)
     clone.pop("environmental", None)
+    # The shared evidence block (TheHub #60901) shows the environmental scores
+    # too - shown, never scored. Every category it scores must still match.
+    clone.get("risk_evidence", {}).get("categories", {}).pop("environmental", None)
     return clone
 
 

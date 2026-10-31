@@ -722,6 +722,24 @@ class ThreatIntelMatch(Base):
     #: v3-only lookup, which may have dropped a v4 vector: those are eligible
     #: for exactly one more lookup, then a miss is a miss.
     v4_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Public exploit references for this CVE (TheHub #60890): Exploit-DB
+    #: entries, Metasploit modules and NVD references tagged `Exploit` (which
+    #: is where GitHub proof-of-concept links appear). Each is
+    #: {source, ref, url, title}. Null until a lookup has run; an empty list
+    #: once one has and found nothing, which is a different statement.
+    exploit_refs_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=None)
+    #: When the Exploit-DB / Metasploit feeds last answered for this CVE.
+    exploits_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: When NVD's references were last read for exploit links. Separate from
+    #: `vector_checked_at` because rows looked up before #60890 were read for
+    #: vectors only, and are eligible for exactly one more lookup.
+    nvd_refs_checked_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: NVD refusing this CVE in a row (TheHub #61037): when it last did, and
+    #: how many lookups since the last one that answered. A refused row is
+    #: never stamped as checked, so without these it would head both queues
+    #: on every run. A feed outage is not counted against any row.
+    nvd_failed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    nvd_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -927,6 +945,41 @@ class AutoTriageAction(Base):
     undone_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     undone_by: Mapped[str | None] = mapped_column(String(255), default=None)
     undo_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class ModelTriageProposal(Base):
+    """A model's proposed verdict on one finding, in shadow (TheHub #60893,
+    absorbing #60748).
+
+    Recorded under the `finding_disposition` duty and **never applied**:
+    nothing reads this table to change a finding. It exists to be graded -
+    `shadow_proposals.grade` compares each proposal with the verdict a person
+    later recorded - so the decision to let a model act is made on a measured
+    agreement rate rather than on how convincing its prose was.
+
+    Append-only like the audit log: a model that changes its mind writes a
+    new row, and the grade reads the latest per finding and model.
+    """
+
+    __tablename__ = "model_triage_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: The cluster the finding was in when proposed (TheHub #60887), if known.
+    cluster_id: Mapped[str] = mapped_column(String(64), default="")
+    duty: Mapped[str] = mapped_column(String(64), default="finding_disposition")
+    #: true_positive | false_positive | suppressed | accepted_risk
+    proposed_status: Mapped[str] = mapped_column(String(32), default="")
+    confidence: Mapped[float | None] = mapped_column(Float, default=None)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    #: The exact model id that read the code, so grades are per model.
+    model: Mapped[str] = mapped_column(String(128), default="")
+    #: What it read: files and lines, as the proposer reported them.
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    proposed_by: Mapped[str] = mapped_column(String(255), default="")
+    actor_kind: Mapped[str] = mapped_column(String(16), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class PublicEndpoint(Base):
@@ -1491,6 +1544,30 @@ class JobRun(Base):
         return f"<JobRun {self.name} failures={self.consecutive_failures}>"
 
 
+class CiStallEpisode(Base):
+    """One Concourse stall, from its first red evaluation to its first green
+    one (`mykronos.ci_stall`, TheHub #60975).
+
+    Persisted so a restart - the very event that causes a stall - does not
+    forget that the stall was already announced and announce it again.
+    `notified_at` is set only once the notifier reports delivery.
+    """
+
+    __tablename__ = "ci_stall_episodes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: When the episode's window of errored starts opened, ISO 8601.
+    key: Mapped[str] = mapped_column(String(64), default="", index=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    #: Null while the stall lasts. The open episode is the one with no clear.
+    cleared_at: Mapped[datetime | None] = mapped_column(
+        DateTime, default=None, index=True
+    )
+    #: `pipeline/job` of each lane in the window at the latest red read.
+    jobs: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
 class ControlDrift(Base):
     """One control changing state, recorded when it happens (spec 30).
 
@@ -1569,3 +1646,176 @@ class CiCheckRun(Base):
     last_job: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GatingLaneState(Base):
+    """What the red-main poll last saw of one gating lane (TheHub #60973).
+
+    The de-duplication key for its notifications: a lane recorded `red` is not
+    announced again until it has been recorded `green`. Kept here rather than
+    in memory so a backend restart does not post the same red twice, and read
+    by the CI page for `red_since` and `first_bad_sha`. Current state, one row
+    per lane, like `JobRun`.
+    """
+
+    __tablename__ = "gating_lane_states"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job: Mapped[str] = mapped_column(String(100), primary_key=True)
+    pipeline: Mapped[str] = mapped_column(String(100), default="")
+    #: `green` | `red`
+    state: Mapped[str] = mapped_column(String(8), default="green")
+    #: Concourse's word for the latest finished build.
+    status: Mapped[str | None] = mapped_column(String(16), default=None)
+    build: Mapped[str | None] = mapped_column(String(32), default=None)
+    red_since: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    first_bad_build: Mapped[str | None] = mapped_column(String(32), default=None)
+    #: Null when the commit could not be resolved from Concourse.
+    first_bad_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    last_green_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<GatingLaneState {self.repo_full_name} {self.job} {self.state}>"
+
+
+class LibraryRequest(Base):
+    """A request to onboard one third-party library (TheHub #60895, #60896).
+
+    Vetted automatically when it is made, so the record carries the report an
+    approver reads (OSV, deps.dev, typosquat and new-package checks), and then
+    handed to the approvals engine as a `library_approval` request. The state
+    here follows the approval request: an approval puts the library on the
+    allowlist, a rejection is copied back with the approver's reason.
+    """
+
+    __tablename__ = "library_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: The purl ecosystem: npm, pypi, golang, maven, cargo, nuget, gem.
+    ecosystem: Mapped[str] = mapped_column(String(32), index=True, default="")
+    #: Normalised (PyPI names per PEP 503, npm lower-cased).
+    package_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    version: Mapped[str] = mapped_column(String(128), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    #: Proposed for the allowlist entry an approval creates.
+    owner: Mapped[str] = mapped_column(String(255), default="")
+    version_policy: Mapped[str] = mapped_column(String(32), default="minimum")
+    requested_by: Mapped[str] = mapped_column(String(255), default="")
+    requester_kind: Mapped[str] = mapped_column(String(16), default="")
+    #: pending_approval | approved | rejected | expired, or banned: approved,
+    #: but a ban recorded while it was pending stands.
+    state: Mapped[str] = mapped_column(String(24), index=True, default="pending_approval")
+    #: The vetting report, as frozen into the approval evidence.
+    vetting: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    approval_request_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    #: The approver's rationale for a rejection (or approval), copied from the
+    #: decision so the request reads complete on its own.
+    decision_reason: Mapped[str] = mapped_column(Text, default="")
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class LibraryEntry(Base):
+    """One library's managed record: the allowlist (TheHub #60896, #60897).
+
+    `approved` is reached only through an approved `library_approval` request.
+    `tolerated` is a library already in use that nobody has vetted, recorded
+    explicitly so a repository can be shown to be covered. `banned` is never
+    to be added again; a pull request adding it is reported as such.
+    """
+
+    __tablename__ = "library_entries"
+    __table_args__ = (
+        UniqueConstraint("ecosystem", "package_name", name="uq_library_entry"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    ecosystem: Mapped[str] = mapped_column(String(32), index=True, default="")
+    package_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: approved | tolerated | banned
+    status: Mapped[str] = mapped_column(String(16), index=True, default="tolerated")
+    owner: Mapped[str] = mapped_column(String(255), default="")
+    #: any | exact | minimum | same_major, read against `version_ref`.
+    version_policy: Mapped[str] = mapped_column(String(32), default="any")
+    version_ref: Mapped[str] = mapped_column(String(128), default="")
+    #: approval | baseline | manual: how the status was set.
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    approval_request_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    note: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class LibraryFacts(Base):
+    """What the registry last said about a library in use (TheHub #60897).
+
+    Read from deps.dev by the `library-facts` job and the refresh route, so the
+    managed view can flag EOL (the in-use version is marked deprecated),
+    abandonment (no release for two years) and a license change without a
+    network call per page render. A library never read has no row, and its
+    flags read as unknown rather than clean.
+    """
+
+    __tablename__ = "library_facts"
+    __table_args__ = (
+        UniqueConstraint("ecosystem", "package_name", name="uq_library_facts"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    ecosystem: Mapped[str] = mapped_column(String(32), index=True, default="")
+    package_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    latest_version: Mapped[str] = mapped_column(String(128), default="")
+    latest_published_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    latest_licenses: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Versions the registry marks deprecated.
+    deprecated_versions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Empty when the read succeeded.
+    error: Mapped[str] = mapped_column(Text, default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LibraryRepoPolicy(Base):
+    """Whether the library check reports or blocks on one repository (#60898).
+
+    Absent means `report`. `blocking` is set only when every library in the
+    repository's current SBOM has a recorded approved or tolerated entry.
+    """
+
+    __tablename__ = "library_repo_policies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), unique=True, default="")
+    #: report | blocking
+    mode: Mapped[str] = mapped_column(String(16), default="report")
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class LibraryCheck(Base):
+    """The library-allowlist check posted on one pull request head (#60898)."""
+
+    __tablename__ = "library_checks"
+    __table_args__ = (
+        UniqueConstraint("repo_full_name", "head_sha", name="uq_library_check"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    number: Mapped[int] = mapped_column(Integer, default=0)
+    head_sha: Mapped[str] = mapped_column(String(40), default="")
+    #: The mode the check ran in, which may be `report` on a blocking
+    #: repository whose coverage lapsed.
+    mode: Mapped[str] = mapped_column(String(16), default="report")
+    #: success | neutral | failure
+    conclusion: Mapped[str] = mapped_column(String(16), default="")
+    #: Each dependency the PR adds or changes, with its verdict.
+    results: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    external_id: Mapped[str] = mapped_column(String(64), default="")
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    #: Posts tried in a row for this head while it errors; the sweep stops
+    #: retrying at `library_check.MAX_ATTEMPTS`.
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

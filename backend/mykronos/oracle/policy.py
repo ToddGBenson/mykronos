@@ -326,6 +326,11 @@ class TriageRankPolicy:
     repo_is_no_go: float
     fixable_bonus: float
     environmental_per_band: float = 0.0
+    #: Points when a public exploit exists and the CVE is not KEV-listed
+    #: (TheHub #60890, policy 1.17): a Metasploit module, or published
+    #: proof-of-concept code. KEV already carries the larger `in_kev` term.
+    public_exploit_weaponized: float = 0.0
+    public_exploit_poc: float = 0.0
 
     @property
     def configured(self) -> bool:
@@ -797,6 +802,14 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             environmental_per_band=_number(
                 rank_raw.get("environmental_per_band", 0),
                 "triage_rank.environmental_per_band",
+            ),
+            public_exploit_weaponized=_number(
+                rank_raw.get("public_exploit_weaponized", 0),
+                "triage_rank.public_exploit_weaponized",
+            ),
+            public_exploit_poc=_number(
+                rank_raw.get("public_exploit_poc", 0),
+                "triage_rank.public_exploit_poc",
             ),
         ),
         overdue=OverduePolicy(

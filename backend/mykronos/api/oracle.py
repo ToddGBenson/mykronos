@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, s
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import read_coverage
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.api.refusals import CapabilityRefusedError
@@ -89,10 +90,20 @@ class EvaluateResult(BaseModel):
     disclosed: dict[str, int] = Field(
         default_factory=dict,
         description=(
-            "Open container findings this commit's scans saw first in an image "
-            "the previous scan had already seen byte for byte (#734): the "
-            "vulnerability database moved, not the commit. Reported so they "
-            "are not lost, and excluded from `introduced` and the floor."
+            "Open findings this commit's scans saw first that the commit did "
+            "not introduce: a container image the previous scan had already "
+            "seen byte for byte (#734), or a dependency the baseline already "
+            "carried at that version or that this commit's own manifests fix "
+            "(TheHub #61063). The advisory moved, not the commit. Reported so "
+            "they are not lost, and excluded from `introduced` and the floor."
+        ),
+    )
+    remediates: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Of `disclosed`, the findings this commit's own tree fixes, by "
+            "severity: read from an SBOM of what runs, while the commit's "
+            "manifests move the package to the fixed version (TheHub #61063)."
         ),
     )
     introduced_blocking: bool = Field(
@@ -204,6 +215,22 @@ async def evaluate(
     # asked has already exited by the time anyone looks at it. Sent as a
     # background task so a slow webhook cannot add latency to a gate every
     # build waits on (spec 16 §14).
+    # The severity floor. Deliberately a constant rather than policy: a floor
+    # an operator can lower under pressure is a floor that reaches zero.
+    queries = DashboardQueries(request.app.state.catalog)
+    introduced = queries.introduced_by(token.repo_full_name, body.commit_sha)
+    disclosed = queries.disclosed_by(token.repo_full_name, body.commit_sha)
+    remediates = queries.remediated_by(token.repo_full_name, body.commit_sha)
+    introduced_blocking = bool(
+        introduced.get("critical", 0) or introduced.get("high", 0)
+    )
+    # Said in the reasoning the gate job prints and Slack carries, so a
+    # finding kept out of `introduced` is never kept out of sight.
+    reasoning = published.decision.reasoning or ""
+    disclosure = disclosure_sentence(disclosed, remediates)
+    if disclosure:
+        reasoning = f"{reasoning} {disclosure}".strip()
+
     if published.decision.recommendation == "no_go":
         background.add_task(
             request.app.state.notifier.send,
@@ -211,7 +238,7 @@ async def evaluate(
                 title="A risk decision refused a commit",
                 detail=(
                     f"Score {published.decision.overall_risk_score}. "
-                    f"{published.decision.reasoning or 'No reasoning recorded.'}\n"
+                    f"{reasoning or 'No reasoning recorded.'}\n"
                     f"Commit `{body.commit_sha}`. "
                     + (
                         "Blocking is on: the check run is red."
@@ -224,29 +251,43 @@ async def evaluate(
             ),
         )
 
-    # The severity floor. Deliberately a constant rather than policy: a floor
-    # an operator can lower under pressure is a floor that reaches zero.
-    queries = DashboardQueries(request.app.state.catalog)
-    introduced = queries.introduced_by(token.repo_full_name, body.commit_sha)
-    disclosed = queries.disclosed_by(token.repo_full_name, body.commit_sha)
-    introduced_blocking = bool(
-        introduced.get("critical", 0) or introduced.get("high", 0)
-    )
-
     return EvaluateResult(
         decision_id=published.decision.decision_id,
         decision_type=published.decision.decision_type,
         overall_risk_score=published.decision.overall_risk_score,
         recommendation=published.decision.recommendation,
-        reasoning=published.decision.reasoning,
+        reasoning=reasoning,
         policy_version=published.decision.policy_version,
         blocking=published.blocking,
         check_run_id=published.check_run_id,
         check_run_error=published.check_run_error,
         introduced=introduced,
         disclosed=disclosed,
+        remediates=remediates,
         introduced_blocking=introduced_blocking,
     )
+
+
+def disclosure_sentence(disclosed: dict[str, int], remediates: dict[str, int]) -> str:
+    """One sentence naming what was newly disclosed rather than introduced,
+    and how much of it this commit fixes (TheHub #61063). Empty when nothing
+    was."""
+    total = sum(disclosed.values())
+    if not total:
+        return ""
+    order = ("critical", "high", "medium", "low", "info")
+    tally = ", ".join(
+        f"{disclosed[s]} {s}" for s in [*order, *sorted(set(disclosed) - set(order))]
+        if disclosed.get(s)
+    )
+    sentence = (
+        f"Newly disclosed, not introduced by this commit: {tally} - advisories "
+        "published against a version the baseline or production already ran."
+    )
+    fixed = sum(remediates.values())
+    if fixed:
+        sentence += f" This commit remediates {fixed}."
+    return sentence
 
 
 @router.get("/policy")
@@ -425,7 +466,15 @@ class CommitDecisionOut(BaseModel):
     )
     disclosed: dict[str, int] = Field(
         default_factory=dict,
-        description="Newly disclosed in unchanged images; never blocking (#734).",
+        description=(
+            "Newly disclosed in unchanged images (#734) or on dependencies the "
+            "baseline already carried or this commit fixes (TheHub #61063); "
+            "never blocking."
+        ),
+    )
+    remediates: dict[str, int] = Field(
+        default_factory=dict,
+        description="Of `disclosed`, what this commit's own tree fixes (TheHub #61063).",
     )
     introduced_blocking: bool = Field(
         default=False,
@@ -510,6 +559,7 @@ async def decision_for_commit(
         evaluated_at=evaluated_at,
         introduced=introduced,
         disclosed=queries.disclosed_by(repo, filed_sha),
+        remediates=queries.remediated_by(repo, filed_sha),
         # The same floor as `/evaluate`, from the same constant rule.
         introduced_blocking=bool(introduced.get("critical") or introduced.get("high")),
     )
@@ -523,22 +573,56 @@ async def decisions_for_repo(
     decision_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict[str, Any]:
-    """Decision history for one repo, newest first (spec 09 §7)."""
+    """Decision history for one repo, newest first (spec 09 §7).
+
+    `confidence_note` qualifies the newest verdict with how much of the code
+    the analysers read (TheHub #60962, decision 60814 option 2): "go - read
+    31% of the code" under the configured threshold, "go - read coverage
+    unknown" when it could not be measured, null otherwise. It is computed
+    when the history is read and never changes a recorded verdict.
+    """
+    from mykronos.api.dashboard import _repo_read_coverage
+
     with request.app.state.db.session() as session:
         onboarding = session.get(RepoOnboarding, repo_id)
-    if onboarding is None:
+        found = (
+            None
+            if onboarding is None
+            else (str(onboarding.github_repo_full_name), onboarding.github_installation_id)
+        )
+    if found is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No repo {repo_id!r}. This takes the onboarding id.",
         )
+    repo_full_name, installation_id = found
+
+    decisions = _service(request).recent_decisions(
+        repo_full_name,
+        decision_type=decision_type,
+        limit=limit,
+    )
+
+    threshold = float(request.app.state.settings.oracle_read_coverage_threshold)
+    measured: read_coverage.ReadCoverage | None
+    try:
+        measured = await _repo_read_coverage(request, repo_full_name, installation_id)
+    except Exception:  # noqa: BLE001
+        # The note degrades to "unknown"; it never takes the history with it.
+        logger.warning("Could not measure read coverage for %s", scrub(repo_full_name))
+        measured = None
+    newest = str(decisions[0]["recommendation"]) if decisions else None
+    coverage_out: dict[str, Any] = (
+        read_coverage.as_dict(measured)
+        if measured is not None
+        else {"available": False, "reason": "Read coverage could not be measured."}
+    )
 
     return {
-        "repo_full_name": onboarding.github_repo_full_name,
-        "decisions": _service(request).recent_decisions(
-            onboarding.github_repo_full_name,
-            decision_type=decision_type,
-            limit=limit,
-        ),
+        "repo_full_name": repo_full_name,
+        "decisions": decisions,
+        "read_coverage": {**coverage_out, "threshold": threshold},
+        "confidence_note": read_coverage.confidence_note(measured, newest, threshold),
     }
 
 

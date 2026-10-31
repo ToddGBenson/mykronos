@@ -228,6 +228,52 @@ anchors:
   # exact silence PS-12 exists to close. Not worth a third attempt.
   retry_hook: &retry_hook 2
 
+  # -- The uploader install, retried (TheHub #61007) -----------------------
+  #
+  # Every task that runs the mykronos uploader installs it from GitHub at
+  # MYKRONOS_REF, and `pip install git+https://...` is one `git clone` with no
+  # retry of its own. thehub/containers #209 lost that clone to a 21-second
+  # GitHub outage ("Failed to connect to github.com port 443 after 21067 ms"):
+  # no scan ran, yet the job reported `trivy=failed`, TheHub opened "Deploy
+  # stage 'trivy' failed", the check went red and the risk gate stopped for
+  # that commit. A network fault read exactly like a security gate failing.
+  #
+  # So every install runs THIS script, as `bash -c "$MYKRONOS_INSTALL_UPLOADER"`,
+  # instead of its own copy of the pip line: three attempts, 10s then 30s
+  # apart. It travels as a param (an env var holding the script) because an
+  # anchor cannot name part of a block scalar, and TheHub's tasks have no
+  # mykronos checkout to run a script file from. `mykronos_env` carries it;
+  # a task that does not merge that anchor names it itself.
+  # backend/tests/test_uploader_install_retry.py fails on any install that
+  # does not come through here.
+  #
+  # When the last attempt fails it exits 75 (EX_TEMPFAIL) and, if the task
+  # declares an `infra` output, writes the reason to infra/reason. The job's
+  # failure hooks read that and report `errored`, not `failed`, to TheHub and
+  # `cancelled`, not `failure`, to the GitHub check, saying no scan ran.
+  # ONLY a task that runs before anything in its job reaches a verdict may
+  # declare `infra`: a marker left by an upload that follows a real failing
+  # scan would launder that failure into an outage.
+  #
+  # Identical in every pipeline file; the test holds them to one text.
+  install_uploader: &install_uploader |
+    set -u
+    spec="mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+    attempt=1
+    for wait_s in 10 30; do
+      pip install --quiet "$spec" && exit 0
+      echo "uploader install: attempt ${attempt} of 3 failed; retrying in ${wait_s}s (TheHub #61007)." >&2
+      sleep "$wait_s"
+      attempt=$((attempt + 1))
+    done
+    pip install --quiet "$spec" && exit 0
+    reason="INFRASTRUCTURE, NOT A VERDICT: the mykronos uploader could not be installed from GitHub at ${MYKRONOS_REF} after 3 attempts, so no scan ran to a verdict and nothing on this commit was judged. Re-run the job once GitHub is reachable."
+    echo "::error:: ${reason}" >&2
+    for dir in infra ../infra; do
+      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+    done
+    exit 75
+
   # The notifier's credentials, hoisted into their own anchor for the same
   # reason `hub_params` exists: the `on_error:` path now passes an extra param
   # (OUTCOME below), and a step-level `params:` that named only that would be
@@ -246,9 +292,12 @@ anchors:
     # pipeline and team are static per file; each hook passes JOB.
     PIPELINE: personal-soc
     TEAM: main
-    # Concourse is bound to 127.0.0.1:8080 on this host and has no public
-    # hostname, so the link opens on this machine only.
-    CONCOURSE_URL: http://localhost:8080
+    # The browser URL an alert links to. Concourse is published on 127.0.0.1
+    # only, so the http://localhost:8080 this used to carry opened on this
+    # host and nowhere a phone reads Slack (TheHub #60941; #988 refused the
+    # same links in the briefing). Empty sends no link, and the notify script
+    # refuses a loopback one. A LAN or public URL here brings the link back.
+    CONCOURSE_URL: ""
 
   # -- Failure notification -------------------------------------------------
   #
@@ -305,7 +354,16 @@ anchors:
             # The JOB page, not a build page: no task-visible mechanism carries the
             # build number (BUILD_NAME is resource-only), and the failing build
             # is the newest one listed there.
-            BUILD_URL="${CONCOURSE_URL:-http://localhost:8080}/teams/${TEAM:-main}/pipelines/${PIPELINE:-personal-soc}/jobs/${JOB:-}"
+            #
+            # TheHub #60941: no link unless CONCOURSE_URL names a real host. A
+            # loopback URL opens only on the Concourse host itself, never on
+            # the phone the alert is read on, so it is left out rather than
+            # sent as a link that cannot open.
+            BUILD_URL=""
+            case "${CONCOURSE_URL:-}" in
+              ""|*://localhost|*://localhost[:/]*|*://127.*|*://\[::1\]*|*://0.0.0.0*) ;;
+              *) BUILD_URL="${CONCOURSE_URL%/}/teams/${TEAM:-main}/pipelines/${PIPELINE:-personal-soc}/jobs/${JOB:-}" ;;
+            esac
             JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
 
             # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
@@ -349,8 +407,9 @@ anchors:
             # directory owned by root, so `> payload.json` is
             # "Permission denied" - which failed the notify task and printed
             # nothing about Slack at all. /tmp is world-writable in this image.
-            printf '{"channel":"%s","text":"%s\\n%s"}' \
-              "$SLACK_CHANNEL" "$ESCAPED" "$BUILD_URL" > /tmp/payload.json
+            # The link is its own line when there is one, and absent when not.
+            printf '{"channel":"%s","text":"%s%s"}' \
+              "$SLACK_CHANNEL" "$ESCAPED" "${BUILD_URL:+\\n$BUILD_URL}" > /tmp/payload.json
 
             RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
@@ -808,6 +867,7 @@ jobs:
         timeout: 16m
         image: python
         params:
+          MYKRONOS_INSTALL_UPLOADER: *install_uploader
           MYKRONOS_URL: ((mykronos-url))
           MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
           MYKRONOS_REF: ((mykronos-ref))
@@ -932,7 +992,7 @@ jobs:
                   echo "  mykronos rotate-token ToddGBenson/personal-soc"
                   echo "=================================================="
                 else
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   MYKRONOS_JOB=secrets python -m mykronos.upload \
                     --capability secrets --tool gitleaks \
@@ -1003,6 +1063,7 @@ jobs:
         # is not going to be the thirteenth. B-059.
         timeout: 15m
         params:
+          MYKRONOS_INSTALL_UPLOADER: *install_uploader
           MYKRONOS_URL: ((mykronos-url))
           MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
           MYKRONOS_REF: ((mykronos-ref))
@@ -1060,7 +1121,7 @@ jobs:
                   echo "  mykronos rotate-token ToddGBenson/personal-soc"
                   echo "=================================================="
                 else
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
                     --results-path /tmp/results \
@@ -1376,6 +1437,7 @@ jobs:
           timeout: 10m
           image: python
           params:
+            MYKRONOS_INSTALL_UPLOADER: *install_uploader
             MYKRONOS_URL: ((mykronos-url))
             MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
             MYKRONOS_REF: ((mykronos-ref))
@@ -1406,7 +1468,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   cd source
                   MYKRONOS_JOB=lint python -m mykronos.upload \
                     --capability sast --tool psscriptanalyzer \
@@ -1841,6 +1903,7 @@ jobs:
           timeout: 10m
           image: python
           params:
+            MYKRONOS_INSTALL_UPLOADER: *install_uploader
             MYKRONOS_URL: ((mykronos-url))
             MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
             MYKRONOS_REF: ((mykronos-ref))
@@ -1862,7 +1925,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   cd source
                   MYKRONOS_JOB=functional python -m mykronos.upload \
@@ -2560,6 +2623,7 @@ jobs:
           timeout: 10m
           image: python
           params:
+            MYKRONOS_INSTALL_UPLOADER: *install_uploader
             MYKRONOS_URL: ((mykronos-url))
             MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
             MYKRONOS_REF: ((mykronos-ref))
@@ -2590,7 +2654,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
                   # hook reads it.
@@ -2914,6 +2978,7 @@ jobs:
           timeout: 10m
           image: python
           params:
+            MYKRONOS_INSTALL_UPLOADER: *install_uploader
             MYKRONOS_URL: ((mykronos-url))
             MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
             MYKRONOS_REF: ((mykronos-ref))
@@ -2944,7 +3009,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
                   # hook reads it.
@@ -3103,6 +3168,7 @@ jobs:
           timeout: 10m
           image: python
           params:
+            MYKRONOS_INSTALL_UPLOADER: *install_uploader
             MYKRONOS_URL: ((mykronos-url))
             MYKRONOS_TOKEN: ((personal-soc-ingestion-token))
             MYKRONOS_REF: ((mykronos-ref))
@@ -3133,7 +3199,7 @@ jobs:
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  pip install --quiet "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend"
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
                   # hook reads it.

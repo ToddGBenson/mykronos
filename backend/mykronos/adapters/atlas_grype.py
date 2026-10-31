@@ -46,7 +46,7 @@ import logging
 import re
 from typing import Any
 
-from mykronos import cvss_vectors
+from mykronos import atlas_baseline, cvss_vectors
 from mykronos.adapters.atlas_osv import _basis, _pick_fix
 from mykronos.adapters.base import AdapterResult, ScanContext, warn_if_identity_degrades
 from mykronos.adapters.sarif import sarif_to_findings
@@ -153,6 +153,9 @@ def normalize(raw_output: bytes, context: ScanContext) -> AdapterResult:
     # grype 0.87-0.120 SARIF publishes no vector, so this finds nothing today;
     # it keeps one the day grype starts writing them (TheHub #60824).
     cvss_vectors.attach(outcome.findings, raw_output, source="grype")
+
+    # The same commit attribution as osv-scanner's findings (TheHub #61063).
+    atlas_baseline.annotate(outcome.findings, context)
 
     floors = sum(1 for f in outcome.findings if f.version_basis == "declared_floor")
     if floors:

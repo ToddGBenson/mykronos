@@ -62,6 +62,38 @@ def _failure_reports() -> list[tuple[str, dict]]:
     return out
 
 
+# -- no lane that runs a suite is silent (TheHub #61090) ---------------------
+
+
+def test_every_job_that_runs_a_suite_reports_to_the_hub():
+    """functional-demo ran TheHub's HTTP suite from #872 on and told the Hub
+    nothing: a red suite reached Slack and no stage, incident or lifecycle
+    signal. Any job that runs pytest must report, through the hook or inline."""
+    silent = [
+        job["name"]
+        for job in _doc()["jobs"]
+        if "pytest" in json.dumps(job)
+        and not any(j == job["name"] for j, _ in _hub_reports())
+        and "/api/ops/deploys" not in json.dumps(job)
+    ]
+    assert silent == [], f"jobs that run a suite and never report to the Hub: {silent}"
+
+
+def test_functional_demo_reports_every_outcome_as_its_own_demo_stage():
+    reports = {
+        h["params"]["STATUS"]: h["params"] for j, h in _hub_reports() if j == "functional-demo"
+    }
+    assert set(reports) == {"success", "failed", "errored", "aborted"}, sorted(reports)
+    for status, p in reports.items():
+        assert p.get("STAGE") == "functional_demo", (status, p.get("STAGE"))
+        assert p.get("TARGET_ENV") == "demo", (status, p.get("TARGET_ENV"))
+    job = next(j for j in _doc()["jobs"] if j["name"] == "functional-demo")
+    task = next(s for s in job["plan"] if s.get("task") == "run-functional")
+    assert {"name": "hub_log"} in task["config"]["outputs"]
+    script = task["config"]["run"]["args"][-1]
+    assert "tee hub_log/output.log" in script and "hub_log/exit_code" in script
+
+
 # -- structure ---------------------------------------------------------------
 
 

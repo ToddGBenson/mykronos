@@ -284,6 +284,26 @@ Each compensating control names its **800-53 control ID** (e.g. `SC-7` for a fir
 at cannot be checked when it is removed" — the checklist's own words — becomes a requirement: a
 `risk_adjustment` without at least one monitorable premise is refused.
 
+**A compensating control cites what observes it (TheHub #60902).** Each entry names
+`observation_id` (a `ControlObservation`) or `control_id` (a declared `RepoControl`); free text, or
+an id this repository does not have, is refused on a new proposal. The control is read against the
+newest fresh observation of its subject and assertion — or, for a declared control, the observations
+tied to it — as `verified`, `contradicted` or `unverified`, using the state of each assertion that
+means the control holds (`bound_loopback` pass, `port_published` fail, ...). The status is stored on
+the control as `status_at_proposal`, frozen into the approver's evidence as `control_checks`, and
+re-read on every view of the acceptance. **Only a verified control lowers the tier:** a
+`risk_adjustment` that cites compensating controls, none of them verified, keeps the scanner's
+severity as its residual and carries an `unverified_controls` flag.
+
+**Every premise kind is monitored or says why not (TheHub #60903).** `premise_monitor.MONITORED`
+evaluates `port_not_published`, `firewall_scope`, `not_internet_facing`, `epss_below`,
+`not_kev_listed` (threat intel: fails on a KEV-listed CVE, holds only on fresh intel for every CVE)
+and `path_unreachable` (the stored import analysis: holds when every path is proven dead, and can
+never fail — not proven dead is not proven reachable — so it does not exempt a record from interim
+review). `premise_monitor.UNMONITORED` names every other kind with its reason: `no_fixed_version` is
+monitored by the acceptance sweep; `image_role` and `container_command` have no evidence the
+monitor can read today. Each reads `unverified`, never `holds`.
+
 ### 4.2 On failure
 
 - Monitors run daily and after every relevant scan. A failing premise moves the acceptance to
@@ -442,6 +462,34 @@ Phase 1 alone closes gaps 1, 2, 5 and 6 from §0. Phases 2 and 3 close 3 and 4.
   each premise as holds / failed / unverified with its evidence. Not built: per-person routing
   (the notifier posts to one channel and names both people) and §5's private tracking issue (the
   tracking item is the agent work queue's `acceptance_attention`).
+- Built (TheHub #60901, 2026-10-22): one evidence model, `risk_evidence.py`. KEV/EPSS, environmental
+  scores, reachability, toxic combinations, the risk profile, declared surfaces and verified controls
+  are each read by one function there, which the Oracle (engine, environmental shadow, toxic
+  combinations), the acceptance proposal, the premise monitor and the acceptance API all call. An
+  Oracle decision's `inputs_snapshot.risk_evidence` and an acceptance's approval evidence
+  `risk_evidence` are the same block: every category, with `scored` saying whether the decision's
+  arithmetic read it. Environmental scoring and verified controls stay shown-not-scored in the
+  Oracle until the per-repository go-live (TheHub #60904). The acceptance detail returns the block
+  the approver signed.
+- Built (TheHub #60902, #60903, 2026-10-22): compensating controls cite an observation and only a
+  verified one lowers the tier; `not_kev_listed` and `path_unreachable` are monitored and every other
+  kind is named unmonitorable; and every live acceptance — whatever its premises — is checked for a
+  covered CVE that joined KEV on or after the day it was proposed, which moves it to
+  `premise_failed` through §4.2's path (the §13 criterion).
+- Built (TheHub #61013): a new toxic combination reopens an acceptance. An `accepted_risk` member
+  dissolves a combination only when that combination (by `combination_id`) is in the evidence frozen
+  into a live acceptance's approval: the `risk_evidence` block's `toxic_combinations` items or the
+  `combinations` the tier was floored at, both read with nothing suppressed so a renewal sees what it
+  renews. A combination that formed later stays formed, names the acceptance in
+  `unanticipated_acceptances`, and fails the implicit `no_unanticipated_toxic_combination` premise,
+  which moves it to `premise_failed` through §4.2's path. Missing or unreadable frozen evidence —
+  a direct disposition with no record, a record proposed before the evidence block — covers nothing.
+- Built (review of #1005): the legacy sweep. Until #1005 the KEV refusal read rule ids only, so an
+  acceptance proposed before it (its approval evidence has no `risk_evidence` block) could cover a
+  GHSA-keyed finding whose title CVE was already in KEV. On those records a title-only KEV CVE
+  fails the implicit premise whatever its KEV date. No new record can enter that set, so the sweep
+  retires itself. The monitor's lake read is limited to the live acceptances' repositories, and
+  the evidence model's `IN` lists are read in chunks of 900, under SQLite's bind limit.
 - Not built: the POA&M export. No route or command produces OSCAL or CSV, so the §13 criterion on
   the OSCAL 1.1 schema is unmet.
 - Not built: §8's scoring changes. `residual_cap` is still **15** in `oracle-policy-v1.yaml`, not 30,

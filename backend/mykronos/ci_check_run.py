@@ -77,6 +77,16 @@ def _render(job: str, phase: str, conclusion: str | None) -> tuple[str, str]:
             f"`{job}` passed, and it runs only after every lane before it passed on "
             "this commit.",
         )
+    if conclusion == "cancelled":
+        # TheHub #61007: a 21-second GitHub outage failed the uploader install
+        # before any scan ran, and the check said the commit had failed.
+        return (
+            f"Not verified: {job} could not run",
+            f"`{job}` stopped on an infrastructure fault before it reached a "
+            "verdict, so no scan ran and nothing on this commit was judged. "
+            "This is not a security failure. Re-run the job; its build in "
+            "Concourse says what was unreachable.",
+        )
     return (
         f"Not verified: {job} did not pass",
         f"`{job}` failed or errored on this commit, so it has not cleared "

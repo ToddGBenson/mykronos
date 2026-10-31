@@ -226,6 +226,19 @@ Two things this deliberately does *not* do:
   authenticated read and the credential belongs in the manager, not in
   `.env`.
 
+**Why a job failed (TheHub #60913).** The CI page explains each *failing*
+job, and that one read does open a build's event stream: `ci_why.py` reads
+the build plan (step names) and the events of the failed build, anonymously,
+as the public jobs allow. The property above holds for what is *returned*:
+the stream is parsed only to find the failing step and its exit code, plus
+Concourse's own `error` events. Log lines are never returned, logged or
+cached — `::error` lines included (operator decision on #1037, 2026-10-29).
+Showing `::error` lines may be revisited once Concourse secret redaction is
+on. What is returned is masked for credential shapes and scrubbed. The
+read is capped (2 MB / 20,000 lines, 5 s), cached by build id, and limited to
+eight failing jobs per request. For Actions the equivalent is the run's job
+list and the failed job's check-run annotations; no Actions log is read.
+
 **Failure is silent and visible.** Concourse being unreachable must not affect
 a page about findings: the panel says the pipeline state is unavailable and
 every other part of the repository view renders. A dashboard that 500s because

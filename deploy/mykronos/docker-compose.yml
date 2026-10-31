@@ -73,6 +73,9 @@ services:
       MYKRONOS_REVIEWER_MODE: ${MYKRONOS_REVIEWER_MODE:-shadow}
       MYKRONOS_REVIEWER_MODEL: ${MYKRONOS_REVIEWER_MODEL:-claude-opus-5-5}
       MYKRONOS_REVIEWER_API_KEY: ${MYKRONOS_REVIEWER_API_KEY:-}
+      # Optional NVD API key (TheHub #61034): raises NVD's rate limit and the
+      # CVSS-vector lookup's batch with it. Empty is the unauthenticated budget.
+      MYKRONOS_NVD_API_KEY: ${MYKRONOS_NVD_API_KEY:-}
       MYKRONOS_GITHUB_APP_ID: ${MYKRONOS_GITHUB_APP_ID:-}
       # Mounted read-only below. The container never holds a copy.
       MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/github-app.pem
