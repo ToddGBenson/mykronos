@@ -2425,10 +2425,16 @@ jobs:
         # a finding on the public IP - medium when not allowlisted, info when it
         # is - and an unknown is a failed run, never a clean edge.
         # An `ensure:`, so a red verdict still files - the result that turned
-        # the job red is the one most worth recording - and the upload never
-        # changes the verdict: it ends `exit 0`, and the task above decides
-        # the build. Filed against ToddGBenson/personal-soc, the repository
-        # that scanned, with the host in each finding's address and port.
+        # the job red is the one most worth recording. Filed against
+        # ToddGBenson/personal-soc, the repository that scanned, with the host
+        # in each finding's address and port.
+        #
+        # TheHub #61121: a run the backend REFUSES turns the job red. This hook
+        # used to end `|| echo "...the verdict above still stands."; exit 0`,
+        # so a 403 ("'network' is not enabled for ToddGBenson/personal-soc")
+        # left every build green while nothing reached the lake. Now: nothing
+        # filed -> exit 1 and a Slack line saying so; filed, even as a degraded
+        # scan -> exit 0, because the task above already judged that run.
         ensure:
           task: upload-network-findings
           # PS-7. An apt install of git, a pip install of the uploader and one
@@ -2449,9 +2455,16 @@ jobs:
             # Optional, both (PS-3): a verdict task that never started leaves
             # no `results`, and the uploader reports a missing file as a failed
             # scan instead of this hook erroring on a missing input.
+            #
+            # `notify` in and out (#61121): a refusal writes the line the job's
+            # `on_failure:` Slack alert reads first, above whatever the verdict
+            # task left there, rather than letting the alert repeat it.
             inputs:
               - { name: results, optional: true }
               - { name: source, optional: true }
+              - { name: notify, optional: true }
+            outputs:
+              - { name: notify }
             run:
               path: bash
               args:
@@ -2473,6 +2486,7 @@ jobs:
                   # hook reads it.
                   SHA=$(tr -d ' \n\r\t' < source/.git/HEAD 2>/dev/null || true)
                   case "$SHA" in *[!0-9a-f]*|"") SHA=unknown ;; esac
+                  rc=0
                   MYKRONOS_JOB=external-exposure python -m mykronos.upload \
                     --capability network --tool shodan-internetdb \
                     --results-path results/external-exposure.json \
@@ -2480,7 +2494,23 @@ jobs:
                     --repo ToddGBenson/personal-soc \
                     --commit-sha "$SHA" --branch "$BRANCH" --triggered-by schedule \
                     --severity-threshold low --blocking false \
-                    || echo "upload did not complete cleanly - the verdict above still stands."
+                    2>&1 | tee upload.log || rc=$?
+                  # The uploader logs this line only once the backend has accepted
+                  # the run. Exit 1 without it is a refusal (a 403 naming an ungranted
+                  # capability, a revoked token) or a backend that was never reached:
+                  # nothing was filed. Exit 1 WITH it is a degraded scan that is in
+                  # the lake, and the verdict above already judged it.
+                  if [ "$rc" -ne 0 ] && ! grep -q 'Uploaded [0-9]* finding(s) for scan run' upload.log; then
+                    echo "::error:: Mykronos did not accept this run (uploader exit $rc), so"
+                    echo "          nothing was filed. The reason is in the uploader's output above."
+                    echo "          A 403 naming 'network' means the capability is not granted:"
+                    echo "            mykronos grant ToddGBenson/personal-soc network"
+                    mkdir -p notify
+                    { echo "*personal-soc / external-exposure*: Mykronos refused or never received the network upload (exit $rc) - nothing was filed."
+                      cat notify/message.txt 2>/dev/null || true; } > notify/message.next
+                    mv notify/message.next notify/message.txt
+                    exit 1
+                  fi
                   exit 0
 
   # -- Netassess ingest ----------------------------------------------------
@@ -2771,10 +2801,16 @@ jobs:
         # access point on `wifi:<SSID>`; a check that reported `unknown` makes
         # the run partial, so nothing it did not look at is closed.
         # An `ensure:`, so a red verdict still files - the result that turned
-        # the job red is the one most worth recording - and the upload never
-        # changes the verdict: it ends `exit 0`, and the task above decides
-        # the build. Filed against ToddGBenson/personal-soc, the repository
-        # that scanned, with the host in each finding's address and port.
+        # the job red is the one most worth recording. Filed against
+        # ToddGBenson/personal-soc, the repository that scanned, with the host
+        # in each finding's address and port.
+        #
+        # TheHub #61121: a run the backend REFUSES turns the job red. This hook
+        # used to end `|| echo "...the verdict above still stands."; exit 0`,
+        # so a 403 ("'network' is not enabled for ToddGBenson/personal-soc")
+        # left every build green while nothing reached the lake. Now: nothing
+        # filed -> exit 1 and a Slack line saying so; filed, even as a degraded
+        # scan -> exit 0, because the task above already judged that run.
         ensure:
           task: upload-network-findings
           # PS-7. An apt install of git, a pip install of the uploader and one
@@ -2795,9 +2831,16 @@ jobs:
             # Optional, both (PS-3): a verdict task that never started leaves
             # no `results`, and the uploader reports a missing file as a failed
             # scan instead of this hook erroring on a missing input.
+            #
+            # `notify` in and out (#61121): a refusal writes the line the job's
+            # `on_failure:` Slack alert reads first, above whatever the verdict
+            # task left there, rather than letting the alert repeat it.
             inputs:
               - { name: results, optional: true }
               - { name: source, optional: true }
+              - { name: notify, optional: true }
+            outputs:
+              - { name: notify }
             run:
               path: bash
               args:
@@ -2819,6 +2862,7 @@ jobs:
                   # hook reads it.
                   SHA=$(tr -d ' \n\r\t' < source/.git/HEAD 2>/dev/null || true)
                   case "$SHA" in *[!0-9a-f]*|"") SHA=unknown ;; esac
+                  rc=0
                   MYKRONOS_JOB=netassess-ingest python -m mykronos.upload \
                     --capability network --tool netassess \
                     --results-path results/netassess-run.json \
@@ -2826,7 +2870,23 @@ jobs:
                     --repo ToddGBenson/personal-soc \
                     --commit-sha "$SHA" --branch "$BRANCH" --triggered-by schedule \
                     --severity-threshold low --blocking false \
-                    || echo "upload did not complete cleanly - the verdict above still stands."
+                    2>&1 | tee upload.log || rc=$?
+                  # The uploader logs this line only once the backend has accepted
+                  # the run. Exit 1 without it is a refusal (a 403 naming an ungranted
+                  # capability, a revoked token) or a backend that was never reached:
+                  # nothing was filed. Exit 1 WITH it is a degraded scan that is in
+                  # the lake, and the verdict above already judged it.
+                  if [ "$rc" -ne 0 ] && ! grep -q 'Uploaded [0-9]* finding(s) for scan run' upload.log; then
+                    echo "::error:: Mykronos did not accept this run (uploader exit $rc), so"
+                    echo "          nothing was filed. The reason is in the uploader's output above."
+                    echo "          A 403 naming 'network' means the capability is not granted:"
+                    echo "            mykronos grant ToddGBenson/personal-soc network"
+                    mkdir -p notify
+                    { echo "*personal-soc / netassess-ingest*: Mykronos refused or never received the network upload (exit $rc) - nothing was filed."
+                      cat notify/message.txt 2>/dev/null || true; } > notify/message.next
+                    mv notify/message.next notify/message.txt
+                    exit 1
+                  fi
                   exit 0
 
   # -- Netassess freshness -------------------------------------------------
@@ -2955,10 +3015,16 @@ jobs:
         # stale, empty or unreadable bucket is a failed `network` run, so the
         # portfolio shows it red instead of showing the last good scan.
         # An `ensure:`, so a red verdict still files - the result that turned
-        # the job red is the one most worth recording - and the upload never
-        # changes the verdict: it ends `exit 0`, and the task above decides
-        # the build. Filed against ToddGBenson/personal-soc, the repository
-        # that scanned, with the host in each finding's address and port.
+        # the job red is the one most worth recording. Filed against
+        # ToddGBenson/personal-soc, the repository that scanned, with the host
+        # in each finding's address and port.
+        #
+        # TheHub #61121: a run the backend REFUSES turns the job red. This hook
+        # used to end `|| echo "...the verdict above still stands."; exit 0`,
+        # so a 403 ("'network' is not enabled for ToddGBenson/personal-soc")
+        # left every build green while nothing reached the lake. Now: nothing
+        # filed -> exit 1 and a Slack line saying so; filed, even as a degraded
+        # scan -> exit 0, because the task above already judged that run.
         ensure:
           task: upload-network-findings
           # PS-7. An apt install of git, a pip install of the uploader and one
@@ -2979,9 +3045,16 @@ jobs:
             # Optional, both (PS-3): a verdict task that never started leaves
             # no `results`, and the uploader reports a missing file as a failed
             # scan instead of this hook erroring on a missing input.
+            #
+            # `notify` in and out (#61121): a refusal writes the line the job's
+            # `on_failure:` Slack alert reads first, above whatever the verdict
+            # task left there, rather than letting the alert repeat it.
             inputs:
               - { name: results, optional: true }
               - { name: source, optional: true }
+              - { name: notify, optional: true }
+            outputs:
+              - { name: notify }
             run:
               path: bash
               args:
@@ -3003,6 +3076,7 @@ jobs:
                   # hook reads it.
                   SHA=$(tr -d ' \n\r\t' < source/.git/HEAD 2>/dev/null || true)
                   case "$SHA" in *[!0-9a-f]*|"") SHA=unknown ;; esac
+                  rc=0
                   MYKRONOS_JOB=netassess-freshness python -m mykronos.upload \
                     --capability network --tool netassess-freshness \
                     --results-path results/netassess-freshness.json \
@@ -3010,7 +3084,23 @@ jobs:
                     --repo ToddGBenson/personal-soc \
                     --commit-sha "$SHA" --branch "$BRANCH" --triggered-by schedule \
                     --severity-threshold low --blocking false \
-                    || echo "upload did not complete cleanly - the verdict above still stands."
+                    2>&1 | tee upload.log || rc=$?
+                  # The uploader logs this line only once the backend has accepted
+                  # the run. Exit 1 without it is a refusal (a 403 naming an ungranted
+                  # capability, a revoked token) or a backend that was never reached:
+                  # nothing was filed. Exit 1 WITH it is a degraded scan that is in
+                  # the lake, and the verdict above already judged it.
+                  if [ "$rc" -ne 0 ] && ! grep -q 'Uploaded [0-9]* finding(s) for scan run' upload.log; then
+                    echo "::error:: Mykronos did not accept this run (uploader exit $rc), so"
+                    echo "          nothing was filed. The reason is in the uploader's output above."
+                    echo "          A 403 naming 'network' means the capability is not granted:"
+                    echo "            mykronos grant ToddGBenson/personal-soc network"
+                    mkdir -p notify
+                    { echo "*personal-soc / netassess-freshness*: Mykronos refused or never received the network upload (exit $rc) - nothing was filed."
+                      cat notify/message.txt 2>/dev/null || true; } > notify/message.next
+                    mv notify/message.next notify/message.txt
+                    exit 1
+                  fi
                   exit 0
 
   # -- Breach confirmation -------------------------------------------------
