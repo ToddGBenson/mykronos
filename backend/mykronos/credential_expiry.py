@@ -144,17 +144,25 @@ def agent_credentials(session: Any, now: datetime) -> list[Credential]:
             AgentCredential.actor,
             AgentCredential.instance,
             AgentCredential.on_behalf_of,
+            AgentCredential.purpose,
             AgentCredential.expires_at,
         ).where(AgentCredential.revoked_at.is_(None), AgentCredential.expires_at > floor)
     ).all()
+    # A lapse is hidden once something replaced it. Every mint is a new
+    # instance and so a new actor, so a renewal matches on the role it was
+    # minted for (TheHub #61147), not on the actor alone.
     live_actors = {r.actor for r in rows if r.expires_at > now}
+    live_roles = {(r.on_behalf_of, r.purpose) for r in rows if r.expires_at > now and r.purpose}
     out = []
     for r in rows:
-        if r.expires_at <= now and r.actor in live_actors:
+        if r.expires_at <= now and (
+            r.actor in live_actors or (r.purpose and (r.on_behalf_of, r.purpose) in live_roles)
+        ):
             continue  # already replaced
+        role = f", {r.purpose}" if r.purpose else ""
         out.append(
             Credential(
-                name=f"{r.actor} ({r.instance[:8]})",
+                name=f"{r.actor} ({r.instance[:8]}{role})",
                 kind="agent-credential",
                 owner=r.on_behalf_of or "operator",
                 expires_at=r.expires_at,

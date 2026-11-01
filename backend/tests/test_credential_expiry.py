@@ -83,7 +83,12 @@ class TestAgentCredentials:
     def test_each_row_names_the_role_it_was_minted_for(self, client) -> None:
         # TheHub #61147: one credential per role, so the calendar must say which.
         with client.app.state.db.session() as session:
-            _agent(session, actor="agent:test:sec1", purpose="secrets", expires=NOW + timedelta(hours=10))
+            _agent(
+                session,
+                actor="agent:test:sec1",
+                purpose="secrets",
+                expires=NOW + timedelta(hours=10),
+            )
             found = credential_expiry.agent_credentials(session, NOW)
         [row] = credential_expiry.expiring(found, NOW, 48)
         assert row["name"].startswith("agent:test:sec1 (")
@@ -93,9 +98,24 @@ class TestAgentCredentials:
         # Every mint is a new instance and so a new actor: matching on actor
         # alone never sees a renewal, and the lapsed one crowds the list.
         with client.app.state.db.session() as session:
-            _agent(session, actor="agent:test:old1", purpose="delivery", expires=NOW - timedelta(hours=1))
-            _agent(session, actor="agent:test:new1", purpose="delivery", expires=NOW + timedelta(days=7))
-            _agent(session, actor="agent:test:ux01", purpose="ux", expires=NOW - timedelta(hours=1))
+            _agent(
+                session,
+                actor="agent:test:old1",
+                purpose="delivery",
+                expires=NOW - timedelta(hours=1),
+            )
+            _agent(
+                session,
+                actor="agent:test:new1",
+                purpose="delivery",
+                expires=NOW + timedelta(days=7),
+            )
+            _agent(
+                session,
+                actor="agent:test:ux01",
+                purpose="ux",
+                expires=NOW - timedelta(hours=1),
+            )
             found = credential_expiry.agent_credentials(session, NOW)
         names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
         assert names == ["agent:test:ux01"], "a lapse with no renewal of its role stays listed"
