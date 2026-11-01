@@ -57,14 +57,21 @@ describe("maxDurationDays", () => {
 });
 
 describe("defaultScope", () => {
-  it("scopes a container finding to its image, never to every image (D-127)", () => {
+  it("scopes a container finding to its image and its own CVE, not every finding on the image", () => {
+    // Review of #1065: without rule_ids, `match_scope` covers every open
+    // finding on the image, so accepting one CVE proposed accepting them all,
+    // and a vendor dependency was refused whenever any other one had a fix.
     expect(
       defaultScope({
         capability: "containers",
         rule_id: "CVE-2026-1",
         raw_finding_json: { image: "library/postgres:17" },
       }),
-    ).toEqual({ capability: "containers", image: "library/postgres:17" });
+    ).toEqual({
+      capability: "containers",
+      image: "library/postgres:17",
+      rule_ids: ["CVE-2026-1"],
+    });
   });
 
   it("scopes a code finding to its rule and file", () => {
