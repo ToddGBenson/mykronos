@@ -26,13 +26,24 @@ REPO = "example-org/payments-api"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _agent(session, *, actor="agent:test:aaaa", expires, revoked=False) -> str:
+def _agent(
+    session,
+    *,
+    actor="agent:test:aaaa",
+    expires,
+    revoked=False,
+    purpose="",
+    on_behalf_of="the-operator",
+    lineage=None,
+) -> str:
     plaintext = f"mka_{actor}_{expires.isoformat()}"
     row = AgentCredential(
         token_sha256=hash_token(plaintext),
         actor=actor,
-        on_behalf_of="the-operator",
+        on_behalf_of=on_behalf_of,
         expires_at=expires,
+        purpose=purpose,
+        lineage=list(lineage or []),
     )
     if revoked:
         row.revoked_at = NOW
@@ -78,6 +89,154 @@ class TestAgentCredentials:
             _agent(session, expires=NOW + timedelta(days=7))
             found = credential_expiry.agent_credentials(session, NOW)
         assert credential_expiry.expiring(found, NOW, 48) == []
+
+    def test_each_row_names_the_role_it_was_minted_for(self, client) -> None:
+        # TheHub #61147: one credential per role, so the calendar must say which.
+        with client.app.state.db.session() as session:
+            _agent(
+                session,
+                actor="agent:test:sec1",
+                purpose="secrets",
+                expires=NOW + timedelta(hours=10),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        [row] = credential_expiry.expiring(found, NOW, 48)
+        assert row["name"].startswith("agent:test:sec1 (")
+        assert row["name"].endswith(", secrets)")
+
+    def test_a_renewal_hides_the_lapsed_credential_of_the_same_role(self, client) -> None:
+        # Every mint is a new instance and so a new actor: matching on actor
+        # alone never sees a renewal, and the lapsed one crowds the list.
+        with client.app.state.db.session() as session:
+            _agent(
+                session,
+                actor="agent:test:old1",
+                purpose="delivery",
+                expires=NOW - timedelta(hours=1),
+            )
+            _agent(
+                session,
+                actor="agent:test:new1",
+                purpose="delivery",
+                expires=NOW + timedelta(days=7),
+            )
+            _agent(
+                session,
+                actor="agent:test:ux01",
+                purpose="ux",
+                expires=NOW - timedelta(hours=1),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
+        assert names == ["agent:test:ux01"], "a lapse with no renewal of its role stays listed"
+
+    def test_a_sub_agent_labelled_with_a_role_does_not_hide_its_lapse(self, client) -> None:
+        # Any agent may mint a child with any purpose. Only a root credential
+        # (minted by a person, empty lineage) renews a role, or a short-lived
+        # child labelled "delivery" would hide the real delivery lapse.
+        with client.app.state.db.session() as session:
+            _agent(
+                session,
+                actor="agent:test:del0",
+                purpose="delivery",
+                expires=NOW - timedelta(hours=1),
+            )
+            _agent(
+                session,
+                actor="agent:test:kid1",
+                purpose="delivery",
+                lineage=["ux-root-instance"],
+                expires=NOW + timedelta(hours=2),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
+        assert "agent:test:del0" in names
+
+    def test_a_role_matches_regardless_of_case_and_spacing(self, client) -> None:
+        with client.app.state.db.session() as session:
+            _agent(
+                session,
+                actor="agent:test:old2",
+                purpose="CI  Triage",
+                expires=NOW - timedelta(hours=1),
+            )
+            _agent(
+                session,
+                actor="agent:test:new2",
+                purpose=" ci triage",
+                expires=NOW + timedelta(days=7),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        assert credential_expiry.expiring(found, NOW, 48) == []
+
+    def test_control_characters_in_a_purpose_never_reach_the_name(self, client) -> None:
+        # The name is printed in the `mykronos credentials` terminal table: an
+        # escape or newline in a self-chosen purpose must not garble it.
+        with client.app.state.db.session() as session:
+            _agent(
+                session,
+                actor="agent:test:esc1",
+                purpose="ux\x1b[31m\nfake row\r",
+                expires=NOW + timedelta(hours=10),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        [row] = credential_expiry.expiring(found, NOW, 48)
+        assert row["name"].isprintable(), row["name"]
+        assert row["name"].endswith(", ux[31m fake row)")
+
+    # Guards: each of these must stay listed (the review checked them by hand).
+
+    def test_a_live_credential_of_another_role_does_not_hide_a_lapse(self, client) -> None:
+        with client.app.state.db.session() as session:
+            _agent(session, actor="agent:test:g1a", purpose="ux", expires=NOW - timedelta(hours=1))
+            _agent(session, actor="agent:test:g1b", purpose="docs", expires=NOW + timedelta(days=7))
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
+        assert names == ["agent:test:g1a"]
+
+    def test_a_live_credential_for_another_person_does_not_hide_a_lapse(self, client) -> None:
+        with client.app.state.db.session() as session:
+            _agent(session, actor="agent:test:g2a", purpose="ux", expires=NOW - timedelta(hours=1))
+            _agent(
+                session,
+                actor="agent:test:g2b",
+                purpose="ux",
+                on_behalf_of="someone-else",
+                expires=NOW + timedelta(days=7),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
+        assert names == ["agent:test:g2a"]
+
+    def test_a_revoked_renewal_does_not_hide_a_lapse(self, client) -> None:
+        with client.app.state.db.session() as session:
+            _agent(session, actor="agent:test:g3a", purpose="ux", expires=NOW - timedelta(hours=1))
+            _agent(
+                session,
+                actor="agent:test:g3b",
+                purpose="ux",
+                revoked=True,
+                expires=NOW + timedelta(days=7),
+            )
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
+        assert names == ["agent:test:g3a"]
+
+    def test_one_expiring_exactly_now_is_lapsed_not_a_renewal(self, client) -> None:
+        with client.app.state.db.session() as session:
+            _agent(session, actor="agent:test:g4a", purpose="ux", expires=NOW - timedelta(hours=1))
+            _agent(session, actor="agent:test:g4b", purpose="ux", expires=NOW)
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = sorted(r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48))
+        assert names == ["agent:test:g4a", "agent:test:g4b"]
+
+    def test_empty_purposes_never_match_as_one_role(self, client) -> None:
+        with client.app.state.db.session() as session:
+            _agent(session, actor="agent:test:g5a", expires=NOW - timedelta(hours=1))
+            _agent(session, actor="agent:test:g5b", expires=NOW + timedelta(days=7))
+            found = credential_expiry.agent_credentials(session, NOW)
+        names = [r["name"].split(" (")[0] for r in credential_expiry.expiring(found, NOW, 48)]
+        assert names == ["agent:test:g5a"]
 
     def test_an_old_lapse_ages_off_the_list(self, client) -> None:
         with client.app.state.db.session() as session:
