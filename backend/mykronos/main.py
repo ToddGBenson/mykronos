@@ -21,6 +21,7 @@ from mykronos import (
     auto_triage,
     briefing_dm,
     briefing_flash,
+    credential_expiry_incidents,
     environment,
     finding_disposition,
     logsafe,
@@ -92,6 +93,7 @@ from mykronos.jobs import (
     BRIEFING_DM_JOB,
     BRIEFING_FLASH_JOB,
     CI_STALL_JOB,
+    CREDENTIAL_EXPIRY_INCIDENTS_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
     RED_MAIN_JOB,
@@ -886,6 +888,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 read=briefing_dm.route_reader(app, actor=f"job:{SIGNAL_FILING_JOB}"),
             )
 
+        async def _credential_expiry_incidents() -> None:
+            # A Hub incident a day before a credential lapses unrenewed
+            # (TheHub #61104), read through the calendar route so it says
+            # what the page says. Without TheHub it raises JobSkipped.
+            await credential_expiry_incidents.raise_incidents(
+                db=app.state.db,
+                hub=getattr(app.state, "hub", None),
+                read=credential_expiry_incidents.route_reader(app),
+            )
+
         async def _threat_intel() -> None:
             # In a thread: it makes a blocking HTTP call (spec 17 §4.3),
             # which would otherwise stall the event loop for every other
@@ -1052,6 +1064,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Always scheduled, for the same reason: without TheHub it records
             # `skipped` and says so.
             (SIGNAL_FILING_JOB, sprint_signal.TICK_SECONDS, _signal_filing),
+            (
+                CREDENTIAL_EXPIRY_INCIDENTS_JOB,
+                credential_expiry_incidents.TICK_SECONDS,
+                _credential_expiry_incidents,
+            ),
             ("shadow-reviews", settings.shadow_review_interval_seconds, _shadow_reviews),
             ("fix-verification", settings.fix_verification_interval_seconds, _verify_fixes),
             # TheHub #60888. Hourly, and only lanes the policy enables.

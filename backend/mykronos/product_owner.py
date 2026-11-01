@@ -1186,6 +1186,16 @@ class HubClient:
             raise ValueError("MyKronos files new stories to the backlog only.")
         return await self._write("/api/dev/stories", payload)
 
+    async def open_incident(self, payload: dict[str, Any]) -> HubResult:
+        """A Hub incident (`POST /api/incidents`), for the credential-expiry
+        job only (TheHub #61104). TheHub keeps one open incident per
+        `(source_capability, source_ref)`, so a repeat is folded into it."""
+        return await self._write("/api/incidents", payload)
+
+    async def comment_incident(self, incident_id: int, text: str) -> HubResult:
+        """A comment on a Hub incident (`POST /api/incidents/{id}/comment`)."""
+        return await self._write(f"/api/incidents/{int(incident_id)}/comment", {"text": text})
+
     async def disable_autonomy(self, story_id: int) -> HubResult:
         return await self._write(
             f"/api/devops/autonomy/stories/{story_id}/toggle-autonomy",

@@ -1854,6 +1854,10 @@ BRIEFING_FLASH_JOB = "briefing-flash"
 #: TheHub #60862). Ticks hourly, acts once a UTC day.
 SIGNAL_FILING_JOB = "briefing-signal-filing"
 
+#: An incident a day before a credential lapses unrenewed
+#: (`mykronos.credential_expiry_incidents`, TheHub #61104). Ticks hourly.
+CREDENTIAL_EXPIRY_INCIDENTS_JOB = "credential-expiry-incidents"
+
 #: The interval `job_runs` records for a job whose scheduler tick is shorter
 #: than its real cadence. The briefing DM ticks every five minutes and is owed
 #: once a day; platform health judges `late` against what is recorded here,
