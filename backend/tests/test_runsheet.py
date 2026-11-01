@@ -71,7 +71,9 @@ class TestDecide:
         step = rs.decide_step([pending(f"{REPO}#7@{OLD}")], [pr()])
         assert step.items == []
         assert step.state == rs.DONE
-        assert step.hidden == [f"{REPO}#7: its head moved to {HEAD[:7]}, so this request is superseded"]
+        assert step.hidden == [
+            f"{REPO}#7: its head moved to {HEAD[:7]}, so this request is superseded"
+        ]
 
     def test_a_request_for_a_pull_request_no_longer_open_is_hidden(self) -> None:
         step = rs.decide_step([pending()], [])
@@ -250,7 +252,12 @@ class TestDeploy:
 
     def test_every_guard_is_listed_as_an_item(self) -> None:
         names = [i.text for i in rs.deploy_step(facts()).items]
-        assert names == ["Delivery on main", "unit and lint-and-types lanes", "risk gate", "backup window"]
+        assert names == [
+            "Delivery on main",
+            "unit and lint-and-types lanes",
+            "risk gate",
+            "backup window",
+        ]
 
     def test_unknown_shas_are_unknown(self) -> None:
         assert rs.deploy_step(facts(running_sha="")).state == rs.UNKNOWN
@@ -277,7 +284,8 @@ class TestTasks:
             1: oc.Verification(oc.OBSERVED_DONE, evidence="tags are protected"),
             2: oc.Verification(oc.OBSERVED_NOT_DONE, evidence="not required yet"),
         }
-        step = rs.tasks_step(stories, checks)
+        probe = oc.Probe(name="fake", repo="acme/app", check=None)  # type: ignore[arg-type]
+        step = rs.tasks_step(stories, checks, registry={1: probe, 2: probe})
         assert [i.ref for i in step.items] == ["#2"]
         assert step.items[0].reason == "checked: not required yet"
         assert step.hidden == ["#1 is done on GitHub: close the story"]
