@@ -1679,6 +1679,35 @@ class GatingLaneState(Base):
         return f"<GatingLaneState {self.repo_full_name} {self.job} {self.state}>"
 
 
+class RiskGateNoticeState(Base):
+    """The risk gate's last announced decision for one repo and scope (TheHub #61197).
+
+    The de-duplication key for "A risk decision refused a commit": a scope
+    recorded `refused` is not announced again until it has been recorded
+    `clear`, whatever the score does in between. Kept here rather than in
+    memory so a backend restart does not post the same refusal twice.
+    Current state, one row per `(repo, subject)`, like `GatingLaneState`.
+    """
+
+    __tablename__ = "risk_gate_notice_states"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: `commit_gate`, `portfolio`, `release_gate`, or `pr_gate#<n>`.
+    subject: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: `refused` | `clear`
+    state: Mapped[str] = mapped_column(String(8), default="clear")
+    #: The commit the current state started at.
+    since_sha: Mapped[str] = mapped_column(String(64), default="")
+    since: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: Decisions in the current state that were not posted.
+    held: Mapped[int] = mapped_column(Integer, default=0)
+    last_score: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<RiskGateNoticeState {self.repo_full_name} {self.subject} {self.state}>"
+
+
 class LibraryRequest(Base):
     """A request to onboard one third-party library (TheHub #60895, #60896).
 

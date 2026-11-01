@@ -25,11 +25,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mykronos.config import Settings
+from mykronos.github.factory import FakeGitHubClientFactory
 from mykronos.main import create_app
 from mykronos.notify import Notification
 from mykronos.oracle.engine import Decision
 from mykronos.oracle.service import PublishedDecision
-from mykronos.github.factory import FakeGitHubClientFactory
 from tests.conftest import REPO, issue_token
 
 #: Pinned so no assertion depends on the wall clock.
