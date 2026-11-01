@@ -167,7 +167,7 @@ describe("links", () => {
     expect(refLink("/api/risk-acceptances/ra-1", "o/thehub", REPO_IDS)?.href).toBe(
       "/repos/repo-1/risk/ra-1",
     );
-    expect(refLink("/api/risk-acceptances/ra-1", "", REPO_IDS)?.href).toBe("/decisions");
+    expect(refLink("/api/risk-acceptances/ra-1", "", REPO_IDS)?.href).toBe("/risk-policy");
     expect(refLink("/api/dashboard/scan-runs/s-9", "o/mykronos", REPO_IDS)?.href).toBe(
       "/repos/repo-2/scan-runs/s-9",
     );
