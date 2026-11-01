@@ -29,7 +29,7 @@ from fastapi.testclient import TestClient
 from mykronos import briefing_dm, daily_briefing
 from mykronos.api.briefing_daily import DailyBriefingOut
 from mykronos.config import Settings
-from mykronos.lake.compaction import compact
+from mykronos.lake import compact
 from mykronos.main import create_app
 from mykronos.notify import Notification
 from tests.conftest import REPO, issue_token, post_findings
