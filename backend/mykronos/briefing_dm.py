@@ -5,6 +5,8 @@ puts it in front of him without his asking: once a local day, at
 `briefing_dm_time` in `briefing_dm_timezone`, a short Slack DM with
 
 - how much on the page is work for him, split merge / decision / story;
+- the open critical/high backlog, by severity: the scan post names only
+  new findings (TheHub #61195), so this is where the totals are;
 - the top three suggested-focus lines;
 - every section that could not be read, by name - a briefing that leaves out
   what it could not see reads as "all clear", which is the failure the page
@@ -238,6 +240,20 @@ class ProductRead:
     error: str = ""
 
 
+def backlog_text(delta: Any) -> str:
+    """"16 critical, 2 high" from a risk-delta section, or "" when it was not
+    read or holds none. The scan post names only new findings (TheHub
+    #61195); the standing backlog is reported here, once a day."""
+    if delta is None or delta.status not in ("ok", "partial"):
+        return ""
+    by_severity = delta.data.get("open_backlog", {}).get("by_severity", {}) or {}
+    return ", ".join(
+        f"{int(by_severity[name])} {name}"
+        for name in ("critical", "high")
+        if by_severity.get(name)
+    )
+
+
 def product_line(product: ProductRead) -> str:
     """One line: what changed in the window, what is work, what is unread."""
     name = _esc(product.repo_full_name)
@@ -252,6 +268,9 @@ def product_line(product: ProductRead) -> str:
         closed = int(delta.data.get("closed", {}).get("total", 0) or 0)
         window = int(delta.data.get("window_hours", 24) or 24)
         parts.append(f"{introduced} introduced, {closed} closed in {window}h")
+        backlog = int(delta.data.get("open_backlog", {}).get("total", 0) or 0)
+        if backlog:
+            parts.append(f"{backlog} open critical/high")
 
     deploy = sections.get("deploy_and_health")
     if deploy is not None and deploy.status in ("ok", "partial") and deploy.lines:
@@ -293,6 +312,10 @@ def compose(
         f"<{url}|Open the full briefing>",
         f"*Needs you:* {_counts_text(counts)}.",
     ]
+
+    backlog = backlog_text(sections.get("risk_delta"))
+    if backlog:
+        lines.append(f"*Open critical/high backlog:* {backlog}.")
 
     focus = sections.get(FOCUS_KEY)
     if focus is not None and focus.lines:
