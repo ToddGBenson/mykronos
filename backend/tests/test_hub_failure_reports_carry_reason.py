@@ -91,7 +91,7 @@ def test_functional_demo_reports_every_outcome_as_its_own_demo_stage():
     task = next(s for s in job["plan"] if s.get("task") == "run-functional")
     assert {"name": "hub_log"} in task["config"]["outputs"]
     script = task["config"]["run"]["args"][-1]
-    assert "tee hub_log/output.log" in script and "hub_log/exit_code" in script
+    assert "tee hub_log/output.log" in script and '"$HUB_LOG_DIR/exit_code"' in script
 
 
 # -- structure ---------------------------------------------------------------
@@ -300,3 +300,49 @@ def test_request_deploy_tees_its_output_and_records_its_exit_code(tmp_path):
     out = (tmp_path / "hub_log" / "output.log").read_text()
     assert "before" in out and "410 Gone" in out
     assert "before" in r.stdout, "the build log itself must still show the output"
+
+
+# -- the trap writes where the task started, wherever it ends (TheHub #61116) --
+
+
+def _trap_tasks() -> list[tuple[str, dict]]:
+    found: list[tuple[str, dict]] = []
+    for job in _doc()["jobs"]:
+        _walk(
+            job,
+            job["name"],
+            found,
+            lambda n: "task" in n
+            and "config" in n
+            and "wait \"$TEE_PID\"" in str(n["config"].get("run", {})),
+        )
+    assert len(found) >= 3, f"expected the three hub_log EXIT traps, found {len(found)}"
+    return found
+
+
+@pytest.mark.parametrize("code", [0, 3])
+def test_the_exit_trap_records_the_code_after_the_task_changes_directory(tmp_path, code):
+    """#1045 wrote `hub_log/exit_code` relative to wherever the script was when
+    it exited. functional-demo `cd source`s first, so the write failed, the
+    trap exited non-zero under `-e`, and every run since reported failed
+    (builds 16 and 17: 27 passed, then "hub_log/exit_code: No such file")."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required")
+    for job, task in _trap_tasks():
+        script = task["config"]["run"]["args"][-1]
+        head = script[: script.index("\n", script.index("trap '")) + 1]
+        root = tmp_path / f"{job}-{task['task']}-{code}"
+        (root / "hub_log").mkdir(parents=True)
+        (root / "source").mkdir()
+        r = subprocess.run(
+            [bash, "-ec", head + f"cd source\necho ran\nexit {code}\n"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        where = f"{job}/{task['task']}"
+        assert r.returncode == code, f"{where}: exited {r.returncode}, not {code}: {r.stderr}"
+        assert (root / "hub_log" / "exit_code").read_text().strip() == str(code), where
+        assert "ran" in (root / "hub_log" / "output.log").read_text(), where

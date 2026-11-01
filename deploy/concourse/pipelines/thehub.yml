@@ -2539,7 +2539,10 @@ jobs:
                 # [#336] This task's output and exit status, for the failure hook.
                 exec > >(tee hub_log/output.log) 2>&1
                 TEE_PID=$!
-                trap 'rc=$?; echo "$rc" > hub_log/exit_code; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
+                # [TheHub #61116] An absolute path: the trap runs wherever the script
+                # ends, and a task that cds into source/ made a relative write fail.
+                HUB_LOG_DIR="$PWD/hub_log"
+                trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
 
                 if [ ! -f pr/.git/HEAD ]; then
                   echo "No pull request head needs judging on this run."
@@ -4947,7 +4950,10 @@ jobs:
                 # why -- are on disk before the container is torn down.
                 exec > >(tee hub_log/output.log) 2>&1
                 TEE_PID=$!
-                trap 'rc=$?; echo "$rc" > hub_log/exit_code; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
+                # [TheHub #61116] An absolute path: the trap runs wherever the script
+                # ends, and a task that cds into source/ made a relative write fail.
+                HUB_LOG_DIR="$PWD/hub_log"
+                trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
                 # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
@@ -5306,7 +5312,10 @@ jobs:
                 # exit status where the failure hook can read them.
                 exec > >(tee hub_log/output.log) 2>&1
                 TEE_PID=$!
-                trap 'rc=$?; echo "$rc" > hub_log/exit_code; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
+                # [TheHub #61116] An absolute path: the trap runs wherever the script
+                # ends, and a task that cds into source/ made a relative write fail.
+                HUB_LOG_DIR="$PWD/hub_log"
+                trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
                 # #59976: IPv4 for apt before it opens a socket (see `anchors:`).
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
