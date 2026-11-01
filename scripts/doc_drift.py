@@ -12,9 +12,14 @@ machine can check, in every README and every Markdown file under `docs/`:
   segment is a top-level entry of the repository, so `GET /api/x`, globs and
   container paths are not claims about this tree.
 
-Records describe the past: decisions, retros, lessons, ADRs, reports, audits
-and any file dated in its name. A path in one of them names what existed then,
-so records are counted as skipped rather than checked.
+Records describe the past: decisions, retros, lessons, ADRs, reports, audits,
+the backlog and decision logs, and any file dated in its name. A path in one of
+them names what existed then, so records are counted as skipped rather than
+checked.
+
+Not drift: a gitignored file (`backend/.env` is named by every operator doc and
+is never committed), an action ref (`actions/checkout@v4`), and a numbered
+prefix (`docs/09` for `docs/09-retrospective-and-improvement.md`).
 
 Run it against a fresh clone of the branch the docs describe (origin/main or
 origin/develop), never a shared checkout that lags. It exits 1 when anything
@@ -32,6 +37,7 @@ import json
 import re
 import sys
 from dataclasses import asdict, dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -47,11 +53,12 @@ RECORD_DIRS = {
     "research",
     "spikes",
 }
+RECORD_NAMES = {"BACKLOG.md", "DECISIONS.md", "CHANGELOG.md"}
 DATED = re.compile(r"\d{4}-\d{2}-\d{2}")
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 TICK = re.compile(r"`([^`\n]+)`")
 SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
-NOT_A_PATH = set("*?{}<>[]$%|=")
+NOT_A_PATH = set("*?{}<>[]$%|=@")
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,8 @@ def _is_record(rel: Path) -> bool:
     parts = rel.parts
     if parts[0] != "docs":
         return False
+    if rel.name.upper() in {n.upper() for n in RECORD_NAMES}:
+        return True
     if any(part.lower() in RECORD_DIRS for part in parts[1:-1]):
         return True
     return bool(DATED.search(rel.name))
@@ -125,10 +134,56 @@ def _path_claim(content: str, top_level: set[str]) -> str | None:
     return word
 
 
+def _ignore_rules(root: Path) -> list[tuple[Path, str]]:
+    """(folder, pattern) for every .gitignore line; negations are not honoured."""
+    rules: list[tuple[Path, str]] = []
+    for gi in root.rglob(".gitignore"):
+        if _skipped(gi, root):
+            continue
+        try:
+            lines = gi.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith(("#", "!")):
+                rules.append((gi.parent, line))
+    return rules
+
+
+def _ignored(path: Path, rules: list[tuple[Path, str]]) -> bool:
+    for base, pattern in rules:
+        try:
+            rel = path.relative_to(base)
+        except ValueError:
+            continue
+        pat = pattern.rstrip("/")
+        anchored = "/" in pat
+        pat = pat.lstrip("/")
+        candidates = [rel.as_posix()] if anchored else list(rel.parts)
+        # A pattern also ignores everything under a folder it matches.
+        if anchored:
+            candidates += ["/".join(rel.parts[: i + 1]) for i in range(len(rel.parts))]
+        if any(fnmatch(c, pat) for c in candidates):
+            return True
+    return False
+
+
+def _exists(target: Path) -> bool:
+    if target.exists():
+        return True
+    # `docs/09` names docs/09-retrospective-and-improvement.md.
+    parent, name = target.parent, target.name
+    return bool(re.fullmatch(r"\d+", name)) and parent.is_dir() and any(
+        c.name.startswith(name + "-") for c in parent.iterdir()
+    )
+
+
 def check(root: Path) -> Report:
     root = root.resolve()
     living, records = documents(root)
     top_level = {p.name for p in root.iterdir() if p.name not in SKIP_DIRS}
+    rules = _ignore_rules(root)
     report = Report(documents_checked=len(living), records_skipped=len(records))
     for doc in living:
         rel = doc.relative_to(root).as_posix()
@@ -143,14 +198,15 @@ def check(root: Path) -> Report:
                 continue
             report.claims_checked += 1
             base = root if target.startswith("/") else doc.parent
-            if not (base / target.lstrip("/")).exists():
+            path = base / target.lstrip("/")
+            if not _exists(path) and not _ignored(path.resolve(), rules):
                 report.drift.append(Drift(rel, _line(text, m.start()), "link", target))
         for m in TICK.finditer(text):
             claim = _path_claim(m.group(1), top_level)
             if claim is None:
                 continue
             report.claims_checked += 1
-            if not (root / claim).exists():
+            if not _exists(root / claim) and not _ignored(root / claim, rules):
                 report.drift.append(Drift(rel, _line(text, m.start()), "path", claim))
     return report
 

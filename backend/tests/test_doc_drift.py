@@ -142,6 +142,33 @@ class TestClaims:
         assert [p.name for p in living] == ["GUIDE.md"]
         assert sorted(p.name for p in records) == ["BACKLOG.md", "DECISIONS.md"]
 
+    def test_a_symbol_or_line_suffix_checks_the_file(self, tmp_path: Path) -> None:
+        root = _repo(
+            tmp_path,
+            {
+                "README.md": "`backend/a.py::fn` `backend/a.py:11,26` `backend/gone.py::fn`",
+                "backend/a.py": "",
+            },
+        )
+        report = d.check(root)
+        assert report.claims_checked == 3
+        assert [x.claim for x in report.drift] == ["backend/gone.py"]
+
+    def test_audits_retros_and_month_dated_files_are_records(self, tmp_path: Path) -> None:
+        root = _repo(
+            tmp_path,
+            {
+                "docs/fresh-eyes/AUDIT_51679_X.md": "x",
+                "docs/fresh-eyes/RETRO.md": "x",
+                "docs/finops/cost_saving_audit_2026_05_09.md": "x",
+                "docs/security/security-assessment-2026-06.md": "x",
+                "docs/runbooks/vault.md": "x",
+            },
+        )
+        living, records = d.documents(root)
+        assert [p.name for p in living] == ["vault.md"]
+        assert len(records) == 4
+
     def test_the_line_number_is_reported(self, tmp_path: Path) -> None:
         root = _repo(tmp_path, {"README.md": "one\ntwo\n[x](missing.md)\n", "docs/a.md": "x"})
         (item,) = d.check(root).drift
