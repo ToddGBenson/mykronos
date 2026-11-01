@@ -3,13 +3,17 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
+import { dispositionProblem } from "@/lib/finding-decision";
+
 /**
  * Recording a human disposition on a finding (spec 10 §2.2).
  *
  * The reason field is not decoration. spec 11 §4: a dismissal without one is
- * still recorded but flagged low-confidence and barred from promotion,
- * because reasons are what make a learning actionable rather than a
- * statistic. The form says so rather than silently downgrading the signal.
+ * flagged low-confidence and barred from promotion, because reasons are what
+ * make a learning actionable rather than a statistic. Since TheHub #61140 the
+ * form will not send one without a reason at all (`dispositionProblem`): the
+ * API still accepts it, for agents and old clients, but nobody clicking here
+ * needs the low-confidence path.
  *
  * `fixed` is deliberately not offered. That is an observation the scanners and
  * the reconciler own; letting a person assert it would put a claim in the lake
@@ -75,9 +79,13 @@ function defaultReviewDate(): string {
 export function DispositionForm({
   findingId,
   currentStatus,
+  offerAccept = true,
 }: {
   findingId: string;
   currentStatus: string;
+  /** False on the finding page, which offers the formal risk acceptance
+   *  (spec 33) in place of the row-level one. */
+  offerAccept?: boolean;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -89,7 +97,9 @@ export function DispositionForm({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
+  const offered = DISPOSITIONS.filter((d) => offerAccept || d.value !== "accepted_risk");
   const selected = DISPOSITIONS.find((d) => d.value === status);
+  const problem = dispositionProblem(status, reason);
   const accepting = status === "accepted_risk";
   const selectedReason = ACCEPTANCE_REASONS.find((r) => r.value === reasonCode);
 
@@ -97,6 +107,10 @@ export function DispositionForm({
     event.preventDefault();
     setError(null);
     setDone(null);
+    if (problem) {
+      setError(problem);
+      return;
+    }
 
     const response = await fetch(`/api/findings/${findingId}/status`, {
       method: "PATCH",
@@ -144,7 +158,7 @@ export function DispositionForm({
   return (
     <form onSubmit={submit} className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-1.5">
-        {DISPOSITIONS.map((disposition) => (
+        {offered.map((disposition) => (
           <button
             key={disposition.value}
             type="button"
@@ -217,27 +231,28 @@ export function DispositionForm({
 
       <label className="flex flex-col gap-1">
         <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3">
-          Reason
+          Reason (required)
         </span>
         <textarea
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           rows={2}
+          required
+          aria-invalid={error !== null && problem !== null}
           placeholder="Why? e.g. generated code directory — this rule always fires here"
           className="border border-rule bg-paper p-2 text-[13px] text-ink placeholder:text-ink-3"
         />
       </label>
 
       <p className="text-[12px] leading-relaxed text-ink-3">
-        Without a reason this is still recorded, but flagged low-confidence and
-        excluded from becoming a team or org-wide learning. Reasons are what
-        make a dismissal actionable rather than a statistic.
+        A reason is required. It is what makes a dismissal actionable rather
+        than a statistic, and what lets it become a team or org-wide learning.
       </p>
 
       <button
         type="submit"
-        disabled={pending}
-        className="self-start border border-accent bg-accent-wash px-3 py-1 font-mono text-[12px] font-bold text-accent disabled:opacity-50"
+        disabled={pending || problem !== null}
+        className="min-h-11 self-start border border-accent bg-accent-wash px-3 py-1 font-mono text-[12px] font-bold text-accent disabled:opacity-50"
       >
         {pending ? "Recording…" : "Record"}
       </button>
