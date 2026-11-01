@@ -68,14 +68,17 @@ def _agent(
     expires: datetime,
     lineage: list[str] | None = None,
     revoked: bool = False,
+    purpose: str = "",
+    on_behalf_of: str = "the-operator",
 ) -> str:
     plaintext = f"mka_{actor}_{expires.isoformat()}"
     row = AgentCredential(
         token_sha256=hash_token(plaintext),
         actor=actor,
-        on_behalf_of="the-operator",
+        on_behalf_of=on_behalf_of,
         expires_at=expires,
         lineage=lineage or [],
+        purpose=purpose,
     )
     if revoked:
         row.revoked_at = NOW
@@ -178,6 +181,51 @@ class TestNobodyRenewed:
         assert "no longer on the expiry list" in body["text"]
         assert renewed.cleared == [incident["source_ref"]]
         assert len(fake.opened) == 1
+
+    async def test_a_role_renewed_early_does_not_page_for_the_old_credential(
+        self, app
+    ) -> None:
+        # The renewal rule is "mint the next one 48 hours ahead". Every mint is
+        # a new actor, and the old credential stays live until it lapses, so
+        # the calendar still lists it in its last day. That is not "nobody
+        # renewed it".
+        with app.state.db.session() as session:
+            _agent(session, actor="agent:test:old", purpose="author",
+                   expires=NOW + timedelta(hours=20))
+            _agent(session, actor="agent:test:new", purpose=" Author ",
+                   expires=NOW + timedelta(days=6))
+        fake = FakeHub()
+        await _run(app, fake)
+        assert fake.opened == []
+
+    async def test_another_role_or_person_or_a_sub_agent_is_not_a_renewal(
+        self, app
+    ) -> None:
+        with app.state.db.session() as session:
+            _agent(session, actor="agent:test:old", purpose="author",
+                   expires=NOW + timedelta(hours=20))
+            _agent(session, actor="agent:test:ux", purpose="ux",
+                   expires=NOW + timedelta(days=6))
+            _agent(session, actor="agent:test:else", purpose="author",
+                   on_behalf_of="someone-else", expires=NOW + timedelta(days=6))
+            _agent(session, actor="agent:test:kid", purpose="author",
+                   lineage=["agent:test:ux"], expires=NOW + timedelta(days=6))
+            _agent(session, actor="agent:test:gone", purpose="author",
+                   revoked=True, expires=NOW + timedelta(days=6))
+        fake = FakeHub()
+        await _run(app, fake)
+        [incident] = fake.opened
+        assert "agent:test:old" in incident["title"]
+
+    async def test_a_renewal_that_lapses_inside_the_day_is_no_renewal(self, app) -> None:
+        with app.state.db.session() as session:
+            _agent(session, actor="agent:test:old", purpose="author",
+                   expires=NOW + timedelta(hours=10))
+            _agent(session, actor="agent:test:new", purpose="author",
+                   expires=NOW + timedelta(hours=12))
+        fake = FakeHub()
+        await _run(app, fake)
+        assert len(fake.opened) == 2
 
     async def test_a_sub_agents_credential_never_pages(self, app) -> None:
         # A sub-agent's credential is short-lived by design and its parent's
