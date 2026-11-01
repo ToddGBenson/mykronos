@@ -795,6 +795,11 @@ def main(argv: list[str] | None = None) -> int:
             missing = credential_expiry.undated(everything)
             if missing:
                 print(f"\nNo date declared for: {', '.join(missing)}")
+            private = credential_expiry.load_declared(settings.credential_expiry_private_path)
+            if private:
+                # The count only: the overlay exists to keep its names and its
+                # host path out of anything that might be shared.
+                print(f"Private overlay: {len(private)} entries")
             return 0
 
         if args.command == "list-tokens":

@@ -172,7 +172,14 @@ services:
       # way; there was no reason for the one credential that cannot be rotated
       # from inside the platform to be the lenient one.
       - ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:?set it in backend/.env — the host path to the App private key}:/secrets/github-app.pem:ro
-      - ${MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_HOST_PATH:-/dev/null}:/secrets/credential-expiry-private.yaml:ro
+      # Long syntax so a missing host file is an error at `up`, not a directory
+      # created on the host and mounted where the backend expects a file.
+      - type: bind
+        source: ${MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_HOST_PATH:-/dev/null}
+        target: /secrets/credential-expiry-private.yaml
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       # python, not curl: curl is no longer in the image (its CVEs were 4 of
       # the highs the platform's own scan found), and compose's healthcheck

@@ -99,3 +99,5 @@ deploy/personal-soc/.installed-skills
 
 # Vault unseal task log (#60474). Timestamps and outcomes, no key material.
 deploy/concourse/vault-unseal.log
+# A Windows process run with an unexpanded %SystemDrive% writes its cache here (#1058 review).
+%SystemDrive%/
