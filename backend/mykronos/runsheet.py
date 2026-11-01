@@ -300,9 +300,12 @@ def _pr_item(
         return item(UNKNOWN, "its checks could not be read", OWNER_CI)
     if checks.pending:
         return item(WAITING, f"{checks.pending} check(s) still running", OWNER_CI)
+    if not checks.total:
+        # Start-Here skips a PR no check has reported on: nothing judged it yet.
+        return item(WAITING, "no check has reported on it yet", OWNER_CI)
     if p.mergeable is None:
         return item(UNKNOWN, "GitHub has not said whether it can merge", OWNER_CI)
-    green = f"{checks.passed}/{checks.total} checks green" if checks.total else "no checks ran"
+    green = f"{checks.passed}/{checks.total} checks green"
     return item(READY, f"approved at its head, {green}" if requires_review else green, OWNER_YOU)
 
 

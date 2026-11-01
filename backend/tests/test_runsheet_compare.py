@@ -116,15 +116,23 @@ class TestParseStartHere:
             text = f"== [Delivery] 3. Deploy MyKronos production\n  {line}\n"
             return rc.parse_start_here(text).deploy
 
-        assert deploy("production is on main") == "done"
-        assert deploy("main is ahead, but 02:40-04:15Z (7:40-9:15 pm Arizona) is the backup window. Re-run after it.") == "waiting"
-        assert deploy("main is ahead, but main's Delivery concluded 'failure': no image to deploy.") == "blocked"
-        assert deploy("main is ahead, but its unit or lint-and-types lane is red - not deploying a broken main.") == "blocked"
-        assert deploy("main is ahead, but its Delivery has not succeeded yet - re-run this script later") == "waiting"
-        assert deploy("The gate refused ccccccc: it introduced blocking findings. Not deploying") == "blocked"
-        # Guards only the host can see: not comparable, never guessed.
-        assert deploy("main is ahead, but HubOps is deploying TheHub - one deploy at a time.") == rc.HOST_ONLY
-        assert deploy("main is ahead; the Delivery session deploys ccccccc itself after TheHub's deploy.") == rc.HOST_ONLY
+        cases = {
+            "production is on main": "done",
+            "main is ahead, but 02:40-04:15Z (7:40-9:15 pm Arizona) is the backup window. "
+            "Re-run after it.": "waiting",
+            "main is ahead, but main's Delivery concluded 'failure': "
+            "no image to deploy.": "blocked",
+            "main is ahead, but its unit or lint-and-types lane is red - "
+            "not deploying a broken main.": "blocked",
+            "main is ahead, but its Delivery has not succeeded yet - "
+            "re-run this script later": "waiting",
+            "The gate refused ccccccc: it introduced blocking findings. Not deploying": "blocked",
+            # Guards only the host can see: not comparable, never guessed.
+            "main is ahead, but HubOps is deploying TheHub - one deploy at a time.": rc.HOST_ONLY,
+            "main is ahead; the Delivery session deploys ccccccc itself "
+            "after TheHub's deploy.": rc.HOST_ONLY,
+        }
+        assert {line: deploy(line) for line in cases} == cases
 
     def test_nothing_waiting_is_an_empty_set_not_a_missing_section(self) -> None:
         text = "== [Delivery] 1. Decisions\n  nothing waiting for your decision\n"
@@ -171,8 +179,9 @@ class TestCompare:
 
     def test_a_host_only_deploy_guard_is_skipped_not_failed(self) -> None:
         text = TRANSCRIPT.replace(
-            f"  (check mode: would ask)   Deploy {MAIN[:7]} to production? (waits up to 45 min for the risk gate)",
-            "  main is ahead, but HubOps is deploying TheHub - one deploy at a time. Re-run after it.",
+            f"  (check mode: would ask)   Deploy {MAIN[:7]} to production? "
+            "(waits up to 45 min for the risk gate)",
+            "  main is ahead, but HubOps is deploying TheHub - one deploy at a time.",
         )
         result = rc.compare(rc.parse_start_here(text), sheet())
         assert "deploy" not in result.steps
