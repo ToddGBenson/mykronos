@@ -423,3 +423,127 @@ class TestTheActionsPinsAreCheckedToo:
 
         assert checker._actions_pin_problems() == []
         assert "skipping" in capsys.readouterr().out
+
+
+#: `atlas_osv._fixed_versions` as the v16 tag shipped it, before #1036: keyed
+#: on the table row's id only, and stopping every rule after the first at the
+#: blank line under its own heading. Kept verbatim so the control below is the
+#: code TheHub's lanes actually ran, not a paraphrase of it.
+def _fixed_versions_v16(raw_output: bytes) -> dict[tuple[str, str], str]:
+    import json
+
+    try:
+        document = json.loads(raw_output.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    table: dict[tuple[str, str], str] = {}
+    for run in document.get("runs") or []:
+        driver = (run.get("tool") or {}).get("driver") or {}
+        for rule in driver.get("rules") or []:
+            markdown = (rule.get("help") or {}).get("markdown") or ""
+            start = markdown.find("### Fixed Versions")
+            if start < 0:
+                continue
+            for line in markdown[start:].splitlines()[1:]:
+                line = line.strip()
+                if not line.startswith("|"):
+                    if table:
+                        break
+                    continue
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if len(cells) < 3:
+                    continue
+                if cells[0] == "Vulnerability ID" or set(cells[0]) <= set("- "):
+                    continue
+                table[(cells[0], cells[1])] = cells[2]
+    return table
+
+
+class TestBehaviourIsCheckedToo:
+    """The fifth way the pin goes stale, and the one that cost a critical.
+
+    Modules, flags, scripts and adapters were all checked, and every one of
+    them was present at v16. What v16 did not have was #1036: osv-scanner
+    names a rule after the CVE or PYSEC id and writes the fix under the GHSA
+    alias, and v16's parser keyed on the alias only. #1036 merged and the
+    backend deployed it, but normalising happens in the *uploader*, installed
+    from `mykronos-ref`. So TheHub's atlas findings kept arriving with no
+    `fixed_version` (pypdf x9 on 2026-11-01, `fixable=false` while OSV named
+    6.21.2-6.21.4), and `pin-check` stayed green the whole time (TheHub
+    #60909).
+
+    A bug fix changes no module, flag or adapter name, so only running the
+    pinned code on a known input can tell a fixed pin from a stale one.
+    """
+
+    def test_this_checkout_passes_every_probe(self, checker) -> None:
+        assert checker._behaviour_problems() == []
+
+    def test_the_probes_are_not_empty(self, checker) -> None:
+        assert checker.REQUIRED_BEHAVIOURS
+
+    def test_the_v16_osv_parser_is_caught(self, checker, monkeypatch) -> None:
+        """The control: the parser TheHub's lanes ran before this fails."""
+        from mykronos.adapters import atlas_osv
+
+        monkeypatch.setattr(atlas_osv, "_fixed_versions", _fixed_versions_v16)
+
+        problems = checker._behaviour_problems()
+
+        assert len(problems) == 1
+        assert "#60909" in problems[0]
+        assert "fixed version" in problems[0]
+
+    def test_check_reports_a_failed_probe(self, checker, monkeypatch) -> None:
+        from mykronos.adapters import atlas_osv
+
+        monkeypatch.setattr(atlas_osv, "_fixed_versions", _fixed_versions_v16)
+        monkeypatch.setattr(checker, "_missing_scripts", lambda commit: [])
+        monkeypatch.setattr(checker, "_actions_pin_problems", lambda: [])
+
+        assert any("#60909" in p for p in checker.check("unknown"))
+
+    def test_a_probe_that_cannot_run_is_a_problem_not_a_pass(
+        self, checker, monkeypatch
+    ) -> None:
+        """A pin whose code cannot be asked has not shown it has the fix. This
+        is the module docstring's own rule: a guard that passes when it cannot
+        tell converts an open question into a green tick."""
+        from mykronos.adapters import atlas_osv
+
+        monkeypatch.delattr(atlas_osv, "_fixed_versions")
+
+        problems = checker._behaviour_problems()
+
+        assert len(problems) == 1
+        assert "could not be run" in problems[0]
+
+    def test_the_summary_names_the_probes(self, checker, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(checker, "_installed_commit", lambda: "9cae400d75a8")
+        monkeypatch.setattr(checker, "check", lambda commit="": [])
+
+        assert checker.main([]) == 0
+        assert "behaviour probe" in capsys.readouterr().out
+
+
+class TestEveryPinNamesOneRef:
+    """`mykronos-ref` is written in six places: three set-pipeline scripts and
+    the three vars files the in-pipeline `set-pipeline` jobs apply. The
+    scripts were compared with each other; the vars files, which are what a
+    merge actually applies, were not compared with anything."""
+
+    def test_the_vars_files_pin_what_the_scripts_pin(self) -> None:
+        import re
+
+        root = Path(__file__).resolve().parents[2] / "deploy" / "concourse"
+        refs = {
+            path.name: re.search(
+                r'"mykronos-ref:\s*([^"]+)"', path.read_text(encoding="utf-8")
+            ).group(1)
+            for path in root.glob("set-*pipeline.ps1")
+        }
+        for name in ("mykronos.yml", "thehub.yml", "personal-soc.yml"):
+            document = yaml.safe_load((root / "vars" / name).read_text(encoding="utf-8"))
+            refs[f"vars/{name}"] = str(document["mykronos-ref"])
+
+        assert len(set(refs.values())) == 1, refs
