@@ -204,6 +204,55 @@ class TestDeclared:
         with pytest.raises(credential_expiry.CredentialFileError):
             credential_expiry.load_declared(self._file(tmp_path, body))
 
+    def test_a_private_entry_replaces_the_public_one_of_the_same_name(self, tmp_path) -> None:
+        public = tmp_path / "public.yaml"
+        public.write_text(
+            "credentials:\n"
+            "  - name: ci-token\n    kind: ci-token\n    owner: op\n    renewal_step: generic\n"
+            "  - name: app-key\n    kind: k\n    owner: op\n    renewal_step: r\n",
+            encoding="utf-8",
+        )
+        private = tmp_path / "private.yaml"
+        private.write_text(
+            "credentials:\n"
+            "  - name: ci-token\n    kind: ci-token\n    owner: op\n"
+            "    expires_at: 2026-11-02\n    renewal_step: specific\n"
+            "  - name: extra\n    kind: k\n    owner: op\n"
+            "    expires_at: 2026-11-01T18:00:00Z\n    renewal_step: r\n",
+            encoding="utf-8",
+        )
+        entries = credential_expiry.load_all(public, private)
+        by_name = {e.name: e for e in entries}
+        assert set(by_name) == {"ci-token", "app-key", "extra"}
+        assert by_name["ci-token"].renewal_step == "specific"
+        assert by_name["ci-token"].expires_at == datetime(2026, 11, 2)
+        assert credential_expiry.undated(entries) == ["app-key"]
+        assert [r["name"] for r in credential_expiry.expiring(entries, NOW, 48)] == [
+            "extra",
+            "ci-token",
+        ]
+
+    def test_an_empty_or_absent_private_file_leaves_the_public_list(self, tmp_path) -> None:
+        public = REPO_ROOT / "credential-expiry-v1.yaml"
+        empty = tmp_path / "empty.yaml"
+        empty.write_text("", encoding="utf-8")
+        names = {e.name for e in credential_expiry.load_declared(public)}
+        assert {e.name for e in credential_expiry.load_all(public, empty)} == names
+        assert {e.name for e in credential_expiry.load_all(public, None)} == names
+        assert {e.name for e in credential_expiry.load_all(public, tmp_path / "no")} == names
+
+    def test_the_private_file_is_refused_for_a_stray_field_like_the_public_one(
+        self, tmp_path
+    ) -> None:
+        private = tmp_path / "private.yaml"
+        private.write_text(
+            "credentials:\n  - name: x\n    kind: k\n    owner: o\n"
+            "    renewal_step: r\n    token: abc\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(credential_expiry.CredentialFileError):
+            credential_expiry.load_all(REPO_ROOT / "credential-expiry-v1.yaml", private)
+
     def test_a_missing_file_is_an_empty_list(self, tmp_path) -> None:
         assert credential_expiry.load_declared(tmp_path / "nope.yaml") == []
 

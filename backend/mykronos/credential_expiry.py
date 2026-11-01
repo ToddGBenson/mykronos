@@ -134,6 +134,21 @@ def load_declared(path: Path | None) -> list[Credential]:
     return out
 
 
+def load_all(public: Path | None, private: Path | None) -> list[Credential]:
+    """The public declared file, overlaid by the optional private one.
+
+    The repository is public, so the committed file names credentials only
+    generically. The private file (bind-mounted, never committed) carries the
+    specific ones. A private entry with the same name as a public one replaces
+    it; the rest are added. Both files go through `load_declared`, so the
+    private one is refused for the same stray fields, gaps and duplicates.
+    """
+    merged = {c.name: c for c in load_declared(public)}
+    for c in load_declared(private):
+        merged[c.name] = c
+    return list(merged.values())
+
+
 # -- observed sources -------------------------------------------------------
 
 

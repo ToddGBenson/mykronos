@@ -768,7 +768,9 @@ def main(argv: list[str] | None = None) -> int:
             from mykronos.schemas import utcnow as clock
 
             now = clock()
-            declared = credential_expiry.load_declared(settings.credential_expiry_path)
+            declared = credential_expiry.load_all(
+                settings.credential_expiry_path, settings.credential_expiry_private_path
+            )
             with db.session() as session:
                 everything = credential_expiry.collect(session, declared, now)
             listed = credential_expiry.expiring(everything, now, args.within_hours)

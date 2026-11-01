@@ -79,6 +79,10 @@ services:
       MYKRONOS_GITHUB_APP_ID: ${MYKRONOS_GITHUB_APP_ID:-}
       # Mounted read-only below. The container never holds a copy.
       MYKRONOS_GITHUB_APP_PRIVATE_KEY_PATH: /secrets/github-app.pem
+      # TheHub #61104: the private overlay of credential-expiry-v1.yaml, mounted
+      # below. Unset on the host, it mounts /dev/null: an empty file, so only the
+      # public file is read.
+      MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_PATH: /secrets/credential-expiry-private.yaml
       MYKRONOS_INGESTION_API_URL: ${MYKRONOS_INGESTION_API_URL:-https://mykronos.toddbenson.net}
 
       # Reading Concourse back (spec 15 §4a). Two URLs because they genuinely
@@ -168,6 +172,7 @@ services:
       # way; there was no reason for the one credential that cannot be rotated
       # from inside the platform to be the lenient one.
       - ${MYKRONOS_GITHUB_APP_KEY_HOST_PATH:?set it in backend/.env — the host path to the App private key}:/secrets/github-app.pem:ro
+      - ${MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_HOST_PATH:-/dev/null}:/secrets/credential-expiry-private.yaml:ro
     healthcheck:
       # python, not curl: curl is no longer in the image (its CVEs were 4 of
       # the highs the platform's own scan found), and compose's healthcheck
