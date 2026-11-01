@@ -232,3 +232,47 @@ class TestLog:
         assert json.loads(line)["agree"] is True
         today.write_text(json.dumps(sheet(deploy_state="blocked")), encoding="utf-8")
         assert rc.main(["--start-here", str(transcript), "--today", str(today)]) == 1
+
+
+class TestMergeScope:
+    """PR #1068's review: Start-Here's TheHub lines are a fixed batch, not the
+    repository, and two of its merge outcomes rest on what only the host sees."""
+
+    def test_thehub_is_compared_only_on_the_batch_start_here_printed(self) -> None:
+        # acme/TheHub#999 is ready on the run sheet and is not in the batch:
+        # Start-Here never looked at it, so it is not a disagreement.
+        body = sheet()
+        body["steps"][1]["items"].append(item("acme/TheHub#999", "ready"))
+        result = rc.compare(rc.parse_start_here(TRANSCRIPT), body)
+        assert result.steps["merge"] is True, result.diffs
+
+    def test_a_batch_pr_held_back_for_ordering_is_not_offered(self) -> None:
+        text = TRANSCRIPT.replace(
+            "  acme/app#7  Rate-limit",
+            "  not merging TheHub#564 this run: #564 must merge before it and is not "
+            "approved at its head\n  acme/app#7  Rate-limit",
+        )
+        assert "acme/TheHub#564" not in rc.parse_start_here(text).merge_ready
+
+    def test_a_pr_held_for_the_thehub_deploy_lock_is_skipped_not_compared(self) -> None:
+        text = TRANSCRIPT.replace(
+            "  acme/app#7  Rate-limit the export route\n",
+            "  acme/app#7  Rate-limit the export route\n      not yet: waiting: HubOps is "
+            "deploying TheHub (a merge here starts MyKronos CI); re-run after it\n",
+        )
+        result = rc.compare(rc.parse_start_here(text), sheet())
+        assert result.steps["merge"] is True, result.diffs
+        assert any("acme/app#7" in s and "host" in s for s in result.skipped)
+
+    def test_a_draft_the_run_sheet_hid_is_skipped_when_start_here_offers_it(self) -> None:
+        text = TRANSCRIPT.replace(
+            "  acme/app#7  Rate-limit", "  acme/app#1046  Registry snapshot\n  acme/app#7  Rate-limit"
+        )
+        body = sheet()
+        body["steps"][1]["hidden"] = [
+            "acme/app#1046: a draft; Start-Here offers a draft only when its "
+            "ready-drafts list names it"
+        ]
+        result = rc.compare(rc.parse_start_here(text), body)
+        assert result.steps["merge"] is True, result.diffs
+        assert any("acme/app#1046" in s for s in result.skipped)
