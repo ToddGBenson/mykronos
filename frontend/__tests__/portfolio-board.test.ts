@@ -1,17 +1,27 @@
 import { prerender } from "react-dom/static";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ageLabel, bandSummary, sortBands, tileState } from "../lib/portfolio-board";
+import {
+  BOARD_CAPABILITIES,
+  ageLabel,
+  bandSummary,
+  sortBands,
+  tileState,
+  tileValue,
+} from "../lib/portfolio-board";
 
 /**
  * The Portfolio status board (TheHub #61138, v2 P4 and P6): each product a
  * band of tiles, one per capability, coloured by state, each with an icon, a
  * word and the age of its last run, each linking to that check's history.
  * Bands with problems sort first. It replaces the 15px capability cells.
+ * Twelve tiles a band, six states: healthy, failing, stale or silent, never
+ * scanned, accepted and overdue.
  */
 
 const getPortfolio = vi.fn();
-vi.mock("@/lib/server", () => ({ getPortfolio }));
+const getBoardCounts = vi.fn();
+vi.mock("@/lib/server", () => ({ getPortfolio, getBoardCounts }));
 
 const NOW = Date.parse("2026-10-31T12:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW - h * 3600_000).toISOString();
@@ -61,6 +71,44 @@ describe("tileState", () => {
   it("is never scanned when not enabled, or only pending", () => {
     expect(tileState({ enabled: false, pending: false }, NOW).state).toBe("never");
     expect(tileState({ enabled: false, pending: true }, NOW).state).toBe("never");
+  });
+
+  it("is overdue when findings are past their target, with the count and oldest age", () => {
+    const tile = tileState(
+      { enabled: true, pending: false, run: run(), overdue: { count: 3, oldestDays: 9 } },
+      NOW,
+    );
+    expect(tile.state).toBe("overdue");
+    expect(tileValue(tile, NOW)).toBe("3·9d");
+  });
+
+  it("is accepted when a working check carries accepted risk, with the count", () => {
+    const tile = tileState({ enabled: true, pending: false, run: run(), accepted: 4 }, NOW);
+    expect(tile.state).toBe("accepted");
+    expect(tileValue(tile, NOW)).toBe("4");
+  });
+
+  it("lets a failure outrank overdue, and overdue outrank stale and accepted", () => {
+    const failed = run({ last_run_failed: true });
+    const old = run({ last_scan_at: hoursAgo(8 * 24) });
+    const overdue = { count: 1, oldestDays: 40 };
+    expect(tileState({ enabled: true, pending: false, run: failed, overdue }, NOW).state).toBe(
+      "failing",
+    );
+    expect(
+      tileState({ enabled: true, pending: false, run: old, overdue, accepted: 2 }, NOW).state,
+    ).toBe("overdue");
+    expect(tileState({ enabled: true, pending: false, run: old, accepted: 2 }, NOW).state).toBe(
+      "stale",
+    );
+  });
+});
+
+describe("BOARD_CAPABILITIES", () => {
+  it("is twelve tiles, one per capability or lane, each with a short name", () => {
+    expect(BOARD_CAPABILITIES).toHaveLength(12);
+    expect(new Set(BOARD_CAPABILITIES.map((c) => c.capability)).size).toBe(12);
+    for (const c of BOARD_CAPABILITIES) expect(c.short.length).toBeLessThanOrEqual(9);
   });
 });
 
@@ -140,7 +188,7 @@ describe("bandSummary", () => {
     expect(counts.failing).toBe(1);
     expect(counts.stale).toBe(1);
     expect(counts.healthy).toBe(4 - 2);
-    expect(counts.never).toBe(2 * 15 - 4);
+    expect(counts.never).toBe(2 * 12 - 4);
   });
 });
 
@@ -163,6 +211,11 @@ describe("the Portfolio page", () => {
         repos: [healthy, broken, bench],
       },
     });
+    getBoardCounts.mockImplementation(async (repoId: string) =>
+      repoId === "r-a"
+        ? { ok: true, data: { accepted: { secrets: 4 }, overdue: {} } }
+        : { ok: true, data: { accepted: {}, overdue: {} } },
+    );
   });
 
   async function render(query: Record<string, string> = {}) {
@@ -184,7 +237,7 @@ describe("the Portfolio page", () => {
     const html = await render();
     expect(html).toContain('href="/repos/r-z/checks/sast"');
     const tiles = html.match(/<a [^>]*data-tile="[a-z]+"[^>]*>/g) ?? [];
-    expect(tiles.length).toBe(2 * 15);
+    expect(tiles.length).toBe(2 * 12);
     for (const tile of tiles) expect(tile).toMatch(/min-h-11/);
     for (const tile of tiles) expect(tile).toMatch(/sm:min-h-14/);
   });
@@ -194,6 +247,21 @@ describe("the Portfolio page", () => {
     expect(html).toMatch(/aria-label="Static analysis \(SAST\): failing[^"]*3h/);
     expect(html).toMatch(/aria-label="Secret scanning: stale or silent/);
     expect(html).toMatch(/aria-label="Dynamic analysis \(DAST\): never scanned/);
+  });
+
+  it("links an accepted tile to the accepted findings for that check", async () => {
+    const html = await render();
+    expect(html).toMatch(/aria-label="Secret scanning: accepted risk, 4 findings/);
+    expect(html).toContain(
+      'href="/repos/r-a?tab=findings&amp;status=accepted_risk&amp;capability=secrets"',
+    );
+  });
+
+  it("still draws the board when the finding counts cannot be read", async () => {
+    getBoardCounts.mockResolvedValue({ ok: false, error: "backend down" });
+    const html = await render();
+    expect(html).toContain("example-org/alpha");
+    expect(html).toContain("overdue and accepted counts could not be read");
   });
 
   it("says what is wrong on the board at the top", async () => {
@@ -214,7 +282,14 @@ describe("the Portfolio page", () => {
 
   it("has a legend with the icon and word for each state", async () => {
     const html = await render();
-    for (const word of ["healthy", "failing", "stale or silent", "never scanned"]) {
+    for (const word of [
+      "healthy",
+      "failing",
+      "stale or silent",
+      "never scanned",
+      "accepted risk",
+      "overdue",
+    ]) {
       expect(html).toContain(word);
     }
   });
