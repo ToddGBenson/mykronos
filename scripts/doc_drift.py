@@ -13,7 +13,8 @@ machine can check, in every README and every Markdown file under `docs/`:
   container paths are not claims about this tree.
 
 Records describe the past: decisions, retros, lessons, ADRs, reports, audits,
-the backlog and decision logs, and any file dated in its name. A path in one of
+the backlog and decision logs, audit and retro files, and any file dated in
+its name (a year and month is enough). A path in one of
 them names what existed then, so records are counted as skipped rather than
 checked.
 
@@ -54,7 +55,8 @@ RECORD_DIRS = {
     "spikes",
 }
 RECORD_NAMES = {"BACKLOG.md", "DECISIONS.md", "CHANGELOG.md"}
-DATED = re.compile(r"\d{4}-\d{2}-\d{2}")
+DATED = re.compile(r"(19|20)\d{2}[-_]\d{2}")
+RECORD_WORD = re.compile(r"(^|[_-])(audit|retro|postmortem)([_.-]|$)", re.IGNORECASE)
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 TICK = re.compile(r"`([^`\n]+)`")
 SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -89,7 +91,7 @@ def _is_record(rel: Path) -> bool:
         return True
     if any(part.lower() in RECORD_DIRS for part in parts[1:-1]):
         return True
-    return bool(DATED.search(rel.name))
+    return bool(DATED.search(rel.name) or RECORD_WORD.search(rel.name))
 
 
 def documents(root: Path) -> tuple[list[Path], list[Path]]:
@@ -121,10 +123,10 @@ def _link_target(raw: str) -> str | None:
 def _path_claim(content: str, top_level: set[str]) -> str | None:
     word = content.strip().split()[0] if content.strip() else ""
     word = word.rstrip(".,;:)")
-    word = re.sub(r":\d+(-\d+)?$", "", word)
+    word = word.split("::", 1)[0]
+    word = re.sub(r":\d+([,-]\d+)*$", "", word)
     word = word.split("#", 1)[0]
-    if word.startswith("./"):
-        word = word[2:]
+    word = word.removeprefix("./")
     if "/" not in word or word.startswith(("/", "~", ".", "-")) or "\\" in word:
         return None
     if any(ch in NOT_A_PATH for ch in word):
@@ -230,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
         for x in report.drift:
             print(f"{x.document}:{x.line}: {x.kind} {x.claim}")
         print(
-            f"{report.documents_checked} documents checked, {report.records_skipped} records skipped, "
+            f"{report.documents_checked} documents checked, "
+            f"{report.records_skipped} records skipped, "
             f"{report.claims_checked} claims checked, {len(report.drift)} drifted"
         )
     return 1 if report.drift else 0

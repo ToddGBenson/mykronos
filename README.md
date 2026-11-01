@@ -35,26 +35,28 @@ is a number people stop believing.
 
 ## Status
 
-Running in production against four repositories — one scanned by Concourse,
-three by GitHub Actions — with ten capabilities reporting.
+Running in production against five repositories, scanned by Concourse and
+GitHub Actions, with ten capabilities reporting. Measured 2026-11-01 from the
+running backend with `mykronos briefing`, `mykronos stats` and `mykronos query`
+(TheHub #61166); the previous figures were from 2026-09-03.
 
 | | |
 |---|---|
-| Open findings | 430, every one owned and dated or visibly not |
-| Successful scan runs recorded | 2,581 |
-| Findings ever recorded | 2,964 |
+| Open findings | 106, every one owned and dated or visibly not |
+| Successful scan runs recorded | 8,517 (of 9,039 runs) |
+| Findings ever recorded | 20,163, of which 13,074 fixed and 5,786 superseded |
 | Capabilities reporting | 10 of 15 |
-| Risk gate | Advisory. It would have refused 0 of the last 30 merges (D-102) |
+| Risk gate | Advisory. It would have refused 0 of the last 30 merges (D-102, measured 2026-09; not re-measured) |
 
 Known gaps, stated rather than implied:
 
 | Area | State |
 |---|---|
 | Network scanning | **Not started.** The authorization model and the ingest path exist; no scanner does, so no CIDR would be scanned if one were authorized |
-| Cloud posture | Enabled on one repository and structurally unable to run — no Azure principal (B-018) |
+| Cloud posture | Enabled on one repository and structurally unable to run — no Azure principal (B-018). The lake holds no cloud scan run as of 2026-11-01 |
 | ZAP active scanning | Paused. It measured 548% CPU and 7 GiB on the shared host and took production down while it ran (D-053). Passive DAST still runs |
 | Notifications | The notifier is built, the severity threshold is set, and no webhook URL is configured — so everything is pull (B-035) |
-| Risk profiles | 0 of 4 repositories have one, so scoring degrades to severity and threat intelligence. The interface says so at the point of ranking (B-033) |
+| Risk profiles | 0 of 4 repositories had one at 2026-09-03 (not re-measured since the fifth was onboarded), so scoring degrades to severity and threat intelligence. The interface says so at the point of ranking (B-033) |
 | Local / pre-commit | Deliberately absent. This is a control plane, not a scanner, and the loop starts at push (D-101) |
 
 ## How it decides

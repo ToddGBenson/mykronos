@@ -43,7 +43,12 @@ class TestWhichDocuments:
         )
         living, records = d.documents(root)
         names = [p.relative_to(root).as_posix() for p in living]
-        assert names == ["README.md", "backend/README.md", "docs/GUIDE.md", "docs/runbooks/vault.md"]
+        assert names == [
+            "README.md",
+            "backend/README.md",
+            "docs/GUIDE.md",
+            "docs/runbooks/vault.md",
+        ]
         assert records == []
 
     def test_records_are_skipped_not_checked(self, tmp_path: Path) -> None:
@@ -81,12 +86,17 @@ class TestClaims:
     def test_links_resolve_from_the_documents_own_folder(self, tmp_path: Path) -> None:
         root = _repo(
             tmp_path,
-            {"docs/runbooks/a.md": "[b](../GUIDE.md) [c](./b.md)", "docs/GUIDE.md": "x", "docs/runbooks/b.md": "x"},
+            {
+                "docs/runbooks/a.md": "[b](../GUIDE.md) [c](./b.md)",
+                "docs/GUIDE.md": "x",
+                "docs/runbooks/b.md": "x",
+            },
         )
         assert d.check(root).drift == []
 
     def test_external_links_and_anchors_are_not_claims_about_the_tree(self, tmp_path: Path) -> None:
-        root = _repo(tmp_path, {"README.md": "[a](https://example.com/x.md) [b](#status) [c](mailto:a@b)"})
+        text = "[a](https://example.com/x.md) [b](#status) [c](mailto:a@b)"
+        root = _repo(tmp_path, {"README.md": text})
         report = d.check(root)
         assert report.claims_checked == 0
 
@@ -94,7 +104,9 @@ class TestClaims:
         root = _repo(
             tmp_path,
             {
-                "README.md": "Run `scripts/check.py`, then `scripts/gone.py --fix`. Edit `backend/app/`.",
+                "README.md": (
+                    "Run `scripts/check.py`, then `scripts/gone.py --fix`. Edit `backend/app/`."
+                ),
                 "scripts/check.py": "",
                 "backend/app/__init__.py": "",
             },
@@ -109,7 +121,10 @@ class TestClaims:
         root = _repo(
             tmp_path,
             {
-                "README.md": "`GET /api/x` `/etc/passwd` `docs/*.md` `nothere/x.py` `<repo>/x` `docs/{a,b}.md`",
+                "README.md": (
+                    "`GET /api/x` `/etc/passwd` `docs/*.md` `nothere/x.py` "
+                    "`<repo>/x` `docs/{a,b}.md`"
+                ),
                 "docs/a.md": "x",
             },
         )
@@ -128,15 +143,24 @@ class TestClaims:
         # `backend/.env` is named by every operator doc and is never committed.
         root = _repo(
             tmp_path,
-            {".gitignore": ".env\n*.jsonl\n", "README.md": "Set it in `backend/.env` and `deploy/log.jsonl`.",
-             "backend/app.py": "", "deploy/x": ""},
+            {
+                ".gitignore": ".env\n*.jsonl\n",
+                "README.md": "Set it in `backend/.env` and `deploy/log.jsonl`.",
+                "backend/app.py": "",
+                "deploy/x": "",
+            },
         )
         assert d.check(root).drift == []
 
     def test_backlog_decision_log_and_changelog_are_records(self, tmp_path: Path) -> None:
         root = _repo(
             tmp_path,
-            {"docs/BACKLOG.md": "x", "docs/DECISIONS.md": "x", "CHANGELOG.md": "x", "docs/GUIDE.md": "x"},
+            {
+                "docs/BACKLOG.md": "x",
+                "docs/DECISIONS.md": "x",
+                "CHANGELOG.md": "x",
+                "docs/GUIDE.md": "x",
+            },
         )
         living, records = d.documents(root)
         assert [p.name for p in living] == ["GUIDE.md"]
@@ -175,7 +199,8 @@ class TestClaims:
         assert item.line == 3
 
     def test_fenced_code_is_still_checked_for_paths(self, tmp_path: Path) -> None:
-        root = _repo(tmp_path, {"README.md": "```\npython `scripts/gone.py`\n```\n", "scripts/a.py": ""})
+        fenced = "```\npython `scripts/gone.py`\n```\n"
+        root = _repo(tmp_path, {"README.md": fenced, "scripts/a.py": ""})
         assert [x.claim for x in d.check(root).drift] == ["scripts/gone.py"]
 
 
@@ -183,7 +208,11 @@ class TestOutput:
     def test_json_summary_carries_the_retro_counts(self, tmp_path: Path, capsys) -> None:
         root = _repo(
             tmp_path,
-            {"README.md": "[ok](docs/a.md) [bad](docs/b.md)", "docs/a.md": "x", "docs/decisions/D-1.md": "x"},
+            {
+                "README.md": "[ok](docs/a.md) [bad](docs/b.md)",
+                "docs/a.md": "x",
+                "docs/decisions/D-1.md": "x",
+            },
         )
         code = d.main([str(root), "--json"])
         out = json.loads(capsys.readouterr().out)
@@ -192,7 +221,12 @@ class TestOutput:
         assert out["records_skipped"] == 1
         assert out["claims_checked"] == 2
         assert out["drifted"] == 1
-        assert out["drift"][0] == {"document": "README.md", "line": 1, "kind": "link", "claim": "docs/b.md"}
+        assert out["drift"][0] == {
+            "document": "README.md",
+            "line": 1,
+            "kind": "link",
+            "claim": "docs/b.md",
+        }
 
     def test_a_clean_tree_exits_zero(self, tmp_path: Path, capsys) -> None:
         root = _repo(tmp_path, {"README.md": "[ok](docs/a.md)", "docs/a.md": "x"})
