@@ -253,13 +253,15 @@ def statuses(client: TestClient) -> dict[str, str]:
     return {str(r[0]): str(r[1]) for r in rows}
 
 
-def seed_cluster(client, admin_auth, run_compaction, severities=("high", "medium")) -> str:
+def seed_cluster(
+    client, admin_auth, run_compaction, severities=("high", "medium"), other="medium"
+) -> str:
     auth = activate(client, admin_auth, REPO)
-    other = activate(client, admin_auth, OTHER)
+    other_auth = activate(client, admin_auth, OTHER)
     ingest(client, auth, REPO, [
         container(f"app-{i}:sha", severity=s) for i, s in enumerate(severities)
     ])
-    ingest(client, other, OTHER, [container("ledger:sha", severity="medium")])
+    ingest(client, other_auth, OTHER, [container("ledger:sha", severity=other)])
     run_compaction()
     [cluster] = grouped(client, admin_auth)["clusters"]
     return str(cluster["cluster_id"])
@@ -478,11 +480,12 @@ class TestTheApprovalRule:
         assert response.status_code == 403
         assert "/api/risk-acceptances" in response.json()["detail"]
 
-    def test_an_agent_on_a_cluster_of_mediums_applies_directly(
+    def test_an_agent_on_a_cluster_of_infos_applies_directly(
         self, client: TestClient, admin_auth, run_compaction
     ) -> None:
+        # Medium and low are governed since TheHub #61158.
         cluster_id = seed_cluster(
-            client, admin_auth, run_compaction, severities=("medium", "low")
+            client, admin_auth, run_compaction, severities=("info", "info"), other="info"
         )
 
         response = client.post(

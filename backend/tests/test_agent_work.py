@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
 from mykronos import agent_work, briefing_sources
 from mykronos.adminauth import ActorKind, Principal, Role
 from mykronos.briefing import AwaitingClosure, Briefing, StalledLane, TokenDelivery
@@ -265,9 +267,15 @@ class TestGovernance:
         assert action.governed_by is None
         assert action.method == "PATCH"
 
-    def test_an_agent_closes_a_medium_finding_directly(self) -> None:
-        [item] = _build(triage_rows=[_finding(severity="medium")]).items
+    def test_an_agent_closes_an_info_finding_directly(self) -> None:
+        [item] = _build(triage_rows=[_finding(severity="info")]).items
         assert self._close(item).governed_by is None
+
+    @pytest.mark.parametrize("severity", ["medium", "low"])
+    def test_an_agents_medium_or_low_close_is_governed(self, severity: str) -> None:
+        """TheHub #61158: low and medium are a request too."""
+        [item] = _build(triage_rows=[_finding(severity=severity)]).items
+        assert self._close(item).governed_by == "finding_disposition"
 
     def test_an_acceptance_is_always_governed(self) -> None:
         [item] = _build(principal=PERSON, triage_rows=[_finding(severity="low")]).items

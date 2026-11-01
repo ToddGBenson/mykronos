@@ -22,6 +22,7 @@ uses its own `mka_` credential (`POST /api/agents/credentials`).
 | | production, routine | a person, or a delegated agent |
 | `finding_disposition` | critical | a person |
 | | high | a person, or a delegated agent of a *different* model family |
+| | medium, low | a person, or a delegated agent; a delegation may name a credential purpose (`constraints.approver_purposes`, e.g. `security-champion`) |
 | `incident_action` | irreversible | a person |
 | | reversible | a person, or a delegated agent (break-glass) |
 | `deploy_override` | any | a person |

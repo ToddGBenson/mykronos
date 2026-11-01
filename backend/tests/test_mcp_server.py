@@ -499,7 +499,7 @@ async def test_a_serious_finding_is_routed_to_a_disposition_request(severity: st
     assert out["governed_by"] == "finding_disposition"
 
 
-@pytest.mark.parametrize("severity", ["medium", "low", "info"])
+@pytest.mark.parametrize("severity", ["info", ""])
 async def test_a_lesser_finding_is_dispositioned_directly(severity: str) -> None:
     fake = FakeMykronos({("GET", "/api/dashboard/findings/f1"): _finding(severity)})
     result = await _call(
@@ -522,8 +522,9 @@ async def test_a_lesser_member_of_a_serious_combination_is_routed_to_a_request(
     the low half of a critical pair is governed at the pair's severity."""
     fake = FakeMykronos(
         {
+            # info: low is governed in its own right (TheHub #61158).
             ("GET", "/api/dashboard/findings/f1"): _finding(
-                "low", capability="dast", repo_full_name="acme/api"
+                "info", capability="dast", repo_full_name="acme/api"
             ),
             ("GET", "/api/dashboard/toxic-combinations"): httpx2.Response(
                 200,

@@ -790,13 +790,14 @@ playbooks:
           - "POST /api/approvals/pull-requests"
       - id: disposition-it
         do: >-
-          If it is not real, disposition it with evidence. For a critical or
-          high finding an agent must request it: the evidence is frozen and an
-          independent approver decides. Medium and below take the direct route.
+          If it is not real, disposition it with evidence. For a critical,
+          high, medium or low finding an agent must request it: the evidence
+          is frozen and an independent approver decides (for low and medium,
+          a delegated security-champion may). Info takes the direct route.
           The item's actions already name the right one for you.
         check: >-
-          A disposition request exists (critical, high) or the status is set
-          with your reason (medium and below).
+          A disposition request exists (critical to low) or the status is set
+          with your reason (info).
         routes:
           - "POST /api/dashboard/findings/{finding_id}/disposition-requests"
           - "PATCH /api/dashboard/findings/{finding_id}/status"
