@@ -20,8 +20,9 @@ Why not a top-level `[[allowlists]]` with `targetRules`: under gitleaks
 loads without error and suppresses nothing. A test below refuses it.
 
 These are structural checks. Whether gitleaks itself honours the file is
-proved by running gitleaks; the pull request that added each entry records
-that run.
+proved by running gitleaks: scripts/check_gitleaks_allowlist.py, run by the
+required `secret-hygiene` check on every pull request, fails on any entry that
+suppresses nothing (TheHub #61011; tests in test_gitleaks_allowlist_check.py).
 """
 
 from __future__ import annotations

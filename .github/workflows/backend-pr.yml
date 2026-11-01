@@ -86,12 +86,26 @@ jobs:
   # `-c /dev/null`: the backend's pytest config sets asyncio options and
   # warnings-as-errors for plugins this job does not install. `--noconftest`:
   # conftest.py imports the backend. The test file uses the standard library.
+  #
+  # It also proves every allowlist entry in .gitleaks.toml (TheHub #61011).
+  # #1014 changed that file and merged with its gitleaks evidence "pending":
+  # the structural test of the entry's shape passed while gitleaks 8.28 ignored
+  # the entry. scripts/check_gitleaks_allowlist.py runs gitleaks with the
+  # config this pull request carries, then once per entry with the entry
+  # removed, and fails on an entry whose removal surfaces nothing. It runs on
+  # every pull request, not only ones touching the file: a fixture deleted
+  # elsewhere leaves its entry matching nothing just the same, and a required
+  # check cannot be path-filtered (D-110).
   secret-hygiene:
     name: secret-hygiene
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the fixtures an entry is written for live in a
+          # branch commit and its squash-merge, not only in the tree.
+          fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -102,3 +116,23 @@ jobs:
         run: |
           python -m pip install --quiet pytest
           python -m pytest -q -p no:cacheprovider -c /dev/null --rootdir . --noconftest tests/test_no_secret_on_a_command_line.py
+
+      # The version and bytes the Concourse `secrets` lane pins (PS-8).
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz             https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+          echo "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb  /tmp/gitleaks.tar.gz"             | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf /tmp/gitleaks.tar.gz -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # MYKRONOS_REQUIRE_GITLEAKS=1: the real-gitleaks tests fail, not skip,
+      # if the binary is missing.
+      - name: The allowlist check fails an entry that matches nothing
+        working-directory: backend
+        run: |
+          MYKRONOS_REQUIRE_GITLEAKS=1 python -m pytest -q -p no:cacheprovider -c /dev/null --rootdir . --noconftest tests/test_gitleaks_allowlist_check.py
+
+      - name: Every .gitleaks.toml allowlist entry suppresses a finding
+        run: |
+          python scripts/check_gitleaks_allowlist.py --config .gitleaks.toml --source . --mode git --log-opts="--full-history --all"

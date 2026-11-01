@@ -13,7 +13,10 @@
 # commit and its squash-merge), where a fingerprint would need one entry per
 # copy and a new entry every time the line moved.
 #
-# backend/tests/test_gitleaks_allowlist.py holds every entry to that shape.
+# backend/tests/test_gitleaks_allowlist.py holds every entry to that shape,
+# and scripts/check_gitleaks_allowlist.py (the required secret-hygiene check)
+# runs gitleaks to prove each entry suppresses at least one finding: an entry
+# that matches nothing fails the pull request that carries it.
 # Do not quote a real credential in a comment here: this file is scanned too.
 
 [extend]
