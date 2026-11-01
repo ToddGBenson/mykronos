@@ -418,6 +418,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.catalog,
         db=app.state.db,
         oracle_policy_path=settings.oracle_policy_path,
+        # TheHub #61158: an agent's low/medium close is a request too.
+        govern_low_medium=settings.agent_low_medium_dispositions_governed,
     )
     # TheHub #60895: library vetting reads OSV and deps.dev; tests replace it.
     app.state.library_fetch = http_library_fetch

@@ -13,7 +13,7 @@ import dataclasses
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -142,6 +142,12 @@ class DelegationOut(BaseModel):
     suspended_at: datetime | None
     suspended_reason: str | None
     active: bool
+    constraints: dict[str, Any] = Field(
+        default_factory=dict,
+        description="What the delegation is scoped to beyond its families, e.g. "
+        "`approver_purposes: ['security-champion']` (TheHub #61158). Empty for a "
+        "family-only delegation such as the platform reviewer's.",
+    )
 
 
 def _request_out(session: Any, row: ApprovalRequest) -> RequestOut:
@@ -259,6 +265,7 @@ async def delegations(request: Request, principal: PrincipalDep) -> list[Delegat
                 suspended_at=d.suspended_at,
                 suspended_reason=d.suspended_reason,
                 active=not (d.revoked_at or d.suspended_at) and d.expires_at > now,
+                constraints=dict(d.constraints or {}),
             )
             for d in rows
         ]
@@ -379,10 +386,17 @@ async def sample_verdict(
 
 @router.get("/delegations/{delegation_id}/stats")
 async def delegation_stats(
-    request: Request, delegation_id: str, principal: PrincipalDep
+    request: Request,
+    delegation_id: str,
+    principal: PrincipalDep,
+    days: int = Query(default=7, ge=1, le=90),
 ) -> dict[str, Any]:
+    """One delegation's record: all-time counts, and what its delegates
+    approved in the last `days` (TheHub #61158), for the weekly audit line."""
     try:
-        return sampling.delegation_stats(request.app.state.db, _policy(request), delegation_id)
+        return sampling.delegation_stats(
+            request.app.state.db, _policy(request), delegation_id, days=days
+        )
     except ApprovalError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -113,10 +113,11 @@ class TestTheDirectRouteRefusesAnAgent:
 
         assert response.status_code == 200, response.text
 
-    def test_an_agent_on_a_medium_is_unchanged(
+    def test_an_agent_on_an_info_is_unchanged(
         self, client, auth, admin_auth, run_compaction
     ) -> None:
-        finding = _seed(client, auth, run_compaction, "medium")
+        # Medium and low are governed since TheHub #61158.
+        finding = _seed(client, auth, run_compaction, "info")
 
         response = _patch(client, _agent(client, admin_auth), finding, "false_positive")
 
@@ -168,8 +169,9 @@ class TestTheGovernedRoute:
             assert entry.detail["approval_request_id"] == body["approval_request_id"]
             assert entry.detail["applied"] is True
 
-    def test_a_medium_is_not_governed(self, client, auth, admin_auth, run_compaction) -> None:
-        finding = _seed(client, auth, run_compaction, "medium")
+    def test_an_info_is_not_governed(self, client, auth, admin_auth, run_compaction) -> None:
+        # Medium and low are governed since TheHub #61158.
+        finding = _seed(client, auth, run_compaction, "info")
 
         response = _ask(client, _agent(client, admin_auth), finding)
 
@@ -236,7 +238,9 @@ class TestMembersOfASeriousCombination:
                 finding_payload(
                     rule_id="ZAP-10037-CWE-497",
                     title='Server Leaks Information via "X-Powered-By" at GET /',
-                    severity="low", file_path=None, line_start=None, line_end=None,
+                    # info: governed only through the pair, since low is
+                    # governed in its own right (TheHub #61158).
+                    severity="info", file_path=None, line_start=None, line_end=None,
                     symbol=None, code_snippet=None,
                 ),
             ),
@@ -326,10 +330,10 @@ class TestMembersOfASeriousCombination:
 
         assert response.status_code == 200, response.text
 
-    def test_a_low_outside_any_combination_is_unchanged(
+    def test_an_info_outside_any_combination_is_unchanged(
         self, client, auth, admin_auth, run_compaction
     ) -> None:
-        finding = _seed(client, auth, run_compaction, "low")
+        finding = _seed(client, auth, run_compaction, "info")
 
         response = _patch(client, _agent(client, admin_auth), finding, "false_positive")
 

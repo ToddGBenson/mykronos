@@ -644,8 +644,8 @@ def build_server(api: MykronosApi, principal: Principal) -> MCPServer:
         """Close a finding as a false positive or suppressed, by the route the
         platform requires of you.
 
-        Reads the finding's severity first. For a critical or high finding an
-        agent's word is not enough (#713): this files
+        Reads the finding's severity first. For a critical, high, medium or low
+        finding an agent's word is not enough (#713, TheHub #61158): this files
         POST /api/dashboard/findings/{id}/disposition-requests, and the finding
         stays open until someone independent signs off. Otherwise it sets the
         status directly with PATCH /api/dashboard/findings/{id}/status. To accept
