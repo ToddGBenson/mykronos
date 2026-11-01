@@ -21,9 +21,12 @@ the real date makes fixed-date tests fail days later (#1034).
 
 **Expired is listed, up to a point.** A credential that has lapsed and not been
 renewed is the most useful row, so it is listed. An observed one stops being
-listed after `EXPIRED_LOOKBACK_DAYS`, and when its holder has a live
-replacement, otherwise a week-old agent credential would crowd the list for
-ever. Revoked credentials are never listed: revoking is a decision, not a lapse.
+listed after `EXPIRED_LOOKBACK_DAYS`, and when it has a live replacement,
+otherwise a week-old agent credential would crowd the list for ever. For an
+agent credential a replacement is a live one for the same actor, or a live root
+credential (minted by a person) for the same role, that is the same purpose on
+behalf of the same person (TheHub #61147). Revoked credentials are never
+listed: revoking is a decision, not a lapse.
 
 There is deliberately no incident filing here: MyKronos has no hook that opens
 a Hub incident, and the story's incident step needs one (see the pull request).
@@ -137,6 +140,23 @@ def load_declared(path: Path | None) -> list[Credential]:
 # -- observed sources -------------------------------------------------------
 
 
+def _clean_purpose(purpose: str) -> str:
+    """A purpose as printed: no control characters, single spaces.
+
+    `purpose` is free text the minting caller chose, and the name lands in the
+    `mykronos credentials` terminal table, so an escape or newline must not
+    reach it.
+    """
+    kept = "".join(c if c.isprintable() or c.isspace() else "" for c in purpose)
+    return " ".join(kept.split())
+
+
+def _role(on_behalf_of: str, purpose: str) -> tuple[str, str] | None:
+    """The role a credential was minted for, or None when it names none."""
+    key = _clean_purpose(purpose).casefold()
+    return (on_behalf_of, key) if key else None
+
+
 def agent_credentials(session: Any, now: datetime) -> list[Credential]:
     floor = now - timedelta(days=EXPIRED_LOOKBACK_DAYS)
     rows = session.execute(
@@ -145,21 +165,30 @@ def agent_credentials(session: Any, now: datetime) -> list[Credential]:
             AgentCredential.instance,
             AgentCredential.on_behalf_of,
             AgentCredential.purpose,
+            AgentCredential.lineage,
             AgentCredential.expires_at,
         ).where(AgentCredential.revoked_at.is_(None), AgentCredential.expires_at > floor)
     ).all()
     # A lapse is hidden once something replaced it. Every mint is a new
     # instance and so a new actor, so a renewal matches on the role it was
-    # minted for (TheHub #61147), not on the actor alone.
+    # minted for (TheHub #61147), not on the actor alone. Only a root
+    # credential (empty lineage: a person minted it) renews a role: any agent
+    # may mint a child with any purpose, and a short-lived child labelled
+    # "delivery" must not hide the real delivery credential's lapse.
     live_actors = {r.actor for r in rows if r.expires_at > now}
-    live_roles = {(r.on_behalf_of, r.purpose) for r in rows if r.expires_at > now and r.purpose}
+    live_roles = {
+        _role(r.on_behalf_of, r.purpose)
+        for r in rows
+        if r.expires_at > now and not r.lineage and _role(r.on_behalf_of, r.purpose)
+    }
     out = []
     for r in rows:
         if r.expires_at <= now and (
-            r.actor in live_actors or (r.purpose and (r.on_behalf_of, r.purpose) in live_roles)
+            r.actor in live_actors or _role(r.on_behalf_of, r.purpose) in live_roles
         ):
             continue  # already replaced
-        role = f", {r.purpose}" if r.purpose else ""
+        purpose = _clean_purpose(r.purpose)
+        role = f", {purpose}" if purpose else ""
         out.append(
             Credential(
                 name=f"{r.actor} ({r.instance[:8]}{role})",
