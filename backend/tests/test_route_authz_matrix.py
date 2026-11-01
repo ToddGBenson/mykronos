@@ -209,6 +209,9 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/product-owner/fleet": PRINCIPAL,
     "GET /api/dashboard/product-owner/estate": PRINCIPAL,
     "GET /api/dashboard/product-owner/review-queue": PRINCIPAL,
+    # Deciding from the packet (TheHub #61136): PrincipalDep, then
+    # `require_admin` in the handler, so a viewer and an agent are both 403.
+    "POST /api/dashboard/product-owner/approvals/{request_id}/decision": PRINCIPAL,
     "GET /api/dashboard/product-owner/review-queue/{request_id}": PRINCIPAL,
     # -- exposure ----------------------------------------------------------
     "GET /api/exposure": PRINCIPAL,

@@ -100,6 +100,7 @@ export async function ReviewQueueTab() {
     return <ErrorPanel title="Review queue unavailable" detail={result.error} />;
   }
   const { counts, pending, ready_to_merge: merges, reviewer } = result.data;
+  const superseded = result.data.superseded ?? [];
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
@@ -140,6 +141,34 @@ export async function ReviewQueueTab() {
         ) : (
           pending.map((item) => <PendingRow key={item.id} item={item} />)
         )}
+        {superseded.length ? (
+          // TheHub #61136: a request at a head its pull request has left covers
+          // nothing, so it is out of the list; it is still here to reject.
+          <details className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-2">
+            <summary className="cursor-pointer text-ink-3">
+              {superseded.length === 1
+                ? "1 superseded request hidden because its pull request moved on"
+                : `${superseded.length} superseded requests hidden because their pull request moved on`}
+            </summary>
+            <ul className="mt-1 flex flex-col gap-1">
+              {superseded.map((row) => (
+                <li key={row.id} className="flex flex-wrap items-baseline gap-2">
+                  <Link
+                    href={`/product-owner/review-queue/${encodeURIComponent(row.id)}`}
+                    className="font-mono text-accent hover:underline"
+                  >
+                    {row.summary || row.subject_ref}
+                  </Link>
+                  <span className="font-mono text-[11px] text-ink-3">
+                    {row.reason === "new_commits"
+                      ? `names ${row.requested_head_sha.slice(0, 8)}, now at ${(row.current_head_sha ?? "").slice(0, 8)}`
+                      : row.reason}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
       </Section>
       <Section title="Approved pull requests" detail="still open on GitHub">
         {merges.length === 0 ? (
