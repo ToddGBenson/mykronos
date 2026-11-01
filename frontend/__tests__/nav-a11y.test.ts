@@ -36,7 +36,17 @@ describe("activeHref", () => {
   });
 
   it("keeps a section active on its sub-pages", () => {
-    expect(activeHref("/product-owner/review-queue/abc", HREFS)).toBe("/product-owner");
+    expect(activeHref("/product-owner/agents", HREFS)).toBe("/product-owner");
+  });
+
+  it("lights Approvals on an approval packet, which lives under /product-owner", () => {
+    const withApprovals = [...HREFS, "/approvals"];
+    expect(activeHref("/product-owner/review-queue/abc", withApprovals)).toBe("/approvals");
+    expect(activeHref("/product-owner/review-queue", withApprovals)).toBe("/approvals");
+    // Until the nav has Approvals, the packet stays under Product Owner.
+    expect(activeHref("/product-owner/review-queue/abc", ["/product-owner"])).toBe(
+      "/product-owner",
+    );
   });
 
   it("does not match on a shared prefix that is not a path segment", () => {
@@ -81,6 +91,19 @@ describe("the nav rail", () => {
     expect(html).not.toMatch(/opacity-\d/);
   });
 
+  it("folds behind a Menu button on a phone, and stays open from md up", async () => {
+    const html = await render("/");
+    const button = html.match(/<button[^>]*>/)?.[0] ?? "";
+    expect(button).toContain('aria-expanded="false"');
+    expect(button).toContain('aria-controls="nav-sections"');
+    expect(button).toContain("md:hidden");
+    expect(button).toContain("min-h-11");
+    expect(html).toMatch(/<button[^>]*>[^<]*Menu/);
+    const list = html.match(/<div[^>]*id="nav-sections"[^>]*>/)?.[0] ?? "";
+    expect(list).toMatch(/\bhidden\b/);
+    expect(list).toContain("md:block");
+  });
+
   it("labels the rail as navigation", async () => {
     const html = await render("/");
     expect(html).toMatch(/<nav[^>]*aria-label="Sections"/);
@@ -93,6 +116,16 @@ describe("the layout", () => {
     expect(LAYOUT).toMatch(/<main[^>]*id="main"/);
     // The skip link must come before the header, or it is not the first stop.
     expect(LAYOUT.indexOf('href="#main"')).toBeLessThan(LAYOUT.indexOf("<header"));
+  });
+
+  it("keeps the header on one line on a phone", () => {
+    // The tagline gives way below sm, and the feedback buttons never wrap.
+    expect(LAYOUT).toMatch(/className="[^"]*hidden[^"]*sm:inline[^"]*"[^>]*>\s*AppSec control plane/);
+    const FEEDBACK = readFileSync(
+      fileURLToPath(new URL("../components/feedback.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(FEEDBACK).toMatch(/className="tap [^"]*whitespace-nowrap/);
   });
 
   it("renders the nav through the rail, so aria-current is computed", () => {
