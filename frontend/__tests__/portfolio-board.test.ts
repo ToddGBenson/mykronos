@@ -108,7 +108,9 @@ describe("BOARD_CAPABILITIES", () => {
   it("is twelve tiles, one per capability or lane, each with a short name", () => {
     expect(BOARD_CAPABILITIES).toHaveLength(12);
     expect(new Set(BOARD_CAPABILITIES.map((c) => c.capability)).size).toBe(12);
-    for (const c of BOARD_CAPABILITIES) expect(c.short.length).toBeLessThanOrEqual(9);
+    // Seven monospace characters is what a quarter of a 400px screen holds
+    // beside the icon; "Container" was cut to "Contai…" there.
+    for (const c of BOARD_CAPABILITIES) expect(c.short.length).toBeLessThanOrEqual(7);
   });
 });
 
