@@ -993,9 +993,12 @@ class Settings(BaseSettings):
         default="high",
         pattern="^(critical|high|medium|low|info)$",
         description=(
-            "Findings at or above this cause one summary message per ingested "
-            "batch. Not per finding: a scan uploading four hundred criticals "
-            "is one event a person needs to know about. Set to 'critical' if "
+            "New findings at or above this cause one summary message per "
+            "ingested batch. Not per finding: a scan uploading four hundred "
+            "criticals is one event a person needs to know about. Only "
+            "findings no earlier scan submitted at or above this severity are "
+            "posted; the open backlog is counted in the briefing DM instead "
+            "(TheHub #61195). Set to 'critical' if "
             "'high' proves too noisy — the failure mode of an alert channel is "
             "that people stop reading it, which costs more than it saves."
         ),
@@ -1042,7 +1045,9 @@ class Settings(BaseSettings):
             "DM with no link to the page it summarises is skipped rather than "
             "sent. The library-allowlist check run links each reported library "
             "to `<dashboard_url>/libraries/request`; unset, it carries no links "
-            "and says so."
+            "and says so. A scan's new-finding post links each finding to "
+            "`<dashboard_url>/repos/<id>/findings/<finding_id>`; unset, it "
+            "names them without links."
         ),
     )
 

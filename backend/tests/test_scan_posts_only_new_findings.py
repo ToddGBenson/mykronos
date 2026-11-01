@@ -269,3 +269,17 @@ class TestTheBacklogIsInTheDigest:
         assert "18 open critical/high" in briefing_dm.product_line(
             briefing_dm.ProductRead(REPO, product)
         )
+
+
+class TestTheFloor:
+    def test_a_finding_raised_above_the_floor_is_new_to_the_channel(
+        self, app_client: TestClient
+    ) -> None:
+        """First seen at medium, it was ingested and never announced. When
+        the scanner re-rates it high, the channel has not heard of it."""
+        auth = _auth(app_client)
+        _post(app_client, auth, [_finding(1, "medium")], FIRST_RUN)
+        _compact(app_client)
+        _post(app_client, auth, [_finding(1, "high")], SECOND_RUN)
+        assert len(_sent(app_client)) == 1
+        assert "1 new high" in _sent(app_client)[0].title

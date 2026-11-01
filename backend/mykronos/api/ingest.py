@@ -617,6 +617,109 @@ async def ingest_scan_run(
 _SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 _SEVERITY_RANK = {name: rank for rank, name in enumerate(reversed(_SEVERITY_ORDER))}
 
+#: How many new findings a post names before it says how many it left out.
+_NEW_LISTED = 5
+
+#: A finding title is cut to this in a post; its page has it whole.
+_TITLE_CHARS = 200
+
+
+def _first_sightings(
+    request: Request, loud: list[dict[str, Any]], now: datetime, threshold: int
+) -> list[dict[str, Any]]:
+    """The rows in `loud` that no earlier scan has submitted at or above the
+    alert floor (TheHub #61195).
+
+    Known means the lake holds the `finding_id` at a severity at or above
+    `threshold`, in any status, or a sealed buffer segment not yet compacted
+    carries it so: compaction runs every five minutes, and a lane can post
+    twice inside that window. A finding first seen below the floor and now
+    above it was never announced, so it is new to the channel. A row that
+    inherited an earlier first sighting from its re-keyed predecessor (D-139)
+    is the same finding under a new id, so it is not new either. A finding
+    that was fixed and comes back is not announced here; it is open again,
+    and the briefing counts it.
+
+    The buffer is read before the lake: compaction writes the lake before it
+    consumes a segment, so a row moving between the two is seen in one of
+    them. An unreadable lake fails toward posting, which is what this did
+    before, rather than silencing a new critical.
+    """
+    candidates = {
+        str(r["finding_id"]) for r in loud if r.get("first_seen_at") == now
+    }
+    if not candidates:
+        return []
+    known: set[str] = set()
+
+    buffer = request.app.state.buffer
+    for segment in buffer.sealed_segments("findings"):
+        try:
+            pending = buffer.read_segment(segment)
+        except OSError:
+            continue  # consumed by compaction since it was listed
+        known.update(
+            str(row.get("finding_id"))
+            for row in pending
+            if row.get("finding_id") in candidates
+            and _SEVERITY_RANK.get(str(row.get("severity") or ""), 0) >= threshold
+        )
+
+    catalog = request.app.state.catalog
+    wanted = sorted(candidates - known)
+    floor = [name for name, rank in _SEVERITY_RANK.items() if rank >= threshold]
+    if wanted and catalog.all_files("findings"):
+        try:
+            known.update(
+                str(row[0])
+                for row in catalog.query(
+                    "SELECT DISTINCT finding_id FROM findings WHERE finding_id IN "
+                    f"({', '.join('?' for _ in wanted)}) "
+                    f"AND lower(severity) IN ({', '.join('?' for _ in floor)})",
+                    [*wanted, *floor],
+                )
+            )
+        except duckdb.Error:
+            logger.warning("Could not read findings to tell new from known", exc_info=True)
+
+    seen: set[str] = set()
+    new: list[dict[str, Any]] = []
+    for row in loud:
+        finding_id = str(row["finding_id"])
+        if finding_id in candidates and finding_id not in known and finding_id not in seen:
+            seen.add(finding_id)
+            new.append(row)
+    return new
+
+
+def _new_finding_line(row: dict[str, Any], base: str) -> str:
+    """One line per new finding: the link before the title, so a long title
+    cut at `notify.LINE_MAX` never loses it. The title is the scanner's text,
+    so Slack's three markup characters are escaped."""
+    title = str(row.get("title") or row.get("rule_id") or "")[:_TITLE_CHARS]
+    title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    link = f"<{base}{row['finding_id']}|open> " if base else ""
+    return f"- {row['severity']}: {link}{title}"
+
+
+def _finding_link_base(request: Request, repo_full_name: str) -> str:
+    """`<dashboard_url>/repos/<onboarding id>/findings/`, or "" when either is
+    unknown: a post without a link still says what was found."""
+    base = request.app.state.settings.dashboard_url.strip().rstrip("/")
+    if not base:
+        return ""
+    try:
+        with request.app.state.db.session() as session:
+            repo_id = session.execute(
+                select(RepoOnboarding.id).where(
+                    RepoOnboarding.github_repo_full_name == repo_full_name
+                )
+            ).scalar()
+    except Exception:  # noqa: BLE001 - a missing link must not lose the post
+        logger.warning("Could not read the onboarding id for a finding link", exc_info=True)
+        return ""
+    return f"{base}/repos/{repo_id}/findings/" if repo_id else ""
+
 
 @router.post("/findings", response_model=IngestAccepted)
 async def ingest_findings(
@@ -756,6 +859,12 @@ async def ingest_findings(
     # finding a gate would count against this commit (D-139).
     inherit_decisions(request.app.state.catalog, rows, predecessors)
 
+    settings = request.app.state.settings
+    threshold = _SEVERITY_RANK.get(settings.slack_notify_min_severity, 3)
+    loud = [r for r in rows if _SEVERITY_RANK.get(r["severity"], 0) >= threshold]
+    # Before this batch is appended, or every finding in it would be "known".
+    new = _first_sightings(request, loud, now, threshold)
+
     request.app.state.buffer.append("findings", rows)
     # Rescored after the next compaction puts these rows in the lake
     # (TheHub #60827); the flag is debounced, so a scan's many batches are
@@ -767,29 +876,34 @@ async def ingest_findings(
     # four hundred messages is a channel somebody mutes, which costs more than
     # the alert was ever worth.
     #
-    # These are newly *ingested*, not necessarily newly *discovered* — the
-    # compaction upsert decides that, and it has not run yet. The wording says
-    # "reported" for exactly that reason.
-    settings = request.app.state.settings
-    threshold = _SEVERITY_RANK.get(settings.slack_notify_min_severity, 3)
-    loud = [r for r in rows if _SEVERITY_RANK.get(r["severity"], 0) >= threshold]
-    if loud:
-        counts = Counter(r["severity"] for r in loud)
+    # And only the findings this batch is first to see (TheHub #61195). The
+    # post used to say "reported N" for everything in the batch, so every scan
+    # re-announced the standing backlog: 318 posts in 14 days, 220 of them
+    # verbatim repeats. A finding the lake or the buffer already holds is not
+    # news; the backlog's totals are in the daily briefing DM instead.
+    if new:
+        counts = Counter(r["severity"] for r in new)
         summary = ", ".join(
-            f"{counts[name]} {name}" for name in _SEVERITY_ORDER if counts.get(name)
+            f"{counts[name]} new {name}" for name in _SEVERITY_ORDER if counts.get(name)
         )
-        worst = max(_SEVERITY_RANK.get(r["severity"], 0) for r in loud)
+        worst = max(_SEVERITY_RANK.get(r["severity"], 0) for r in new)
+        base = _finding_link_base(request, token.repo_full_name)
         background.add_task(
             request.app.state.notifier.send,
             Notification(
-                title=f"{capability} reported {summary}",
-                detail=(
-                    f"Scan run `{batch.scan_run_id}`.\n"
-                    + "\n".join(f"- {r['severity']}: {r['title']}" for r in loud[:5])
-                    + (f"\n...and {len(loud) - 5} more." if len(loud) > 5 else "")
-                ),
+                title=f"{capability} found {summary}",
+                detail="",
                 repo_full_name=token.repo_full_name,
                 level="critical" if worst >= _SEVERITY_RANK["critical"] else "warning",
+                lines=(
+                    f"Scan run `{batch.scan_run_id}`.",
+                    *(_new_finding_line(r, base) for r in new[:_NEW_LISTED]),
+                    *(
+                        [f"...and {len(new) - _NEW_LISTED} more."]
+                        if len(new) > _NEW_LISTED
+                        else []
+                    ),
+                ),
             ),
         )
 

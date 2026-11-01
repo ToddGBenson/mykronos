@@ -233,6 +233,10 @@ class RiskDeltaRead:
     #: finding ids with a merged Patchwork fix.
     merged_fix_ids: set[str]
     mass_closures: list[MassClosure]
+    #: severity -> count of open critical/high findings, whenever they were
+    #: first seen. The scan post names only new findings (TheHub #61195), so
+    #: this is where the standing backlog is reported.
+    open_backlog: dict[str, int] = field(default_factory=dict)
 
 
 def _changed_findings(
@@ -268,6 +272,23 @@ def _changed_findings(
         for fid, repo, capability, rule_id, title, severity, status, source, introduced, was_closed
         in rows
     ]
+
+
+def _open_backlog(catalog: Catalog, asset_id: str | None) -> dict[str, int]:
+    """Open critical and high findings by severity: the backlog the scan post
+    no longer repeats on every scan (TheHub #61195)."""
+    scope = " AND asset_id = ?" if asset_id else ""
+    rows = catalog.query(
+        f"""
+        WITH current AS ({CURRENT_FINDINGS})
+        SELECT lower(severity), count(*) FROM current
+        WHERE status = 'open' AND lower(severity) IN ('critical', 'high'){scope}
+        GROUP BY 1
+        """,
+        [asset_id] if asset_id else [],
+    )
+    counts = {str(severity): int(count) for severity, count in rows}
+    return {s: counts[s] for s in ("critical", "high") if counts.get(s)}
 
 
 def _merged_fix_ids(catalog: Catalog, finding_ids: list[str]) -> set[str]:
@@ -442,6 +463,7 @@ def read_risk_delta(
         mass_closures=mass_closures(changed, accepted, merged, threshold=threshold)
         if ids
         else [],
+        open_backlog=_open_backlog(catalog, asset_id),
     )
 
 
@@ -566,6 +588,10 @@ def risk_delta_section(read: RiskDeltaRead | None, why: str = "") -> Section:
                 {"finding_id": f.finding_id, "epss": score} for f, score in epss
             ],
             "mass_closures": [asdict(m) for m in read.mass_closures],
+            "open_backlog": {
+                "total": sum(read.open_backlog.values()),
+                "by_severity": dict(read.open_backlog),
+            },
         },
     )
 

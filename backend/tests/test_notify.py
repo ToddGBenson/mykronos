@@ -373,7 +373,7 @@ class TestFindingAlerts:
             [_finding(rule_id=f"r{n}", file_path=f"a/{n}.py") for n in range(50)],
         )
         assert len(notified.sent) == 1
-        assert "50 critical" in notified.sent[0].title
+        assert "50 new critical" in notified.sent[0].title
 
     def test_the_summary_lists_a_handful_and_says_how_many_it_left_out(
         self, client: TestClient, auth: dict[str, str], notified: RecordingNotifier
@@ -383,7 +383,7 @@ class TestFindingAlerts:
             auth,
             [_finding(rule_id=f"r{n}", file_path=f"a/{n}.py") for n in range(9)],
         )
-        assert "...and 4 more." in notified.sent[0].detail
+        assert "...and 4 more." in notified.sent[0].lines
 
     def test_findings_below_the_floor_are_silent(
         self, client: TestClient, auth: dict[str, str], notified: RecordingNotifier
@@ -472,7 +472,7 @@ class TestTheDeployedConfigurationIsAddressed:
         assert call["url"] == CHAT_POST_MESSAGE
         assert call["headers"]["Authorization"] == "Bearer xoxb-from-vault"
         assert call["json"]["channel"] == "C0ALERTS"
-        assert "1 high" in call["json"]["text"]
+        assert "1 new high" in call["json"]["text"]
 
 
 class TestOracleGateAlerts:
