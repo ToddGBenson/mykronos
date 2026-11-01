@@ -455,6 +455,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    agent_low_medium_dispositions_governed: bool = Field(
+        default=True,
+        description=(
+            "Whether an agent's false-positive, suppression or acceptance of a low "
+            "or medium finding is an approval request rather than a direct close "
+            "(TheHub #61158, operator decision #61148). On by default. Critical and "
+            "high are governed whatever this says (#713); a person's disposition and "
+            "the platform's own closes (reconciler, re-scans, auto-triage) are never "
+            "governed. Off restores direct agent closes of low and medium."
+        ),
+    )
+
     reviewer_model: str = Field(
         default="claude-opus-5-5",
         description=(

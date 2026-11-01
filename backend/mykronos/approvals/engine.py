@@ -416,9 +416,53 @@ def _satisfiable(session: Session, tier: Tier, duty: str, now: datetime) -> bool
     return _active_delegation(session, duty, tier.name, None, now) is not None
 
 
+def approver_purposes(delegation: Delegation) -> list[str]:
+    """The credential purposes a delegation is scoped to; empty means any
+    agent of its families (TheHub #61158)."""
+    raw = (delegation.constraints or {}).get("approver_purposes") or []
+    return [str(p) for p in raw] if isinstance(raw, list) else []
+
+
+def _purpose_refusal(delegation: Delegation, approver: Principal) -> str | None:
+    """Why `approver` is not one of the purposes `delegation` names, or `None`.
+
+    A purpose is free text chosen at mint, and an agent may mint a child with
+    any purpose it likes. So the purpose counts only on a credential a person
+    minted: a root credential (no lineage) that the platform did not start.
+    """
+    purposes = approver_purposes(delegation)
+    if not purposes:
+        return None
+    purpose = str(approver.provenance.get("purpose") or "")
+    if purpose not in purposes:
+        return (
+            f"delegation {delegation.id} admits only approver_purposes "
+            f"{purposes}; this credential's purpose is {purpose or 'unset'!r}."
+        )
+    if approver.provenance.get("lineage") or approver.provenance.get("platform_started"):
+        return (
+            f"delegation {delegation.id} trusts the purpose {purpose!r} only on a "
+            "credential minted by a person; this one was minted by an agent or the "
+            "platform, which may name any purpose it likes."
+        )
+    return None
+
+
 def _active_delegation(
-    session: Session, duty: str, tier: str, family: str | None, now: datetime
+    session: Session,
+    duty: str,
+    tier: str,
+    family: str | None,
+    now: datetime,
+    approver: Principal | None = None,
+    refusals: list[str] | None = None,
 ) -> Delegation | None:
+    """The first live delegation covering `duty`/`tier` for this approver.
+
+    With `approver`, a delegation that names `approver_purposes` matches only
+    a person-minted credential of one of those purposes (TheHub #61158); why
+    each otherwise-matching delegation refused it goes into `refusals`.
+    """
     rows = session.execute(select(Delegation).where(Delegation.duty == duty)).scalars()
     for d in rows:
         if d.revoked_at or d.suspended_at or d.expires_at <= now:
@@ -427,6 +471,12 @@ def _active_delegation(
             continue
         if family is not None and family not in (d.approver_families or []):
             continue
+        if approver is not None:
+            refusal = _purpose_refusal(d, approver)
+            if refusal is not None:
+                if refusals is not None:
+                    refusals.append(refusal)
+                continue
         return d
     return None
 
@@ -510,15 +560,30 @@ def decide(
             )
 
         delegation: Delegation | None = None
+        rules = tier.independence
         if approver.is_agent:
+            refusals: list[str] = []
             delegation = _active_delegation(
-                session, request.duty, tier.name, approver.provenance.get("family"), now
+                session,
+                request.duty,
+                tier.name,
+                approver.provenance.get("family"),
+                now,
+                approver=approver,
+                refusals=refusals,
             )
             if delegation is None:
                 raise ApprovalError(
                     f"No active delegation lets a {approver.provenance.get('family')} agent "
                     f"approve '{request.duty}' tier '{tier.name}' (spec 34 §5)."
+                    + (" " + " ".join(refusals) if refusals else "")
                 )
+            # A tier may leave out fresh_context so a named credential can
+            # approve on its own (TheHub #61158). Only a delegation that names
+            # the purpose earns that: one by model family alone would trust
+            # every agent of the family, so it keeps fresh_context.
+            if not approver_purposes(delegation):
+                rules = rules | {Independence.FRESH_CONTEXT}
 
         same_person = approver.actor == request.requested_by
         allowed_same = (
@@ -532,7 +597,7 @@ def decide(
             requester_kind=request.requester_kind,
             requester_provenance=request.requester_provenance or {},
             approver=approver,
-            rules=tier.independence,
+            rules=rules,
             single_operator_same_person_allowed=allowed_same,
         )
         if violations:
@@ -659,6 +724,19 @@ def propose_delegation(
             )
     if not approver_families:
         raise ApprovalError("Name at least one model family the delegation trusts.")
+    constraints = dict(constraints or {})
+    if "approver_purposes" in constraints:
+        purposes = constraints["approver_purposes"]
+        if (
+            not isinstance(purposes, list)
+            or not purposes
+            or not all(isinstance(p, str) and p.strip() for p in purposes)
+        ):
+            raise ApprovalError(
+                "constraints.approver_purposes must be a non-empty list of credential "
+                "purposes, e.g. ['security-champion'] (TheHub #61158)."
+            )
+        constraints["approver_purposes"] = sorted({p.strip() for p in purposes})
     limit = utcnow() + timedelta(days=policy.delegations.max_days)
     if expires_at > limit:
         raise ApprovalError(
@@ -671,7 +749,7 @@ def propose_delegation(
         "approver_families": sorted(approver_families),
         "expires_at": expires_at.isoformat(),
         "sampling": policy.delegations.default_sampling if sampling is None else sampling,
-        "constraints": constraints or {},
+        "constraints": constraints,
     }
     return create_request(
         db,

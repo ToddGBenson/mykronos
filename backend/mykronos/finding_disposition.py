@@ -1,4 +1,4 @@
-"""Governed dispositions of critical and high findings (mykronos #713).
+"""Governed dispositions of an agent's findings (mykronos #713, TheHub #61158).
 
 `PATCH /api/dashboard/findings/{id}/status` closes a finding as completely as
 an approved risk acceptance does, and until this module anyone with write
@@ -19,9 +19,18 @@ high** finding:
   governed home, `/api/risk-acceptances`.
 
 A person's direct disposition keeps working (one operator runs this estate,
-and `single_operator` already flags that), and so does an agent's on medium
-and below. Those are the next step if the governed tiers prove their worth;
-the dangerous case is the one closed here.
+and `single_operator` already flags that).
+
+**Low and medium too, since TheHub #61158** (operator decision #61148). An
+agent's low or medium false positive or suppression is a request like a high
+one, and its acceptance goes to `/api/risk-acceptances`; a delegation scoped
+to `constraints.approver_purposes = ['security-champion']` lets that one
+credential approve another agent's request. Only an *agent's* disposition
+changes: a person's, and the platform's own - the reconciler's absence
+closing, re-scans, auto-triage - never pass through `governed`. An agent's
+disposition of an `info` finding stays direct. The setting
+`agent_low_medium_dispositions_governed` (default on) restores the #713-only
+behaviour when off.
 
 **A member of a serious toxic combination is governed at the combination's
 severity** (review of #1018). Since TheHub #60965 a member dispositioned
@@ -62,8 +71,15 @@ logger = logging.getLogger(__name__)
 
 DUTY = "finding_disposition"
 ROUTE = "/api/dashboard/findings/{finding_id}/disposition-requests"
-#: Severities an agent may not close on its own word.
-GOVERNED_SEVERITIES = ("critical", "high")
+#: Critical and high: governed since #713, whatever the setting.
+SERIOUS_SEVERITIES: tuple[str, ...] = ("critical", "high")
+#: Governed since TheHub #61158 unless `agent_low_medium_dispositions_governed`
+#: is off.
+LOW_MEDIUM_SEVERITIES: tuple[str, ...] = ("medium", "low")
+#: Severities an agent may not close on its own word, worst first. `bind`
+#: sets it from the setting; read it as `finding_disposition.GOVERNED_SEVERITIES`
+#: (an attribute, never imported by name) so the setting is seen.
+GOVERNED_SEVERITIES: tuple[str, ...] = SERIOUS_SEVERITIES + LOW_MEDIUM_SEVERITIES
 #: What this duty can apply. `accepted_risk` is a risk acceptance, not this.
 DISPOSITIONS = ("false_positive", "suppressed")
 
@@ -75,11 +91,20 @@ _DB: Any = None
 _ORACLE_POLICY_PATH: Any = None
 
 
-def bind(catalog: Catalog, *, db: Any = None, oracle_policy_path: Any = None) -> None:
-    global _CATALOG, _DB, _ORACLE_POLICY_PATH
+def bind(
+    catalog: Catalog,
+    *,
+    db: Any = None,
+    oracle_policy_path: Any = None,
+    govern_low_medium: bool = True,
+) -> None:
+    global _CATALOG, _DB, _ORACLE_POLICY_PATH, GOVERNED_SEVERITIES
     _CATALOG = catalog
     _DB = db
     _ORACLE_POLICY_PATH = oracle_policy_path
+    GOVERNED_SEVERITIES = SERIOUS_SEVERITIES + (
+        LOW_MEDIUM_SEVERITIES if govern_low_medium else ()
+    )
 
 
 def _catalog() -> Catalog:
@@ -262,9 +287,9 @@ def _adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
     severity, combinations = governing_severity(row)
     if severity not in GOVERNED_SEVERITIES:
         raise ApprovalError(
-            f"Finding {subject_ref} is {severity} and in no high or critical toxic "
-            "combination; only critical and high dispositions are governed. "
-            "Disposition it directly."
+            f"Finding {subject_ref} is {severity} and in no toxic combination that "
+            f"raises it; only {', '.join(GOVERNED_SEVERITIES)} dispositions are "
+            "governed. Disposition it directly."
         )
     finding = {key: row.get(key) for key in _FINDING_FIELDS}
     # Round-tripped through JSON once, so the bundle stored in the request is
@@ -329,9 +354,9 @@ def _cluster_adapter(subject_ref: str, context: dict[str, Any]) -> Subject:
     tier = next((s for s in GOVERNED_SEVERITIES if s in severities), None)
     if tier is None:
         raise ApprovalError(
-            f"Cluster {subject_ref} holds no critical or high finding and no member of a "
-            "high or critical toxic combination; dispositions of "
-            "medium and below are not governed. Disposition it directly."
+            f"Cluster {subject_ref} holds no {', '.join(GOVERNED_SEVERITIES)} finding "
+            "and no member of a toxic combination that raises one; its dispositions "
+            "are not governed. Disposition it directly."
         )
     evidence = json.loads(
         json.dumps(

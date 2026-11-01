@@ -1607,13 +1607,16 @@ export interface paths {
         put?: never;
         /**
          * Request Finding Disposition
-         * @description Ask for a critical or high finding to be closed as a false positive (#713).
+         * @description Ask for a finding to be closed as a false positive (#713, TheHub #61158).
          *
-         *     The finding stays open. The platform freezes the finding row, its raw scanner
-         *     record and the reason into an approval request under the `finding_disposition`
-         *     duty, tiered by the finding's governing severity - its own, raised to that of
-         *     any high or critical toxic combination it is a member of - and applies the
-         *     disposition only when an approver the policy admits says yes.
+         *     For an agent's critical, high, medium or low finding. The finding stays
+         *     open. The platform freezes the finding row, its raw scanner record and the
+         *     reason into an approval request under the `finding_disposition` duty,
+         *     tiered by the finding's governing severity - its own, raised to that of any
+         *     toxic combination it is a member of - and applies the disposition only when
+         *     an approver the policy admits says yes. Low and medium may be approved by a
+         *     delegate scoped to a credential purpose (the security champion), never by
+         *     the requester.
          */
         post: operations["request_finding_disposition_api_dashboard_findings__finding_id__disposition_requests_post"];
         delete?: never;
@@ -4231,7 +4234,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Delegation Stats */
+        /**
+         * Delegation Stats
+         * @description One delegation's record: all-time counts, and what its delegates
+         *     approved in the last `days` (TheHub #61158), for the weekly audit line.
+         */
         get: operations["delegation_stats_api_approvals_delegations__delegation_id__stats_get"];
         put?: never;
         post?: never;
@@ -6631,6 +6638,13 @@ export interface components {
             suspended_reason: string | null;
             /** Active */
             active: boolean;
+            /**
+             * Constraints
+             * @description What the delegation is scoped to beyond its families, e.g. `approver_purposes: ['security-champion']` (TheHub #61158). Empty for a family-only delegation such as the platform reviewer's.
+             */
+            constraints?: {
+                [key: string]: unknown;
+            };
         };
         /** DependencyHealthOut */
         DependencyHealthOut: {
@@ -19081,7 +19095,9 @@ export interface operations {
     };
     delegation_stats_api_approvals_delegations__delegation_id__stats_get: {
         parameters: {
-            query?: never;
+            query?: {
+                days?: number;
+            };
             header?: never;
             path: {
                 delegation_id: string;

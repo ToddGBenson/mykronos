@@ -5643,13 +5643,16 @@ class DispositionRequestOut(BaseModel):
 async def request_finding_disposition(
     request: Request, finding_id: str, body: DispositionRequestIn, principal: PrincipalDep
 ) -> DispositionRequestOut:
-    """Ask for a critical or high finding to be closed as a false positive (#713).
+    """Ask for a finding to be closed as a false positive (#713, TheHub #61158).
 
-    The finding stays open. The platform freezes the finding row, its raw scanner
-    record and the reason into an approval request under the `finding_disposition`
-    duty, tiered by the finding's governing severity - its own, raised to that of
-    any high or critical toxic combination it is a member of - and applies the
-    disposition only when an approver the policy admits says yes.
+    For an agent's critical, high, medium or low finding. The finding stays
+    open. The platform freezes the finding row, its raw scanner record and the
+    reason into an approval request under the `finding_disposition` duty,
+    tiered by the finding's governing severity - its own, raised to that of any
+    toxic combination it is a member of - and applies the disposition only when
+    an approver the policy admits says yes. Low and medium may be approved by a
+    delegate scoped to a credential purpose (the security champion), never by
+    the requester.
     """
     if not principal.may_write:
         raise HTTPException(
@@ -5828,7 +5831,9 @@ async def apply_finding_status(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
         )
 
-    # #713: an agent may not close a critical or high finding on its own word.
+    # #713: an agent may not close a critical or high finding on its own word,
+    # and since TheHub #61158 a low or medium one either (unless
+    # agent_low_medium_dispositions_governed is off).
     # A false positive or a suppression goes through the governed duty; an
     # acceptance already has one. A person's direct call is unchanged. A
     # member of a high or critical toxic combination is governed at the
@@ -5844,15 +5849,16 @@ async def apply_finding_status(
         what = (
             f"a {own} finding"
             if own in finding_disposition.GOVERNED_SEVERITIES
-            else f"a {own} finding that is a member of a high or critical toxic "
-            "combination (dispositioning it dissolves the combination)"
+            else f"a {own} finding that is a member of a toxic combination that "
+            "raises it (dispositioning it dissolves the combination)"
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 f"An agent may not set {what} to "
-                f"'{body.status.value}' directly: closing a serious finding is a "
-                f"governed decision (#713). Use {governed_route}; someone independent "
+                f"'{body.status.value}' directly: an agent closing a finding is a "
+                f"governed decision (#713, TheHub #61158). Use {governed_route}; "
+                "someone independent "
                 "approves it, and the finding stays open until they do."
             ),
         )

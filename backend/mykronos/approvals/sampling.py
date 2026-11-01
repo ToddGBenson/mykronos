@@ -205,8 +205,15 @@ def sweep(db: Any, policy: ApprovalPolicy, *, now: datetime | None = None) -> Sw
     return result
 
 
-def delegation_stats(db: Any, policy: ApprovalPolicy, delegation_id: str) -> dict[str, Any]:
-    """What the governance page shows for one delegation (spec 34 §5.2)."""
+def delegation_stats(
+    db: Any, policy: ApprovalPolicy, delegation_id: str, *, days: int = 7
+) -> dict[str, Any]:
+    """What the governance page shows for one delegation (spec 34 §5.2).
+
+    `approved` lists what its delegates approved in the last `days`, newest
+    first, with who asked: the weekly audit of a delegate (TheHub #61158).
+    """
+    since = utcnow() - timedelta(days=days)
     with db.session() as session:
         d = session.get(Delegation, delegation_id)
         if d is None:
@@ -222,11 +229,35 @@ def delegation_stats(db: Any, policy: ApprovalPolicy, delegation_id: str) -> dic
         by_verdict: dict[str, int] = {}
         for dec in decisions:
             by_verdict[dec.verdict] = by_verdict.get(dec.verdict, 0) + 1
+        recent = sorted(
+            ((dec, req) for dec, req in pairs if dec.created_at >= since),
+            key=lambda p: p[0].created_at,
+            reverse=True,
+        )
         return {
             "delegation_id": d.id,
             "duty": d.duty,
             "tiers": list(d.tiers or []),
             "approver_families": list(d.approver_families or []),
+            "constraints": dict(d.constraints or {}),
+            "window_days": days,
+            "approved_in_window": sum(1 for dec, _ in recent if dec.verdict == "approve"),
+            "rejected_in_window": sum(1 for dec, _ in recent if dec.verdict == "reject"),
+            "approved": [
+                {
+                    "decision_id": dec.id,
+                    "request_id": req.id,
+                    "duty": req.duty,
+                    "tier": req.tier,
+                    "subject_ref": req.subject_ref,
+                    "requested_by": req.requested_by,
+                    "approver": dec.approver,
+                    "decided_at": dec.created_at,
+                    "sampled": dec.sampled,
+                }
+                for dec, req in recent
+                if dec.verdict == "approve"
+            ],
             "decisions": len(decisions),
             "by_verdict": by_verdict,
             "reject_rate": (by_verdict.get("reject", 0) / len(decisions)) if decisions else None,

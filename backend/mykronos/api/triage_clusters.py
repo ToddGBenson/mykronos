@@ -281,8 +281,8 @@ async def disposition_cluster(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
-                    "An agent may not accept the risk of a cluster holding a critical or "
-                    "high finding directly (#713). Use POST /api/risk-acceptances."
+                    "An agent may not accept the risk of a cluster holding a governed "
+                    "finding directly (#713, TheHub #61158). Use POST /api/risk-acceptances."
                 ),
             )
         settings = request.app.state.settings
