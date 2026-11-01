@@ -107,7 +107,8 @@ GITLEAKS_SHA256 = "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a84
 
 
 def _secret_hygiene_run(document: dict[str, Any]) -> str:
-    return "\n".join(str(step.get("run", "")) for step in document["jobs"]["secret-hygiene"]["steps"])
+    steps = document["jobs"]["secret-hygiene"]["steps"]
+    return "\n".join(str(step.get("run", "")) for step in steps)
 
 
 def test_secret_hygiene_installs_the_pinned_gitleaks_by_checksum(
@@ -117,17 +118,19 @@ def test_secret_hygiene_installs_the_pinned_gitleaks_by_checksum(
     run = _secret_hygiene_run(document)
     assert "/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz" in run
     assert f"{GITLEAKS_SHA256}  " in run and "sha256sum -c" in run
-    pipeline = (WORKFLOW.parents[2] / "deploy" / "concourse" / "pipelines" / "mykronos.yml").read_text(
-        encoding="utf-8"
+    pipeline = WORKFLOW.parents[2] / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+    assert GITLEAKS_SHA256 in pipeline.read_text(encoding="utf-8"), (
+        "the Concourse lane moved; move this pin with it"
     )
-    assert GITLEAKS_SHA256 in pipeline, "the Concourse lane moved; move this pin with it"
 
 
 def test_secret_hygiene_proves_every_allowlist_entry_over_the_history(
     document: dict[str, Any],
 ) -> None:
     job = document["jobs"]["secret-hygiene"]
-    checkout = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    checkout = next(
+        s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
+    )
     # The fixtures an entry exists for live in history (a branch commit and its
     # squash-merge), so a shallow clone would call a needed entry unused.
     assert checkout.get("with", {}).get("fetch-depth") == 0
@@ -152,7 +155,8 @@ def test_the_allowlist_check_tests_need_only_the_standard_library() -> None:
     )
     imports = set(re.findall(r"^(?:from|import) (\w+)", source, re.MULTILINE))
     assert imports <= {
-        "__future__", "importlib", "os", "shutil", "subprocess", "sys", "tomllib", "pathlib", "pytest",
+        "__future__", "collections", "importlib", "os", "pathlib", "shutil", "subprocess",
+        "sys", "tomllib", "typing", "pytest",
     }, imports
     script = (WORKFLOW.parents[2] / "scripts" / "check_gitleaks_allowlist.py").read_text(
         encoding="utf-8"

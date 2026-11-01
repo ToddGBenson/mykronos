@@ -29,7 +29,9 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -137,10 +139,12 @@ def test_the_writer_round_trips_awkward_strings() -> None:
 # --------------------------------------------------------------------------
 
 
-def fake_scanner(suppresses: dict[str, set[str]], findings: set[str]):
+def fake_scanner(
+    suppresses: dict[str, set[str]], findings: set[str]
+) -> Callable[[dict[str, Any]], set[str]]:
     """A gitleaks stand-in: an entry, keyed by description, hides findings."""
 
-    def scan(config: dict) -> set[str]:
+    def scan(config: dict[str, Any]) -> set[str]:
         hidden: set[str] = set()
         for entry in check.entries(config):
             hidden |= suppresses.get(entry.allowlist.get("description", ""), set())
@@ -188,7 +192,7 @@ def test_two_entries_covering_only_the_same_finding_both_fail() -> None:
 
 
 def test_a_config_with_no_entries_passes_without_scanning() -> None:
-    def scan(config: dict) -> set[str]:
+    def scan(config: dict[str, Any]) -> set[str]:
         raise AssertionError("nothing to prove, so nothing to run")
 
     assert check.unused_entries({"extend": {"useDefault": True}}, scan) == []
