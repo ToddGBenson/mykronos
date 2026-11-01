@@ -226,17 +226,20 @@ def test_a_hook_that_can_fail_loses_its_retry(tmp_path: Path) -> None:
     route to a non-success. An edit that gives either a non-zero exit path takes
     that premise away, and the exemption has to lapse with it rather than
     outlive the reason for it.
+
+    Broken on `report-to-hub`: since TheHub #61194 no pipeline has a
+    `notify-slack` hook left to break.
     """
     source = checker.PIPELINE_DIR / "thehub.yml"
     document = yaml.safe_load(source.read_text(encoding="utf-8"))
 
     patched = 0
     for step in _steps(document):
-        if step.get("task") == "notify-slack" and "attempts" in step:
+        if step.get("task") == "report-to-hub" and "attempts" in step:
             args = step["config"]["run"]["args"]
             args[-1] = args[-1].rstrip() + "\nexit 1\n"
             patched += 1
-    assert patched, "no retried notify-slack hook to break"
+    assert patched, "no retried report-to-hub hook to break"
 
     broken = tmp_path / "thehub.yml"
     broken.write_text(yaml.safe_dump(document), encoding="utf-8")

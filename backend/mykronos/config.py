@@ -835,14 +835,28 @@ class Settings(BaseSettings):
 
     red_main_gating_lanes: dict[str, list[str]] = Field(
         default_factory=lambda: {
-            "ToddGBenson/mykronos": ["unit", "lint-and-types", "pin-check"],
+            "ToddGBenson/mykronos": ["*"],
+            "ToddGBenson/TheHub": ["*"],
+            "ToddGBenson/personal-soc": ["*"],
         },
         description=(
             "Per repository, the Concourse jobs whose red build on main is "
-            "announced by the red-main poll. The pipeline is the repository "
-            "name lower-cased. A JSON object in the environment, for example "
+            "announced by the red-main poll; \"*\" is every job the pipeline "
+            "has. The pipeline is the repository name lower-cased. Since TheHub "
+            "#61194 this poll is the only sender of a red lane (the pipeline "
+            "hooks no longer post), so a lane left out here is announced "
+            "nowhere. A JSON object in the environment, for example "
             '{"owner/repo": ["unit", "lint"]}; an empty object turns the '
             "announcements off."
+        ),
+    )
+
+    red_main_branches: dict[str, str] = Field(
+        default_factory=lambda: {"ToddGBenson/TheHub": "develop"},
+        description=(
+            "Per repository, the branch its pipeline builds, where that is not "
+            "main, so the red-main poll's messages name the right one "
+            "(TheHub #61194)."
         ),
     )
 

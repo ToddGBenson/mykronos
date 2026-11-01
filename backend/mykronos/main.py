@@ -835,6 +835,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.concourse_url,
                 db=app.state.db,
                 gating=settings.red_main_gating_lanes,
+                branches=settings.red_main_branches,
                 tests=junit_totals_lookup(app.state.catalog),
                 team=settings.concourse_team,
                 link_base=(

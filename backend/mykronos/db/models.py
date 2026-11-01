@@ -1673,6 +1673,11 @@ class GatingLaneState(Base):
     #: Null when the commit could not be resolved from Concourse.
     first_bad_sha: Mapped[str | None] = mapped_column(String(40), default=None)
     last_green_sha: Mapped[str | None] = mapped_column(String(40), default=None)
+    #: The red message's Slack thread while the lane is red (TheHub #61194):
+    #: the recovery replies in it, and so can a later message about the same
+    #: red. Null when green, or when the notifier named no message.
+    slack_channel: Mapped[str | None] = mapped_column(String(32), default=None)
+    slack_ts: Mapped[str | None] = mapped_column(String(32), default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

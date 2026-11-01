@@ -419,7 +419,10 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
     if downloads and checksums < 3:
         problems.append(f"{name} PS-8 {checksums} checksum(s) for {downloads} download reference(s)")
 
-    if '"ok":true' not in raw:
+    # A pipeline with no notifier has nothing to verify: since TheHub #61194
+    # none of them posts to Slack, the backend's red-main poll does, and its
+    # SlackNotifier reads the body (`notify._read_bot_response`).
+    if "chat.postMessage" in raw and '"ok":true' not in raw:
         problems.append(f"{name} PS-10 the notifier does not check the response body")
 
     jobs = {job["name"] for job in document["jobs"]}

@@ -2424,6 +2424,21 @@ class RedGatingLaneOut(BaseModel):
         ),
     )
     last_green_sha: str | None = None
+    slack_channel: str | None = Field(
+        default=None,
+        description=(
+            "The Slack channel of this red run's message, with slack_ts "
+            "(TheHub #61194). Null when no message was posted or the notifier "
+            "named none."
+        ),
+    )
+    slack_ts: str | None = Field(
+        default=None,
+        description=(
+            "The Slack ts of this red run's message: a later message about the "
+            "same red replies in its thread rather than posting top-level."
+        ),
+    )
 
 
 class CiPage(BaseModel):
@@ -2580,6 +2595,8 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
                 first_bad_build=lane.first_bad_build,
                 first_bad_sha=lane.first_bad_sha,
                 last_green_sha=lane.last_green_sha,
+                slack_channel=lane.slack_channel,
+                slack_ts=lane.slack_ts,
             )
             for lane in session.execute(
                 select(GatingLaneState)

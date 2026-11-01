@@ -294,6 +294,12 @@ So: write to `/tmp`, and check the response body — Slack answers `200` with
 `{"ok":false}` when a post is rejected, and without that check an undelivered
 alert reads exactly like a delivered one.
 
+Since TheHub #61194 no committed pipeline has a notifier: their per-build
+Slack hooks posted once per failing build, so the MyKronos red-main poll
+(`backend/mykronos/red_main.py`) is now the one sender of a red lane, once per
+state change, and its `SlackNotifier` applies the same body check. PS-10 binds
+any pipeline that posts to Slack again.
+
 ### PS-11 — The applied pipeline is the pipeline
 
 The configuration Concourse is running must match the file in this repository.

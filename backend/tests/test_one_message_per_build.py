@@ -38,7 +38,7 @@ from mykronos import jobs, red_main
 from mykronos.config import Settings
 from mykronos.db import Database
 from mykronos.notify import Delivery, Notification
-from tests.test_red_main import BASE, NOW, NO_TESTS, REPO, _job
+from tests.test_red_main import BASE, NO_TESTS, NOW, REPO, _job
 
 THEHUB = "ToddGBenson/TheHub"
 THEHUB_BASE = "/api/v1/teams/main/pipelines/thehub"
@@ -55,9 +55,9 @@ class ThreadRecorder:
         return True
 
     async def send(self, note: Notification) -> bool:
-        return (await self.post(note)).delivered
+        return (await self.post_message(note)).delivered
 
-    async def post(self, note: Notification, *, thread_ts: str = "") -> Delivery:
+    async def post_message(self, note: Notification, *, thread_ts: str = "") -> Delivery:
         self.posts.append((note, thread_ts))
         return Delivery(True, ts=f"1700000000.{len(self.posts):06d}", channel="C0TEST")
 
@@ -274,3 +274,50 @@ def test_the_default_covers_every_lane_of_every_committed_pipeline() -> None:
     covered = {pipeline_name_for(repo) for repo, lanes in gating.items() if "*" in lanes}
     assert set(PIPELINES) <= covered
     assert Settings().red_main_branches == {THEHUB: "develop"}
+
+
+class TestTheBotThreads:
+    """`SlackNotifier.post_message`: the ts comes back, and a reply names its thread.
+
+    httpx is stubbed; nothing leaves the test."""
+
+    NOTE = Notification(title="t", detail="d", repo_full_name=REPO)
+
+    async def test_a_post_returns_the_message_ts_and_a_reply_names_its_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx2
+
+        from mykronos.notify import SlackNotifier
+        from tests.test_notify import TestTheBotTransport
+
+        stub = TestTheBotTransport._answering(
+            httpx2.Response(200, json={"ok": True, "ts": "1700000000.000042", "channel": "C0X"})
+        )
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+        notifier = SlackNotifier(bot_token="xoxb-test", channel="#alerts")
+
+        first = await notifier.post_message(self.NOTE)
+        await notifier.post_message(self.NOTE, thread_ts=first.ts)
+
+        assert first == Delivery(True, ts="1700000000.000042", channel="C0X")
+        assert "thread_ts" not in stub.calls[0]["json"]
+        assert stub.calls[1]["json"]["thread_ts"] == "1700000000.000042"
+
+    async def test_a_refused_post_names_no_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx2
+
+        from mykronos.notify import SlackNotifier
+        from tests.test_notify import TestTheBotTransport
+
+        stub = TestTheBotTransport._answering(
+            httpx2.Response(200, json={"ok": False, "error": "not_in_channel"})
+        )
+        monkeypatch.setattr(httpx2, "AsyncClient", lambda **kw: stub())
+
+        notifier = SlackNotifier(bot_token="xoxb-test", channel="#alerts")
+        result = await notifier.post_message(self.NOTE)
+
+        assert result == Delivery(False)

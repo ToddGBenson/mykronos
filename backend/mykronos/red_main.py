@@ -37,6 +37,28 @@ lane reached the lake, and "no test report uploaded" when none did.
 cancelling (`ConcourseClient.FAILED_STATUSES`), and a build with no result is
 not evidence either way.
 
+EVERY LANE, AND THE ONLY SENDER (TheHub #61194)
+-----------------------------------------------
+Every pipeline job used to post its own Slack message from an `on_failure` /
+`on_error` hook, once per failing build, with no memory of the build before:
+the comms audit (#61176) counted 118 of those in 14 days, 47 verbatim
+repeats, and 89 post-merge `NO VERDICT` / `DEVELOP IS RED` posts, 81 repeats,
+because each retry of a red lane posted again. Those hooks are gone. A lane
+list of `"*"` (`ALL_LANES`) now means every job the pipeline has, so this
+poll is the one sender of "a lane went red" for every lane, and its recorded
+state is what makes it one message per red rather than one per build.
+
+The red message's Slack `ts` is recorded with the state (`slack_ts`,
+`slack_channel`) while the lane stays red. The recovery replies in that
+thread instead of posting top-level, and the CI page exposes the thread so a
+later message about the same red, such as TheHub's deploy-stage failure, can
+reply in it too. A notifier that cannot thread (an incoming webhook) leaves
+it empty, and the recovery posts top-level as before.
+
+`branches` names a repository's tracked branch where it is not `main`:
+TheHub's pipeline builds `develop`, and a message saying "on main" for it
+would name the wrong branch.
+
 Pure apart from the injected `fetch` (one Concourse API path, raising on
 failure, as `gate_liveness` takes it) and `tests` (one lake lookup).
 """
@@ -64,6 +86,9 @@ VERSION_WINDOW = 50
 RED_STATUSES = frozenset({"failed", "errored"})
 GREEN = "green"
 RED = "red"
+#: In a repository's lane list: every job its pipeline has (TheHub #61194).
+ALL_LANES = "*"
+DEFAULT_BRANCH = "main"
 
 #: What `adapters/tests_junit` writes into a failing run's `detail`.
 _FAILED_OF = re.compile(r"(\d+) of (\d+) test\(s\) failed")
@@ -127,6 +152,10 @@ class LaneState:
     #: Full sha, or None when it could not be resolved.
     first_bad_sha: str | None = None
     last_green_sha: str | None = None
+    #: The red message's Slack thread while the lane stays red; None when
+    #: green, or when the notifier could not say (TheHub #61194).
+    slack_channel: str | None = None
+    slack_ts: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +165,8 @@ class Message:
     job: str
     title: str
     lines: tuple[str, ...]
+    #: Post as a reply in this thread: the recovery, under its red.
+    thread_ts: str = ""
 
 
 @dataclass
@@ -285,17 +316,21 @@ def evaluate(
     now: datetime,
     team: str = "main",
     link_base: str = "",
+    branches: dict[str, str] | None = None,
 ) -> RedMainReport:
     """One poll: every configured gating lane against its recorded state.
 
-    `gating` maps a repository to its gating lanes; its pipeline is
-    `pipeline_name_for(repo)`. `prior` is what the last poll recorded, keyed
-    on `(repo_full_name, job)`. `link_base` is a browser-reachable Concourse
-    team URL (`ConcourseClient.pipeline_url` minus the pipeline), or "" for no
-    links. Never raises.
+    `gating` maps a repository to its gating lanes, or to `ALL_LANES` for
+    every job its pipeline has; its pipeline is `pipeline_name_for(repo)`.
+    `prior` is what the last poll recorded, keyed on `(repo_full_name, job)`.
+    `link_base` is a browser-reachable Concourse team URL
+    (`ConcourseClient.pipeline_url` minus the pipeline), or "" for no links.
+    `branches` names a repository's branch where it is not `main`. Never
+    raises.
     """
     report = RedMainReport()
-    for repo, lanes in gating.items():
+    for repo, configured in gating.items():
+        branch = (branches or {}).get(repo) or DEFAULT_BRANCH
         pipeline = pipeline_name_for(repo)
         base = f"/api/v1/teams/{team}/pipelines/{pipeline}"
         try:
@@ -309,6 +344,9 @@ def evaluate(
             )
             continue
         by_name = {str(j.get("name")): j for j in jobs if isinstance(j, dict)}
+        lanes = [lane for lane in configured if lane != ALL_LANES]
+        if ALL_LANES in configured:
+            lanes += sorted(name for name in by_name if name not in lanes)
         for lane in lanes:
             before = prior.get((repo, lane))
             job = by_name.get(lane)
@@ -319,7 +357,7 @@ def evaluate(
                 continue
             after, message = _step(
                 fetch, base, repo, pipeline, lane, job, before, tests, now, link_base,
-                report.unreadable,
+                report.unreadable, branch,
             )
             if after is not None:
                 report.states.append(after)
@@ -340,6 +378,7 @@ def _step(
     now: datetime,
     link_base: str,
     problems: list[str],
+    branch: str = DEFAULT_BRANCH,
 ) -> tuple[LaneState | None, Message | None]:
     finished = _build(job.get("finished_build"))
     status = finished.get("status")
@@ -358,7 +397,7 @@ def _step(
             return after, None
         green_at = _when(finished) or now
         lines = [
-            f"{lane} is green again on main: build {build or '?'} succeeded "
+            f"{lane} is green again on {branch}: build {build or '?'} succeeded "
             f"after being red {_hours(before.red_since, green_at)}.",
             "It went red at build "
             f"{before.first_bad_build or '?'}, commit "
@@ -368,7 +407,8 @@ def _step(
         if url:
             lines.append(url)
         return after, Message(
-            "recovered", repo, lane, f"Green again on main: {repo} {lane}", tuple(lines)
+            "recovered", repo, lane, f"Green again on {branch}: {repo} {lane}", tuple(lines),
+            thread_ts=before.slack_ts or "",
         )
 
     transition = _build(job.get("transition_build"))
@@ -418,7 +458,7 @@ def _step(
         first_bad_sha=resolved.first_bad_sha,
         last_green_sha=resolved.last_green_sha,
     )
-    lines = [f"{repo}: {lane} {status} on main, build {build or '?'}."]
+    lines = [f"{repo}: {lane} {status} on {branch}, build {build or '?'}."]
     if again:
         lines.append(
             f"It went green and then red again since the last poll "
@@ -461,4 +501,4 @@ def _step(
     url = _job_url(link_base, pipeline, lane, build)
     if url:
         lines.append(url)
-    return after, Message("red", repo, lane, f"Red on main: {repo} {lane}", tuple(lines))
+    return after, Message("red", repo, lane, f"Red on {branch}: {repo} {lane}", tuple(lines))

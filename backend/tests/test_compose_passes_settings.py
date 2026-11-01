@@ -236,17 +236,18 @@ def test_the_deploy_reads_the_slack_pair_from_the_pipelines_vault_paths() -> Non
 
     A text check, because no test here runs PowerShell. It pins the
     name-to-path pairing, which is the part a rename would break silently.
+
+    Since TheHub #61194 the pipelines no longer resolve the pair at all: their
+    Slack hooks are gone and the backend's red-main poll is the one sender of
+    a red lane, so this pairing is now the only reader of those Vault paths
+    and the only thing keeping the alerts on the channel they always went to.
     """
     deploy = (COMPOSE.parent / "deploy.ps1").read_text(encoding="utf-8")
-    pipeline = (
-        COMPOSE.parents[1] / "concourse" / "pipelines" / "thehub.yml"
-    ).read_text(encoding="utf-8")
 
     for name, var in (
         ("MYKRONOS_SLACK_BOT_TOKEN", "slack-bot-token"),
         ("MYKRONOS_SLACK_CHANNEL", "slack-alert-channel"),
     ):
-        assert f"(({var}))" in pipeline, f"the pipeline no longer resolves (({var}))"
         assert re.search(
             rf'"{name}"\s*=\s*"concourse/main/{var}"', deploy
         ), f"deploy.ps1 does not read {name} from concourse/main/{var}"
