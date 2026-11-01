@@ -1,6 +1,6 @@
 """`pr-gates` runs deploy.sh's process gates on every TheHub pull request (TheHub #61159).
 
-TheHub #531 merged green with three new backend/services modules tested in one
+TheHub #531 merged green with two new backend/services modules tested in one
 combined file. deploy.sh's DEV-D ("Step 2.5: Process gates") wants a
 test_<name>.py for each new .py under backend/services or backend/api, so the
 first place that failed was production deploy 6710, after the merge. #547 split
@@ -104,15 +104,23 @@ BASE_DEPLOY_SH = textwrap.dedent('''\
           python3 scripts/lib/devb_gate.py) || {
         fail "DEV-B"
       }
-      NEW_PY=$(git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null | grep -E '^backend/(services|api)/.+\\.py$' || true)
+      @NEW_PY@
       while IFS= read -r f; do
         base=$(basename "$f" .py)
-        if ! echo "$CHANGED_FILES" | grep -qE "tests/.+/test_${base}\\.py$|tests/test_${base}\\.py$"; then
+        @TEST_LINE@
           MISSING="${MISSING}\\n  ${f}"
         fi
       done <<< "$NEW_PY"
     }
-''')
+''').replace(
+    "@NEW_PY@",
+    "NEW_PY=$(git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null"
+    " | grep -E '^backend/(services|api)/.+\\.py$' || true)",
+).replace(
+    "@TEST_LINE@",
+    'if ! echo "$CHANGED_FILES" | grep -qE'
+    ' "tests/.+/test_${base}\\.py$|tests/test_${base}\\.py$"; then',
+)
 
 
 class Repo:
@@ -196,8 +204,13 @@ def _judge(repo: Repo, base: str, head: str) -> tuple[int, str]:
 # -- AC1: DEV-D, a new module with no test of its own -------------------------
 
 def test_531s_range_is_red_and_names_each_untested_module(tmp_path) -> None:
-    """#531's shape: three new spine modules, one combined test file."""
-    repo, base = _develop(tmp_path)
+    """#531's shape: two new spine modules and one modified, one combined test
+    file. binnacle_spine.py was already on develop with its test, so, as in
+    deploy.sh, a modified module owes nothing."""
+    repo, base = _develop(tmp_path, **{
+        "backend/services/binnacle_spine.py": "x = 0\n",
+        "backend/tests/unit/test_binnacle_spine.py": "def test(): pass\n",
+    })
     repo.branch("feat/spine", base)
     repo.commit("feat(binnacle): approval queues and the bell as event-spine producers", {
         "backend/services/approval_spine.py": "x = 1\n",
@@ -213,8 +226,9 @@ def test_531s_range_is_red_and_names_each_untested_module(tmp_path) -> None:
     rc, log = _judge(repo, base, head)
 
     assert rc != 0, log
-    for module in ("approval_spine", "bell_spine", "binnacle_spine"):
+    for module in ("approval_spine", "bell_spine"):
         assert f"backend/services/{module}.py has no test_{module}.py" in log, log
+    assert "binnacle_spine.py has no" not in log, log
     assert "deploy gates: ok" in log, "the deploy gates still run when DEV-D fails"
 
 
@@ -224,6 +238,8 @@ def test_547s_range_is_green(tmp_path) -> None:
         "backend/services/approval_spine.py": "x = 2\n",
         "backend/services/bell_spine.py": "x = 1\n",
         "backend/services/binnacle_spine.py": "x = 1\n",
+        "backend/tests/unit/test_binnacle_spine.py": "def test(): pass\n",
+        "backend/tests/unit/test_spine_approval_and_bell_producers.py": "def test(): pass\n",
     })
     repo.branch("test/split", base)
     head = repo.commit("test: split #531's spine tests per module so DEV-D finds them", {
@@ -336,7 +352,8 @@ def test_a_pr_that_deletes_the_gate_script_is_still_judged(tmp_path) -> None:
 def test_the_gates_task_runs_no_process_gate_code_from_the_branch() -> None:
     gates = _script("gates")
     assert "pr/scripts/lib" not in gates
-    assert "process-gates/devb_gate.py" in gates
+    assert 'pg = os.path.join("pr", ".git", "process-gates")' in gates
+    assert 'os.path.join(pg, "devb_gate.py")' in gates
     block = _inputs_block()
     assert 'git -C pr show "$BASE_SHA:scripts/lib/devb_gate.py"' in block
     assert 'git -C pr show "$BASE_SHA:scripts/deploy.sh"' in block
