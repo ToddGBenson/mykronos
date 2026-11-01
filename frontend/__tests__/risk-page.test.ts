@@ -376,7 +376,8 @@ describe("buildRiskPage", () => {
     expect(estate.critical.value).toBe(1);
     expect(estate.high.value).toBe(10);
     expect(estate.medium.value).toBe(23);
-    expect(estate.oldest.text).toBe("9d oldest");
+    expect(estate.oldest.text).toBe("12d oldest");
+    expect(estate.oldest.tone).toBe("warn");
     expect(estate.overdue.value).toBe(3);
     expect(estate.needs.value).toBe(2);
   });
