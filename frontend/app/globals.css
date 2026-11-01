@@ -194,6 +194,25 @@ body {
   border-width: 0 1px 1px 0;
 }
 
+/* One page-title size (TheHub #61143, P9).
+ *
+ * Twenty page titles carried five sizes between them (`text-sm`, `text-base`,
+ * `text-lg`, `text-xl`, `text-[20px]`), so a page's own name was sometimes
+ * smaller than its section labels. This rule is deliberately unlayered: it
+ * outranks Tailwind's layered utilities, so every `<h1>` in the main column
+ * takes the one size without editing each page. Weight, family and layout
+ * classes on a title still apply. */
+:root {
+  --text-page-title: 1.375rem;
+}
+
+main h1 {
+  font-size: var(--text-page-title);
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
 /* Digits in a column have to line up to be comparable at a glance. */
 .tabular {
   font-variant-numeric: tabular-nums;
