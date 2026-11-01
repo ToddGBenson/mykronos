@@ -28,6 +28,7 @@ import io
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -163,6 +164,86 @@ def _missing_adapters() -> list[str]:
                 f"(the pin supports: {supported})"
             )
     return missing
+
+
+#: One rule, two ids: the SARIF shape osv-scanner 2.x writes. The rule (and so
+#: the finding's `rule_id`) is named after the CVE, and the fix row under the
+#: GHSA alias. The second rule is there because the v16 parser also stopped
+#: reading after the first rule that had a table.
+_OSV_ALIAS_PROBE = {
+    "runs": [
+        {
+            "tool": {
+                "driver": {
+                    "rules": [
+                        {
+                            "id": f"CVE-0000-000{n}",
+                            "help": {
+                                "markdown": (
+                                    "## Remediation\n\n### Fixed Versions\n\n"
+                                    "| Vulnerability ID | Package Name | Fixed Version |\n"
+                                    "| --- | --- | --- |\n"
+                                    f"| GHSA-0000-0000-000{n} | probe-package | 1.0.{n} |\n\n"
+                                    "If you believe these vulnerabilities do not affect "
+                                    "your code...\n"
+                                )
+                            },
+                        }
+                        for n in (1, 2)
+                    ]
+                }
+            }
+        }
+    ]
+}
+
+
+def _osv_reads_fixes_under_aliases() -> str | None:
+    """Whether the pinned atlas adapter finds a fix filed under the rule's alias."""
+    from mykronos.adapters import atlas_osv
+
+    fixes = atlas_osv._fixed_versions(json.dumps(_OSV_ALIAS_PROBE).encode("utf-8"))
+    found = [fixes.get((f"CVE-0000-000{n}", "probe-package")) for n in (1, 2)]
+    if all(found):
+        return None
+    return (
+        "the pinned atlas adapter does not read osv-scanner's fixed version under "
+        "the rule's alias (#1036), so every atlas finding whose fix OSV files under "
+        "a GHSA id arrives with no fixed version and reads as unfixable (TheHub #60909)"
+    )
+
+
+#: Fixes the lanes depend on that change no module, flag or adapter name, so
+#: nothing above can see whether the pin has them. Each probe runs the pinned
+#: code on a known input and returns a problem, or None.
+#:
+#: That is the fifth way the pin goes stale (TheHub #60909). #1036 fixed the
+#: osv-scanner parser on 2026-10-30 and the backend deployed it, but findings
+#: are normalised by the *uploader*, installed from `mykronos-ref`. The pin
+#: stayed on v16, TheHub's atlas findings kept arriving as "no published fix",
+#: and this check stayed green because v16 had every module and adapter.
+#:
+#: Add a probe in the same commit as an adapter fix a lane must not run without.
+REQUIRED_BEHAVIOURS: tuple[tuple[str, Callable[[], str | None]], ...] = (
+    ("atlas osv-scanner fixed versions under aliases (#1036)", _osv_reads_fixes_under_aliases),
+)
+
+
+def _behaviour_problems() -> list[str]:
+    """Which REQUIRED_BEHAVIOURS the installed runner fails.
+
+    A probe that cannot run -- the function it calls is missing or raises --
+    is a problem, not a pass: the pin has not shown it has the fix.
+    """
+    problems: list[str] = []
+    for name, probe in REQUIRED_BEHAVIOURS:
+        try:
+            problem = probe()
+        except Exception as exc:  # noqa: BLE001 - any failure means "not shown"
+            problem = f"the probe for {name} could not be run against the pin ({exc!r})"
+        if problem:
+            problems.append(problem)
+    return problems
 
 
 #: `(capability, tool)` pairs the GitHub Actions workflow templates upload,
@@ -405,6 +486,7 @@ def check(commit: str = "") -> list[str]:
 
     problems.extend(_missing_scripts(commit))
     problems.extend(_missing_adapters())
+    problems.extend(_behaviour_problems())
     problems.extend(_actions_pin_problems())
 
     return problems
@@ -433,13 +515,15 @@ def main(argv: list[str] | None = None) -> int:
         if can_check_scripts(commit):
             print(
                 f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
-                f"flags, all {len(REQUIRED_SCRIPTS)} raw-fetched scripts, and all "
-                f"{len(REQUIRED_ADAPTERS)} (capability, tool) adapter pairs."
+                f"flags, all {len(REQUIRED_SCRIPTS)} raw-fetched scripts, all "
+                f"{len(REQUIRED_ADAPTERS)} (capability, tool) adapter pairs, and "
+                f"passes all {len(REQUIRED_BEHAVIOURS)} behaviour probes."
             )
         else:
             print(
                 f"The pin supports all {len(REQUIRED_MODULES)} runner modules, their "
-                f"flags, and all {len(REQUIRED_ADAPTERS)} adapter pairs. The "
+                f"flags, and all {len(REQUIRED_ADAPTERS)} adapter pairs, and passes "
+                f"all {len(REQUIRED_BEHAVIOURS)} behaviour probes. The "
                 f"{len(REQUIRED_SCRIPTS)} raw-fetched scripts were NOT checked - the "
                 "pinned commit could not be resolved here."
             )
