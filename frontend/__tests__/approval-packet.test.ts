@@ -228,3 +228,67 @@ describe("the Approvals list hides superseded requests", () => {
     expect(html).toMatch(/<details[\s\S]*#200 Older/);
   });
 });
+
+describe("the packet reads as words (TheHub #61136, screenshot pass)", () => {
+  it("shows the expiry and the check time as the queue does, to the minute", async () => {
+    getReviewPacket.mockResolvedValueOnce({ ok: true, data: packet() });
+    const html = await renderPacket();
+    expect(html).toContain("expires 2026-11-06 10:00");
+    expect(html).not.toContain("2026-11-06T10:00");
+    expect(html).toContain("run by the platform when this page opened, 2026-");
+    expect(html).not.toMatch(/when this page opened, —/);
+  });
+
+  it("says so when the backend returned no check, rather than printing a dash", async () => {
+    getReviewPacket.mockResolvedValueOnce({ ok: true, data: packet({ verification: null }) });
+    const html = await renderPacket();
+    expect(html).toContain("not run: the backend returned no check");
+    expect(html).not.toMatch(/when this page opened, —/);
+  });
+
+  it("states what the tier needs in words, not JSON", async () => {
+    getReviewPacket.mockResolvedValueOnce({
+      ok: true,
+      data: packet({
+        needs: {
+          approvers: [
+            { kind: "human", delegation_required: false },
+            { kind: "agent", delegation_required: true },
+          ],
+          quorum: 2,
+          independence: ["distinct_principal", "outside_lineage"],
+          cooling_off_hours: 24,
+        },
+      }),
+    });
+    const html = await renderPacket();
+    expect(html).not.toContain("{&quot;");
+    expect(html).toContain(
+      "This tier needs 2 approvals, from a human or a delegated agent; each approver must be a different principal and outside the requester’s lineage; and a 24-hour cooling-off.",
+    );
+  });
+
+  it("keeps a disabled Record button legible: no opacity, ink on paper", async () => {
+    getReviewPacket.mockResolvedValueOnce({ ok: true, data: packet() });
+    const html = await renderPacket();
+    const button = html.match(/<button[^>]*disabled[^>]*>/)?.[0] ?? "";
+    expect(button).not.toBe("");
+    expect(button).not.toMatch(/opacity-/);
+    expect(button).toContain("disabled:text-ink-2");
+    expect(button).toContain("disabled:bg-paper-3");
+  });
+});
+
+describe("tierNeeds", () => {
+  it("handles one approver, no independence rules and no cooling-off", async () => {
+    const { tierNeeds } = await import("../lib/approval-packet");
+    expect(
+      tierNeeds({
+        approvers: [{ kind: "human", delegation_required: false }],
+        quorum: 1,
+        independence: [],
+        cooling_off_hours: 0,
+      }),
+    ).toBe("This tier needs 1 approval, from a human.");
+  });
+});
