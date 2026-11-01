@@ -127,3 +127,66 @@ export function nextLabel(pendingIds: readonly string[], current: string): strin
     ? `go to ${nextIndex + 1} of ${pendingIds.length}`
     : "return to Approvals";
 }
+
+/** `2026-11-08 05:48`, to the minute, as the queue writes it. */
+export function packetTime(value: string | null | undefined): string | null {
+  return value ? value.slice(0, 16).replace("T", " ") : null;
+}
+
+/** The verification section's line: when the check ran, or that it did not. */
+export function checkDetail(verification: { ran_at?: string | null } | null | undefined): string {
+  const at = packetTime(verification?.ran_at);
+  if (at) return `run by the platform when this page opened, ${at}`;
+  return verification
+    ? "run by the platform when this page opened"
+    : "not run: the backend returned no check";
+}
+
+const INDEPENDENCE: Record<string, string> = {
+  distinct_principal: "a different principal",
+  distinct_instance: "a different agent instance",
+  outside_lineage: "outside the requester\u2019s lineage",
+  fresh_context: "working from a fresh context",
+  different_family: "from a different model family",
+  human: "a human",
+};
+
+type TierNeeds = {
+  approvers?: { kind?: string; delegation_required?: boolean }[];
+  quorum?: number;
+  independence?: string[];
+  cooling_off_hours?: number | null;
+};
+
+function either(words: string[]): string {
+  if (words.length <= 1) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} or ${words[words.length - 1]}`;
+}
+
+function both(words: string[]): string {
+  if (words.length <= 1) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/**
+ * What the policy asks of this tier, as a sentence: "This tier needs 2
+ * approvals, from a human or a delegated agent; each approver must be a
+ * different principal; and a 24-hour cooling-off."
+ */
+export function tierNeeds(needs: TierNeeds | null | undefined): string | null {
+  if (!needs) return null;
+  const quorum = needs.quorum ?? 1;
+  const who = (needs.approvers ?? []).map((a) => {
+    const kind = a.kind === "agent" ? "agent" : (a.kind ?? "approver");
+    const article = /^[aeiou]/.test(kind) ? "an" : "a";
+    return a.delegation_required ? `a delegated ${kind}` : `${article} ${kind}`;
+  });
+  const clauses = [
+    `This tier needs ${quorum} approval${quorum === 1 ? "" : "s"}${who.length ? `, from ${either(who)}` : ""}`,
+  ];
+  const rules = (needs.independence ?? []).map((rule) => INDEPENDENCE[rule] ?? rule.replace(/_/g, " "));
+  if (rules.length) clauses.push(`each approver must be ${both(rules)}`);
+  if (needs.cooling_off_hours) clauses.push(`a ${needs.cooling_off_hours}-hour cooling-off`);
+  if (clauses.length === 1) return `${clauses[0]}.`;
+  return `${clauses.slice(0, -1).join("; ")}; and ${clauses[clauses.length - 1]}.`;
+}

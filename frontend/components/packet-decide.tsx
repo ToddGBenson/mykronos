@@ -143,7 +143,7 @@ export function PacketDecide({
           type="button"
           disabled={!ready}
           onClick={() => void record()}
-          className="min-h-11 border border-accent bg-accent px-4 text-[13px] font-semibold text-paper disabled:opacity-40"
+          className="min-h-11 border border-accent bg-accent px-4 text-[13px] font-semibold text-paper disabled:border-ink-3 disabled:bg-paper-3 disabled:text-ink-2"
         >
           {`Record and ${nextLabel}`}
         </button>

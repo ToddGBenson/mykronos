@@ -4,7 +4,15 @@ import { getReviewPacket } from "@/lib/po-console";
 import { poTabHref } from "@/lib/po-tabs";
 import { reviewerStanding } from "@/lib/review-queue";
 
-import { concurRationale, evidenceFields, nextLabel, nextRequestHref } from "@/lib/approval-packet";
+import {
+  checkDetail,
+  concurRationale,
+  evidenceFields,
+  nextLabel,
+  nextRequestHref,
+  packetTime,
+  tierNeeds,
+} from "@/lib/approval-packet";
 import { pendingRequestIds } from "@/lib/approval-queue";
 
 export const dynamic = "force-dynamic";
@@ -70,7 +78,7 @@ export default async function ReviewPacketPage({
         <p className="font-mono text-[12px] text-ink-3">
           {packet.subject_ref} · {packet.repo_full_name ?? "estate-wide"} · requested by{" "}
           {packet.requested_by} ({packet.requester_kind}) ·{" "}
-          {packet.overdue ? "expired" : `expires ${packet.expires_at?.slice(0, 16) ?? "—"}`}
+          {packet.overdue ? "expired" : `expires ${packetTime(packet.expires_at) ?? "—"}`}
         </p>
       </div>
 
@@ -87,7 +95,7 @@ export default async function ReviewPacketPage({
 
       <Section
         title="1 · Verification check"
-        detail={`run by the platform when this page opened, ${verification?.ran_at?.slice(0, 16).replace("T", " ") ?? "—"}`}
+        detail={checkDetail(verification)}
         aside={<Pill tone={overall.tone}>{overall.word}</Pill>}
       >
         {verification ? (
@@ -195,8 +203,8 @@ export default async function ReviewPacketPage({
           </p>
         ))}
         {packet.needs ? (
-          <p className="px-3 py-1.5 font-mono text-[11px] text-ink-3">
-            this tier needs: {JSON.stringify(packet.needs)}
+          <p className="px-3 py-1.5 text-[12px] text-ink-2">
+            {tierNeeds(packet.needs)}
           </p>
         ) : null}
         <PacketDecide
