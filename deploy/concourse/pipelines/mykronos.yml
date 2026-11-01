@@ -979,9 +979,24 @@ jobs:
   #
   # So this runs the same suite `unit` runs, nightly, under libfaketime with
   # the clock at now + ((time-travel-offset)). The offset is a var rather than
-  # a literal so it can grow with the longest window in the code: it must stay
-  # longer than every one of them (NVD_RETRY_DAYS=30 today), and
-  # test_time_travel_unit.py fails if it does not.
+  # a literal so it can grow. It reaches a bomb whose window is shorter than
+  # the offset, and no other: it is longer than NVD_RETRY_DAYS (30), the
+  # window that made #1034's bomb, and test_time_travel_unit.py fails if it is
+  # not. It is not longer than every window in the code (credential rotation
+  # is 90 days), and a test that breaks after a longer one is not caught here.
+  #
+  # THE CANARY. A green night means nothing unless the clock really moved: a
+  # preload that does nothing runs the suite on the real clock, green, every
+  # night. So before the suite, tests/test_time_travel_canary.py runs through
+  # the same `under_faketime` wrapper, given the epoch read on the real clock,
+  # and asserts that time.time() has moved by the offset in the main pytest
+  # process (-n 0), in an xdist worker (-n 2), and in DuckDB's now(). If any
+  # has not, the job stops with a CANARY error and never runs the suite.
+  #
+  # THE TOKEN. HUB_STORY_TOKEN is TheHub's, and this job is public, so the
+  # suite and the packages it imports never see it: the filing is its own
+  # task, which is given the token and runs only the reporter (stdlib only,
+  # no pip), reading the suite's report and exit code from `results`.
   #
   # WHAT A RED NIGHT DOES, AND WHAT IT DOES NOT.
   #
@@ -1002,7 +1017,9 @@ jobs:
   # certificate that is valid today, and the story should say when it was
   # really filed. FAKETIME_DONT_FAKE_MONOTONIC keeps the monotonic clock real:
   # timeouts, xdist's worker handshake and asyncio's loop all read it, and
-  # none of them is what is being tested.
+  # none of them is what is being tested. `faketime -m` preloads the
+  # multi-threaded library: execnet's IO threads, asyncio and DuckDB all run
+  # threads.
   - name: time-travel
     public: true
     serial_groups: [worker-a]
@@ -1030,11 +1047,10 @@ jobs:
           MYKRONOS_PERF_MULTIPLIER: "3"
           TIME_TRAVEL_OFFSET: ((time-travel-offset))
           FAKETIME_DONT_FAKE_MONOTONIC: "1"
-          HUB_URL: ((thehub-url))
-          HUB_STORY_TOKEN: ((hub-story-token))
         config:
           platform: linux
           inputs: [{ name: source }]
+          outputs: [{ name: results }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
@@ -1050,15 +1066,44 @@ jobs:
                 pip install --quiet --require-hashes -r requirements-dev.txt
                 pip install --quiet --no-deps -e .
 
-                echo "Clock moved to now${TIME_TRAVEL_OFFSET} for the suite (TheHub #61109)."
-                mkdir -p ../../results
-                rc=0
-                faketime -f "$TIME_TRAVEL_OFFSET" python -m pytest -q -n 6 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+                # The one faketime invocation. The canary and the suite both go
+                # through it, so the canary proves the clock the suite runs on.
+                under_faketime() { faketime -m -f "$TIME_TRAVEL_OFFSET" "$@"; }
 
-                # On the real clock, and its exit code is its own: a filing
-                # that failed says so in the log and never hides the suite's
-                # verdict, which is what the job reports.
-                python ../scripts/time_travel_report.py --junit ../../results/unit.xml --offset "$TIME_TRAVEL_OFFSET" --commit "$(git -C .. rev-parse --short=12 HEAD)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
+                echo "Clock moved to now${TIME_TRAVEL_OFFSET} for the suite (TheHub #61109)."
+                export TIME_TRAVEL_REAL_NOW="$(date +%s)"
+                if ! TIME_TRAVEL_CANARY_IN_WORKER=0 under_faketime python -m pytest -q -p no:cacheprovider -n 0 tests/test_time_travel_canary.py \
+                  || ! TIME_TRAVEL_CANARY_IN_WORKER=1 under_faketime python -m pytest -q -p no:cacheprovider -n 2 tests/test_time_travel_canary.py; then
+                  echo "::error::time-travel CANARY: the clock did not move to now${TIME_TRAVEL_OFFSET} (see above). The suite was not run: on the real clock its green would be a false all-clear."
+                  exit 1
+                fi
+
+                rc=0
+                under_faketime python -m pytest -q -n 6 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+                echo "$rc" > ../../results/rc
+                git -C .. rev-parse --short=12 HEAD > ../../results/commit
+
+      - task: file-hub-story
+        # The only task given TheHub's token. It runs the reporter and
+        # nothing else, on the real clock, and exits with the suite's code: a
+        # filing that failed says so in the log and never hides the suite's
+        # verdict, which is what the job reports.
+        timeout: 10m
+        image: python
+        params:
+          TIME_TRAVEL_OFFSET: ((time-travel-offset))
+          HUB_URL: ((thehub-url))
+          HUB_STORY_TOKEN: ((hub-story-token))
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: results }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                rc="$(cat results/rc)"
+                python source/scripts/time_travel_report.py --junit results/unit.xml --offset "$TIME_TRAVEL_OFFSET" --commit "$(cat results/commit)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
                 exit "$rc"
 
   - name: lint-and-types

@@ -246,8 +246,8 @@ try {
         # set-thehub-pipeline.ps1 and set-personal-soc-pipeline.ps1 use.
         "scan-timezone: America/Phoenix",
         # How far forward the nightly `time-travel` job moves the clock
-        # (TheHub #61109). Longer than the longest window in the code
-        # (NVD_RETRY_DAYS=30); it grows with that window.
+        # (TheHub #61109). Longer than NVD_RETRY_DAYS (30), the window behind
+        # #1034's bomb; it reaches only windows shorter than itself.
         "time-travel-offset: +45d",
         # Where `time-travel` files its story; the same value
         # set-thehub-pipeline.ps1 gives thehub's `thehub-url`.

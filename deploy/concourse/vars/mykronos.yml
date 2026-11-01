@@ -29,8 +29,9 @@ scanned-branch: main
 scan-timezone: America/Phoenix
 
 # How far forward `time-travel` moves the clock (TheHub #61109), in
-# libfaketime's relative form. Longer than the longest window in the code
-# (NVD_RETRY_DAYS=30); grow it with that window, never shrink it below.
+# libfaketime's relative form. Longer than NVD_RETRY_DAYS (30), the window
+# behind #1034's bomb, and a test keeps it so; it reaches only windows shorter
+# than itself, not every window in the code.
 time-travel-offset: +45d
 
 # Where `time-travel` files its story: TheHub's API, through the same host
