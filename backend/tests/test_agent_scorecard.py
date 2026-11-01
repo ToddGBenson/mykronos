@@ -389,7 +389,9 @@ def _seed_findings(client, auth, run_compaction, count: int) -> list[str]:
     post_findings(
         client,
         auth,
-        [finding_payload(rule_id=f"SC-{i}", severity="medium", line_start=10 + i * 20)
+        # info: an agent closes it directly; low and up is a request since
+        # TheHub #61158.
+        [finding_payload(rule_id=f"SC-{i}", severity="info", line_start=10 + i * 20)
          for i in range(count)],
     )
     run_compaction()
