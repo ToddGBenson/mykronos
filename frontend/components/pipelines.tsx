@@ -26,7 +26,7 @@ import {
   type IndicatorTone,
 } from "@/components/primitives";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
-import { failuresWithWhy, whyLines } from "@/lib/ci-why";
+import { failuresWithWhy, recentLine, whyLines } from "@/lib/ci-why";
 
 /** The platform's shared build-status vocabulary, mapped to the palette the
  *  rest of the app uses. Concourse reports these words natively; GitHub's
@@ -209,6 +209,7 @@ function FailureReasons({ jobs }: { jobs: CiJob[] }) {
     <ul className="flex flex-col gap-px bg-rule-soft">
       {failures.map((job) => {
         const lines = whyLines(job.why);
+        const recent = recentLine(job.recent);
         return (
           <li
             key={job.name}
@@ -216,6 +217,7 @@ function FailureReasons({ jobs }: { jobs: CiJob[] }) {
           >
             <span className="font-mono text-[12px] text-ink-2">
               {job.name} <span className="text-ink-3">· {lines.headline}</span>
+              {recent ? <span className="text-ink-3"> · {recent}</span> : null}
             </span>
             {lines.messages.map((message, i) => (
               <code

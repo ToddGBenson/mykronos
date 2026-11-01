@@ -537,6 +537,10 @@ class JobStatus:
     #: Actions run id. What a failure's reason is read and cached by
     #: (TheHub #60913); None where the CI did not say.
     build_id: str | None = None
+    #: The Actions workflow file this lane is, `mykronos-sast.yml`: what a
+    #: failing lane's recent runs are listed by (TheHub #60913). Always empty
+    #: for Concourse, where the job name within its pipeline is the key.
+    workflow_file: str = ""
 
     @property
     def ok(self) -> bool:
@@ -1794,6 +1798,7 @@ class ActionsClient:
                     finished_at=run.finished_at if run and workflow.enabled else None,
                     blocked_by=block.root if block else "",
                     build_id=str(run.run_id) if run and run.run_id else None,
+                    workflow_file=workflow.file_name,
                 )
             )
 

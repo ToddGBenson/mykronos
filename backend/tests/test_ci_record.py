@@ -21,8 +21,8 @@ from mykronos.ci_why import (
     RECENT_WINDOW,
     RecentRecord,
     RecordCache,
-    record_from_statuses,
     recent_records,
+    record_from_statuses,
 )
 from mykronos.github.client import (
     FakeGitHubClient,
@@ -61,7 +61,9 @@ class TestCounting:
         assert record.failed == 4
 
     def test_builds_that_have_not_finished_are_not_builds_yet(self) -> None:
-        record = record_from_statuses(["started", "pending", "failed", None, "skipped", "succeeded"])
+        record = record_from_statuses(
+            ["started", "pending", "failed", None, "skipped", "succeeded"]
+        )
 
         assert record == RecentRecord(failed=1, of=2)
 

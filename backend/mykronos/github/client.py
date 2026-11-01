@@ -98,6 +98,8 @@ METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     # job's check-run annotations. Both reads, both already held.
     "workflow_run_jobs": (("actions", "read"),),
     "check_run_annotations": (("checks", "read"),),
+    # A failing lane's recent record: one workflow's last completed runs.
+    "workflow_runs": (("actions", "read"),),
     "set_workflow_state": (("actions", "write"),),
     "issue_state": (("issues", "read"),),
     "list_issues": (("issues", "read"),),
@@ -676,6 +678,18 @@ class GitHubClient(Protocol):
         """
         ...
 
+    async def workflow_runs(
+        self, repo_full_name: str, workflow_file: str, *, limit: int = 10
+    ) -> list[WorkflowRun]:
+        """One workflow's newest completed runs, newest first (TheHub #60913).
+
+        The per-workflow `runs` endpoint, one page of `limit`: what a failing
+        lane's recent record ("3 of last 10 failed") is counted from. Run
+        metadata only, never logs. Called only for failing lanes, so it costs
+        a request per red lane, not per lane.
+        """
+        ...
+
     async def check_run_annotations(
         self, repo_full_name: str, check_run_id: int, *, limit: int = 10
     ) -> list[CheckAnnotation]:
@@ -778,6 +792,9 @@ class FakeRepo:
     #: Run id -> its jobs, and check-run id -> its annotations (TheHub #60913).
     run_jobs: dict[int, list[WorkflowJob]] = field(default_factory=dict)
     annotations: dict[int, list[CheckAnnotation]] = field(default_factory=dict)
+    #: Workflow file -> its completed runs, newest first (TheHub #60913).
+    #: A workflow with no history listed here answers with its latest run.
+    run_history: dict[str, list[WorkflowRun]] = field(default_factory=dict)
     #: Commits on the default branch, newest first (spec 35 §8.5).
     commits: list[CommitInfo] = field(default_factory=list)
     #: GitHub's `visibility` (`private`, `internal`, `public`). `None` leaves
@@ -1195,6 +1212,18 @@ class FakeGitHubClient:
         self.calls.append(("workflow_run_jobs", f"{repo_full_name}#{run_id}"))
         self._require("actions", "read", "Reading a workflow run's jobs")
         return list(self._repo(repo_full_name).run_jobs.get(run_id, []))
+
+    async def workflow_runs(
+        self, repo_full_name: str, workflow_file: str, *, limit: int = 10
+    ) -> list[WorkflowRun]:
+        self.calls.append(("workflow_runs", f"{repo_full_name}/{workflow_file}"))
+        self._require("actions", "read", "Reading a workflow's runs")
+        repo = self._repo(repo_full_name)
+        history = repo.run_history.get(workflow_file)
+        if history is None:
+            latest = repo.workflow_runs.get(workflow_file)
+            history = [latest] if latest is not None else []
+        return list(history)[:limit]
 
     async def check_run_annotations(
         self, repo_full_name: str, check_run_id: int, *, limit: int = 10
@@ -2108,6 +2137,33 @@ class RestGitHubClient:
                 )
             )
         return out
+
+    async def workflow_runs(
+        self, repo_full_name: str, workflow_file: str, *, limit: int = 10
+    ) -> list[WorkflowRun]:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/runs",
+            params={"per_page": max(1, min(int(limit), 100)), "status": "completed"},
+            timeout=WHY_TIMEOUT,
+        )
+        out: list[WorkflowRun] = []
+        for item in payload.get("workflow_runs", []) or []:
+            if not isinstance(item, dict):
+                continue
+            out.append(
+                WorkflowRun(
+                    workflow_file=str(item.get("path", "")).rsplit("/", 1)[-1]
+                    or workflow_file,
+                    conclusion=str(item["conclusion"]) if item.get("conclusion") else None,
+                    run_number=int(item["run_number"]) if item.get("run_number") else None,
+                    url=str(item.get("html_url") or ""),
+                    finished_at=_parse_time(item.get("updated_at")),
+                    head_branch=str(item["head_branch"]) if item.get("head_branch") else None,
+                    run_id=int(item["id"]) if isinstance(item.get("id"), int) else None,
+                )
+            )
+        return out[:limit]
 
     async def check_run_annotations(
         self, repo_full_name: str, check_run_id: int, *, limit: int = 10

@@ -239,6 +239,13 @@ read is capped (2 MB / 20,000 lines, 5 s), cached by build id, and limited to
 eight failing jobs per request. For Actions the equivalent is the run's job
 list and the failed job's check-run annotations; no Actions log is read.
 
+Beside the reason, each failing job shows its **recent record**: how many of
+its last ten finished builds failed or errored ("3 of last 10 failed").
+It is counted from the build list only, Concourse's `/jobs/:job/builds` or
+the workflow's `/actions/workflows/:file/runs`: statuses, never events or
+logs. Unfinished and skipped builds are not counted. It is cached by the
+job's latest build and capped at eight lookups per request, as the reason is.
+
 **Failure is silent and visible.** Concourse being unreachable must not affect
 a page about findings: the panel says the pipeline state is unavailable and
 every other part of the repository view renders. A dashboard that 500s because

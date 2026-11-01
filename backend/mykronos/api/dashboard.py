@@ -81,7 +81,7 @@ from mykronos.ci import (
 from mykronos.ci import (
     browser_url as ci_browser_url,
 )
-from mykronos.ci_why import ConcourseWhyReader, explain_failures
+from mykronos.ci_why import ConcourseWhyReader, explain_failures, recent_records
 from mykronos.dashboard import (
     STRIDE_CATEGORIES,
     DashboardQueries,
@@ -2342,6 +2342,29 @@ class CiFailureWhyOut(BaseModel):
     )
 
 
+class CiRecentRecordOut(BaseModel):
+    """How many of a failing job's last finished builds failed (TheHub #60913)."""
+
+    failed: int = Field(
+        default=0, description="Builds among the counted ones that failed or errored."
+    )
+    of: int = Field(
+        default=0,
+        description=(
+            "Finished builds counted, newest first: `window`, or fewer if "
+            "the job has fewer."
+        ),
+    )
+    window: int = Field(default=10, description="The most builds counted.")
+    unavailable: str | None = Field(
+        default=None,
+        description=(
+            "Why the build list could not be read, when it could not; shown as "
+            "'recent record unavailable: <this>'."
+        ),
+    )
+
+
 class CiJobOut(BaseModel):
     name: str
     status: str | None = Field(
@@ -2360,6 +2383,13 @@ class CiJobOut(BaseModel):
         description=(
             "Why this job's last build failed, for a job whose status is "
             "failed; null for every other job (TheHub #60913)."
+        ),
+    )
+    recent: CiRecentRecordOut | None = Field(
+        default=None,
+        description=(
+            "For a failed job, how many of its last ten finished builds failed, "
+            "read from the CI's build list; null for every other job (TheHub #60913)."
         ),
     )
 
@@ -2628,17 +2658,38 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
     # Why each failing job failed (TheHub #60913). Bounded and cached by
     # build in `ci_why`; never raises, so a CI that will not explain itself
     # costs this page a "reason unavailable" line and nothing else.
+    # Beside it, how many of the job's last ten builds failed: a first red
+    # build and a tenth in a row call for different responses.
     settings = request.app.state.settings
-    why_by_job = await explain_failures(
-        repo_full_name,
-        status.jobs,
-        source="github" if scanned_by == "github_actions" else "concourse",
-        cache=request.app.state.ci_why_cache,
-        concourse=ConcourseWhyReader(settings.concourse_url) if settings.concourse_url else None,
-        github=(
-            request.app.state.github_factory.for_installation(installation_id)
-            if scanned_by == "github_actions" and installation_id is not None
-            else None
+    source = "github" if scanned_by == "github_actions" else "concourse"
+    github = (
+        request.app.state.github_factory.for_installation(installation_id)
+        if scanned_by == "github_actions" and installation_id is not None
+        else None
+    )
+    why_by_job, record_by_job = await asyncio.gather(
+        explain_failures(
+            repo_full_name,
+            status.jobs,
+            source=source,
+            cache=request.app.state.ci_why_cache,
+            concourse=(
+                ConcourseWhyReader(settings.concourse_url) if settings.concourse_url else None
+            ),
+            github=github,
+        ),
+        recent_records(
+            repo_full_name,
+            status.jobs,
+            source=source,
+            cache=request.app.state.ci_record_cache,
+            pipeline=status.pipeline,
+            concourse=(
+                ConcourseClient(settings.concourse_url, team=settings.concourse_team)
+                if settings.concourse_url
+                else None
+            ),
+            github=github,
         ),
     )
 
@@ -2658,6 +2709,13 @@ async def repo_ci(request: Request, repo_id: str, principal: PrincipalDep) -> Ci
                 why=(
                     CiFailureWhyOut.model_validate(dataclasses.asdict(why_by_job[job.name]))
                     if job.name in why_by_job
+                    else None
+                ),
+                recent=(
+                    CiRecentRecordOut.model_validate(
+                        dataclasses.asdict(record_by_job[job.name])
+                    )
+                    if job.name in record_by_job
                     else None
                 ),
             )
