@@ -115,6 +115,9 @@ class OpenPullRequest:
     depends_on: list[int] = field(default_factory=list)
     #: Whether the single-PR read ran and answered.
     detail_read: bool = False
+    #: The head commit, from the single-PR read (TheHub #61141: the run sheet
+    #: hides an approval request pinned to an older head). Empty when unread.
+    head_sha: str = ""
 
 
 @dataclass
@@ -350,6 +353,7 @@ async def _read_pull_requests(db: Any, catalog: Any, factory: Any) -> PullReques
         if live is None:
             return False
         pr.base_branch = live.base_branch
+        pr.head_sha = live.head_sha
         pr.mergeable = live.mergeable
         pr.mergeable_state = live.mergeable_state
         pr.story_ids = story_refs(pr.title, live.body, branch=pr.head_branch)
