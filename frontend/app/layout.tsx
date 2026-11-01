@@ -4,8 +4,8 @@ import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import Link from "next/link";
 
 import { Feedback } from "@/components/feedback";
+import { NavRail } from "@/components/nav-rail";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { NAV } from "@/lib/nav";
 
 import "./globals.css";
 
@@ -83,6 +83,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         />
       </head>
       <body className="min-h-screen antialiased">
+        {/* The first stop for a keyboard: past the header and fourteen nav
+            links, straight to the page (TheHub #61135). Hidden until it has
+            focus, so it costs a sighted mouse user nothing. */}
+        <a
+          href="#main"
+          data-chrome
+          className="sr-only z-50 bg-accent px-3 py-2 font-mono text-[13px] text-on-fill focus:not-sr-only focus:fixed focus:left-2 focus:top-2"
+        >
+          Skip to content
+        </a>
         <div className="flex min-h-screen flex-col">
           {/* `data-chrome` marks what a printed report leaves out (globals.css). */}
           <header
@@ -92,7 +102,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/" className="font-mono text-xs font-bold tracking-[0.14em]">
               MYKRONOS
             </Link>
-            <span className="font-mono text-[12px] text-ink-3">
+            {/* Gives way on a phone, so the header's controls stay on one line. */}
+            <span className="hidden font-mono text-[12px] text-ink-3 sm:inline">
               AppSec control plane
             </span>
             <div className="ml-auto flex items-center gap-3">
@@ -114,30 +125,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </header>
 
           <div className="flex flex-1 flex-col md:flex-row">
-            <nav
-              data-chrome
-              aria-label="Sections"
-              className="shrink-0 border-b border-rule bg-paper-2 py-2 md:w-44 md:border-b-0 md:border-r"
-            >
-              {NAV.map((group) => (
-                <div key={group.section} className="mb-2">
-                  <p className="px-3 pb-1 pt-2 font-mono text-[11px] uppercase tracking-[0.13em] text-ink-3 opacity-70">
-                    {group.section}
-                  </p>
-                  {group.items.map((item) => (
-                    <Link
-                      key={item.label}
-                      href={item.href}
-                      className="block border-l-2 border-transparent px-3 py-1.5 font-mono text-[13px] text-ink-2 hover:border-accent hover:bg-paper-3"
-                    >
-                      {item.label}
-                    </Link>
-                  ))}
-                </div>
-              ))}
-            </nav>
+            <NavRail />
 
-            <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
+            <main id="main" tabIndex={-1} className="min-w-0 flex-1 p-4 outline-none md:p-6">{children}</main>
           </div>
         </div>
       </body>

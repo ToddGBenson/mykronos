@@ -24,40 +24,56 @@
  */
 
 @theme {
-  --color-paper: #f2f1ec;
-  --color-paper-2: #e8e7e0;
-  --color-paper-3: #dedcd3;
-  --color-ink: #121715;
-  --color-ink-2: #3f4a46;
-  /* Muted, but not below AA. `ink-3` carries real text all over this app —
-     run counts, "silent for 13 days", the cadence beside a stalled lane — and
-     the values these replaced sat at 3.61 and 4.00 against their own grounds.
-     Both are now above 4.5, checked in both directions rather than eyeballed
-     on the one the author happened to be using. */
-  --color-ink-3: #5f6b67;
-  --color-rule: #c8c9c0;
-  --color-rule-soft: #dad9d1;
+  /* The v2 palette (TheHub #61135, operator-approved 2026-11-01). Colour
+     carries meaning and nothing else: the accent marks what you can press,
+     the status scale and the severities mark state, and every state also has
+     its own icon and word (`components/status.tsx`). Every text pair below is
+     at least 4.5:1 on every ground, in both themes, and
+     `__tests__/palette.test.ts` measures it from this file. */
+  --color-paper: #f3f5f8;
+  --color-paper-2: #ffffff;
+  --color-paper-3: #eef1f5;
+  --color-ink: #131821;
+  --color-ink-2: #3a4352;
+  /* Muted, but not below AA: `ink-3` carries real text all over this app —
+     run counts, "silent for 13 days", the cadence beside a stalled lane. */
+  --color-ink-3: #566070;
+  --color-rule: #d5dbe3;
+  --color-rule-soft: #e3e7ed;
 
-  --color-accent: #8a5a12;
-  --color-accent-2: #a97220;
-  --color-accent-wash: #f5ecd9;
+  /* Teal, for links, buttons and focus. It used to share its hex with
+     "high" (P10), so a link read as a severity. */
+  --color-accent: #0b6e80;
+  --color-accent-2: #095b6a;
+  --color-accent-wash: #e0f1f4;
 
-  --color-critical: #a8342a;
-  --color-high: #8a5a12;
-  --color-medium: #6f6420;
-  --color-low: #5f6b67;
-  --color-info: #8b948f;
-  --color-pass: #2c6b4a;
+  /* Severities. Critical shares the fail token: a failing lane and a critical
+     finding both mean "stop", and severity is always a labelled chip. */
+  --color-critical: #b3261e;
+  --color-high: #b8460b;
+  /* #8a6a00 in the design; one step darker so it holds 4.5:1 on paper-3 too,
+     not only on the card surface the design measured. */
+  --color-medium: #866700;
+  --color-low: #566070;
+  --color-info: #5b6678;
+  --color-pass: #17784a;
 
-  --color-critical-wash: #f6e3e0;
-  --color-high-wash: #f5ecd9;
-  --color-pass-wash: #e0efe6;
+  --color-critical-wash: #fbe9e7;
+  --color-high-wash: #fdeee3;
+  --color-pass-wash: #e3f2ea;
 
-  /* The drafting grid, as a token so it moves with the theme rather than
-     being a literal that only works on one ground. */
-  /* No drafting grid in this direction — an instrument panel is unlit
-     background, not paper. Kept as a transparent token so nothing that
-     references it breaks. */
+  /* The six-state status scale. `on-fill` is the text inside a solid tile or
+     pill: white on the light ground, near-black on the dark one. */
+  --color-ok: #17784a;
+  --color-warn: #a3530a;
+  --color-fail: #b3261e;
+  --color-stale: #5b6678;
+  --color-ready: #2453c7;
+  --color-accepted: #6b3fc4;
+  --color-on-fill: #ffffff;
+
+  /* No drafting grid in this direction. Kept as a transparent token so
+     nothing that references it breaks. */
   --color-grid: transparent;
 
   /* Both faces are self-hosted by `next/font` in `layout.tsx`, which sets the
@@ -86,8 +102,8 @@
  *
  * **Direction A is dark-first, and the light ground is a counterpart rather
  * than the intent.** An instrument panel is a lit readout in a dim room; the
- * light palette is the same instrument printed on paper, and the amber signal
- * darkens to `#8a5a12` there because amber on white is unreadable at this
+ * light palette is the same instrument printed on paper, and the signal
+ * colours darken there because a light tint on white is unreadable at this
  * type size. Both were checked against each other, which is the step that was
  * skipped last time: the previous dark variant sat three points from the
  * palette it replaced and the redesign was invisible to anyone whose OS was
@@ -96,50 +112,64 @@
 @media (prefers-color-scheme: dark) {
   /* Guarded, so an explicit light choice still wins on a dark OS. */
   :root:not([data-theme="light"]) {
-    --color-paper: #0b0f0e;
-    --color-paper-2: #121817;
-    --color-paper-3: #1a2220;
-    --color-ink: #ccdad3;
-    --color-ink-2: #8ba098;
-    --color-ink-3: #748782;
-    --color-rule: #1f2b28;
-    --color-rule-soft: #172120;
-    --color-accent: #e8a33d;
-    --color-accent-2: #b8802e;
-    --color-accent-wash: #241c0e;
-    --color-critical: #e5534b;
-    --color-high: #e8a33d;
-    --color-medium: #c9b95e;
-    --color-low: #748782;
-    --color-info: #4a5a55;
-    --color-pass: #4fb783;
-    --color-critical-wash: #2a1614;
-    --color-high-wash: #241c0e;
-    --color-pass-wash: #12241c;
+    --color-paper: #0d1117;
+    --color-paper-2: #161b23;
+    --color-paper-3: #1d2430;
+    --color-ink: #e2e8f0;
+    --color-ink-2: #b4bfcd;
+    --color-ink-3: #94a1b2;
+    --color-rule: #2b3442;
+    --color-rule-soft: #222a36;
+    --color-accent: #3fc1d4;
+    --color-accent-2: #2fa3b5;
+    --color-accent-wash: #0d2529;
+    --color-critical: #f2766b;
+    --color-high: #fb8f52;
+    --color-medium: #dcb43c;
+    --color-low: #a3adbb;
+    --color-info: #9aa6b8;
+    --color-pass: #4cc38a;
+    --color-critical-wash: #2b1715;
+    --color-high-wash: #2b1a0f;
+    --color-pass-wash: #10261b;
+    --color-ok: #4cc38a;
+    --color-warn: #f0a53a;
+    --color-fail: #f2766b;
+    --color-stale: #9aa6b8;
+    --color-ready: #7ea6ff;
+    --color-accepted: #b79cf7;
+    --color-on-fill: #0d1117;
   }
 }
 
 :root[data-theme="dark"] {
-    --color-paper: #0b0f0e;
-    --color-paper-2: #121817;
-    --color-paper-3: #1a2220;
-    --color-ink: #ccdad3;
-    --color-ink-2: #8ba098;
-    --color-ink-3: #748782;
-    --color-rule: #1f2b28;
-    --color-rule-soft: #172120;
-    --color-accent: #e8a33d;
-    --color-accent-2: #b8802e;
-    --color-accent-wash: #241c0e;
-    --color-critical: #e5534b;
-    --color-high: #e8a33d;
-    --color-medium: #c9b95e;
-    --color-low: #748782;
-    --color-info: #4a5a55;
-    --color-pass: #4fb783;
-    --color-critical-wash: #2a1614;
-    --color-high-wash: #241c0e;
-    --color-pass-wash: #12241c;
+    --color-paper: #0d1117;
+    --color-paper-2: #161b23;
+    --color-paper-3: #1d2430;
+    --color-ink: #e2e8f0;
+    --color-ink-2: #b4bfcd;
+    --color-ink-3: #94a1b2;
+    --color-rule: #2b3442;
+    --color-rule-soft: #222a36;
+    --color-accent: #3fc1d4;
+    --color-accent-2: #2fa3b5;
+    --color-accent-wash: #0d2529;
+    --color-critical: #f2766b;
+    --color-high: #fb8f52;
+    --color-medium: #dcb43c;
+    --color-low: #a3adbb;
+    --color-info: #9aa6b8;
+    --color-pass: #4cc38a;
+    --color-critical-wash: #2b1715;
+    --color-high-wash: #2b1a0f;
+    --color-pass-wash: #10261b;
+    --color-ok: #4cc38a;
+    --color-warn: #f0a53a;
+    --color-fail: #f2766b;
+    --color-stale: #9aa6b8;
+    --color-ready: #7ea6ff;
+    --color-accepted: #b79cf7;
+    --color-on-fill: #0d1117;
 }
 
 html,
@@ -260,24 +290,31 @@ body {
   :root:has([data-print-report]) {
     --color-paper: #ffffff;
     --color-paper-2: #ffffff;
-    --color-paper-3: #f2f1ec;
-    --color-ink: #121715;
-    --color-ink-2: #3f4a46;
-    --color-ink-3: #5f6b67;
-    --color-rule: #c8c9c0;
-    --color-rule-soft: #dad9d1;
-    --color-accent: #8a5a12;
-    --color-accent-2: #a97220;
-    --color-accent-wash: #f5ecd9;
-    --color-critical: #a8342a;
-    --color-high: #8a5a12;
-    --color-medium: #6f6420;
-    --color-low: #5f6b67;
-    --color-info: #8b948f;
-    --color-pass: #2c6b4a;
-    --color-critical-wash: #f6e3e0;
-    --color-high-wash: #f5ecd9;
-    --color-pass-wash: #e0efe6;
+    --color-paper-3: #eef1f5;
+    --color-ink: #131821;
+    --color-ink-2: #3a4352;
+    --color-ink-3: #566070;
+    --color-rule: #d5dbe3;
+    --color-rule-soft: #e3e7ed;
+    --color-accent: #0b6e80;
+    --color-accent-2: #095b6a;
+    --color-accent-wash: #e0f1f4;
+    --color-critical: #b3261e;
+    --color-high: #b8460b;
+    --color-medium: #866700;
+    --color-low: #566070;
+    --color-info: #5b6678;
+    --color-pass: #17784a;
+    --color-critical-wash: #fbe9e7;
+    --color-high-wash: #fdeee3;
+    --color-pass-wash: #e3f2ea;
+    --color-ok: #17784a;
+    --color-warn: #a3530a;
+    --color-fail: #b3261e;
+    --color-stale: #5b6678;
+    --color-ready: #2453c7;
+    --color-accepted: #6b3fc4;
+    --color-on-fill: #ffffff;
   }
 
   :root:has([data-print-report]) [data-chrome] {
