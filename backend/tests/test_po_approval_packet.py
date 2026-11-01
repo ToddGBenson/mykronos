@@ -163,7 +163,8 @@ class TestDecideAnyRequest:
         assert entry.detail["outcome"] == "approved"
         assert entry.detail["evidence_digest"] == digest
         assert entry.detail["verification"]["holds"] is True
-        assert any(f"#41 is open at {HEAD[:12]}" in line["text"] for line in entry.detail["verification"]["lines"])
+        lines = entry.detail["verification"]["lines"]
+        assert any(f"#41 is open at {HEAD[:12]}" in line["text"] for line in lines)
         assert entry.detail["repo_full_name"] == REPO
 
     def test_a_decision_without_a_rationale_is_refused(

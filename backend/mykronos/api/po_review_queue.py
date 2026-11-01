@@ -18,10 +18,23 @@ still hashes to its digest, the duty's review instructions from the policy -
 the platform's question for that duty, never the requester's - and the
 reviewer's per-claim checks.
 
-Deciding stays where it was. Repository requests are decided in place on the
-repository's tab (D-144) and everything else through
-`/api/approvals/{id}/decisions`; both run `approvals.engine.decide`. Nothing
-here records a decision, starts a reviewer or posts to GitHub.
+Two things Review-PendingApprovals.ps1 did that only the terminal could
+(TheHub #61136):
+
+- **The verification check.** The packet carries the platform's own check,
+  run when it is read: the evidence still hashes to its digest, the request
+  has not expired, and for a pull request what GitHub says now. A question
+  nobody could answer is `None`, never a pass.
+- **Superseded requests.** A pending pull-request request names one head.
+  Once the pull request moves on, is merged or is closed, approving it covers
+  nothing, so the queue lists it under `superseded` rather than `pending`.
+  GitHub not answering is not superseded: those stay pending.
+
+Deciding is not here. Repository requests are decided in place on the
+repository's tab (D-144), and any request from the packet through
+`/api/dashboard/product-owner/approvals/{id}/decision` (`api/po_console.py`);
+both run `approvals.engine.decide`. Nothing here records a decision, starts a
+reviewer or posts to GitHub.
 """
 
 from __future__ import annotations
@@ -147,14 +160,48 @@ class PoQueueCountsOut(BaseModel):
     unreviewed: int
     overdue: int
     ready_to_merge: int
+    #: Pending requests left out of `pending` because their pull request
+    #: moved on, merged or closed.
+    superseded: int = 0
+
+
+class PoSupersededOut(BaseModel):
+    """A pending request whose pull request has left the head it names."""
+
+    id: str
+    duty: str
+    subject_ref: str
+    summary: str
+    repo_full_name: str | None
+    requested_head_sha: str
+    #: The head GitHub reports now; None when the pull request is closed.
+    current_head_sha: str | None
+    #: new_commits | merged | closed
+    reason: str
 
 
 class PoReviewQueueOut(BaseModel):
     reviewer: PoReviewerStateOut
     counts: PoQueueCountsOut
     pending: list[PoQueueItemOut]
+    superseded: list[PoSupersededOut] = Field(default_factory=list)
     ready_to_merge: list[PoMergeRowOut]
     policy_version: str | None
+
+
+class PoVerificationLineOut(BaseModel):
+    #: True holds, False fails, None could not be checked.
+    ok: bool | None
+    text: str
+
+
+class PoVerificationOut(BaseModel):
+    """The platform's check of a request, run when it was read."""
+
+    ran_at: str | None
+    #: True when every line holds, False when any fails, else None.
+    holds: bool | None
+    lines: list[PoVerificationLineOut]
 
 
 class PoReviewPacketOut(PoQueueItemOut):
@@ -164,6 +211,9 @@ class PoReviewPacketOut(PoQueueItemOut):
     #: What the policy asks an approver of this duty to check.
     review_instructions: str | None
     needs: dict[str, Any] | None
+    #: The pull request has left the head this request names.
+    superseded: bool = False
+    verification: PoVerificationOut | None = None
 
 
 def _policy(request: Request) -> Any:
@@ -284,6 +334,115 @@ async def _github_state(
     return (READY if pr.head_sha == approved_head else NEW_COMMITS), None
 
 
+#: Where a pending pull request stands against the head its request names.
+AT_HEAD = "at_head"
+MERGED = "merged"
+CLOSED = "closed"
+SUPERSEDED = (NEW_COMMITS, MERGED, CLOSED)
+
+
+def _pr_ref(duty: str, subject_ref: str, evidence: Any) -> tuple[str | None, Any, str]:
+    """(repo, number, head) of the pull request a request names, if it names one."""
+    if duty != pull_requests.DUTY:
+        return None, None, ""
+    data = evidence if isinstance(evidence, dict) else {}
+    return (
+        pc.request_repo(duty, subject_ref, data),
+        data.get("number"),
+        str(data.get("head_sha") or ""),
+    )
+
+
+async def _pr_standing(
+    request: Request, repo: str | None, number: Any, head: str
+) -> tuple[str, str | None, str | None]:
+    """(standing, current head, error) of the pull request a request names.
+
+    UNKNOWN whenever GitHub was not asked or did not answer: a question nobody
+    could answer is never read as superseded, or as current.
+    """
+    if not repo or not isinstance(number, int) or not head:
+        return UNKNOWN, None, "the evidence names no pull request and head"
+    github = pull_requests.client_for(
+        request.app.state.db, request.app.state.github_factory, repo
+    )
+    if github is None:
+        return UNKNOWN, None, f"{repo} is not onboarded, so GitHub was not asked"
+    try:
+        pr = await asyncio.wait_for(
+            github.get_pull_request(repo, number), timeout=GITHUB_TIMEOUT_SECONDS
+        )
+    except Exception as exc:  # noqa: BLE001 - one pull request never stops the page
+        return UNKNOWN, None, f"GitHub did not answer: {type(exc).__name__}"
+    if pr is None:
+        return UNKNOWN, None, f"GitHub has no pull request #{number} in {repo}"
+    if pr.merged:
+        return MERGED, pr.head_sha, None
+    if pr.state != "open":
+        return CLOSED, pr.head_sha, None
+    return (AT_HEAD if pr.head_sha == head else NEW_COMMITS), pr.head_sha, None
+
+
+def _line(ok: bool | None, text: str) -> PoVerificationLineOut:
+    return PoVerificationLineOut(ok=ok, text=text)
+
+
+async def verify(
+    request: Request,
+    *,
+    duty: str,
+    subject_ref: str,
+    evidence: Any,
+    evidence_digest: str,
+    expires_at: Any,
+    now: Any,
+) -> tuple[PoVerificationOut, str | None]:
+    """The platform's verification check of one request, and the pull
+    request's standing when it names one (TheHub #61136).
+
+    The same lines whether the packet is being read or a decision recorded,
+    so what is stored with a decision is what the page showed, re-run.
+    """
+    data = evidence if isinstance(evidence, dict) else {}
+    digest_ok = canonical_digest(data) == evidence_digest
+    lines = [
+        _line(
+            digest_ok,
+            "the stored evidence hashes to its digest"
+            if digest_ok
+            else "the stored evidence no longer hashes to its digest: do not decide on it",
+        ),
+        _line(
+            expires_at > now,
+            f"the request is open until {pc.iso(expires_at)}"
+            if expires_at > now
+            else f"the request expired at {pc.iso(expires_at)}: the engine will refuse a decision",
+        ),
+    ]
+    standing: str | None = None
+    if duty == pull_requests.DUTY:
+        repo, number, head = _pr_ref(duty, subject_ref, data)
+        standing, current, error = await _pr_standing(request, repo, number, head)
+        pr = f"#{number}" if isinstance(number, int) else "the pull request"
+        if standing == AT_HEAD:
+            lines.append(_line(True, f"{pr} is open at {head[:12]}, the head this request names"))
+        elif standing == NEW_COMMITS:
+            lines.append(
+                _line(
+                    False,
+                    f"superseded: {pr} has moved on to {(current or '')[:12]}; "
+                    f"this request names {head[:12]}, so approving it covers nothing",
+                )
+            )
+        elif standing in (MERGED, CLOSED):
+            lines.append(_line(False, f"superseded: {pr} is already {standing}"))
+        else:
+            lines.append(_line(None, f"{pr} could not be checked: {error}"))
+    oks = [line.ok for line in lines]
+    holds = False if False in oks else (None if None in oks else True)
+    return PoVerificationOut(ran_at=pc.iso(now), holds=holds, lines=lines), standing
+
+
 async def _ready_to_merge(request: Request, policy: Any) -> list[PoMergeRowOut]:
     ttl = getattr(policy, "request_ttl_hours", 168)
     since = utcnow() - timedelta(hours=ttl + 24)
@@ -371,12 +530,46 @@ async def review_queue(request: Request, principal: PrincipalDep) -> PoReviewQue
         reviews = _latest_reviews(session, ids, policy)
         decisions = _decisions(session, ids)
         repo_ids = _repo_ids(session)
-        pending = [
+        listed = [
             PoQueueItemOut(
                 **_item(r, reviews.get(r.id), decisions.get(r.id, []), repo_ids, now)
             )
             for r in rows
         ]
+        refs = {r.id: _pr_ref(r.duty, r.subject_ref, r.evidence) for r in rows}
+
+    # Which pending pull-request requests still name the pull request's head
+    # (TheHub #61136). Only these are asked about; nothing else is superseded.
+    semaphore = asyncio.Semaphore(GITHUB_CONCURRENCY)
+
+    async def standing_of(item: PoQueueItemOut) -> tuple[str, str | None]:
+        repo, number, head = refs[item.id]
+        if repo is None:
+            return UNKNOWN, None
+        async with semaphore:
+            standing, current, _ = await _pr_standing(request, repo, number, head)
+        return standing, current
+
+    standings = await asyncio.gather(*(standing_of(item) for item in listed))
+    pending: list[PoQueueItemOut] = []
+    superseded: list[PoSupersededOut] = []
+    for item, (standing, current) in zip(listed, standings, strict=True):
+        if standing in SUPERSEDED:
+            superseded.append(
+                PoSupersededOut(
+                    id=item.id,
+                    duty=item.duty,
+                    subject_ref=item.subject_ref,
+                    summary=item.summary,
+                    repo_full_name=item.repo_full_name,
+                    requested_head_sha=refs[item.id][2],
+                    current_head_sha=current if standing != CLOSED else None,
+                    reason=standing,
+                )
+            )
+        else:
+            pending.append(item)
+
     report = await asyncio.to_thread(reviewer.shadow_report, request.app.state.db, policy)
     merge = await _ready_to_merge(request, policy)
     return PoReviewQueueOut(
@@ -388,8 +581,10 @@ async def review_queue(request: Request, principal: PrincipalDep) -> PoReviewQue
             unreviewed=sum(1 for p in pending if p.reviewer is None),
             overdue=sum(1 for p in pending if p.overdue),
             ready_to_merge=sum(1 for m in merge if m.ready),
+            superseded=len(superseded),
         ),
         pending=pending,
+        superseded=superseded,
         ready_to_merge=merge,
         policy_version=getattr(policy, "version", None),
     )
@@ -416,6 +611,16 @@ async def review_packet(
         evidence = dict(row.evidence or {})
         verified = canonical_digest(evidence) == row.evidence_digest
         duty, tier = row.duty, row.tier
+        subject_ref, digest, expires_at = row.subject_ref, row.evidence_digest, row.expires_at
+    verification, standing = await verify(
+        request,
+        duty=duty,
+        subject_ref=subject_ref,
+        evidence=evidence,
+        evidence_digest=digest,
+        expires_at=expires_at,
+        now=utcnow(),
+    )
     instructions = None
     needs = None
     if policy is not None:
@@ -430,4 +635,6 @@ async def review_packet(
         digest_verified=verified,
         review_instructions=instructions,
         needs=needs,
+        superseded=standing in SUPERSEDED,
+        verification=verification,
     )

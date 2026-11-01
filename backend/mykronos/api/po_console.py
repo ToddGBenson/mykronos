@@ -24,6 +24,7 @@ from mykronos import po_console as pc
 from mykronos import po_fleet, po_trace
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep, Role
+from mykronos.api import po_review_queue as review_queue
 from mykronos.api import product_owner as phase1
 from mykronos.api.dashboard import DeployLagOut, deploy_lag_out, unrecorded_lag
 from mykronos.approvals import pull_requests
@@ -463,6 +464,94 @@ async def decide_in_place(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No approval request {request_id} for {repo_full_name}.",
         )
+    return await _decide(
+        request,
+        principal,
+        request_id,
+        body,
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        duty=duty,
+    )
+
+
+@router.post("/product-owner/approvals/{request_id}/decision", response_model=PoDecideOut)
+async def decide_from_packet(
+    request: Request, request_id: str, body: PoDecideIn, principal: PrincipalDep
+) -> PoDecideOut:
+    """Decide any pending request from its review packet (TheHub #61136).
+
+    Estate-wide requests and requests for repositories that are not onboarded
+    had no dashboard route and went to the terminal. This one decides any of
+    them through `approvals.engine.decide`, exactly as the in-place route
+    does. The platform runs the packet's verification check again first and
+    stores its output with the decision's audit entry, so the record says
+    what was true when the decision was made.
+    """
+    require_admin(principal, "Deciding an approval request")
+    database = request.app.state.db
+    with database.session() as session:
+        row = session.get(ApprovalRequest, request_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No approval request {request_id}.",
+            )
+        duty, subject_ref = row.duty, row.subject_ref
+        evidence = dict(row.evidence or {})
+        digest, expires_at = row.evidence_digest, row.expires_at
+        repo_full_name = pc.request_repo(duty, subject_ref, evidence)
+        repo_id = None
+        if repo_full_name:
+            # Compared lowered rather than with ILIKE, whose `_` would match
+            # any character in a repository name.
+            repo_id = next(
+                (
+                    onboarded.id
+                    for onboarded in session.execute(
+                        select(RepoOnboarding).where(RepoOnboarding.status == "active")
+                    ).scalars()
+                    if pc.same_repo(onboarded.github_repo_full_name, repo_full_name)
+                ),
+                None,
+            )
+    check, _ = await review_queue.verify(
+        request,
+        duty=duty,
+        subject_ref=subject_ref,
+        evidence=evidence,
+        evidence_digest=digest,
+        expires_at=expires_at,
+        now=utcnow(),
+    )
+    return await _decide(
+        request,
+        principal,
+        request_id,
+        body,
+        repo_id=repo_id,
+        repo_full_name=repo_full_name,
+        duty=duty,
+        verification=check.model_dump(),
+    )
+
+
+async def _decide(
+    request: Request,
+    principal: Any,
+    request_id: str,
+    body: PoDecideIn,
+    *,
+    repo_id: str | None,
+    repo_full_name: str | None,
+    duty: str | None,
+    verification: dict[str, Any] | None = None,
+) -> PoDecideOut:
+    """Hand one decision to the engine and audit it, refused or not."""
+    database = request.app.state.db
+    extra: dict[str, Any] = {}
+    if verification is not None:
+        extra = {"verification": verification, "evidence_digest": body.evidence_digest}
 
     def audit(outcome: str, **detail: Any) -> None:
         with database.session() as session:
@@ -477,6 +566,7 @@ async def decide_in_place(
                 duty=duty,
                 verdict=body.verdict,
                 outcome=outcome,
+                **extra,
                 **detail,
             )
 

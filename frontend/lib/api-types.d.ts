@@ -3184,6 +3184,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/product-owner/approvals/{request_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide From Packet
+         * @description Decide any pending request from its review packet (TheHub #61136).
+         *
+         *     Estate-wide requests and requests for repositories that are not onboarded
+         *     had no dashboard route and went to the terminal. This one decides any of
+         *     them through `approvals.engine.decide`, exactly as the in-place route
+         *     does. The platform runs the packet's verification check again first and
+         *     stores its output with the decision's audit entry, so the record says
+         *     what was true when the decision was made.
+         */
+        post: operations["decide_from_packet_api_dashboard_product_owner_approvals__request_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/product-owner/roles": {
         parameters: {
             query?: never;
@@ -9728,6 +9755,11 @@ export interface components {
             overdue: number;
             /** Ready To Merge */
             ready_to_merge: number;
+            /**
+             * Superseded
+             * @default 0
+             */
+            superseded: number;
         };
         /** PoQueueDecisionOut */
         PoQueueDecisionOut: {
@@ -9902,6 +9934,12 @@ export interface components {
             needs: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Superseded
+             * @default false
+             */
+            superseded: boolean;
+            verification?: components["schemas"]["PoVerificationOut"] | null;
         };
         /** PoReviewQueueOut */
         PoReviewQueueOut: {
@@ -9909,6 +9947,8 @@ export interface components {
             counts: components["schemas"]["PoQueueCountsOut"];
             /** Pending */
             pending: components["schemas"]["PoQueueItemOut"][];
+            /** Superseded */
+            superseded?: components["schemas"]["PoSupersededOut"][];
             /** Ready To Merge */
             ready_to_merge: components["schemas"]["PoMergeRowOut"][];
             /** Policy Version */
@@ -9950,6 +9990,28 @@ export interface components {
             at: string | null;
             /** Run Url */
             run_url: string | null;
+        };
+        /**
+         * PoSupersededOut
+         * @description A pending request whose pull request has left the head it names.
+         */
+        PoSupersededOut: {
+            /** Id */
+            id: string;
+            /** Duty */
+            duty: string;
+            /** Subject Ref */
+            subject_ref: string;
+            /** Summary */
+            summary: string;
+            /** Repo Full Name */
+            repo_full_name: string | null;
+            /** Requested Head Sha */
+            requested_head_sha: string;
+            /** Current Head Sha */
+            current_head_sha: string | null;
+            /** Reason */
+            reason: string;
         };
         /** PoTierNeedsOut */
         PoTierNeedsOut: {
@@ -10078,6 +10140,25 @@ export interface components {
             /** Stories */
             stories: components["schemas"]["PoTracePickOut"][];
             trace: components["schemas"]["PoTraceOut"] | null;
+        };
+        /** PoVerificationLineOut */
+        PoVerificationLineOut: {
+            /** Ok */
+            ok: boolean | null;
+            /** Text */
+            text: string;
+        };
+        /**
+         * PoVerificationOut
+         * @description The platform's check of a request, run when it was read.
+         */
+        PoVerificationOut: {
+            /** Ran At */
+            ran_at: string | null;
+            /** Holds */
+            holds: boolean | null;
+            /** Lines */
+            lines: components["schemas"]["PoVerificationLineOut"][];
         };
         /** PortfolioOut */
         PortfolioOut: {
@@ -17391,6 +17472,41 @@ export interface operations {
             header?: never;
             path: {
                 repo_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PoDecideIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoDecideOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_from_packet_api_dashboard_product_owner_approvals__request_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
                 request_id: string;
             };
             cookie?: never;
