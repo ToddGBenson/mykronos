@@ -11,6 +11,7 @@
 import "server-only";
 
 import type { findingsApiQuery } from "./findings-filters";
+import type { BoardCounts } from "./portfolio-board";
 
 import {
   BackendUnavailable,
@@ -178,6 +179,59 @@ export async function getOpenFindings(
     );
     if (!data) return { ok: false, error: describe(response, "Could not load open findings") };
     return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * The Portfolio board's overdue and accepted counts per capability, for one
+ * repository (TheHub #61138), from the open-findings endpoint.
+ *
+ * Accepted comes from `by_capability` of the accepted-risk view, which is
+ * counted before the limit, so one row is asked for. Overdue reads the
+ * groups, because `by_capability` is counted before the `due` filter; each
+ * group adds its occurrences to every capability that reported it, and the
+ * oldest age is the largest `age_days`. If the overdue list is truncated the
+ * count is a floor.
+ */
+export async function getBoardCounts(repoId: string): Promise<Result<BoardCounts>> {
+  try {
+    const client = backendClient();
+    const path = "/api/dashboard/repos/{repo_id}/open-findings" as const;
+    const [accepted, overdue] = await Promise.all([
+      client.GET(path, {
+        params: {
+          path: { repo_id: repoId },
+          query: { finding_status: ["accepted_risk"], limit: 1 } as never,
+        },
+        cache: "no-store",
+      }),
+      client.GET(path, {
+        params: {
+          path: { repo_id: repoId },
+          query: { finding_status: ["open"], due: ["overdue"], limit: 2000 } as never,
+        },
+        cache: "no-store",
+      }),
+    ]);
+    if (!accepted.data) {
+      return { ok: false, error: describe(accepted.response, "Could not load accepted risk") };
+    }
+    if (!overdue.data) {
+      return { ok: false, error: describe(overdue.response, "Could not load overdue findings") };
+    }
+    const late: BoardCounts["overdue"] = {};
+    for (const group of overdue.data.groups) {
+      for (const capability of group.capabilities ?? []) {
+        const entry = (late[capability] ??= { count: 0, oldestDays: null });
+        entry.count += group.occurrences;
+        if (typeof group.age_days === "number") {
+          entry.oldestDays = Math.max(entry.oldestDays ?? 0, group.age_days);
+        }
+      }
+    }
+    return { ok: true, data: { accepted: accepted.data.by_capability ?? {}, overdue: late } };
   } catch (error) {
     return failure(error);
   }
