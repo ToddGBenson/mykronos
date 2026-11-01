@@ -209,7 +209,9 @@ if not HAVE_GITLEAKS and os.environ.get("MYKRONOS_REQUIRE_GITLEAKS"):
 needs_gitleaks = pytest.mark.skipif(not HAVE_GITLEAKS, reason="gitleaks is not on PATH")
 
 # Assembled at runtime so this file holds no line generic-api-key fires on.
-VALUE = "".join("Qm4Tz8Kd2W"[i % 10] for i in range(32))
+# Thirty-two distinct characters: generic-api-key only fires above an entropy
+# of 3.5, which a short repeated alphabet does not reach.
+VALUE = "".join("Qm4Tz8Kd2WxRb7Hn3Vc9Lp5Gs1Yf6Jt0A"[(i * 7) % 33] for i in range(32))
 FIXTURE_LINE = 'service_key = "' + VALUE + '"\n'
 
 
