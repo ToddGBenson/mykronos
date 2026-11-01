@@ -18,6 +18,7 @@ import {
   delegationState,
   descendants,
   isDefaultTtl,
+  lifetimeLabel,
   orderCredentials,
   ttlHours,
   type AgentCredential,
@@ -69,6 +70,19 @@ describe("ttlHours and isDefaultTtl", () => {
   it("flags the 12-hour default, and nothing longer", () => {
     expect(isDefaultTtl(cred())).toBe(true);
     expect(isDefaultTtl(cred({ expires_at: "2026-11-02T00:00:00" }))).toBe(false);
+  });
+});
+
+describe("lifetimeLabel", () => {
+  it("shows minutes under an hour, never 0h", () => {
+    expect(lifetimeLabel(cred({ expires_at: "2026-11-01T00:20:00" }))).toBe("20m lifetime");
+    expect(lifetimeLabel(cred({ expires_at: "2026-11-01T00:59:00" }))).toBe("59m lifetime");
+  });
+
+  it("shows hours under two days, and days beyond", () => {
+    expect(lifetimeLabel(cred())).toBe("12h lifetime");
+    expect(lifetimeLabel(cred({ expires_at: "2026-11-01T01:00:00" }))).toBe("1h lifetime");
+    expect(lifetimeLabel(cred({ expires_at: "2026-11-08T00:00:00" }))).toBe("7d lifetime");
   });
 });
 
