@@ -9,6 +9,7 @@ import {
   SeverityPair,
 } from "@/components/accepted-risk";
 import { Crumb, ErrorPanel, Label, Pill, RelativeTime } from "@/components/primitives";
+import { RiskAcceptanceActions } from "@/components/risk-acceptance-actions";
 import {
   auditActionLabel,
   controlText,
@@ -35,10 +36,11 @@ export const metadata = { title: "Risk acceptance — Mykronos" };
  * an acceptance can cover thousands of findings and carry several premises
  * with their observations, which is a page, not a disclosure.
  *
- * **No buttons.** The acceptance API can renew and revoke, but no page in this
- * dashboard calls those routes yet; the actions are listed with their routes
- * so an operator (or the agent playbook, which offers the same ones) can take
- * them, rather than this page inventing a mutation path of its own.
+ * **Buttons since TheHub #61140.** The actions the acceptance API offers for
+ * this record's status are listed with their routes, and renew, revoke and
+ * the interim review can be taken here (`RiskAcceptanceActions`), each with
+ * the words its route requires. Anything else listed is still taken through
+ * the API or the agent playbook.
  */
 export default async function RiskAcceptancePage({
   params,
@@ -350,10 +352,10 @@ export default async function RiskAcceptancePage({
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-[13px] text-ink-3">
-              Not buttons yet: no page in this dashboard calls these routes. The agent work
-              queue offers the same actions.
-            </p>
+            <RiskAcceptanceActions
+              recordId={a.id}
+              actions={a.actions.map((action) => action.path)}
+            />
           </>
         )}
       </Block>

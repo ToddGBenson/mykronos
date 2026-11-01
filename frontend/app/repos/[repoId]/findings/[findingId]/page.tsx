@@ -28,8 +28,11 @@ import {
   ExploitabilityPanel,
   RescoreSteps,
 } from "@/components/finding-workbench";
+import { FindingDecision } from "@/components/finding-decision";
 import { PinRegressionTest } from "@/components/pin-regression-test";
 import { RemediationAction } from "@/components/remediation-action";
+import { defaultScope, recommendAction } from "@/lib/finding-decision";
+import { getDeclaredControls } from "@/lib/server-finding-decision";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +50,11 @@ export const metadata = { title: "Finding — Mykronos" };
  * is cheapest to fetch: what is it, does it matter *here*, what do I do, what
  * happened and can it end. Identification is first because it is unavoidable,
  * not because it is the decision — so it gets a header rather than the page.
+ *
+ * The decision itself comes first since TheHub #61140 (P7): a sticky panel
+ * beside the evidence on a wide screen, and above it on a narrow one, with the
+ * recommendation, the facts that drive it, and the three ways to act. It was
+ * below five panels of evidence, and dispositions were on another tab.
  */
 export default async function FindingRecordPage({
   params,
@@ -54,9 +62,10 @@ export default async function FindingRecordPage({
   params: Promise<{ repoId: string; findingId: string }>;
 }) {
   const { repoId, findingId } = await params;
-  const [result, dossierResult] = await Promise.all([
+  const [result, dossierResult, controls] = await Promise.all([
     getFindingRecord(findingId),
     getFindingDossier(findingId),
+    getDeclaredControls(repoId),
   ]);
 
   if (!result.ok) {
@@ -66,9 +75,61 @@ export default async function FindingRecordPage({
   const { finding, repo_full_name, closure, fix, missing_context } = result.data;
   const here = result.data.severity_here;
   const pkg = result.data.package;
+  const effective = here?.effective_severity ?? null;
+  const recommendation = recommendAction({
+    status: finding.status,
+    fixable: Boolean(pkg?.fixable),
+    fixedVersion: pkg?.fixed_version ?? null,
+    hasFix: Boolean(fix),
+    isPackage: Boolean(pkg),
+  });
+  const decisionFacts: { label: string; value: string; tone?: "pass" | "high" | "critical" }[] = [
+    {
+      label: "severity",
+      value:
+        effective && effective !== finding.severity
+          ? `${finding.severity} as scanned, ${effective} here`
+          : finding.severity,
+    },
+    ...(pkg
+      ? [
+          pkg.fixable
+            ? { label: "fix", value: `${pkg.fixed_version} published`, tone: "pass" as const }
+            : { label: "fix", value: "none published", tone: "high" as const },
+        ]
+      : []),
+    {
+      label: "can close",
+      value: closure.can_close ? "yes, lane healthy" : "no, lane blocked",
+      ...(closure.can_close ? {} : { tone: "critical" as const }),
+    },
+    { label: "due", value: finding.due_at ? finding.due_at.slice(0, 10) : "no target set" },
+    ...(finding.accepted_until
+      ? [{ label: "accepted until", value: finding.accepted_until.slice(0, 10) }]
+      : []),
+  ];
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_400px] lg:items-start">
+      {/* First in the document, so it is first for a keyboard and a screen
+          reader too; on a wide screen it sits in the right column and stays
+          in view while the evidence scrolls. */}
+      <aside className="lg:sticky lg:top-4 lg:col-start-2 lg:row-start-1 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+        <FindingDecision
+          findingId={findingId}
+          status={finding.status}
+          recommendation={recommendation}
+          facts={decisionFacts}
+          acceptance={{
+            repo: repo_full_name,
+            repoId,
+            scope: defaultScope(finding),
+            noFixPublished: Boolean(pkg && !pkg.fixable),
+            controls,
+          }}
+        />
+      </aside>
+    <div className="flex min-w-0 flex-col gap-4 lg:col-start-1 lg:row-start-1">
       <div className="font-mono text-[12px] text-ink-3">
         <Crumb href="/">Portfolio</Crumb> /{" "}
         <Crumb href={`/repos/${repoId}`}>{repo_full_name}</Crumb> /{" "}
@@ -153,7 +214,7 @@ export default async function FindingRecordPage({
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.3fr_1fr]">
         <div className="flex flex-col gap-3">
-          <section className="border border-rule bg-paper-2">
+          <section id="act" className="scroll-mt-4 border border-rule bg-paper-2">
             <div className="border-b border-rule-soft px-3 py-1.5">
               <Label as="h2">What to do about it</Label>
             </div>
@@ -292,7 +353,7 @@ export default async function FindingRecordPage({
           </section>
 
           <p className="text-[13px] leading-relaxed text-ink-3">
-            Dispositions, claims and owner changes are made from the{" "}
+            Claims and owner changes are made from the{" "}
             <Link
               href={`/repos/${repoId}?tab=findings&finding=${findingId}`}
               className="text-accent underline-offset-2 hover:underline"
@@ -303,6 +364,7 @@ export default async function FindingRecordPage({
           </p>
         </div>
       </div>
+    </div>
     </div>
   );
 }
