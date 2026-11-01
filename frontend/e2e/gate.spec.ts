@@ -20,6 +20,10 @@ test("with no token the dashboard answers 401 and shows nothing", async ({ page 
   expect(response?.status()).toBe(401);
   expect(response?.headers()["www-authenticate"]).toContain("X-Hub-Token");
   await expect(page.locator("body")).toContainText("Not authorised for this host.");
+  // A page that names the next step, not a bare JSON refusal (TheHub #61143).
+  await expect(
+    page.getByRole("heading", { name: "This dashboard opens through its access link" }),
+  ).toBeVisible();
   // Nothing of the application rendered: no layout, no navigation.
   await expect(page.getByRole("group", { name: "Colour theme" })).toHaveCount(0);
 });

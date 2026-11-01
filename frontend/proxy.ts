@@ -9,6 +9,17 @@ import {
   presentedToken,
   tokensMatch,
 } from "./lib/gate";
+import { GATE_PAGE, GATE_PAGE_CSP } from "./lib/gate-page";
+
+/** A browser navigating to a page, as opposed to a script, a route handler or a prefetch. */
+function wantsPage(request: NextRequest): boolean {
+  const path = request.nextUrl.pathname;
+  if (path === "/api" || path.startsWith("/api/")) return false;
+  if (request.headers.has("next-router-prefetch") || request.headers.get("purpose") === "prefetch") {
+    return false;
+  }
+  return (request.headers.get("accept") ?? "").includes("text/html");
+}
 
 /**
  * Every request passes the perimeter gate (`lib/gate.ts`) first; only then
@@ -33,6 +44,21 @@ export async function proxy(request: NextRequest) {
       presented = fromLink;
     }
     if (!(await tokensMatch(presented, expected))) {
+      // A person navigating gets a page that says what to do next (TheHub
+      // #61143): the same 401 and challenge, the same bytes for every wrong
+      // token, no script and no cookie. Route handlers, prefetches and
+      // anything that did not ask for HTML keep the JSON below.
+      if (wantsPage(request)) {
+        return new NextResponse(GATE_PAGE, {
+          status: 401,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": GATE_PAGE_CSP,
+            "Cache-Control": "no-store",
+            "WWW-Authenticate": 'X-Hub-Token realm="mykronos"',
+          },
+        });
+      }
       // Terse and identical for absent, wrong and malformed, as the backend.
       return NextResponse.json(
         { detail: "Not authorised for this host." },
