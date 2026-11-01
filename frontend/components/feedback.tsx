@@ -83,7 +83,7 @@ export function Feedback() {
               ? "Open a GitHub issue about something that is wrong. It opens under your own account, pre-filled with this page and release."
               : "Ask for something. It opens under your own account."
           }
-          className="tap border border-rule px-1.5 py-0.5 font-mono text-[11px] lowercase tracking-[0.08em] text-ink-3 hover:border-accent hover:text-accent"
+          className="tap whitespace-nowrap border border-rule px-1.5 py-0.5 font-mono text-[11px] lowercase tracking-[0.08em] text-ink-3 hover:border-accent hover:text-accent"
         >
           {kind === "bug" ? "report a bug" : "request"}
         </a>

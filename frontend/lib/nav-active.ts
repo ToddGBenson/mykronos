@@ -7,7 +7,21 @@
  * page would be Portfolio. An item's query and hash are ignored: the rail
  * marks a page, not a tab.
  */
+/**
+ * Pages that live under one section's path and belong to another item. An
+ * approval packet's URL is `/product-owner/review-queue/<id>`, and the nav's
+ * home for it is Approvals (TheHub #61137). An alias applies only when its
+ * item is in the nav.
+ */
+const ALIASES: readonly [prefix: string, href: string][] = [
+  ["/product-owner/review-queue", "/approvals"],
+];
+
 export function activeHref(pathname: string, hrefs: readonly string[]): string | null {
+  for (const [prefix, href] of ALIASES) {
+    const under = pathname === prefix || pathname.startsWith(`${prefix}/`);
+    if (under && hrefs.includes(href)) return href;
+  }
   let best: string | null = null;
   let bestLength = -1;
   for (const href of hrefs) {

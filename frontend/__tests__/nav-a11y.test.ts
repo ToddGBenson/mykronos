@@ -98,7 +98,7 @@ describe("the nav rail", () => {
     expect(button).toContain('aria-controls="nav-sections"');
     expect(button).toContain("md:hidden");
     expect(button).toContain("min-h-11");
-    expect(html).toMatch(/<button[^>]*>[^<]*Menu/);
+    expect(html).toMatch(/<button[^>]*>(?:(?!<\/button>).)*Menu/);
     const list = html.match(/<div[^>]*id="nav-sections"[^>]*>/)?.[0] ?? "";
     expect(list).toMatch(/\bhidden\b/);
     expect(list).toContain("md:block");

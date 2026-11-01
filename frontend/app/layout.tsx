@@ -102,7 +102,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/" className="font-mono text-xs font-bold tracking-[0.14em]">
               MYKRONOS
             </Link>
-            <span className="font-mono text-[12px] text-ink-3">
+            {/* Gives way on a phone, so the header's controls stay on one line. */}
+            <span className="hidden font-mono text-[12px] text-ink-3 sm:inline">
               AppSec control plane
             </span>
             <div className="ml-auto flex items-center gap-3">
