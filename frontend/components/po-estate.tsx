@@ -2,7 +2,6 @@ import Link from "next/link";
 
 import { EmptyState, ErrorPanel, Pill } from "@/components/primitives";
 import { getPoEstate, type PoEstate } from "@/lib/po-console";
-import { poTabHref } from "@/lib/po-tabs";
 
 /**
  * The estate roll-up of the Product Owner tab (spec 35 §8.7, D-148): the
@@ -42,8 +41,8 @@ export async function PoEstateTab() {
           <span className="font-mono">.sdlc/process.yaml</span> and from TheHub. Each row is
           that repository&rsquo;s Product Owner tab; open it for the detail. Decisions waiting
           on you across all of them are in the{" "}
-          <Link href={poTabHref("review")} className="text-accent hover:underline">
-            review queue
+          <Link href="/approvals" className="text-accent hover:underline">
+            Approvals
           </Link>
           .
         </p>

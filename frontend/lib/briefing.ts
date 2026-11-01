@@ -130,7 +130,7 @@ export function refLink(
           label: "acceptance",
           external: false,
         }
-      : { href: "/decisions", label: "acceptance", external: false };
+      : { href: "/risk-policy", label: "acceptance", external: false };
   }
   const scanRun = value.match(SCAN_RUN_REF);
   if (scanRun && repoId) {

@@ -10,9 +10,13 @@ export const RETIRED_ROUTES: Readonly<Record<string, string>> = {
   // the #library section of Remediate today.
   "/remediation": "/remediate#library",
   // TheHub #60884: the review queue and the pull requests list were nav
-  // entries of their own beside Product Owner. They are its tabs now.
-  "/product-owner/review-queue": "/product-owner?tab=review",
+  // entries of their own beside Product Owner, and became its tabs. TheHub
+  // #61137 moved the review queue again, to Approvals at the top of the rail;
+  // `/product-owner?tab=review` redirects there too (app/product-owner).
+  "/product-owner/review-queue": "/approvals",
   "/pull-requests": "/product-owner?tab=pull-requests",
+  // TheHub #61137: "Decisions" was the scoring policy, and read as approvals.
+  "/decisions": "/risk-policy",
 };
 
 /** Where a retired path now lands. Throws for a path that was never retired. */
