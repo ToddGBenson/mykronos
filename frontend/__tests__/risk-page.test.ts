@@ -409,7 +409,7 @@ describe("RiskMatrix and AgeChart render", () => {
   it("has the eleven columns of the design", () => {
     for (const heading of [
       "Product",
-      "Gate (main)",
+      "Gate (newest commit)",
       "Prod lag",
       "Crit",
       "High",
@@ -447,5 +447,156 @@ describe("RiskMatrix and AgeChart render", () => {
     expect(chart).toContain("over 90 days");
     expect(chart).toContain('aria-label="8–30 days: 1 critical, 1 high"');
     expect(chart).toContain('aria-label="0–7 days: 0 critical, 0 high"');
+  });
+});
+
+// -- Review of #1080: unknown is never a green zero ------------------------
+
+function allFailed(): RiskInputs {
+  return inputs({
+    deployments: FAILED,
+    approvals: FAILED,
+    reads: {
+      r1: reads({ gate: FAILED, highPlus: FAILED, overdue: FAILED, acceptances: FAILED }),
+      r2: reads({ gate: FAILED, highPlus: FAILED, overdue: FAILED, acceptances: FAILED }),
+    },
+  });
+}
+
+describe("the estate row when reads fail", () => {
+  it("every read failing is unknown in every estate cell, never a green zero", () => {
+    const page = buildRiskPage(allFailed(), { now: NOW });
+    const { estate } = page;
+    for (const cell of [estate.gate, estate.lag, estate.oldest, estate.accepted]) {
+      expect(cell.tone).toBe("stale");
+      expect(cell.text).not.toMatch(/^0\b/);
+      expect(cell.label).toContain("could not be read");
+    }
+    expect(estate.gate.text).not.toBe("0 no-go");
+    expect(estate.lag.text).not.toBe("0 behind");
+    expect(estate.accepted.text).not.toBe("0 expiring");
+    expect(page.ageCoverage.unread).toEqual(["o/beacon", "o/relay"]);
+  });
+
+  it("the age chart says it could not be read, and draws no zero bars", () => {
+    const page = buildRiskPage(allFailed(), { now: NOW });
+    const chart = renderToStaticMarkup(
+      createElement(AgeChart, { buckets: page.buckets, coverage: page.ageCoverage }),
+    );
+    expect(chart).toContain("could not be read");
+    expect(chart).not.toContain('aria-label="0–7 days: 0 critical, 0 high"');
+  });
+
+  it("one product unread: a no-go elsewhere still shows, as a floor", () => {
+    const partial = inputs();
+    partial.reads.r2 = reads({ gate: FAILED });
+    const { estate } = buildRiskPage(partial, { now: NOW });
+    expect(estate.gate.text).toBe("1 no-go");
+    expect(estate.gate.tone).toBe("fail");
+    expect(estate.gate.label).toContain("at least");
+  });
+
+  it("one product unread and the rest go: unknown, not ok", () => {
+    const partial = inputs();
+    partial.reads.r1 = reads();
+    partial.reads.r2 = reads({ gate: FAILED });
+    const { estate } = buildRiskPage(partial, { now: NOW });
+    expect(estate.gate.tone).toBe("stale");
+    expect(estate.gate.text).toContain("1 unknown");
+  });
+
+  it("a partial age chart says its totals are floors", () => {
+    const partial = inputs();
+    partial.reads.r2 = reads({ highPlus: FAILED });
+    const page = buildRiskPage(partial, { now: NOW });
+    expect(page.estate.oldest.label).toContain("at least");
+    const chart = renderToStaticMarkup(
+      createElement(AgeChart, { buckets: page.buckets, coverage: page.ageCoverage }),
+    );
+    expect(chart).toContain("at least");
+    expect(chart).toContain("o/relay");
+  });
+});
+
+describe("a read truncated at its limit is a floor", () => {
+  const capped = {
+    groups: [group({ occurrences: 2000, due_state: "overdue", age_days: 40 })],
+    matching: 2000,
+    shown: 2000,
+    truncated: true,
+  };
+
+  it("overdue reads `matching` and says 'at least' when truncated", () => {
+    const cell = overdueCell("r1", ok(capped));
+    expect(cell.value).toBe(2000);
+    expect(cell.floor).toBe(true);
+    expect(cell.label).toContain("at least");
+  });
+
+  it("an untruncated overdue read is exact", () => {
+    const cell = overdueCell("r1", ok({ ...capped, truncated: false }));
+    expect(cell.floor).toBeFalsy();
+    expect(cell.label).not.toContain("at least");
+  });
+
+  it("oldest is a floor when the high+ read was cut short, or matched more than it showed", () => {
+    for (const read of [capped, { ...capped, truncated: false, matching: 2500 }]) {
+      const cell = oldestCell("r1", ok(read));
+      expect(cell.text.startsWith("≥")).toBe(true);
+      expect(cell.label).toContain("at least");
+    }
+  });
+
+  it("the estate row, the count link and the age chart carry the floor through", () => {
+    const cut = inputs();
+    cut.reads.r2 = reads({ highPlus: ok(capped), overdue: ok(capped) });
+    const page = buildRiskPage(cut, { now: NOW });
+    expect(page.estate.overdue.floor).toBe(true);
+    expect(page.estate.overdue.label).toContain("at least");
+    expect(page.ageCoverage.truncated).toEqual(["o/relay"]);
+    const html = renderToStaticMarkup(createElement(RiskMatrix, { page }));
+    expect(html).toContain("≥2003");
+    const chart = renderToStaticMarkup(
+      createElement(AgeChart, { buckets: page.buckets, coverage: page.ageCoverage }),
+    );
+    expect(chart).toContain("at least");
+  });
+});
+
+describe("acceptances: estate in force, and what 'in force' counts", () => {
+  it("the estate cell shows in force and expiring, like a product row", () => {
+    const withAcc = inputs();
+    withAcc.reads.r1 = reads({
+      acceptances: ok([
+        { id: "a1", state: "active", days_left: 50 },
+        { id: "a2", state: "expiring", days_left: 9 },
+      ]),
+    });
+    const { estate } = buildRiskPage(withAcc, { now: NOW });
+    expect(estate.accepted.text).toBe("2 · 1 expiring");
+  });
+
+  it("the tooltip says when needs-review or premise-failed acceptances are counted", () => {
+    const cell = acceptedCell(
+      "r1",
+      ok([
+        { id: "a1", state: "active", days_left: 50 },
+        { id: "a2", state: "needs_review", days_left: 20 },
+        { id: "a3", state: "premise_failed", days_left: 20 },
+      ]),
+    );
+    expect(cell.label).toContain("needs review");
+    expect(cell.label).toContain("premise failed");
+  });
+});
+
+describe("the gate column names what it reads", () => {
+  it("decision records carry no branch, so the heading does not claim main", () => {
+    const html = renderToStaticMarkup(
+      createElement(RiskMatrix, { page: buildRiskPage(inputs(), { now: NOW }) }),
+    );
+    expect(html).not.toContain(">Gate (main)</th>");
+    expect(html).toContain(">Gate (newest commit)</th>");
+    expect(gateCell("r1", ok(null)).label).not.toContain("default branch");
   });
 });
