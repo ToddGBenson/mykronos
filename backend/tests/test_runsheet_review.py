@@ -340,6 +340,26 @@ class TestMergeRules:
         assert any("TheHub deploy" in n and "lock" in n for n in step.notes)
 
 
+def test_the_self_review_record_is_read_from_the_pull_requests_files(
+    client: TestClient, github: FakeGitHubClient, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(rs, "SELF_REVIEW_REPOS", frozenset({REPO}))
+    onboard(client)
+    github.repos[REPO].pull_request_files = {
+        7: [PullRequestFile(filename="docs/self-review.md", status="added")],
+        8: [PullRequestFile(filename="hooks/pre-push", status="modified")],
+    }
+    with_record, without = pr(number=7), pr(number=8)
+    asyncio.run(
+        rs._self_reviews(
+            client.app.state.db,  # type: ignore[attr-defined]
+            client.app.state.github_factory,  # type: ignore[attr-defined]
+            [with_record, without],
+        )
+    )
+    assert (with_record.has_self_review, without.has_self_review) == (True, False)
+
+
 # -- Low: the approvals read is bounded -----------------------------------------
 
 

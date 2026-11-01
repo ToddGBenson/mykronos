@@ -20,6 +20,13 @@ body, says per step whether they agree, and appends the verdict to a log.
 Capture the transcript with `pwsh -File Start-Here.ps1 -Check *> file`, and
 read the run sheet in the same minute: the two read live state.
 
+**Who runs it, and when.** The seven days start after the run sheet is
+deployed, so the acceptance is shown after the merge, never at it. Delivery
+owns the daily run: once a day, after its Start-Here pass, it captures one
+`-Check` transcript, runs this with `--log`, and reads `--summary`; the page
+is trusted when the summary exits 0. Nothing on the server schedules it,
+because the transcript exists only on the host.
+
 What is compared, and what is not:
 
 * **Decide**: the request ids Start-Here lists as decidable (their first
@@ -29,6 +36,11 @@ What is compared, and what is not:
   under it) against the run sheet's ready Merge items, for the repositories
   Start-Here's Merges section names. Start-Here covers a fixed list; the run
   sheet covers every onboarded repository, and the others are out of scope.
+  TheHub's lines are Start-Here's batch, not the repository, so TheHub is
+  compared only on the pull requests it printed (and one it then holds back
+  for ordering is not offered). A pull request Start-Here holds for the TheHub
+  deploy lock, or a draft the run sheet hid that Start-Here's ready-drafts list
+  offers, rests on what only the host sees: skipped, never a diff.
 * **Deploy**: Start-Here's outcome mapped to the run sheet's state, and the
   running and main shas when both print them. An outcome decided by a guard
   only the host can see (the TheHub deploy lock, Delivery's hold flag) is
@@ -60,6 +72,14 @@ _SECTION_KEYS = {"1": "decide", "2": "merge", "3": "deploy"}
 _DECIDE = re.compile(r"^  (?P<id>[0-9a-f]{8})  \S+\s+\S+\s+\S")
 _MERGE = re.compile(r"^  (?P<repo>[^\s#/]+/[^\s#]+)#(?P<n>\d+)  (?P<rest>.*)$")
 _NOT_READY = ("NOT merging:", "not approved at its head")
+#: Repositories whose Start-Here lines are a fixed batch, not the repository.
+_BATCH_REPO_NAMES = ("TheHub",)
+#: "not merging TheHub#561 this run: #564 must merge before it ..."
+_HELD_BACK = re.compile(r"not merging (?P<name>[\w.-]+)#(?P<n>\d+) this run")
+#: A `not yet:` reason that is the host's TheHub deploy lock.
+_LOCK_WAIT = "HubOps is deploying TheHub"
+#: The run sheet's hidden draft line: "owner/repo#12: a draft; ..."
+_HIDDEN_DRAFT = re.compile(r"^(?P<ref>[^\s#]+/[^\s#]+#\d+): a draft\b")
 _SHAS = re.compile(r"running: (?P<running>\S+)\s+main: (?P<main>\S+)")
 _SUMMARY_SHAS = re.compile(
     r"deploy (?P<main>[0-9a-f]{7}): production runs (?P<running>[0-9a-f]{7})"
@@ -85,11 +105,19 @@ class StartHere:
     decide: set[str] = field(default_factory=set)
     merge_ready: set[str] = field(default_factory=set)
     merge_repos: set[str] = field(default_factory=set)
+    #: For a batch repository (TheHub), the pull requests Start-Here printed.
+    merge_batch: set[str] = field(default_factory=set)
+    #: Held for a guard only the host sees (the TheHub deploy lock).
+    merge_host_only: set[str] = field(default_factory=set)
     deploy: str | None = None
     running: str = ""
     main: str = ""
     #: The sections the transcript contained, by run-sheet step key.
     sections: set[str] = field(default_factory=set)
+
+
+def _is_batch(repo: str) -> bool:
+    return repo.rsplit("/", 1)[-1] in _BATCH_REPO_NAMES
 
 
 def parse_start_here(text: str) -> StartHere:
@@ -112,12 +140,24 @@ def parse_start_here(text: str) -> StartHere:
             if m:
                 out.decide.add(m["id"])
         elif section == "merge":
+            held = _HELD_BACK.search(line)
+            if held:
+                out.merge_ready -= {
+                    r for r in out.merge_ready if r.endswith(f"/{held['name']}#{held['n']}")
+                }
+                continue
             m = _MERGE.match(line)
             if not m:
                 continue
             ref = f"{m['repo']}#{m['n']}"
-            out.merge_repos.add(m["repo"])
+            if _is_batch(m["repo"]):
+                out.merge_batch.add(ref)
+            else:
+                out.merge_repos.add(m["repo"])
             follows = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            if follows.startswith("not yet:") and _LOCK_WAIT in follows:
+                out.merge_host_only.add(ref)
+                continue
             if m["rest"].startswith(_NOT_READY) or follows.startswith("not yet:"):
                 continue
             out.merge_ready.add(ref)
@@ -181,11 +221,30 @@ def compare(start_here: StartHere, sheet: dict[str, Any]) -> Result:
         if key == "decide":
             _sets(key, start_here.decide, {ref[:8] for ref in _ready(step)}, result)
         elif key == "merge":
-            ours = {ref for ref in _ready(step) if ref.split("#")[0] in start_here.merge_repos}
-            _sets(key, start_here.merge_ready, ours, result)
+            _merge(start_here, step, result)
         else:
             _deploy(start_here, step, result)
     return result
+
+
+def _merge(start_here: StartHere, step: dict[str, Any], result: Result) -> None:
+    drafts = {
+        m["ref"] for line in step.get("hidden") or [] if (m := _HIDDEN_DRAFT.match(str(line)))
+    }
+    skip = start_here.merge_host_only | (drafts & start_here.merge_ready)
+    for ref in sorted(start_here.merge_host_only):
+        result.skipped.append(f"merge: {ref} waits on the TheHub deploy lock, a host guard")
+    for ref in sorted(drafts & start_here.merge_ready):
+        result.skipped.append(f"merge: {ref} is a draft Start-Here's ready-drafts list offers")
+
+    def in_scope(ref: str) -> bool:
+        repo = ref.split("#")[0]
+        if ref in skip:
+            return False
+        return ref in start_here.merge_batch if _is_batch(repo) else repo in start_here.merge_repos
+
+    ours = {ref for ref in _ready(step) if in_scope(ref)}
+    _sets("merge", start_here.merge_ready - skip, ours, result)
 
 
 def _deploy(start_here: StartHere, step: dict[str, Any], result: Result) -> None:

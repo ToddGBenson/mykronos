@@ -13,17 +13,28 @@ week before the page is trusted (the story's acceptance):
 * **Decide.** Pending approval requests. A `pull_request_merge` request is
   hidden when its pull request is no longer open, or when the pull request's
   head has moved past the sha it names (#1049 had both: approving the old one
-  does nothing). While the independent reviewer runs in `shadow`, a request it
-  has not posted on waits for it.
+  does nothing). Each is checked against a live read of its own pull request,
+  as Start-Here's `gh pr view` does, never the cached listing: a request made
+  right after a push names a head the cache has not seen. A request whose
+  pull request could not be read stays, and the step says why. While the
+  independent reviewer runs in `shadow`, a request it has not posted on waits
+  for it.
 * **Merge.** Every open, non-draft pull request on an onboarded repository,
-  oldest number first per repository. Approved at its head when the
-  repository requires `independent-review`; then conflicts, red checks,
-  behind, running checks; never guessed ready when a read is missing.
+  oldest number first per repository, under Start-Here's rule for its
+  repository: TheHub merges only at a head an approved request names (develop
+  requires no check, so a red advisory check does not stop it); keel and
+  binnacle need the operator's `self-review.md` in the pull request; any
+  repository whose branch requires `independent-review` needs the approval at
+  its head. Then conflicts, red checks, behind, running checks; never guessed
+  ready when a read is missing. Drafts are named, since Start-Here offers the
+  drafts its own list names, and the host-only guards (the TheHub deploy
+  lock, TheHub's batch list) are named in `notes`.
 * **Deploy.** The platform's own production: running sha against main, the
   backup window, main's Delivery run, the `unit` and `lint-and-types` lanes,
-  and the risk gate's verdict on main. Two guards live only on the host (the
-  TheHub deploy lock and Delivery's hold flag); they are named in `notes`,
-  never guessed.
+  and the risk gate on main, read as `/decisions/by-commit` answers it (the
+  floor is what the commit introduced, which an override does not clear).
+  Two guards live only on the host (the TheHub deploy lock and Delivery's
+  hold flag); they are named in `notes`, never guessed.
 * **Tasks.** The board's `OPERATOR ACTION:` stories that GitHub does not show
   as done (`operator_checks`). Start-Here's one-offs are scripts on the host
   and are not visible here.
@@ -37,7 +48,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import Any
@@ -79,6 +90,23 @@ BACKUP_WINDOW = (time(2, 40), time(4, 15))
 #: The check `main` requires on mykronos (spec 34 §6.1).
 REVIEW_CHECK = "independent-review"
 PR_DUTY = "pull_request_merge"
+
+#: Start-Here's per-repository merge rules (section 2).
+#: TheHub requires no check on develop: the approval at the head is the gate.
+APPROVAL_REPOS: frozenset[str] = frozenset({"ToddGBenson/TheHub"})
+#: keel and binnacle need the operator's own self-review record in the PR.
+SELF_REVIEW_REPOS: frozenset[str] = frozenset({"ToddGBenson/keel", "ToddGBenson/binnacle"})
+SELF_REVIEW_FILE = "self-review.md"
+#: Live single-PR reads for Decide, at a time and each under this many seconds.
+LIVE_READ_CONCURRENCY = 6
+LIVE_READ_TIMEOUT_SECONDS = 15.0
+
+MERGE_HOST_NOTES = (
+    "Start-Here holds every merge while a TheHub deploy runs (the deploy lock, on the "
+    "host); this server cannot see the lock.",
+    "Start-Here merges TheHub pull requests only from its batch list, which lives on the "
+    "host: an approved one outside the batch waits for the next batch.",
+)
 
 HOST_ONLY_GUARDS = (
     "Start-Here also checks the TheHub deploy lock, which this server cannot see: "
@@ -165,35 +193,44 @@ class PullRequestState:
     checks: ChecksSummary | None
     depends_on: list[int] = field(default_factory=list)
     detail_read: bool = False
+    #: Whether the PR changes a `self-review.md` (keel, binnacle). None when
+    #: its files were not read.
+    has_self_review: bool | None = None
 
 
-def decide_step(
-    pending: list[PendingApproval],
-    prs: list[PullRequestState] | None,
-    *,
-    prs_reason: str = "",
-) -> Step:
-    by_number = {(p.repo, p.number): p for p in prs} if prs is not None else None
+@dataclass
+class LiveHead:
+    """One pull request as a live single-PR read found it."""
+
+    open: bool
+    head_sha: str
+
+
+#: (repo, number) -> what the live read found, or why it could not be read.
+LiveHeads = dict[tuple[str, int], LiveHead | str]
+
+
+def decide_step(pending: list[PendingApproval], heads: LiveHeads) -> Step:
     items: list[Item] = []
     hidden: list[str] = []
-    unchecked = 0
+    unchecked: list[str] = []
     for request in pending:
         parsed = parse_pr_ref(request.subject_ref) if request.duty == PR_DUTY else None
         if parsed is not None:
             repo, number, sha = parsed
-            if by_number is None:
-                unchecked += 1
-            else:
-                live = by_number.get((repo, number))
-                if live is None:
-                    hidden.append(f"{repo}#{number}: no longer open (merged or closed)")
-                    continue
-                if live.head_sha and not same_sha(live.head_sha, sha):
-                    hidden.append(
-                        f"{repo}#{number}: its head moved to {live.head_sha[:7]}, "
-                        "so this request is superseded"
-                    )
-                    continue
+            live = heads.get((repo, number), "its pull request was not read")
+            if isinstance(live, str):
+                # Never hidden on a read that did not happen: only you can tell.
+                unchecked.append(f"{repo}#{number}: {live}")
+            elif not live.open:
+                hidden.append(f"{repo}#{number}: no longer open (merged or closed)")
+                continue
+            elif live.head_sha and not same_sha(live.head_sha, sha):
+                hidden.append(
+                    f"{repo}#{number}: its head moved to {live.head_sha[:7]}, "
+                    "so this request is superseded"
+                )
+                continue
         text = f"{request.duty.replace('_', ' ')} · {request.tier} · {request.subject_ref}"
         if request.reviewed is False:
             items.append(
@@ -223,8 +260,8 @@ def decide_step(
     if unchecked:
         status = PARTIAL
         reason = (
-            f"{unchecked} pull-request request(s) not checked against their pull request's "
-            f"head: {prs_reason or 'the pull requests could not be read.'}"
+            f"{len(unchecked)} pull-request request(s) not checked against their pull "
+            "request's head, so none is hidden: " + "; ".join(unchecked)
         )
     return Step(
         key="decide",
@@ -247,6 +284,9 @@ def _pr_item(
     approved_refs: set[str],
     pending_refs: set[str],
     requires_review: bool,
+    required_checks: frozenset[str] | None = None,
+    approval_gated: bool = False,
+    needs_self_review: bool = False,
 ) -> Item:
     def item(state: str, reason: str, owner: str) -> Item:
         return Item(
@@ -273,6 +313,9 @@ def _pr_item(
         return False
 
     approved = names(approved_refs) if p.head_sha else False
+    checks = p.checks
+    if approval_gated:
+        return _approval_gated_item(p, item, approved, names(pending_refs), required_checks)
     if requires_review and not approved:
         if not p.head_sha:
             return item(
@@ -285,7 +328,13 @@ def _pr_item(
             f"waiting on {REVIEW_CHECK}: no request at its head {p.head_sha[:7]}",
             OWNER_DELIVERY,
         )
-    checks = p.checks
+    if needs_self_review and not p.has_self_review:
+        if p.has_self_review is None:
+            return item(
+                UNKNOWN, "its files were not read, so its self-review record cannot be checked",
+                OWNER_CI,
+            )
+        return item(WAITING, f"needs your self-review record ({SELF_REVIEW_FILE})", OWNER_YOU)
     if p.mergeable is False or p.mergeable_state == "dirty":
         return item(BLOCKED, f"conflicts with {p.base_branch or 'its base'}", OWNER_AGENT)
     if checks is not None and checks.failed:
@@ -309,12 +358,60 @@ def _pr_item(
     return item(READY, f"approved at its head, {green}" if requires_review else green, OWNER_YOU)
 
 
+def _approval_gated_item(
+    p: PullRequestState,
+    item: Callable[[str, str, str], Item],
+    approved: bool,
+    pending: bool,
+    required: frozenset[str] | None,
+) -> Item:
+    """TheHub's rule: a PR merges only at the exact head an approved request
+    names, and only a *required* check that is not green stops it. A conflict
+    is still named: the merge would refuse it."""
+    if not p.head_sha:
+        return item(UNKNOWN, "its head was not read, so its approval cannot be checked", OWNER_CI)
+    if not approved:
+        if pending:
+            return item(BLOCKED, "blocked until you decide it in step 1", OWNER_YOU)
+        return item(
+            WAITING,
+            f"not approved at its head {p.head_sha[:7]}: it waits for the next batch",
+            OWNER_DELIVERY,
+        )
+    if p.mergeable is False or p.mergeable_state == "dirty":
+        return item(BLOCKED, f"conflicts with {p.base_branch or 'its base'}", OWNER_AGENT)
+    checks = p.checks
+    # Unknown protection is read as requiring checks: never guess ready.
+    enforced = required is None or bool(required)
+    if enforced:
+        if checks is None:
+            return item(UNKNOWN, "its checks could not be read", OWNER_CI)
+        if checks.failed:
+            return item(
+                BLOCKED,
+                f"{checks.failed} of {checks.total} check(s) failed, and "
+                f"{p.base_branch or 'its base'} requires checks",
+                OWNER_AGENT,
+            )
+        if checks.pending:
+            return item(WAITING, f"{checks.pending} check(s) still running", OWNER_CI)
+    advisory = (
+        f"; {checks.failed} advisory check(s) red, none required"
+        if not enforced and checks is not None and checks.failed
+        else ""
+    )
+    return item(READY, f"approved at its head{advisory}", OWNER_YOU)
+
+
 def merge_step(
     prs: list[PullRequestState] | None,
     *,
     approved_refs: set[str],
     pending_refs: set[str],
     requires_review: dict[str, bool | None],
+    required_checks: dict[str, frozenset[str] | None] | None = None,
+    approval_repos: frozenset[str] | set[str] = APPROVAL_REPOS,
+    self_review_repos: frozenset[str] | set[str] = SELF_REVIEW_REPOS,
     prs_reason: str = "",
 ) -> Step:
     if prs is None:
@@ -325,8 +422,10 @@ def merge_step(
             summary="pull requests could not be read",
             status=UNAVAILABLE,
             reason=prs_reason or "GitHub's pull requests were not read.",
+            notes=list(MERGE_HOST_NOTES),
         )
-    drafts = [p for p in prs if p.draft]
+    required = required_checks or {}
+    drafts = sorted((p for p in prs if p.draft), key=lambda p: (p.repo, p.number))
     offered = sorted((p for p in prs if not p.draft), key=lambda p: (p.repo, p.number))
     items = [
         _pr_item(
@@ -335,6 +434,9 @@ def merge_step(
             pending_refs=pending_refs,
             # Unknown protection is read as requiring review: never guess ready.
             requires_review=requires_review.get(p.repo) is not False,
+            required_checks=required.get(p.repo),
+            approval_gated=p.repo in approval_repos,
+            needs_self_review=p.repo in self_review_repos,
         )
         for p in offered
     ]
@@ -347,9 +449,14 @@ def merge_step(
             "nothing open to merge" if not items else f"{ready} ready, {len(items) - ready} not yet"
         ),
         items=items,
-        hidden=[f"{len(drafts)} draft pull request(s) not offered"] if drafts else [],
+        hidden=[
+            f"{p.repo}#{p.number}: a draft; Start-Here offers a draft only when its "
+            "ready-drafts list names it"
+            for p in drafts
+        ],
         status=PARTIAL if prs_reason else OK,
         reason=prs_reason,
+        notes=list(MERGE_HOST_NOTES),
     )
 
 
@@ -367,7 +474,8 @@ class DeployFacts:
     delivery: tuple[str, str | None] | None
     #: Concourse job -> its latest finished build's status, None if unread.
     lanes: dict[str, str | None]
-    #: `GET /api/oracle/decisions/by-commit` for main, or None when unread.
+    #: `GET /api/oracle/decisions/by-commit` for main, as that route answers
+    #: it (`api.oracle.commit_decision`), or None when unread.
     decision: dict[str, Any] | None
     now: datetime
     reason: str = ""
@@ -386,8 +494,13 @@ def deploy_step(f: DeployFacts) -> Step:
 
     delivery_word = " ".join(x for x in (f.delivery or ("not found", None)) if x)
     red_lanes = [name for name, status in f.lanes.items() if status != "succeeded"]
+    unread_lanes = [name for name in red_lanes if not f.lanes[name]]
     lanes_word = (
-        "green" if not red_lanes else ", ".join(f"{n} {f.lanes[n] or 'unread'}" for n in red_lanes)
+        "green"
+        if not red_lanes
+        else ", ".join(
+            f"{n} {f.lanes[n]}" if f.lanes[n] else f"{n} could not be read" for n in red_lanes
+        )
     )
     window = in_backup_window(f.now)
     if f.decision is None:
@@ -397,7 +510,8 @@ def deploy_step(f: DeployFacts) -> Step:
     elif f.decision.get("introduced_blocking"):
         gate_word, gate_state = "introduced blocking findings", BLOCKED
     else:
-        gate_word, gate_state = str(f.decision.get("recommendation") or "decided"), READY
+        word = f.decision.get("effective_recommendation") or f.decision.get("recommendation")
+        gate_word, gate_state = str(word or "decided"), READY
     items = [
         Item(
             "Delivery on main",
@@ -452,7 +566,11 @@ def deploy_step(f: DeployFacts) -> Step:
         base.reason = f"main's Delivery concluded {f.delivery[1]}: no image to deploy."
     elif red_lanes:
         base.state = BLOCKED
-        base.reason = f"not deploying a broken main: {lanes_word}."
+        base.reason = (
+            f"not deploying a broken main: {lanes_word}."
+            if len(unread_lanes) < len(red_lanes)
+            else f"Start-Here counts a lane it cannot read as not green: {lanes_word}."
+        )
     elif f.delivery != ("completed", "success"):
         base.state = WAITING
         base.reason = "Delivery on main has not succeeded yet"
@@ -529,19 +647,34 @@ def _error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[:300]
 
 
-def _approvals(db: Any, reviewer_mode: str) -> tuple[list[PendingApproval], set[str], set[str]]:
+def _approvals(
+    db: Any, reviewer_mode: str, head_refs: set[str]
+) -> tuple[list[PendingApproval], set[str], set[str]]:
+    """Pending requests, and the approved ones among `head_refs` (each open
+    pull request's `repo#n@head`): only an approval at a head counts, so the
+    approvals ever made are never all read."""
     from mykronos.approvals.reviewer import SHADOW_ACTION
     from mykronos.db.models import ApprovalRequest, AuditLogEntry
 
     with db.session() as session:
-        rows = list(
+        pending_rows = list(
             session.execute(
                 select(ApprovalRequest)
-                .where(ApprovalRequest.state.in_(("pending", "approved")))
+                .where(ApprovalRequest.state == "pending")
                 .order_by(ApprovalRequest.created_at)
             ).scalars()
         )
-        pending_rows = [r for r in rows if r.state == "pending"]
+        approved: set[str] = set()
+        if head_refs:
+            approved = {
+                str(ref)
+                for ref in session.execute(
+                    select(ApprovalRequest.subject_ref)
+                    .where(ApprovalRequest.state == "approved")
+                    .where(ApprovalRequest.duty == PR_DUTY)
+                    .where(ApprovalRequest.subject_ref.in_(sorted(head_refs)))
+                ).scalars()
+            }
         reviewed: set[str] | None = None
         if reviewer_mode == "shadow" and pending_rows:
             reviewed = {
@@ -562,18 +695,19 @@ def _approvals(db: Any, reviewer_mode: str) -> tuple[list[PendingApproval], set[
             )
             for r in pending_rows
         ]
-        approved = {r.subject_ref for r in rows if r.state == "approved" and r.duty == PR_DUTY}
         pending_refs = {r.subject_ref for r in pending_rows if r.duty == PR_DUTY}
     return pending, approved, pending_refs
 
 
-async def _requires_review(
+async def _protections(
     db: Any, factory: Any, branches: dict[str, str]
-) -> dict[str, bool | None]:
+) -> tuple[dict[str, bool | None], dict[str, frozenset[str] | None]]:
+    """Per repository: whether its branch requires `independent-review`, and
+    the checks it requires. None for either when protection was not read."""
     from mykronos.approvals.pull_requests import client_for
 
-    async def one(repo: str, branch: str) -> tuple[str, bool | None]:
-        client = client_for(db, factory, repo)
+    async def one(repo: str, branch: str) -> tuple[str, frozenset[str] | None]:
+        client = client_for(db, factory, repo) if factory is not None else None
         if client is None:
             return repo, None
         try:
@@ -581,22 +715,83 @@ async def _requires_review(
         except Exception:  # noqa: BLE001 - an unread protection is "unknown", never "none"
             return repo, None
         if protection is None:
-            return repo, False
+            return repo, frozenset()
         required = protection.get("required_status_checks") or {}
-        contexts = set(required.get("contexts") or [])
+        contexts = {str(c) for c in required.get("contexts") or []}
         contexts |= {
             str(c.get("context")) for c in required.get("checks") or [] if isinstance(c, dict)
         }
-        return repo, REVIEW_CHECK in contexts
+        return repo, frozenset(contexts)
 
     pairs = await asyncio.gather(*(one(r, b) for r, b in branches.items()))
-    return dict(pairs)
+    checks = dict(pairs)
+    review = {r: (None if c is None else REVIEW_CHECK in c) for r, c in checks.items()}
+    return review, checks
+
+
+async def _live_heads(db: Any, factory: Any, pending: list[PendingApproval]) -> LiveHeads:
+    """Each pending pull-request request's pull request, read live (Start-Here's
+    `gh pr view` per request). Bounded by the pending requests, a few at a time."""
+    from mykronos.approvals.pull_requests import client_for
+
+    wanted = sorted(
+        {
+            (parsed[0], parsed[1])
+            for r in pending
+            if r.duty == PR_DUTY and (parsed := parse_pr_ref(r.subject_ref)) is not None
+        }
+    )
+    gate = asyncio.Semaphore(LIVE_READ_CONCURRENCY)
+
+    async def one(repo: str, number: int) -> LiveHead | str:
+        if factory is None:
+            return "no GitHub client is configured"
+        client = client_for(db, factory, repo)
+        if client is None:
+            return f"{repo} is not onboarded, so its pull request was not read"
+        async with gate:
+            try:
+                live = await asyncio.wait_for(
+                    client.get_pull_request(repo, number), LIVE_READ_TIMEOUT_SECONDS
+                )
+            except Exception as exc:  # noqa: BLE001 - kept visible, with why
+                return f"its pull request could not be read ({type(exc).__name__})"
+        if live is None:
+            return LiveHead(open=False, head_sha="")
+        return LiveHead(open=live.state == "open" and not live.merged, head_sha=live.head_sha)
+
+    answers = await asyncio.gather(*(one(repo, n) for repo, n in wanted))
+    return dict(zip(wanted, answers, strict=True))
+
+
+async def _self_reviews(db: Any, factory: Any, prs: list[PullRequestState]) -> None:
+    """Whether each open keel or binnacle PR carries the self-review record,
+    as Start-Here reads it from the PR's files. Left None when unread."""
+    from mykronos.approvals.pull_requests import client_for
+
+    gate = asyncio.Semaphore(LIVE_READ_CONCURRENCY)
+
+    async def one(p: PullRequestState) -> None:
+        client = client_for(db, factory, p.repo) if factory is not None else None
+        if client is None:
+            return
+        async with gate:
+            try:
+                files = await asyncio.wait_for(
+                    client.pull_request_files(p.repo, p.number), LIVE_READ_TIMEOUT_SECONDS
+                )
+            except Exception:  # noqa: BLE001 - None: the line says it was not read
+                return
+        p.has_self_review = any(SELF_REVIEW_FILE in f.filename for f in files)
+
+    await asyncio.gather(
+        *(one(p) for p in prs if p.repo in SELF_REVIEW_REPOS and not p.draft)
+    )
 
 
 async def _deploy_facts(state: Any, now: datetime) -> DeployFacts:
     from mykronos.approvals.pull_requests import client_for
     from mykronos.ci import ConcourseClient
-    from mykronos.oracle.service import OracleService
 
     settings = state.settings
     reasons: list[str] = []
@@ -635,23 +830,7 @@ async def _deploy_facts(state: Any, now: datetime) -> DeployFacts:
     decision: dict[str, Any] | None = None
     if main_sha:
         try:
-            service = OracleService(
-                state.catalog, state.buffer, state.oracle_policy, state.knowledge, db=state.db
-            )
-            record = await asyncio.to_thread(service.decision_for_commit, main_sha)
-            if record is None:
-                decision = {"found": False}
-            else:
-                override = record.get("human_override")
-                accepted = (
-                    override.get("accepted_recommendation") if isinstance(override, dict) else None
-                )
-                decision = {
-                    "found": True,
-                    "recommendation": str(accepted or record.get("recommendation") or ""),
-                    "introduced_blocking": bool(record.get("introduced_blocking"))
-                    and not accepted,
-                }
+            decision = await asyncio.to_thread(_risk_gate, state, main_sha)
         except Exception as exc:  # noqa: BLE001
             reasons.append(f"The risk gate could not be read: {_error(exc)}")
     return DeployFacts(
@@ -666,14 +845,24 @@ async def _deploy_facts(state: Any, now: datetime) -> DeployFacts:
     )
 
 
+def _risk_gate(state: Any, sha: str) -> dict[str, Any]:
+    """`/decisions/by-commit/{sha}`'s body, computed by the route's own code:
+    the floor (`introduced_blocking`) is what the commit introduced, judged
+    now, which is what Start-Here and deploy.ps1 read."""
+    from mykronos.api.oracle import commit_decision
+    from mykronos.oracle.service import OracleService
+
+    service = OracleService(
+        state.catalog, state.buffer, state.oracle_policy, state.knowledge, db=state.db
+    )
+    return commit_decision(service, state.catalog, sha).model_dump()
+
+
 async def gather(state: Any, now: datetime) -> list[Step]:
     """Read every source and build the four steps. Each read fails alone."""
     from mykronos import delivery_sources
     from mykronos.approvals import reviewer
 
-    pending, approved, pending_refs = await asyncio.to_thread(
-        _approvals, state.db, reviewer.mode(state.settings)
-    )
     inputs = await delivery_sources.gather(state)
     read = inputs.pull_requests
     prs: list[PullRequestState] | None = None
@@ -703,18 +892,28 @@ async def gather(state: Any, now: datetime) -> list[Step]:
         if read.details_unread:
             notes.append(f"{read.details_unread} pull request(s) not read in detail")
         prs_reason = "; ".join(notes)
+    factory = getattr(state, "github_factory", None)
+    head_refs = {f"{p.repo}#{p.number}@{p.head_sha}" for p in prs or [] if p.head_sha}
+    pending, approved, pending_refs = await asyncio.to_thread(
+        _approvals, state.db, reviewer.mode(state.settings), head_refs
+    )
     branches = {p.repo: p.default_branch or "main" for p in prs or []}
-    requires = await _requires_review(state.db, state.github_factory, branches)
+    (requires, required), heads, _ = await asyncio.gather(
+        _protections(state.db, factory, branches),
+        _live_heads(state.db, factory, pending),
+        _self_reviews(state.db, factory, prs or []),
+    )
     facts = await _deploy_facts(state, now)
     board = inputs.board
     stories = board.open_stories() if board is not None else None
     return [
-        decide_step(pending, prs, prs_reason=prs_reason),
+        decide_step(pending, heads),
         merge_step(
             prs,
             approved_refs=approved,
             pending_refs=pending_refs,
             requires_review=requires,
+            required_checks=required,
             prs_reason=prs_reason,
         ),
         deploy_step(facts),

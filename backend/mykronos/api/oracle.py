@@ -515,7 +515,13 @@ async def decision_for_commit(
     Ordered before `/decisions/{repo_id}` because a literal path must not be
     shadowed by the parameterised one.
     """
-    record = _service(request).decision_for_commit(commit_sha)
+    return commit_decision(_service(request), request.app.state.catalog, commit_sha)
+
+
+def commit_decision(service: OracleService, catalog: Any, commit_sha: str) -> CommitDecisionOut:
+    """`/decisions/by-commit`'s body. Also what the Today run sheet reads
+    (TheHub #61141), so the two can never compute the floor differently."""
+    record = service.decision_for_commit(commit_sha)
     if record is None:
         return CommitDecisionOut(commit_sha=commit_sha, found=False)
 
@@ -539,7 +545,7 @@ async def decision_for_commit(
         evaluated_at = str(raw_evaluated_at)
     # Keyed by the sha the decision was filed under, which is the full one:
     # scan runs carry 40 characters, and the operator may have typed 7.
-    queries = DashboardQueries(request.app.state.catalog)
+    queries = DashboardQueries(catalog)
     repo = str(record["repo_full_name"])
     filed_sha = str(record.get("commit_sha") or commit_sha)
     introduced = queries.introduced_by(repo, filed_sha)

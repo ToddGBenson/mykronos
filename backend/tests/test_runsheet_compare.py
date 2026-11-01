@@ -104,7 +104,9 @@ class TestParseStartHere:
     def test_merges_offered_are_those_with_no_not_yet_line(self) -> None:
         parsed = rc.parse_start_here(TRANSCRIPT)
         assert parsed.merge_ready == {"acme/TheHub#564", "acme/app#7"}
-        assert parsed.merge_repos == {"acme/TheHub", "acme/app", "acme/keel"}
+        # TheHub's lines are Start-Here's batch: scoped by pull request, not repo.
+        assert parsed.merge_repos == {"acme/app", "acme/keel"}
+        assert parsed.merge_batch == {"acme/TheHub#561", "acme/TheHub#564"}
 
     def test_the_deploy_offer_reads_as_ready_with_its_shas(self) -> None:
         parsed = rc.parse_start_here(TRANSCRIPT)
@@ -266,7 +268,8 @@ class TestMergeScope:
 
     def test_a_draft_the_run_sheet_hid_is_skipped_when_start_here_offers_it(self) -> None:
         text = TRANSCRIPT.replace(
-            "  acme/app#7  Rate-limit", "  acme/app#1046  Registry snapshot\n  acme/app#7  Rate-limit"
+            "  acme/app#7  Rate-limit",
+            "  acme/app#1046  Registry snapshot\n  acme/app#7  Rate-limit",
         )
         body = sheet()
         body["steps"][1]["hidden"] = [

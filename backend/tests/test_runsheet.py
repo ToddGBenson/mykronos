@@ -59,16 +59,21 @@ def pr(**overrides: Any) -> rs.PullRequestState:
 # -- Decide ---------------------------------------------------------------------
 
 
+def live(head: str = HEAD, *, open: bool = True, number: int = 7) -> rs.LiveHeads:
+    """What the live single-PR read of the request's pull request found."""
+    return {(REPO, number): rs.LiveHead(open=open, head_sha=head)}
+
+
 class TestDecide:
     def test_a_reviewed_request_at_the_current_head_is_ready_for_you(self) -> None:
-        step = rs.decide_step([pending()], [pr()])
+        step = rs.decide_step([pending()], live())
         assert step.state == rs.READY
         [item] = step.items
         assert item.state == rs.READY and item.owner == rs.OWNER_YOU
         assert item.ref == "r1"
 
     def test_a_request_pinned_to_an_older_head_is_hidden_as_superseded(self) -> None:
-        step = rs.decide_step([pending(f"{REPO}#7@{OLD}")], [pr()])
+        step = rs.decide_step([pending(f"{REPO}#7@{OLD}")], live())
         assert step.items == []
         assert step.state == rs.DONE
         assert step.hidden == [
@@ -76,12 +81,12 @@ class TestDecide:
         ]
 
     def test_a_request_for_a_pull_request_no_longer_open_is_hidden(self) -> None:
-        step = rs.decide_step([pending()], [])
+        step = rs.decide_step([pending()], live(open=False))
         assert step.items == []
         assert step.hidden == [f"{REPO}#7: no longer open (merged or closed)"]
 
     def test_a_request_the_reviewer_has_not_posted_on_waits(self) -> None:
-        step = rs.decide_step([pending(reviewed=False)], [pr()])
+        step = rs.decide_step([pending(reviewed=False)], live())
         [item] = step.items
         assert item.state == rs.WAITING
         assert item.owner == rs.OWNER_REVIEWER
@@ -89,26 +94,26 @@ class TestDecide:
         assert step.state == rs.WAITING
 
     def test_every_request_is_decidable_when_the_reviewer_is_not_in_shadow(self) -> None:
-        step = rs.decide_step([pending(reviewed=None)], [pr()])
+        step = rs.decide_step([pending(reviewed=None)], live())
         assert step.items[0].state == rs.READY
 
     def test_other_duties_are_never_checked_against_github(self) -> None:
-        step = rs.decide_step([pending("acme/app:RA-1", duty="risk_acceptance")], None)
+        step = rs.decide_step([pending("acme/app:RA-1", duty="risk_acceptance")], {})
         assert [i.state for i in step.items] == [rs.READY]
         assert step.status == rs.OK
 
-    def test_an_unread_pull_request_list_keeps_the_request_and_says_so(self) -> None:
-        step = rs.decide_step([pending()], None, prs_reason="GitHub timed out.")
+    def test_an_unread_pull_request_keeps_the_request_and_says_so(self) -> None:
+        step = rs.decide_step([pending()], {(REPO, 7): "GitHub timed out."})
         assert [i.state for i in step.items] == [rs.READY]
         assert step.status == rs.PARTIAL
-        assert "GitHub timed out." in step.reason
+        assert f"{REPO}#7: GitHub timed out." in step.reason
 
     def test_an_abbreviated_sha_matches_the_full_head(self) -> None:
-        step = rs.decide_step([pending(f"{REPO}#7@{HEAD[:7]}")], [pr()])
+        step = rs.decide_step([pending(f"{REPO}#7@{HEAD[:7]}")], live())
         assert len(step.items) == 1
 
     def test_nothing_pending_is_done(self) -> None:
-        step = rs.decide_step([], [pr()])
+        step = rs.decide_step([], live())
         assert step.state == rs.DONE
         assert step.summary == "nothing waiting for your decision"
 
@@ -187,7 +192,10 @@ class TestMerge:
     def test_drafts_are_not_offered(self) -> None:
         step = self.merge([pr(draft=True)])
         assert step.items == []
-        assert step.hidden == ["1 draft pull request(s) not offered"]
+        assert step.hidden == [
+            f"{REPO}#7: a draft; Start-Here offers a draft only when its "
+            "ready-drafts list names it"
+        ]
 
     def test_order_is_by_repository_then_number_and_the_summary_counts(self) -> None:
         step = self.merge(
