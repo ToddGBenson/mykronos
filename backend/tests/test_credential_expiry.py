@@ -204,6 +204,81 @@ class TestDeclared:
         with pytest.raises(credential_expiry.CredentialFileError):
             credential_expiry.load_declared(self._file(tmp_path, body))
 
+    def test_a_private_entry_replaces_the_public_one_of_the_same_name(self, tmp_path) -> None:
+        public = tmp_path / "public.yaml"
+        public.write_text(
+            "credentials:\n"
+            "  - name: ci-token\n    kind: ci-token\n    owner: op\n    renewal_step: generic\n"
+            "  - name: app-key\n    kind: k\n    owner: op\n    renewal_step: r\n",
+            encoding="utf-8",
+        )
+        private = tmp_path / "private.yaml"
+        private.write_text(
+            "credentials:\n"
+            "  - name: ci-token\n    kind: ci-token\n    owner: op\n"
+            "    expires_at: 2026-11-02\n    renewal_step: specific\n"
+            "  - name: extra\n    kind: k\n    owner: op\n"
+            "    expires_at: 2026-11-01T18:00:00Z\n    renewal_step: r\n",
+            encoding="utf-8",
+        )
+        entries = credential_expiry.load_all(public, private)
+        by_name = {e.name: e for e in entries}
+        assert set(by_name) == {"ci-token", "app-key", "extra"}
+        assert by_name["ci-token"].renewal_step == "specific"
+        assert by_name["ci-token"].expires_at == datetime(2026, 11, 2)
+        assert credential_expiry.undated(entries) == ["app-key"]
+        assert [r["name"] for r in credential_expiry.expiring(entries, NOW, 48)] == [
+            "extra",
+            "ci-token",
+        ]
+
+    def test_an_empty_or_absent_private_file_leaves_the_public_list(self, tmp_path) -> None:
+        public = REPO_ROOT / "credential-expiry-v1.yaml"
+        empty = tmp_path / "empty.yaml"
+        empty.write_text("", encoding="utf-8")
+        names = {e.name for e in credential_expiry.load_declared(public)}
+        assert {e.name for e in credential_expiry.load_all(public, empty)} == names
+        assert {e.name for e in credential_expiry.load_all(public, None)} == names
+        assert {e.name for e in credential_expiry.load_all(public, tmp_path / "no")} == names
+
+    def test_the_private_file_is_refused_for_a_stray_field_like_the_public_one(
+        self, tmp_path
+    ) -> None:
+        private = tmp_path / "private.yaml"
+        private.write_text(
+            "credentials:\n  - name: x\n    kind: k\n    owner: o\n"
+            "    renewal_step: r\n    token: abc\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(credential_expiry.CredentialFileError):
+            credential_expiry.load_all(REPO_ROOT / "credential-expiry-v1.yaml", private)
+
+    def test_an_unreadable_path_is_refused_not_a_crash(self, tmp_path) -> None:
+        # A directory where the file should be: what a short-syntax bind mount
+        # of a missing host file produces. read_text raises OSError.
+        with pytest.raises(credential_expiry.CredentialFileError):
+            credential_expiry.load_declared(tmp_path)
+
+    def test_a_file_that_is_not_utf8_is_refused(self, tmp_path) -> None:
+        path = tmp_path / "latin1.yaml"
+        path.write_bytes(b"credentials:\n  - name: caf\xe9\n")
+        with pytest.raises(credential_expiry.CredentialFileError):
+            credential_expiry.load_declared(path)
+
+    @pytest.mark.parametrize(
+        "body",
+        ["- just\n- a list\n", "a plain string\n", "credentials: not-a-list\n"],
+    )
+    def test_a_document_of_the_wrong_shape_is_refused(self, tmp_path, body) -> None:
+        with pytest.raises(credential_expiry.CredentialFileError):
+            credential_expiry.load_declared(self._file(tmp_path, body))
+
+    def test_an_empty_path_is_unset(self) -> None:
+        assert credential_expiry.load_declared(Path("")) == []
+        public = REPO_ROOT / "credential-expiry-v1.yaml"
+        names = {e.name for e in credential_expiry.load_declared(public)}
+        assert {e.name for e in credential_expiry.load_all(public, Path(""))} == names
+
     def test_a_missing_file_is_an_empty_list(self, tmp_path) -> None:
         assert credential_expiry.load_declared(tmp_path / "nope.yaml") == []
 
@@ -303,6 +378,54 @@ class TestTheRoute:
             "renewal_step", "source",
         }
 
+    def test_a_broken_private_overlay_is_a_503_naming_the_file(
+        self, client, admin_auth, tmp_path, monkeypatch
+    ) -> None:
+        self._fix_clock(client)
+        broken = tmp_path / "private.yaml"
+        broken.write_text("- not\n- a mapping\n", encoding="utf-8")
+        monkeypatch.setattr(client.app.state.settings, "credential_expiry_private_path", broken)
+        response = client.get("/api/credentials/expiring", headers=admin_auth)
+        assert response.status_code == 503
+        assert "private.yaml" in response.json()["detail"]
+
+
+class TestTheComposeMount:
+    """The overlay's mount: read-only, never created on the host, /dev/null when
+    unset, and landing exactly where the backend is told to look."""
+
+    COMPOSE = REPO_ROOT / "deploy" / "mykronos" / "docker-compose.yml"
+    TARGET = "/secrets/credential-expiry-private.yaml"
+
+    def _backend(self) -> dict:
+        import yaml
+
+        return yaml.safe_load(self.COMPOSE.read_text(encoding="utf-8"))["services"]["backend"]
+
+    def _mount(self) -> dict:
+        [mount] = [
+            v
+            for v in self._backend()["volumes"]
+            if isinstance(v, dict) and v.get("target") == self.TARGET
+        ]
+        return mount
+
+    def test_it_is_a_read_only_bind_that_never_creates_a_host_path(self) -> None:
+        mount = self._mount()
+        assert mount["type"] == "bind"
+        assert mount["read_only"] is True
+        # Short syntax would create a DIRECTORY at a missing host path, and the
+        # loader would then read a directory. Long syntax refuses instead.
+        assert mount["bind"]["create_host_path"] is False
+
+    def test_unset_it_mounts_dev_null(self) -> None:
+        expected = "${MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_HOST_PATH:-/dev/null}"
+        assert self._mount()["source"] == expected
+
+    def test_the_container_path_is_the_one_the_backend_reads(self) -> None:
+        env = self._backend()["environment"]
+        assert env["MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_PATH"] == self.TARGET
+
 
 class TestTheCommand:
     def test_it_prints_the_same_list_as_a_table(
@@ -339,3 +462,25 @@ class TestTheCommand:
         [row] = json.loads(capsys.readouterr().out)
         assert row["source"] == "observed"
         assert "token_sha256" not in row
+
+    def test_it_says_how_many_private_entries_loaded_and_nothing_else(
+        self, settings: Settings, monkeypatch, capsys, tmp_path
+    ) -> None:
+        db = Database(settings.database_url)
+        db.create_all()
+        db.close()
+        private = tmp_path / "private.yaml"
+        private.write_text(
+            "credentials:\n"
+            "  - name: secret-sounding-name\n    kind: k\n    owner: o\n    renewal_step: r\n"
+            "  - name: another\n    kind: k\n    owner: o\n    renewal_step: r\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings, "credential_expiry_private_path", private)
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        monkeypatch.setattr("mykronos.schemas.utcnow", lambda: NOW)
+
+        assert cli.main(["credentials", "expiring", "--within-hours", "48"]) == 0
+        out = capsys.readouterr().out
+        assert "Private overlay: 2 entries" in out
+        assert str(private) not in out, "the count only, never the host path"

@@ -64,7 +64,10 @@ async def expiring(
     state = request.app.state
     now = _now(request)
     try:
-        declared = credential_expiry.load_declared(state.settings.credential_expiry_path)
+        declared = credential_expiry.load_all(
+            state.settings.credential_expiry_path,
+            state.settings.credential_expiry_private_path,
+        )
     except credential_expiry.CredentialFileError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     with state.db.session() as session:

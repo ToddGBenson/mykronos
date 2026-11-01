@@ -648,6 +648,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    credential_expiry_private_path: Path | None = Field(
+        default=None,
+        description=(
+            "An optional second declared-expiry file, kept outside this public "
+            "repository and bind-mounted read-only (TheHub #61104). Same fields "
+            "and the same refusals as `credential_expiry_path`. An entry here "
+            "replaces a public entry of the same name, so the public file can "
+            "keep generic labels while the private one carries the specific "
+            "names and dates. Unset, missing or empty: only the public file."
+        ),
+    )
+
     environment_map_path: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "environment-map-v1.yaml",

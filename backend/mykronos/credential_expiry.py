@@ -94,14 +94,36 @@ def _naive_utc(value: Any, where: str) -> datetime | None:
 
 def load_declared(path: Path | None) -> list[Credential]:
     """The declared credentials. A missing file is an empty list; a malformed
-    one raises, because silently dropping an entry hides a credential."""
-    if path is None or not path.exists():
+    one raises, because silently dropping an entry hides a credential.
+
+    An empty path is unset: pydantic turns an empty environment value into
+    `Path("")`, which is the current directory, not a file. Anything that
+    cannot be read or is the wrong shape raises `CredentialFileError`, which
+    the route answers with a 503 naming the file, rather than a 500.
+    """
+    if path is None or str(path) in ("", "."):
+        return []
+    if not path.exists():
         return []
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CredentialFileError(f"{path.name}: not UTF-8") from exc
+    except OSError as exc:
+        # A directory where the file should be is what a bind mount of a
+        # missing host file produces; unreadable is unreadable either way.
+        raise CredentialFileError(f"{path.name}: unreadable ({type(exc).__name__})") from exc
+    try:
+        document = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise CredentialFileError(f"{path.name}: not valid YAML") from exc
+    if document is None:
+        return []
+    if not isinstance(document, dict):
+        raise CredentialFileError(f"{path.name}: the top level must be a mapping")
     entries = document.get("credentials") or []
+    if not isinstance(entries, list):
+        raise CredentialFileError(f"{path.name}: `credentials` must be a list")
     out: list[Credential] = []
     seen: set[str] = set()
     for index, entry in enumerate(entries):
@@ -132,6 +154,21 @@ def load_declared(path: Path | None) -> list[Credential]:
             )
         )
     return out
+
+
+def load_all(public: Path | None, private: Path | None) -> list[Credential]:
+    """The public declared file, overlaid by the optional private one.
+
+    The repository is public, so the committed file names credentials only
+    generically. The private file (bind-mounted, never committed) carries the
+    specific ones. A private entry with the same name as a public one replaces
+    it; the rest are added. Both files go through `load_declared`, so the
+    private one is refused for the same stray fields, gaps and duplicates.
+    """
+    merged = {c.name: c for c in load_declared(public)}
+    for c in load_declared(private):
+        merged[c.name] = c
+    return list(merged.values())
 
 
 # -- observed sources -------------------------------------------------------
