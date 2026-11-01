@@ -620,7 +620,12 @@ class TestItIsScheduled:
         assert interval == 300
         [call] = calls
         assert call["url"] == "http://concourse:8080"
-        assert call["gating"] == {REPO: ["unit", "lint-and-types", "pin-check"]}
+        # Every lane of every committed pipeline since TheHub #61194: the
+        # pipeline hooks no longer post, so this poll is the one sender.
+        assert call["gating"] == {
+            REPO: ["*"], "ToddGBenson/TheHub": ["*"], "ToddGBenson/personal-soc": ["*"],
+        }
+        assert call["branches"] == {"ToddGBenson/TheHub": "develop"}
         assert call["link_base"] == "", "a compose service name is no browser link"
 
     def test_without_a_concourse_it_is_not_scheduled(

@@ -129,9 +129,9 @@ def test_every_lane_up_to_the_gate_reports_failure(hook: str) -> None:
     for name in sorted(VERIFYING | {GATE}):
         steps = jobs[name].get(hook, {}).get("do", [])
         assert steps, f"{name} has no {hook} hook"
-        # Last, so a failed report cannot stop the Slack alert that runs
-        # before it in the same `do:`.
-        assert steps[0].get("task") == "notify-slack", f"{name}.{hook} lost its Slack alert"
+        # No Slack hook since TheHub #61194: the red-main poll is the one
+        # sender, and test_one_message_per_build fails on a hook that posts.
+        assert all(step.get("task") != "notify-slack" for step in steps), f"{name}.{hook}"
         last = steps[-1]
         assert last.get("task") == TASK, f"{name}.{hook} does not end with {TASK}"
         params = last["params"]

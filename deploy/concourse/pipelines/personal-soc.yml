@@ -274,157 +274,23 @@ anchors:
     done
     exit 75
 
-  # The notifier's credentials, hoisted into their own anchor for the same
-  # reason `hub_params` exists: the `on_error:` path now passes an extra param
-  # (OUTCOME below), and a step-level `params:` that named only that would be
-  # relying on Concourse merging it onto the ones in the task config. If it
-  # replaced them instead, the token would be unset, the notifier's
-  # "unset is not an error" guard would exit 0, and every errored lane would
-  # go quiet -- silently, which is the failure mode this whole change is
-  # about. Restating them at the call site removes the question.
-  slack_params: &slack_params
-    SLACK_BOT_TOKEN: ((slack-bot-token))
-    SLACK_CHANNEL: ((slack-alert-channel))
-    # Who and where, for the alert text and link. Concourse exposes
-    # BUILD_JOB_NAME / BUILD_NAME / BUILD_TEAM_NAME / BUILD_PIPELINE_NAME to
-    # RESOURCES, not to tasks, so every alert read "job `` failed (build )"
-    # with a link to /teams//pipelines//jobs//builds/ (2026-10-08..10). The
-    # pipeline and team are static per file; each hook passes JOB.
-    PIPELINE: personal-soc
-    TEAM: main
-    # The browser URL an alert links to. Concourse is published on 127.0.0.1
-    # only, so the http://localhost:8080 this used to carry opened on this
-    # host and nowhere a phone reads Slack (TheHub #60941; #988 refused the
-    # same links in the briefing). Empty sends no link, and the notify script
-    # refuses a loopback one. A LAN or public URL here brings the link back.
-    CONCOURSE_URL: ""
-
-  # -- Failure notification -------------------------------------------------
+  # -- No Slack hooks (TheHub #61194) ------------------------------------
   #
-  # Neither value is supplied by set-personal-soc-pipeline.ps1. Both resolve
-  # through the Vault credential manager at `concourse/main/<name>`, which is
-  # team scope - so this pipeline and TheHub's read the same credential and
-  # neither file contains it. That matters more than tidiness here: Concourse
-  # stores pipeline configuration verbatim, so a token passed with
-  # `--load-vars-from` is readable afterwards by anyone who can run
-  # `fly get-pipeline`.
+  # Every job here used to post to Slack from its own `on_failure` /
+  # `on_error` hook, once per failing build and with no memory of the build
+  # before it, so a lane red for a day posted on every retry: the comms
+  # audit (#61176) counted 118 such posts in 14 days across the pipelines,
+  # 47 of them verbatim repeats, and 89 post-merge NO VERDICT / DEVELOP IS
+  # RED posts, 81 of them repeats. The MyKronos red-main poll
+  # (backend/mykronos/red_main.py) now reads every lane of this pipeline and
+  # posts once when a lane goes red and once, in that message's thread, when
+  # it goes green. So a failure here reaches Slack through that poll, and a
+  # hook that posts as well is the duplicate this removed:
+  # backend/tests/test_one_message_per_build.py fails on one.
   #
-  # A bot token rather than an incoming webhook, and the reason is the same
-  # one that makes it vaultable: chat.postMessage authenticates with a header,
-  # which Vault can substitute at egress. A webhook carries its secret in the
-  # URL path, where it cannot.
-  #
-  # WHAT MUST NEVER BE SENT
-  #
-  # breach-check is `public: false` because its log names each address and the
-  # breaches it appears in. This notifier must not undo that. The default text
-  # is the job name and a link - the link needs a Concourse login to follow -
-  # and breach-check deliberately writes no notify/message.txt, so the address
-  # list cannot reach a channel that is not the private build log.
-  slack_alert: &slack_alert
-    task: notify-slack
-    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
-    # reach a non-success is by never having run at all -- a resolver blip
-    # pulling its image, a lost container lock. There is no verdict here to
-    # launder, and a lost alert about an errored lane is exactly the silence
-    # PS-12 exists to close.
-    attempts: *retry_hook
-    config:
-      platform: linux
-      image_resource:
-        type: registry-image
-        source: { repository: curlimages/curl, tag: "8.11.1" }
-      inputs:
-        - name: notify
-          optional: true
-      params: *slack_params
-      run:
-        path: sh
-        args:
-          - -ec
-          - |
-            # Unset is not an error. This hook only ever runs when something
-            # has already gone wrong, and a missing notification must not
-            # become a second failure on top of it.
-            if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_CHANNEL:-}" ]; then
-              echo "No Slack bot token or channel configured - skipping notification."
-              exit 0
-            fi
-
-            # The JOB page, not a build page: no task-visible mechanism carries the
-            # build number (BUILD_NAME is resource-only), and the failing build
-            # is the newest one listed there.
-            #
-            # TheHub #60941: no link unless CONCOURSE_URL names a real host. A
-            # loopback URL opens only on the Concourse host itself, never on
-            # the phone the alert is read on, so it is left out rather than
-            # sent as a link that cannot open.
-            BUILD_URL=""
-            case "${CONCOURSE_URL:-}" in
-              ""|*://localhost|*://localhost[:/]*|*://127.*|*://\[::1\]*|*://0.0.0.0*) ;;
-              *) BUILD_URL="${CONCOURSE_URL%/}/teams/${TEAM:-main}/pipelines/${PIPELINE:-personal-soc}/jobs/${JOB:-}" ;;
-            esac
-            JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
-
-            # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
-            # else sets it, so the failure path keeps the wording it had.
-            #
-            # This is the errored/failed line reaching the one surface a human
-            # actually reads, and the two need different words because they
-            # need opposite actions. An errored lane did not run, and
-            # re-triggering it is the correct response. A failed lane ran and
-            # answered, and re-triggering that is how a red gate gets
-            # laundered green by repetition. Told only "job X failed", nobody
-            # can tell which they are looking at -- and for three days in
-            # September nobody did.
-            #
-            # `notify/message.txt` is deliberately not read on the errored
-            # path. A job writes it to explain a verdict; a job that errored
-            # never reached one, so whatever is on disk is a half-finished
-            # thought from a run that died.
-            #
-            # TheHub #60852. OUTCOME=succeeded is the `on_success:` hook of a
-            # lane that reports without failing (netassess-ingest's host
-            # adds/removes). It posts only when the job wrote a message; a
-            # quiet success stays quiet, and must never fall through to the
-            # "failed" wording below.
-            if [ "${OUTCOME:-failed}" = "succeeded" ] && [ ! -s notify/message.txt ]; then
-              echo "Succeeded with nothing to report - no notification."
-              exit 0
-            fi
-            if [ "${OUTCOME:-failed}" = "errored" ]; then
-              TEXT="*personal-soc*: job \`$JOB_LABEL\` ERRORED (newest build) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
-            elif [ -s notify/message.txt ]; then
-              TEXT=$(head -1 notify/message.txt)
-            else
-              TEXT="*personal-soc*: job \`$JOB_LABEL\` failed (newest build) - it ran and the answer was bad. Re-triggering does not clear this."
-            fi
-
-            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-
-            # /tmp, not the working directory. curlimages/curl runs as an
-            # unprivileged user and Concourse creates the task's working
-            # directory owned by root, so `> payload.json` is
-            # "Permission denied" - which failed the notify task and printed
-            # nothing about Slack at all. /tmp is world-writable in this image.
-            # The link is its own line when there is one, and absent when not.
-            printf '{"channel":"%s","text":"%s%s"}' \
-              "$SLACK_CHANNEL" "$ESCAPED" "${BUILD_URL:+\\n$BUILD_URL}" > /tmp/payload.json
-
-            RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-              -H 'Content-Type: application/json; charset=utf-8' \
-              -d @/tmp/payload.json) || RESP=""
-
-            # Slack answers 200 with {"ok":false,"error":"..."} when a post is
-            # rejected. The status code proves nothing; without reading the
-            # body, a silently undelivered alert reads exactly like a
-            # delivered one.
-            case "$RESP" in
-              *'"ok":true'*) echo "Posted to Slack." ;;
-              *) echo "Slack post failed: $RESP" ;;
-            esac
-            exit 0
+  # A job's `notify/message.txt` is no longer sent anywhere; the detail it
+  # carried is in the build log and, where the job reports a stage, in the
+  # stage's own report.
 
   # -- PS-2: probe Mykronos before anything talks to it ------------------
   #
@@ -667,12 +533,6 @@ jobs:
       - set_pipeline: self
         file: pipelines/deploy/concourse/pipelines/personal-soc.yml
         var_files: [pipelines/deploy/concourse/vars/personal-soc.yml]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: set-pipeline }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: set-pipeline }
 
   # `serial_groups: [worker]` on every job that installs a toolchain before it
   # does any work. One Linux worker runs this pipeline, TheHub's and mykronos';
@@ -702,14 +562,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: guard }
         - <<: *check_run
           params: { <<: *check_params, JOB: guard, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: guard }
         - <<: *check_run
           params: { <<: *check_params, JOB: guard, PHASE: end, CONCLUSION: failure }
     plan:
@@ -833,14 +689,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: secrets }
         - <<: *check_run
           params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
         - <<: *check_run
           params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     plan:
@@ -1035,14 +887,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: iac }
         - <<: *check_run
           params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
         - <<: *check_run
           params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     plan:
@@ -1170,14 +1018,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: oracle }
         - <<: *check_run
           params: { <<: *check_params, JOB: oracle, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: oracle }
         - <<: *check_run
           params: { <<: *check_params, JOB: oracle, PHASE: end, CONCLUSION: failure }
     plan:
@@ -1308,14 +1152,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: lint }
         - <<: *check_run
           params: { <<: *check_params, JOB: lint, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: lint }
         - <<: *check_run
           params: { <<: *check_params, JOB: lint, PHASE: end, CONCLUSION: failure }
     plan:
@@ -1515,14 +1355,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: functional }
         - <<: *check_run
           params: { <<: *check_params, JOB: functional, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: functional }
         - <<: *check_run
           params: { <<: *check_params, JOB: functional, PHASE: end, CONCLUSION: failure }
     plan:
@@ -1973,14 +1809,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: skill-integrity }
         - <<: *check_run
           params: { <<: *check_params, JOB: skill-integrity, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: skill-integrity }
         - <<: *check_run
           params: { <<: *check_params, JOB: skill-integrity, PHASE: end, CONCLUSION: failure }
     plan:
@@ -2210,14 +2042,10 @@ jobs:
     serial_groups: [worker]
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: all-lanes }
         - <<: *check_run
           params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: all-lanes }
         - <<: *check_run
           params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: failure }
     plan:
@@ -2252,12 +2080,6 @@ jobs:
   - name: package
     public: true
     serial_groups: [worker]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: package }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: package }
     plan:
       # Every gate, not just guard. This job puts a bundle on the host and the
       # Scheduled Tasks then run it unattended at 03:00 on a Sunday, which is
@@ -2402,9 +2224,6 @@ jobs:
   - name: doc-drift
     public: true
     serial_groups: [worker]
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: doc-drift }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2509,12 +2328,6 @@ jobs:
     # a private job answers /jobs/<name> fine and returns 401 only on
     # /builds/<id>/events. So this costs the platform nothing; it reads
     # status, not logs (mykronos-concourse-is-readable-without-fly).
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: external-exposure }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: external-exposure }
     plan:
       - get: weekly
         attempts: *retry_fetch
@@ -2704,18 +2517,9 @@ jobs:
     # /builds/<id>/events. So this costs the platform nothing; it reads
     # status, not logs (mykronos-concourse-is-readable-without-fly).
     serial_groups: [worker]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: netassess-ingest }
     # TheHub #60852: host adds/removes are reported to Slack without failing
     # the run. The anchor posts on success only when notify/message.txt was
     # written, which this job does only when hosts changed.
-    on_success:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: succeeded, JOB: netassess-ingest }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: netassess-ingest }
     plan:
       - get: netassess-run
         attempts: *retry_fetch
@@ -3049,12 +2853,6 @@ jobs:
     # a private job answers /jobs/<name> fine and returns 401 only on
     # /builds/<id>/events. So this costs the platform nothing; it reads
     # status, not logs (mykronos-concourse-is-readable-without-fly).
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: netassess-freshness }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: netassess-freshness }
     plan:
       - get: weekly
         attempts: *retry_fetch

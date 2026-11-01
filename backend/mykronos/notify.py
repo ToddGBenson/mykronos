@@ -95,6 +95,22 @@ class Notification:
         return text[:MAX_TEXT]
 
 
+@dataclass(frozen=True)
+class Delivery:
+    """What a post came back with (TheHub #61194).
+
+    `ts` and `channel` are Slack's own identifiers for the message, which a
+    later message about the same thing passes as `thread_ts` to reply in its
+    thread rather than post a new top-level message. Both are empty when the
+    post was not delivered, and for an incoming webhook, which answers with a
+    bare `ok` and names no message.
+    """
+
+    delivered: bool
+    ts: str = ""
+    channel: str = ""
+
+
 class Notifier(Protocol):
     """What a caller may assume about a notifier.
 
@@ -113,6 +129,16 @@ class Notifier(Protocol):
 
     async def send(self, note: Notification) -> bool:
         """Post one notification. Returns whether it was delivered."""
+
+
+class ThreadingNotifier(Notifier, Protocol):
+    """A notifier that can reply in a message's thread (TheHub #61194).
+
+    Separate from `Notifier` so the many callers and doubles that only ever
+    `send` keep working; a caller that wants a thread checks for `post_message`."""
+
+    async def post_message(self, note: Notification, *, thread_ts: str = "") -> Delivery:
+        """Post one notification, as a reply under `thread_ts` when given."""
 
 
 #: Slack's own endpoint for posting as a bot. Named here rather than made
@@ -189,17 +215,30 @@ class SlackNotifier:
         return value exists for tests rather than for branching: there is
         nothing useful an ingestion handler could do about a failed post.
         """
+        return (await self.post_message(note)).delivered
+
+    async def post_message(self, note: Notification, *, thread_ts: str = "") -> Delivery:
+        """`send`, and what Slack called the message (TheHub #61194).
+
+        With `thread_ts`, the message is a reply in that message's thread.
+        Only the bot transport can thread: an incoming webhook ignores
+        `thread_ts` and names no message, so a webhook post is delivered with
+        an empty `ts` and a reply to it lands top-level. Never raises.
+        """
         if not self.enabled:
-            return False
+            return Delivery(False)
 
         try:
             async with httpx2.AsyncClient(timeout=self._timeout) as http:
                 if self.transport == "bot":
+                    payload = {"channel": self._channel, "text": note.render()}
+                    if thread_ts:
+                        payload["thread_ts"] = thread_ts
                     return self._read_bot_response(
                         await http.post(
                             CHAT_POST_MESSAGE,
                             headers={"Authorization": f"Bearer {self._bot_token}"},
-                            json={"channel": self._channel, "text": note.render()},
+                            json=payload,
                         )
                     )
                 response = await http.post(
@@ -213,13 +252,13 @@ class SlackNotifier:
                     response.status_code,
                     scrub(response.text)[:200],
                 )
-                return False
-            return True
+                return Delivery(False)
+            return Delivery(True)
         except Exception as exc:  # noqa: BLE001 - see the class docstring
             logger.warning("Could not post to Slack: %s", scrub(str(exc)))
-            return False
+            return Delivery(False)
 
-    def _read_bot_response(self, response: Any) -> bool:
+    def _read_bot_response(self, response: Any) -> Delivery:
         """Whether `chat.postMessage` actually posted.
 
         Both halves matter. A 200 can carry `ok: false`, and a body that is
@@ -233,14 +272,14 @@ class SlackNotifier:
                 response.status_code,
                 scrub(response.text)[:200],
             )
-            return False
+            return Delivery(False)
         try:
             body = response.json()
         except ValueError:
             logger.warning(
                 "Slack answered %s with a body that is not JSON.", response.status_code
             )
-            return False
+            return Delivery(False)
         if not body.get("ok"):
             # `error` is Slack's own enum — `channel_not_found`,
             # `invalid_auth`, `not_in_channel`. Each names a different thing
@@ -249,5 +288,10 @@ class SlackNotifier:
             logger.warning(
                 "Slack refused a notification: %s", scrub(str(body.get("error")))
             )
-            return False
-        return True
+            return Delivery(False)
+        ts, channel = body.get("ts"), body.get("channel")
+        return Delivery(
+            True,
+            ts=ts if isinstance(ts, str) else "",
+            channel=channel if isinstance(channel, str) else "",
+        )

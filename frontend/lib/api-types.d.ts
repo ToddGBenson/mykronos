@@ -10919,6 +10919,16 @@ export interface components {
             first_bad_sha?: string | null;
             /** Last Green Sha */
             last_green_sha?: string | null;
+            /**
+             * Slack Channel
+             * @description The Slack channel of this red run's message, with slack_ts (TheHub #61194). Null when no message was posted or the notifier named none.
+             */
+            slack_channel?: string | null;
+            /**
+             * Slack Ts
+             * @description The Slack ts of this red run's message: a later message about the same red replies in its thread rather than posting top-level.
+             */
+            slack_ts?: string | null;
         };
         /**
          * RegressionLinkRequest

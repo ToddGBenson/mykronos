@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -42,7 +42,7 @@ from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, purge_rows, update_findings
 from mykronos.logsafe import scrub
-from mykronos.notify import Notification, Notifier
+from mykronos.notify import Delivery, Notification, Notifier
 from mykronos.oracle.service import OracleService
 from mykronos.patchwork.stewardship import close_superseded_drafts
 from mykronos.patchwork.verification import (
@@ -1637,6 +1637,8 @@ def load_lane_states(db: Database) -> dict[tuple[str, str], red_main.LaneState]:
                 first_bad_build=row.first_bad_build,
                 first_bad_sha=row.first_bad_sha,
                 last_green_sha=row.last_green_sha,
+                slack_channel=row.slack_channel,
+                slack_ts=row.slack_ts,
             )
             for row in rows
         }
@@ -1658,6 +1660,8 @@ def save_lane_state(db: Database, state: red_main.LaneState) -> None:
         row.first_bad_build = state.first_bad_build
         row.first_bad_sha = state.first_bad_sha
         row.last_green_sha = state.last_green_sha
+        row.slack_channel = state.slack_channel
+        row.slack_ts = state.slack_ts
         row.updated_at = utcnow()
 
 
@@ -1706,8 +1710,15 @@ async def announce_red_main(
     notifier: Notifier | None = None,
     fetch: red_main.Fetch | None = None,
     now: datetime | None = None,
+    branches: dict[str, str] | None = None,
 ) -> red_main.RedMainReport:
     """Announce a gating lane that went red on main, or recovered, once (TheHub #60973).
+
+    Since TheHub #61194 this is the one sender for every lane of every
+    configured pipeline (`red_main.ALL_LANES`), and the pipelines' own hooks
+    no longer post. A red message's Slack thread is recorded with the red
+    state, and its recovery replies in that thread, through the notifier's
+    `post_message` when it has one; a notifier with only `send` posts top-level.
 
     The recorded state in `gating_lane_states` is the de-duplication key. A
     lane's new state is saved only after its message is delivered, so a
@@ -1728,6 +1739,7 @@ async def announce_red_main(
         now=now or datetime.now(UTC),
         team=team,
         link_base=link_base,
+        branches=branches,
     )
     pending = {(m.repo_full_name, m.job): m for m in report.messages}
     for state in report.states:
@@ -1735,15 +1747,26 @@ async def announce_red_main(
         if message is not None:
             logger.warning("Red main: %s", " ".join(message.lines))
             if notifier is not None and notifier.enabled:
-                delivered = await notifier.send(
-                    Notification(
-                        title=message.title,
-                        detail="",
-                        repo_full_name="",
-                        level="warning" if message.kind == "red" else "info",
-                        lines=message.lines,
-                    )
+                note = Notification(
+                    title=message.title,
+                    detail="",
+                    repo_full_name="",
+                    level="warning" if message.kind == "red" else "info",
+                    lines=message.lines,
                 )
+                post = getattr(notifier, "post_message", None)
+                if post is not None:
+                    delivery: Delivery = await post(note, thread_ts=message.thread_ts)
+                else:
+                    delivery = Delivery(await notifier.send(note))
+                delivered = delivery.delivered
+                if delivered and message.kind == "red":
+                    # The thread every later message about this red replies in.
+                    state = replace(
+                        state,
+                        slack_channel=delivery.channel or None,
+                        slack_ts=delivery.ts or None,
+                    )
                 if not delivered:
                     # Not saved: the next poll sees the same transition.
                     report.unreadable.append(

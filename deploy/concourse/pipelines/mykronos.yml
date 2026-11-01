@@ -324,161 +324,23 @@ anchors:
     done
     exit 75
 
-  # The notifier's credentials, hoisted into their own anchor for the same
-  # reason `hub_params` exists: the `on_error:` path now passes an extra param
-  # (OUTCOME below), and a step-level `params:` that named only that would be
-  # relying on Concourse merging it onto the ones in the task config. If it
-  # replaced them instead, the token would be unset, the notifier's
-  # "unset is not an error" guard would exit 0, and every errored lane would
-  # go quiet -- silently, which is the failure mode this whole change is
-  # about. Restating them at the call site removes the question.
-  slack_params: &slack_params
-    SLACK_BOT_TOKEN: ((slack-bot-token))
-    SLACK_CHANNEL: ((slack-alert-channel))
-    # Who and where, for the alert text and link. Concourse exposes
-    # BUILD_JOB_NAME / BUILD_NAME / BUILD_TEAM_NAME / BUILD_PIPELINE_NAME to
-    # RESOURCES, not to tasks, so every alert read "job `` failed (build )"
-    # with a link to /teams//pipelines//jobs//builds/ (2026-10-08..10). The
-    # pipeline and team are static per file; each hook passes JOB.
-    PIPELINE: mykronos
-    TEAM: main
-    # The browser URL an alert links to. Concourse is published on 127.0.0.1
-    # only, so the http://localhost:8080 this used to carry opened on this
-    # host and nowhere a phone reads Slack (TheHub #60941; #988 refused the
-    # same links in the briefing). Empty sends no link, and the notify script
-    # refuses a loopback one. A LAN or public URL here brings the link back.
-    CONCOURSE_URL: ""
-
-  # Failure notification. curl rather than a slack-notification resource type:
-  # this pipeline already carries no third-party resource types, and adding
-  # one to a security pipeline to send a chat message is a poor trade. It also
-  # keeps the payload under this file's control, which the insider job depends
-  # on - see the note there about what must never be sent.
+  # -- No Slack hooks (TheHub #61194) ------------------------------------
   #
-  # `notify` is an *optional* input. A job that knows more than "it failed"
-  # writes a single line to notify/message.txt and that is used verbatim;
-  # every other job falls back to its own name. That is what keeps one
-  # notification per event instead of a specific one racing a generic one.
-  slack_alert: &slack_alert
-    task: notify-slack
-    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
-    # reach a non-success is by never having run at all -- a resolver blip
-    # pulling its image, a lost container lock. There is no verdict here to
-    # launder, and a lost alert about an errored lane is exactly the silence
-    # PS-12 exists to close.
-    attempts: *retry_hook
-    # PS-7. A notifier that hangs turns one failed job into a held worker,
-    # inside the hook that exists to report the first failure.
-    timeout: 5m
-    config:
-      platform: linux
-      image_resource:
-        type: registry-image
-        source: { repository: curlimages/curl, tag: "8.11.1" }
-      inputs:
-        - name: notify
-          optional: true
-      params: *slack_params
-      run:
-        path: sh
-        args:
-          - -ec
-          - |
-            # This anchor used to post `-d @payload.json` against a file
-            # nothing ever wrote. $TEXT was computed and discarded, curl failed
-            # on the missing file, and `|| echo` swallowed it before `exit 0`.
-            # Every on_failure and on_error hook in this pipeline has been
-            # decorative since the day it was added, and the only symptom was a
-            # red job that was already red. L0003 - a check that cannot report
-            # is a check that does not exist - applies to the alerting as much
-            # as to the scanning.
-            #
-            # chat.postMessage with a bot token, not an incoming webhook, and
-            # that is PS-9 rather than preference. A webhook's secret lives in
-            # the URL path of the endpoint being called, so the pipeline has to
-            # hold it; a bot token lives in an `Authorization:` header, which
-            # Vault can substitute at egress. Switching is the prerequisite for
-            # the credential leaving this file at all, and it is the same
-            # credential thehub and personal-soc already resolve at team scope
-            # - so this host has one Slack identity rather than three.
-            #
-            # Unset is not an error. The pipeline has to be applicable before
-            # Slack is configured, and this hook only ever runs when something
-            # has already gone wrong - a missing notification must not become
-            # a second failure on top of it.
-            if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_CHANNEL:-}" ]; then
-              echo "No Slack bot token or channel configured - skipping notification."
-              exit 0
-            fi
-
-            # The JOB page, not a build page: no task-visible mechanism carries the
-            # build number (BUILD_NAME is resource-only), and the failing build
-            # is the newest one listed there.
-            #
-            # TheHub #60941: no link unless CONCOURSE_URL names a real host. A
-            # loopback URL opens only on the Concourse host itself, never on
-            # the phone the alert is read on, so it is left out rather than
-            # sent as a link that cannot open.
-            BUILD_URL=""
-            case "${CONCOURSE_URL:-}" in
-              ""|*://localhost|*://localhost[:/]*|*://127.*|*://\[::1\]*|*://0.0.0.0*) ;;
-              *) BUILD_URL="${CONCOURSE_URL%/}/teams/${TEAM:-main}/pipelines/${PIPELINE:-mykronos}/jobs/${JOB:-}" ;;
-            esac
-            JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
-
-            # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
-            # else sets it, so the failure path keeps the wording it had.
-            #
-            # This is the errored/failed line reaching the one surface a human
-            # actually reads, and the two need different words because they
-            # need opposite actions. An errored lane did not run, and
-            # re-triggering it is the correct response. A failed lane ran and
-            # answered, and re-triggering that is how a red gate gets
-            # laundered green by repetition. Told only "job X failed", nobody
-            # can tell which they are looking at -- and for three days in
-            # September nobody did.
-            #
-            # `notify/message.txt` is deliberately not read on the errored
-            # path. A job writes it to explain a verdict; a job that errored
-            # never reached one, so whatever is on disk is a half-finished
-            # thought from a run that died.
-            if [ "${OUTCOME:-failed}" = "errored" ]; then
-              TEXT="*Mykronos*: job \`$JOB_LABEL\` ERRORED (newest build) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
-            elif [ -s notify/message.txt ]; then
-              TEXT=$(head -1 notify/message.txt)
-            else
-              TEXT="*Mykronos*: job \`$JOB_LABEL\` failed (newest build) - it ran and the answer was bad. Re-triggering does not clear this."
-            fi
-
-            # Escaped with sed because this image has no jq. Single-line
-            # messages by construction, so backslash and quote are the only
-            # characters that can break the document.
-            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-
-            # /tmp, not the working directory. curlimages/curl runs as an
-            # unprivileged user and Concourse creates the task's working
-            # directory owned by root, so `> payload.json` is "Permission
-            # denied" - a second way this same hook can die inside the failure
-            # it was trying to report. thehub's notifier already found this one.
-            # The link is its own line when there is one, and absent when not.
-            printf '{"channel":"%s","text":"%s%s"}' \
-              "$SLACK_CHANNEL" "$ESCAPED" "${BUILD_URL:+\\n$BUILD_URL}" > /tmp/payload.json
-
-            RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-              -H 'Content-Type: application/json; charset=utf-8' \
-              -d @/tmp/payload.json) || RESP=""
-
-            # Slack answers 200 with {"ok":false,"error":"..."} when a post is
-            # rejected - a wrong channel, a bot that was removed, a revoked
-            # scope. The status code proves nothing here; the body is the
-            # result, and without this check a silently undelivered alert reads
-            # exactly like a delivered one.
-            case "$RESP" in
-              *'"ok":true'*) echo "Posted to Slack." ;;
-              *) echo "Slack post failed: $RESP" ;;
-            esac
-            exit 0
+  # Every job here used to post to Slack from its own `on_failure` /
+  # `on_error` hook, once per failing build and with no memory of the build
+  # before it, so a lane red for a day posted on every retry: the comms
+  # audit (#61176) counted 118 such posts in 14 days across the pipelines,
+  # 47 of them verbatim repeats, and 89 post-merge NO VERDICT / DEVELOP IS
+  # RED posts, 81 of them repeats. The MyKronos red-main poll
+  # (backend/mykronos/red_main.py) now reads every lane of this pipeline and
+  # posts once when a lane goes red and once, in that message's thread, when
+  # it goes green. So a failure here reaches Slack through that poll, and a
+  # hook that posts as well is the duplicate this removed:
+  # backend/tests/test_one_message_per_build.py fails on one.
+  #
+  # A job's `notify/message.txt` is no longer sent anywhere; the detail it
+  # carried is in the build log and, where the job reports a stage, in the
+  # stage's own report.
 
   # Every task that reports findings does this: install the package the
   # GitHub composite action installs, then call the same uploader. The logic
@@ -633,12 +495,6 @@ jobs:
       - set_pipeline: self
         file: pipelines/deploy/concourse/pipelines/mykronos.yml
         var_files: [pipelines/deploy/concourse/vars/mykronos.yml]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: set-pipeline }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: set-pipeline }
 
   # -- Stage 1: quality gate (spec 15 §3) ---------------------------------
   #
@@ -705,12 +561,6 @@ jobs:
     # bit — five builds of one job, one per commit, four of them already
     # superseded before they finished.
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: pin-check }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: pin-check }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -748,12 +598,6 @@ jobs:
   - name: unit
     public: true
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: unit }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: unit }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -885,12 +729,6 @@ jobs:
   - name: coverage
     public: true
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: coverage }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: coverage }
     plan:
       - get: weekly
         attempts: *retry_fetch
@@ -1113,12 +951,6 @@ jobs:
   - name: lint-and-types
     public: true
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: lint-and-types }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: lint-and-types }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1222,12 +1054,6 @@ jobs:
   - name: qa-spec-links
     public: true
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: qa-spec-links }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: qa-spec-links }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1284,12 +1110,6 @@ jobs:
   - name: frontend
     public: true
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: frontend }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: frontend }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1459,12 +1279,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: secrets }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1560,12 +1374,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: dependencies }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: dependencies }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1897,12 +1705,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: ai }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: ai }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1952,12 +1754,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: sast }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: sast }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2205,12 +2001,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: insider }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: insider }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2431,12 +2221,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: iac }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2593,12 +2377,6 @@ jobs:
     # putting it in the two-slot cap would make a gate queue behind a
     # twenty-minute image build for work that takes seconds.
     serial: true
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: oracle-gate }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: oracle-gate }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2729,12 +2507,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial: true
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: promote }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: promote }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2817,12 +2589,6 @@ jobs:
     # In the cap: this compiles the wheel the image jobs consume, and it is
     # real work on a worker rather than an API call.
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: build }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: build }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2909,12 +2675,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: publish-backend }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: publish-backend }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -3001,12 +2761,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: publish-frontend }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: publish-frontend }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -3129,12 +2883,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial_groups: [worker-b]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: containers }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: containers }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -3538,12 +3286,6 @@ jobs:
     # single commit fanned out onto the one worker and left thehub with
     # 11 builds pending and 0 started for hours.
     serial: true
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: remediate }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: remediate }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -3666,12 +3408,6 @@ jobs:
   - name: image-refresh
     public: true
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: image-refresh }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: image-refresh }
     plan:
       - get: nightly
         attempts: *retry_fetch
@@ -3875,12 +3611,6 @@ jobs:
     # no longer known - which is exactly what happened to build 7 when builds
     # 8 and 9 started while it was still scanning.
     serial: true
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: demo-and-dast }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: demo-and-dast }
     plan:
       - get: source
         attempts: *retry_fetch

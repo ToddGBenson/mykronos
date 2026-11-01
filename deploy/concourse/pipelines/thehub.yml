@@ -634,31 +634,6 @@ anchors:
                 fh.write("137\n")
     sys.exit(rc)
 
-  # The notifier's credentials, hoisted into their own anchor for the same
-  # reason `hub_params` exists: the `on_error:` path now passes an extra param
-  # (OUTCOME below), and a step-level `params:` that named only that would be
-  # relying on Concourse merging it onto the ones in the task config. If it
-  # replaced them instead, the token would be unset, the notifier's
-  # "unset is not an error" guard would exit 0, and every errored lane would
-  # go quiet -- silently, which is the failure mode this whole change is
-  # about. Restating them at the call site removes the question.
-  slack_params: &slack_params
-    SLACK_BOT_TOKEN: ((slack-bot-token))
-    SLACK_CHANNEL: ((slack-alert-channel))
-    # Who and where, for the alert text and link. Concourse exposes
-    # BUILD_JOB_NAME / BUILD_NAME / BUILD_TEAM_NAME / BUILD_PIPELINE_NAME to
-    # RESOURCES, not to tasks, so every alert read "job `` failed (build )"
-    # with a link to /teams//pipelines//jobs//builds/ (2026-10-08..10). The
-    # pipeline and team are static per file; each hook passes JOB.
-    PIPELINE: thehub
-    TEAM: main
-    # The browser URL an alert links to. Concourse is published on 127.0.0.1
-    # only, so the http://localhost:8080 this used to carry opened on this
-    # host and nowhere a phone reads Slack (TheHub #60941; #988 refused the
-    # same links in the briefing). Empty sends no link, and the notify script
-    # refuses a loopback one. A LAN or public URL here brings the link back.
-    CONCOURSE_URL: ""
-
   # Reporting credentials. Deliberately does *not* include the deploy keys or
   # the Azure principal: spec 15 section 6 asks for deploy credentials scoped
   # to the deploy job, and an anchor every job pulls in is the opposite of
@@ -1222,129 +1197,23 @@ anchors:
             fi
             exit 0
 
-  # Failure notification. curl rather than a slack-notification resource type:
-  # this pipeline already carries no third-party resource types, and adding
-  # one to a security pipeline to send a chat message is a poor trade. It also
-  # keeps the payload under this file's control.
+  # -- No Slack hooks (TheHub #61194) ------------------------------------
   #
-  # `notify` is an *optional* input. A job that knows more than "it failed"
-  # writes a single line to notify/message.txt and that is used verbatim;
-  # every other job falls back to its own name. That is what keeps one
-  # notification per event instead of a specific one racing a generic one.
-  slack_alert: &slack_alert
-    task: notify-slack
-    container_limits: {cpu: 512}
-    # PS-12. This hook ends `exit 0` unconditionally, so the only way it can
-    # reach a non-success is by never having run at all -- a resolver blip
-    # pulling its image, a lost container lock. There is no verdict here to
-    # launder, and a lost alert about an errored lane is exactly the silence
-    # PS-12 exists to close.
-    attempts: *retry_hook
-    # PS-7. A notifier that hangs turns one failed job into a held worker,
-    # inside the hook that exists to report the first failure.
-    timeout: 5m
-    config:
-      platform: linux
-      image_resource:
-        type: registry-image
-        source: { repository: curlimages/curl, tag: "8.11.1" }
-      inputs:
-        - name: notify
-          optional: true
-      params: *slack_params
-      run:
-        path: sh
-        args:
-          - -ec
-          - |
-            # chat.postMessage with TheHub's bot token, not an incoming
-            # webhook. A webhook is bound to whichever channel it was created
-            # for, so borrowing TheHub's would interleave pipeline alerts with
-            # the messages its app posts to users. This names the channel
-            # explicitly, and it authenticates with a header - which the Vault
-            # credential manager can substitute at egress, where a webhook's
-            # secret sits in the URL path and cannot be.
-            #
-            # Unset is not an error. The pipeline has to be applicable before
-            # Slack is configured, and this hook only ever runs when something
-            # has already gone wrong - a missing notification must not become
-            # a second failure on top of it.
-            if [ -z "${SLACK_BOT_TOKEN:-}" ] || [ -z "${SLACK_CHANNEL:-}" ]; then
-              echo "No Slack bot token or channel configured - skipping notification."
-              exit 0
-            fi
-
-            # The JOB page, not a build page: no task-visible mechanism carries the
-            # build number (BUILD_NAME is resource-only), and the failing build
-            # is the newest one listed there.
-            #
-            # TheHub #60941: no link unless CONCOURSE_URL names a real host. A
-            # loopback URL opens only on the Concourse host itself, never on
-            # the phone the alert is read on, so it is left out rather than
-            # sent as a link that cannot open.
-            BUILD_URL=""
-            case "${CONCOURSE_URL:-}" in
-              ""|*://localhost|*://localhost[:/]*|*://127.*|*://\[::1\]*|*://0.0.0.0*) ;;
-              *) BUILD_URL="${CONCOURSE_URL%/}/teams/${TEAM:-main}/pipelines/${PIPELINE:-thehub}/jobs/${JOB:-}" ;;
-            esac
-            JOB_LABEL="${JOB:-unknown -- this hook passed no JOB}"
-
-            # PS-12. The `on_error:` hooks pass OUTCOME=errored; nothing
-            # else sets it, so the failure path keeps the wording it had.
-            #
-            # This is the errored/failed line reaching the one surface a human
-            # actually reads, and the two need different words because they
-            # need opposite actions. An errored lane did not run, and
-            # re-triggering it is the correct response. A failed lane ran and
-            # answered, and re-triggering that is how a red gate gets
-            # laundered green by repetition. Told only "job X failed", nobody
-            # can tell which they are looking at -- and for three days in
-            # September nobody did.
-            #
-            # `notify/message.txt` is deliberately not read on the errored
-            # path. A job writes it to explain a verdict; a job that errored
-            # never reached one, so whatever is on disk is a half-finished
-            # thought from a run that died.
-            if [ "${OUTCOME:-failed}" = "errored" ]; then
-              TEXT="*TheHub*: job \`$JOB_LABEL\` ERRORED (newest build) - infrastructure, it did not run. Its fetches were retried already, so a re-trigger that errors again is not transient."
-            elif [ -s notify/message.txt ]; then
-              TEXT=$(head -1 notify/message.txt)
-            else
-              TEXT="*TheHub*: job \`$JOB_LABEL\` failed (newest build) - it ran and the answer was bad. Re-triggering does not clear this."
-            fi
-
-            # Escaped with sed because this image has no jq. Single-line
-            # messages by construction, so backslash and quote are the only
-            # characters that can break the document.
-            ESCAPED=$(printf '%s' "$TEXT" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-
-            # /tmp, not the working directory. curlimages/curl runs as an
-            # unprivileged user and Concourse creates the task's working
-            # directory owned by root, so `> payload.json` is
-            # "Permission denied" and the notify task dies before it reaches
-            # curl. This predates the switch to chat.postMessage - the webhook
-            # version wrote to the same place - so no alert from this anchor
-            # has ever been delivered. It failed inside an on_failure hook,
-            # where the only symptom is a red job that was already red.
-            # The link is its own line when there is one, and absent when not.
-            printf '{"channel":"%s","text":"%s%s"}' \
-              "$SLACK_CHANNEL" "$ESCAPED" "${BUILD_URL:+\\n$BUILD_URL}" > /tmp/payload.json
-
-            RESP=$(curl -sS --max-time 20 -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-              -H 'Content-Type: application/json; charset=utf-8' \
-              -d @/tmp/payload.json) || RESP=""
-
-            # Slack answers 200 with {"ok":false,"error":"..."} when a post is
-            # rejected - a wrong channel, a bot that was removed, a revoked
-            # scope. The status code proves nothing here; the body is the
-            # result, and without this check a silently undelivered alert
-            # reads exactly like a delivered one.
-            case "$RESP" in
-              *'"ok":true'*) echo "Posted to Slack." ;;
-              *) echo "Slack post failed: $RESP" ;;
-            esac
-            exit 0
+  # Every job here used to post to Slack from its own `on_failure` /
+  # `on_error` hook, once per failing build and with no memory of the build
+  # before it, so a lane red for a day posted on every retry: the comms
+  # audit (#61176) counted 118 such posts in 14 days across the pipelines,
+  # 47 of them verbatim repeats, and 89 post-merge NO VERDICT / DEVELOP IS
+  # RED posts, 81 of them repeats. The MyKronos red-main poll
+  # (backend/mykronos/red_main.py) now reads every lane of this pipeline and
+  # posts once when a lane goes red and once, in that message's thread, when
+  # it goes green. So a failure here reaches Slack through that poll, and a
+  # hook that posts as well is the duplicate this removed:
+  # backend/tests/test_one_message_per_build.py fails on one.
+  #
+  # A job's `notify/message.txt` is no longer sent anywhere; the detail it
+  # carried is in the build log and, where the job reports a stage, in the
+  # stage's own report.
 
 jobs:
 
@@ -1463,14 +1332,10 @@ jobs:
           params: { <<: *hub_params, STAGE: pipeline_apply, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: set-pipeline }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: set-pipeline, STAGE: pipeline_apply, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: set-pipeline }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: set-pipeline, STAGE: pipeline_apply, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1529,14 +1394,10 @@ jobs:
           params: { <<: *hub_params, STAGE: cicd_drift, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: cicd-drift }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: cicd-drift, STAGE: cicd_drift, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: cicd-drift }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: cicd-drift, STAGE: cicd_drift, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -1770,14 +1631,10 @@ jobs:
           params: { <<: *hub_params, STAGE: post_merge_check, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: post-merge }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: post-merge }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -2356,8 +2213,6 @@ jobs:
           params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: pr-gates }
         - <<: *hub_report
           input_mapping: { source: pr }
           params: { <<: *hub_params, JOB: pr-gates, STAGE: pr_gates, STATUS: errored, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
@@ -2571,16 +2426,12 @@ jobs:
           params: { <<: *hub_params, STAGE: integration_tests, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: unit }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: unit, STAGE: integration_tests, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: unit, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: unit }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: unit, STAGE: integration_tests, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -3376,14 +3227,10 @@ jobs:
           params: { <<: *hub_params, STAGE: junit, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: qa }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: qa, STAGE: junit, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: qa }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: qa, STAGE: junit, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -3468,16 +3315,12 @@ jobs:
           params: { <<: *hub_params, STAGE: package_artifact, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: build }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: build, STAGE: package_artifact, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: build, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: build }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: build, STAGE: package_artifact, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -3609,16 +3452,12 @@ jobs:
           params: { <<: *hub_params, STAGE: gitleaks, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: secrets }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: secrets, STAGE: gitleaks, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: secrets }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: secrets, STAGE: gitleaks, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -3749,16 +3588,12 @@ jobs:
           params: { <<: *hub_params, STAGE: semgrep, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: sast }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: sast, STAGE: semgrep, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: sast, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: sast }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: sast, STAGE: semgrep, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -3950,16 +3785,12 @@ jobs:
           params: { <<: *hub_params, STAGE: osv_scanner, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: dependencies }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dependencies, STAGE: osv_scanner, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: dependencies, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: dependencies }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dependencies, STAGE: osv_scanner, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -4342,16 +4173,12 @@ jobs:
           params: { <<: *hub_params, STAGE: trivy, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: containers }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: containers, STAGE: trivy, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: containers, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: containers }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: containers, STAGE: trivy, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -4641,16 +4468,12 @@ jobs:
           params: { <<: *hub_params, STAGE: oracle_gate, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: oracle-gate }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: oracle-gate, STAGE: oracle_gate, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: oracle-gate, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: oracle-gate }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: oracle-gate, STAGE: oracle_gate, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -4891,14 +4714,10 @@ jobs:
           params: { <<: *hub_params, STAGE: deploy_demo, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: deploy-demo }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: deploy-demo, STAGE: deploy_demo, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: deploy-demo }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: deploy-demo, STAGE: deploy_demo, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -5130,14 +4949,10 @@ jobs:
           params: { <<: *hub_params, STAGE: api_inventory, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: api-inventory }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: api-inventory, STAGE: api_inventory, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: api-inventory }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: api-inventory, STAGE: api_inventory, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -5264,14 +5079,10 @@ jobs:
           params: { <<: *hub_params, STAGE: functional_demo, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: functional-demo }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: functional-demo, STAGE: functional_demo, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: functional-demo }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: functional-demo, STAGE: functional_demo, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -5402,14 +5213,10 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: dast-demo }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-demo, STAGE: dast_headers, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: dast-demo }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-demo, STAGE: dast_headers, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -5784,16 +5591,12 @@ jobs:
           params: { <<: *hub_params, STAGE: checkov, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: iac }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: iac, STAGE: checkov, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: iac }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: iac, STAGE: checkov, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -5916,16 +5719,12 @@ jobs:
           params: { <<: *hub_params, STAGE: prompt_evals, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: prompt-evals }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: prompt-evals, STAGE: prompt_evals, STATUS: failed, TARGET_ENV: prod }
         - <<: *check_run
           params: { <<: *check_params, JOB: prompt-evals, PHASE: end, CONCLUSION: failure }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: prompt-evals }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: prompt-evals, STAGE: prompt_evals, STATUS: errored, TARGET_ENV: prod }
         - <<: *check_run
@@ -6132,14 +5931,10 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: dast-prod }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-prod, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: dast-prod }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-prod, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -6471,14 +6266,10 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: prod-edge }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: dast-edge }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-edge, STAGE: dast_headers, STATUS: failed, TARGET_ENV: prod-edge }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: dast-edge }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-edge, STAGE: dast_headers, STATUS: errored, TARGET_ENV: prod-edge }
     on_abort:
@@ -6841,7 +6632,8 @@ jobs:
   # that is a known defect rather than a choice.**
   # `test_every_job_reports_all_four_terminal_states_per_stage` already fails
   # over fifteen stages for it; adding this one makes sixteen. The cause is
-  # structural -- `on_failure` is spent on *slack_alert, and Concourse allows one
+  # structural -- `on_failure` was spent on a Slack hook (gone since TheHub
+  # #61194), and Concourse allows one
   # per job, so reporting a failure to both needs a `do:` wrapper across every
   # job at once. Fixing it here alone would leave the test just as red while
   # making this job inconsistent with its two siblings. Tracked in B-055.
@@ -6854,14 +6646,10 @@ jobs:
           params: { <<: *hub_params, STAGE: dast_headers, STATUS: success, TARGET_ENV: staging }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: dast-staging }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-staging, STAGE: dast_headers, STATUS: failed, TARGET_ENV: staging }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: dast-staging }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: dast-staging, STAGE: dast_headers, STATUS: errored, TARGET_ENV: staging }
     on_abort:
@@ -7102,14 +6890,10 @@ jobs:
           params: { <<: *hub_params, STAGE: prowler, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: cloud-posture }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: cloud-posture, STAGE: prowler, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: cloud-posture }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: cloud-posture, STAGE: prowler, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -7288,14 +7072,10 @@ jobs:
           params: { <<: *hub_params, STAGE: image_refresh, STATUS: success, TARGET_ENV: demo }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: image-refresh }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: image-refresh, STAGE: image_refresh, STATUS: failed, TARGET_ENV: demo }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: image-refresh }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: image-refresh, STAGE: image_refresh, STATUS: errored, TARGET_ENV: demo }
     on_abort:
@@ -7560,14 +7340,10 @@ jobs:
           params: { <<: *hub_params, STAGE: auto_remediation, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: remediate }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: remediate, STAGE: auto_remediation, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: remediate }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: remediate, STAGE: auto_remediation, STATUS: errored, TARGET_ENV: prod }
     on_abort:
@@ -7692,14 +7468,10 @@ jobs:
           params: { <<: *hub_params, STAGE: model_inventory, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, JOB: ai-models }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: ai-models, STAGE: model_inventory, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *slack_alert
-          params: { <<: *slack_params, OUTCOME: errored, JOB: ai-models }
         - <<: *hub_report
           params: { <<: *hub_params, JOB: ai-models, STAGE: model_inventory, STATUS: errored, TARGET_ENV: prod }
     on_abort:
