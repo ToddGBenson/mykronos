@@ -81,7 +81,7 @@ export default async function RiskPage({
       )}
 
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        <AgeChart buckets={page.buckets} />
+        <AgeChart buckets={page.buckets} coverage={page.ageCoverage} />
         <section className="flex flex-col gap-2 border border-rule bg-paper-2 p-3">
           <h2 className="text-[15px] font-semibold text-ink">How to read it</h2>
           <p className="text-[13px] leading-relaxed text-ink-3">

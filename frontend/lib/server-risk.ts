@@ -5,13 +5,15 @@
  * - `/api/dashboard/deployments`: production's lag behind its branch.
  * - `/api/approvals?state=pending`: what waits on a person.
  * - Per product, in parallel:
- *   - `/api/oracle/decisions/{repo_id}` for the newest `commit_gate`
- *     decision's sha, then `/api/oracle/decisions/by-commit/{sha}` for the
+ *   - `/api/oracle/decisions/{repo_id}?decision_type=commit_gate&limit=1`
+ *     for the newest `commit_gate` decision's sha (asked for by type, so
+ *     other decision types cannot push it out of the page), then `/api/oracle/decisions/by-commit/{sha}` for the
  *     verdict that stands on it, overrides and introduced blocking findings
  *     included (the question `deploy.ps1` asks);
  *   - `/open-findings` twice: open critical and high (oldest, and the age
  *     chart), and open past their target (overdue). Each reads up to 2000
- *     occurrences; past that the counts are floors;
+ *     occurrences, and keeps `matching`, `shown` and `truncated`, so a read
+ *     cut short draws its counts as floors ("at least");
  *   - `/risk-acceptances`: acceptances in force and expiring.
  *
  * A failed per-product read is kept as a failure, so the page draws that
@@ -25,6 +27,7 @@ import type { DeployLag } from "./prod-lag";
 import type {
   ApprovalLite,
   CommitGate,
+  FindingsRead,
   Read,
   RiskAcceptanceLite,
   RiskGroup,
@@ -63,21 +66,35 @@ type Client = ReturnType<typeof backendClient>;
 
 const OPEN_FINDINGS = "/api/dashboard/repos/{repo_id}/open-findings" as const;
 
-function groupsOf(page: { groups: RiskGroup[] }): RiskGroup[] {
-  return page.groups.map((g) => ({
-    severity: g.severity,
-    occurrences: g.occurrences,
-    age_days: g.age_days ?? null,
-    first_seen_at: g.first_seen_at ?? null,
-    due_at: g.due_at ?? null,
-    due_state: g.due_state,
-  }));
+function findingsOf(page: {
+  groups: RiskGroup[];
+  matching: number;
+  shown: number;
+  truncated: boolean;
+}): FindingsRead {
+  return {
+    groups: page.groups.map((g) => ({
+      severity: g.severity,
+      occurrences: g.occurrences,
+      age_days: g.age_days ?? null,
+      first_seen_at: g.first_seen_at ?? null,
+      due_at: g.due_at ?? null,
+      due_state: g.due_state,
+    })),
+    matching: page.matching,
+    shown: page.shown,
+    truncated: page.truncated,
+  };
 }
 
 async function gateRead(client: Client, repoId: string): Promise<Read<CommitGate | null>> {
   const history = await read(
     "decisions",
-    () => client.GET("/api/oracle/decisions/{repo_id}", { params: { path: { repo_id: repoId } }, cache: "no-store" }),
+    () =>
+      client.GET("/api/oracle/decisions/{repo_id}", {
+        params: { path: { repo_id: repoId }, query: { decision_type: "commit_gate", limit: 1 } },
+        cache: "no-store",
+      }),
     (data: { decisions?: { decision_type?: string; commit_sha?: string | null }[] }) =>
       (data.decisions ?? []).find((d) => d.decision_type === "commit_gate" && d.commit_sha)?.commit_sha ?? null,
   );
@@ -108,7 +125,7 @@ async function repoReads(client: Client, repoId: string): Promise<RiskRepoReads>
           },
           cache: "no-store",
         }),
-      groupsOf,
+      findingsOf,
     ),
     read(
       "overdue findings",
@@ -120,7 +137,7 @@ async function repoReads(client: Client, repoId: string): Promise<RiskRepoReads>
           },
           cache: "no-store",
         }),
-      groupsOf,
+      findingsOf,
     ),
     read(
       "risk acceptances",

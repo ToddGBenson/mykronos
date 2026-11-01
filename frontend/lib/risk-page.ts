@@ -3,14 +3,17 @@
  * health as columns, an estate row, and open high and critical by age.
  *
  * Columns run from "can it ship" on the left to "what is old" on the right:
- * the gate on main, production's lag, the severity counts, the oldest high or
+ * the gate on the newest commit it judged, production's lag, the severity counts, the oldest high or
  * critical against its own target, overdue, lanes, acceptances, and the
  * requests waiting on a person.
  *
  * Two rules hold for every cell:
  * - **A failed read is unknown, never zero.** An empty cell that looks clean
  *   because the backend did not answer is the failure this page exists to
- *   prevent. Unknown is drawn as stale, with the reason in its label.
+ *   prevent. Unknown is drawn as stale, with the reason in its label. The
+ *   estate row follows the same rule: a total over products some of which
+ *   could not be read is a floor ("at least"), and over none is unknown.
+ *   A read cut short at its limit is a floor too.
  * - **Every cell is a link** to the filtered view behind its number.
  *
  * Built from existing endpoints only (`lib/server-risk.ts` does the reads).
@@ -32,6 +35,8 @@ export type StateCell = {
   href: string;
   /** The state in words: the hover text and the accessible name. */
   label: string;
+  /** True when the read behind it failed: the cell says unknown. */
+  unread?: boolean;
 };
 
 export type CountTone = "crit" | "high" | "med" | "warn" | "zero" | "unknown";
@@ -42,6 +47,8 @@ export type CountCell = {
   tone: CountTone;
   href: string;
   label: string;
+  /** The value is a floor: some of what it counts was not read. */
+  floor?: boolean;
 };
 
 /** `/api/oracle/decisions/by-commit/{sha}`'s body, the fields this page reads. */
@@ -64,6 +71,30 @@ export type RiskGroup = {
   due_at?: string | null;
   due_state?: string;
 };
+
+/**
+ * One `/open-findings` read: its groups, and the counts that say whether the
+ * read saw everything. `matching` is what the filters kept, `shown` what came
+ * back after the limit, and `truncated` that the limit cut the read short.
+ */
+export type FindingsRead = {
+  groups: RiskGroup[];
+  matching: number;
+  shown: number;
+  truncated: boolean;
+};
+
+/** A bare list is a complete read (the shape the tests build by hand). */
+export function findingsOf(data: FindingsRead | RiskGroup[]): FindingsRead {
+  if (!Array.isArray(data)) return data;
+  const occurrences = data.reduce((sum, g) => sum + g.occurrences, 0);
+  return { groups: data, matching: occurrences, shown: occurrences, truncated: false };
+}
+
+/** The read did not see every finding it matched. */
+export function isFloor(read: FindingsRead): boolean {
+  return read.truncated || read.matching > read.shown;
+}
 
 export type RiskAcceptanceLite = { id: string; state: string; days_left: number | null };
 
@@ -90,9 +121,9 @@ export type RiskRepoReads = {
   /** Null data: the repository has no commit-gate decision to ask about. */
   gate: Read<CommitGate | null>;
   /** Open critical and high groups. */
-  highPlus: Read<RiskGroup[]>;
+  highPlus: Read<FindingsRead | RiskGroup[]>;
   /** Open groups past their target, any severity. */
-  overdue: Read<RiskGroup[]>;
+  overdue: Read<FindingsRead | RiskGroup[]>;
   /** Every acceptance on the repository, any state. */
   acceptances: Read<RiskAcceptanceLite[]>;
 };
@@ -120,7 +151,8 @@ export type RiskRow = {
   overdue: CountCell;
   lanes: StateCell;
   accepted: StateCell;
-  /** Acceptances expiring within 30 days. */
+  /** Acceptances in force, and of those expiring within 30 days. */
+  inForce: number;
   expiring: number;
   needs: CountCell;
   /** Anything on the row that wants a look, unknowns included. */
@@ -129,10 +161,17 @@ export type RiskRow = {
 
 export type AgeBucket = { label: string; critical: number; high: number; total: number };
 
+/**
+ * What the age chart was built from: the products it could not read, and
+ * the ones whose read was cut short, so its totals can say "at least".
+ */
+export type AgeCoverage = { products: number; unread: string[]; truncated: string[] };
+
 export type RiskPage = {
   rows: RiskRow[];
-  estate: Omit<RiskRow, "repoId" | "name" | "synthetic" | "problem" | "expiring">;
+  estate: Omit<RiskRow, "repoId" | "name" | "synthetic" | "problem" | "inForce" | "expiring">;
   buckets: AgeBucket[];
+  ageCoverage: AgeCoverage;
   /** Products shown. */
   products: number;
   /** Of those, how many reported a scan in the last 24 hours. */
@@ -159,13 +198,14 @@ export function parseUtc(value: string | null | undefined): number {
 }
 
 function unknown(href: string, what: string, error: string): StateCell {
-  return { text: "unknown", tone: "stale", href, label: `${what}: could not be read (${error})` };
+  return { text: "unknown", tone: "stale", href, label: `${what}: could not be read (${error})`, unread: true };
 }
 
 // -- Gate --------------------------------------------------------------------
 
 /**
- * The verdict on the newest commit the gate judged on the default branch.
+ * The verdict on the newest commit the gate judged. Decision records carry
+ * no branch, so this is the newest `commit_gate`, whichever branch it was on.
  *
  * The gate refuses a commit that introduced an open critical or high
  * (`introduced_blocking`, #735), whatever the backlog-wide recommendation
@@ -180,7 +220,7 @@ export function gateCell(repoId: string, read: Read<CommitGate | null>): StateCe
       text: "not assessed",
       tone: "never",
       href,
-      label: "not assessed: no commit-gate decision is recorded for the default branch",
+      label: "not assessed: no commit-gate decision is recorded for this repository",
     };
   }
   const sha = gate.commit_sha.slice(0, 7);
@@ -294,11 +334,23 @@ function isLate(group: RiskGroup): boolean {
   return target !== null && (group.age_days ?? 0) > target;
 }
 
-export function oldestCell(repoId: string, read: Read<RiskGroup[]>): StateCell {
+const CUT_SHORT = " (the read was cut short at its limit)";
+
+export function oldestCell(repoId: string, read: Read<FindingsRead | RiskGroup[]>): StateCell {
   const href = findingsHref(repoId, {}, { severity: "critical,high", sort: "oldest" });
   if (!read.ok) return unknown(href, "oldest high or critical", read.error);
-  const oldest = oldestOf(read.data);
+  const page = findingsOf(read.data);
+  const floor = isFloor(page);
+  const oldest = oldestOf(page.groups);
   if (!oldest) {
+    if (floor) {
+      return {
+        text: "unknown",
+        tone: "stale",
+        href,
+        label: `oldest high or critical: some are open, none came back with an age${CUT_SHORT}`,
+      };
+    }
     return { text: "—", tone: "never", href, label: "no open high or critical finding" };
   }
   const age = oldest.age_days ?? 0;
@@ -306,24 +358,32 @@ export function oldestCell(repoId: string, read: Read<RiskGroup[]>): StateCell {
   const late = isLate(oldest);
   const against = target === null ? "no target" : `${target}d`;
   return {
-    text: `${age}d / ${against}`,
+    text: `${floor ? "≥" : ""}${age}d / ${against}`,
     tone: late ? "warn" : "ok",
     href,
-    label: `${late ? "overdue: " : ""}oldest open ${oldest.severity} is ${plural(age, "day")} old, ${
+    label: `${late ? "overdue: " : ""}oldest open ${oldest.severity} is ${floor ? "at least " : ""}${plural(age, "day")} old, ${
       target === null ? "with no remediation target" : `against a ${target}-day target`
-    }`,
+    }${floor ? CUT_SHORT : ""}`,
   };
 }
 
 // -- Overdue -----------------------------------------------------------------
 
-export function overdueCell(repoId: string, read: Read<RiskGroup[]>): CountCell {
+export function overdueCell(repoId: string, read: Read<FindingsRead | RiskGroup[]>): CountCell {
   const href = findingsHref(repoId, {}, { due: "overdue" });
   if (!read.ok) {
     return { value: null, tone: "unknown", href, label: `overdue: could not be read (${read.error})` };
   }
-  const value = read.data.reduce((sum, g) => sum + g.occurrences, 0);
-  return { value, tone: value > 0 ? "warn" : "zero", href, label: `${value} open past their target` };
+  const page = findingsOf(read.data);
+  const floor = isFloor(page);
+  const value = page.matching;
+  return {
+    value,
+    tone: value > 0 ? "warn" : "zero",
+    href,
+    floor,
+    label: `${floor ? "at least " : ""}${value} open past their target${floor ? CUT_SHORT : ""}`,
+  };
 }
 
 // -- Lanes -------------------------------------------------------------------
@@ -367,8 +427,21 @@ export function lanesCell(repo: RiskRepoInput, now: number): StateCell {
 
 // -- Acceptances -------------------------------------------------------------
 
-/** Acceptances that are in force: the ones a finding is hidden behind. */
+/**
+ * Acceptances that are in force: the ones a finding is hidden behind. One
+ * that needs review, or whose premise failed, still hides its finding until
+ * someone acts, so it counts, and the label says how many of those there are.
+ */
 const IN_FORCE = new Set(["active", "expiring", "needs_review", "premise_failed"]);
+
+function attention(live: RiskAcceptanceLite[]): string {
+  const review = live.filter((a) => a.state === "needs_review").length;
+  const failed = live.filter((a) => a.state === "premise_failed").length;
+  const parts: string[] = [];
+  if (review) parts.push(`${review} needs review`);
+  if (failed) parts.push(`${failed} premise failed`);
+  return parts.length ? ` (including ${parts.join(", ")})` : "";
+}
 
 export function acceptedCell(repoId: string, read: Read<RiskAcceptanceLite[]>): StateCell {
   const base = `/repos/${repoId}?tab=risk`;
@@ -386,7 +459,7 @@ export function acceptedCell(repoId: string, read: Read<RiskAcceptanceLite[]>): 
     text: `${live.length} · ${expiring.length} expiring`,
     tone: "acc",
     href: expiring.length ? `${base}&state=expiring` : base,
-    label: `accepted: ${plural(live.length, "acceptance")} in force, ${expiring.length} expiring${
+    label: `accepted: ${plural(live.length, "acceptance")} in force${attention(live)}, ${expiring.length} expiring${
       soonest !== undefined ? `, soonest in ${plural(soonest, "day")}` : ""
     }`,
   };
@@ -478,20 +551,55 @@ function rank(row: RiskRow): [number, number, number, number] {
   ];
 }
 
-function sum(cells: CountCell[]): { value: number; partial: boolean } {
+function total(cells: CountCell[], tone: CountTone, href: string, what: string): CountCell {
+  const value = cells.reduce((s, c) => s + (c.value ?? 0), 0);
+  const unread = cells.filter((c) => c.value === null).length;
+  const cut = cells.some((c) => c.floor);
+  if (cells.length > 0 && unread === cells.length) {
+    return { value: null, tone: "unknown", href, label: `${what}: could not be read for any product` };
+  }
+  const floor = unread > 0 || cut;
+  const why = [
+    unread ? `could not be read for ${plural(unread, "product")}` : "",
+    cut ? "some reads were cut short at their limit" : "",
+  ].filter(Boolean);
   return {
-    value: cells.reduce((s, c) => s + (c.value ?? 0), 0),
-    partial: cells.some((c) => c.value === null),
+    value,
+    tone: value > 0 ? tone : unread ? "unknown" : "zero",
+    href,
+    floor,
+    label: `${floor ? "at least " : ""}${value} ${what}${why.length ? ` (${why.join("; ")})` : ""}`,
   };
 }
 
-function total(cells: CountCell[], tone: CountTone, href: string, what: string): CountCell {
-  const { value, partial } = sum(cells);
+/**
+ * An estate state cell over the rows: unknown when no row could be read,
+ * and when some could not, a floor that says how many are unknown.
+ */
+function estateState(
+  cells: StateCell[],
+  href: string,
+  what: string,
+  known: () => StateCell,
+): StateCell {
+  const unread = cells.filter((c) => c.unread).length;
+  if (cells.length > 0 && unread === cells.length) {
+    return {
+      text: "unknown",
+      tone: "stale",
+      href,
+      label: `${what}: could not be read for any product`,
+      unread: true,
+    };
+  }
+  const cell = known();
+  if (!unread) return cell;
+  const failing = cell.tone === "fail" || cell.tone === "warn";
   return {
-    value,
-    tone: value > 0 ? tone : partial ? "unknown" : "zero",
-    href,
-    label: `${partial ? "at least " : ""}${value} ${what}${partial ? " (some products could not be read)" : ""}`,
+    ...cell,
+    text: failing ? cell.text : `${cell.text} · ${unread} unknown`,
+    tone: failing ? cell.tone : "stale",
+    label: `at least ${cell.label}; ${what} could not be read for ${plural(unread, "product")}`,
   };
 }
 
@@ -505,6 +613,7 @@ export function buildRiskPage(
   );
   const incomplete: string[] = [];
   const highPlus: RiskGroup[] = [];
+  const ageCoverage: AgeCoverage = { products: products.length, unread: [], truncated: [] };
 
   const all: RiskRow[] = products.map((repo) => {
     const reads = inputs.reads[repo.repo_id] ?? {
@@ -516,7 +625,16 @@ export function buildRiskPage(
     if (!reads.gate.ok || !reads.highPlus.ok || !reads.overdue.ok || !reads.acceptances.ok) {
       incomplete.push(repo.repo_full_name);
     }
-    if (reads.highPlus.ok) highPlus.push(...reads.highPlus.data);
+    if (reads.highPlus.ok) {
+      const page = findingsOf(reads.highPlus.data);
+      highPlus.push(...page.groups);
+      if (isFloor(page)) ageCoverage.truncated.push(repo.repo_full_name);
+    } else {
+      ageCoverage.unread.push(repo.repo_full_name);
+    }
+    const live = reads.acceptances.ok
+      ? reads.acceptances.data.filter((a) => IN_FORCE.has(a.state))
+      : [];
     const row = {
       repoId: repo.repo_id,
       name: repo.repo_full_name,
@@ -530,9 +648,8 @@ export function buildRiskPage(
       overdue: overdueCell(repo.repo_id, reads.overdue),
       lanes: lanesCell(repo, now),
       accepted: acceptedCell(repo.repo_id, reads.acceptances),
-      expiring: reads.acceptances.ok
-        ? reads.acceptances.data.filter((a) => a.state === "expiring").length
-        : 0,
+      inForce: live.length,
+      expiring: live.filter((a) => a.state === "expiring").length,
       needs: needsYouCell(repo.repo_full_name, reads.acceptances, inputs.approvals, now),
     };
     return { ...row, problem: isProblem(row) };
@@ -550,34 +667,43 @@ export function buildRiskPage(
   const oldestDays = Math.max(-1, ...highPlus.map((g) => g.age_days ?? -1));
   const red = all.filter((r) => r.lanes.tone === "fail").length;
   const silent = all.filter((r) => r.lanes.tone === "stale").length;
+  const inForce = all.reduce((s, r) => s + r.inForce, 0);
   const expiring = all.reduce((s, r) => s + r.expiring, 0);
+  const highFloor = ageCoverage.truncated.length > 0;
   const pending = inputs.approvals.ok ? liveApprovals(inputs.approvals.data, now).length : null;
 
   const estate: RiskPage["estate"] = {
-    gate: {
+    gate: estateState(all.map((r) => r.gate), "/decisions", "the gate", () => ({
       text: `${noGo} no-go`,
       tone: noGo ? "fail" : "ok",
       href: "/decisions",
-      label: `${plural(noGo, "product")} the gate refuses on main`,
-    },
-    lag: {
+      label: `${plural(noGo, "product")} the gate refuses at the newest commit it judged`,
+    })),
+    lag: estateState(all.map((r) => r.lag), "/platform-health", "prod lag", () => ({
       text: `${behind} behind`,
       tone: behind ? "warn" : "ok",
       href: "/platform-health",
       label: `${plural(behind, "product")} with production behind its branch`,
-    },
+    })),
     critical: total(all.map((r) => r.critical), "crit", "/triage", "open critical"),
     high: total(all.map((r) => r.high), "high", "/triage", "open high"),
     medium: total(all.map((r) => r.medium), "med", "/triage", "open medium"),
-    oldest: {
-      text: oldestDays >= 0 ? `${oldestDays}d oldest` : "—",
-      tone: all.some((r) => r.oldest.tone === "warn") ? "warn" : oldestDays >= 0 ? "ok" : "never",
-      href: "/vulnerability-management",
-      label:
-        oldestDays >= 0
-          ? `the oldest open high or critical is ${plural(oldestDays, "day")} old`
-          : "no open high or critical finding",
-    },
+    oldest: estateState(
+      all.map((r) => r.oldest),
+      "/vulnerability-management",
+      "the oldest high or critical",
+      () => ({
+        text: oldestDays >= 0 ? `${highFloor ? "≥" : ""}${oldestDays}d oldest` : "—",
+        tone: all.some((r) => r.oldest.tone === "warn") ? "warn" : oldestDays >= 0 ? "ok" : "never",
+        href: "/vulnerability-management",
+        label:
+          oldestDays >= 0
+            ? `the oldest open high or critical is ${highFloor ? "at least " : ""}${plural(oldestDays, "day")} old${
+                highFloor ? CUT_SHORT : ""
+              }`
+            : "no open high or critical finding",
+      }),
+    ),
     overdue: total(all.map((r) => r.overdue), "warn", "/vulnerability-management", "open past their target"),
     lanes: {
       text: `${red} red · ${silent} silent`,
@@ -585,12 +711,16 @@ export function buildRiskPage(
       href: "/platform-health",
       label: `${plural(red, "product")} with a failing lane, ${silent} with a silent one`,
     },
-    accepted: {
-      text: `${expiring} expiring`,
-      tone: "acc",
-      href: "/vulnerability-management",
-      label: `${plural(expiring, "acceptance")} expiring within 30 days`,
-    },
+    accepted: estateState(all.map((r) => r.accepted), "/vulnerability-management", "acceptances", () =>
+      inForce === 0
+        ? { text: "0", tone: "never", href: "/vulnerability-management", label: "no risk acceptance in force" }
+        : {
+            text: `${inForce} · ${expiring} expiring`,
+            tone: "acc",
+            href: "/vulnerability-management",
+            label: `${plural(inForce, "acceptance")} in force, ${expiring} expiring within 30 days`,
+          },
+    ),
     needs: {
       value: pending,
       tone: pending === null ? "unknown" : pending > 0 ? "high" : "zero",
@@ -611,6 +741,7 @@ export function buildRiskPage(
     rows,
     estate,
     buckets: ageBuckets(highPlus),
+    ageCoverage,
     products: products.length,
     scannedRecently,
     incomplete,

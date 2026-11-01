@@ -12,7 +12,7 @@
 import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
 
-import type { AgeBucket, CountCell, RiskPage, StateCell, Tone } from "@/lib/risk-page";
+import type { AgeBucket, AgeCoverage, CountCell, RiskPage, StateCell, Tone } from "@/lib/risk-page";
 
 const TONE_COLOUR: Record<Tone, string> = {
   ok: "var(--color-ok, var(--color-pass))",
@@ -124,7 +124,7 @@ function CountLink({ cell, who, what }: { cell: CountCell; who: string; what: st
       style={COUNT_STYLE[cell.tone]}
       className={`${LINK} min-w-11 justify-end font-mono font-semibold tabular-nums`}
     >
-      {cell.value === null ? "?" : cell.value}
+      {cell.value === null ? "?" : `${cell.floor ? "≥" : ""}${cell.value}`}
     </Link>
   );
 }
@@ -145,7 +145,7 @@ function NeedsLink({ cell, who }: { cell: CountCell; who: string }) {
 
 const HEADINGS: { label: string; numeric?: boolean }[] = [
   { label: "Product" },
-  { label: "Gate (main)" },
+  { label: "Gate (newest commit)" },
   { label: "Prod lag" },
   { label: "Crit", numeric: true },
   { label: "High", numeric: true },
@@ -248,9 +248,23 @@ export function RiskMatrix({ page }: { page: RiskPage }) {
   );
 }
 
-export function AgeChart({ buckets }: { buckets: AgeBucket[] }) {
+/**
+ * Open high and critical by age. Without a complete read the chart says so:
+ * no product read is a sentence, not four zero bars; some products unread,
+ * or a read cut short, makes every total a floor.
+ */
+export function AgeChart({ buckets, coverage }: { buckets: AgeBucket[]; coverage?: AgeCoverage }) {
   const widest = Math.max(1, ...buckets.map((b) => b.total));
   const pct = (n: number) => `${(n / widest) * 100}%`;
+  const none = coverage !== undefined && coverage.products > 0 && coverage.unread.length === coverage.products;
+  const floor = coverage !== undefined && (coverage.unread.length > 0 || coverage.truncated.length > 0);
+  const atLeast = floor ? "at least " : "";
+  const why = coverage
+    ? [
+        coverage.unread.length ? `could not be read for ${coverage.unread.join(", ")}` : "",
+        coverage.truncated.length ? `cut short at the read limit for ${coverage.truncated.join(", ")}` : "",
+      ].filter(Boolean)
+    : [];
   return (
     <section className="flex flex-col gap-2 border border-rule bg-paper-2 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -266,22 +280,35 @@ export function AgeChart({ buckets }: { buckets: AgeBucket[] }) {
           </span>
         </span>
       </div>
-      <ul className="flex flex-col gap-1.5">
-        {buckets.map((b) => (
-          <li
-            key={b.label}
-            aria-label={`${b.label}: ${b.critical} critical, ${b.high} high`}
-            className="grid grid-cols-[96px_1fr_36px] items-center gap-2.5"
-          >
-            <span className="text-[12.5px] text-ink-3">{b.label}</span>
-            <span className="flex h-3.5 overflow-hidden rounded-sm bg-paper-3" aria-hidden="true">
-              <i className="block h-full" style={{ width: pct(b.critical), background: "var(--color-critical)" }} />
-              <i className="block h-full" style={{ width: pct(b.high), background: "var(--color-high)" }} />
-            </span>
-            <b className="text-right font-mono tabular-nums text-ink">{b.total}</b>
-          </li>
-        ))}
-      </ul>
+      {none ? (
+        <p className="text-[12.5px] text-ink-3">
+          Unknown: the open high and critical findings could not be read for any product.
+        </p>
+      ) : null}
+      {!none && floor ? (
+        <p className="text-[12.5px] text-ink-3">Each total is a floor: {why.join("; ")}.</p>
+      ) : null}
+      {none ? null : (
+        <ul className="flex flex-col gap-1.5">
+          {buckets.map((b) => (
+            <li
+              key={b.label}
+              aria-label={`${b.label}: ${atLeast}${b.critical} critical, ${atLeast}${b.high} high`}
+              className="grid grid-cols-[96px_1fr_36px] items-center gap-2.5"
+            >
+              <span className="text-[12.5px] text-ink-3">{b.label}</span>
+              <span className="flex h-3.5 overflow-hidden rounded-sm bg-paper-3" aria-hidden="true">
+                <i className="block h-full" style={{ width: pct(b.critical), background: "var(--color-critical)" }} />
+                <i className="block h-full" style={{ width: pct(b.high), background: "var(--color-high)" }} />
+              </span>
+              <b className="text-right font-mono tabular-nums text-ink">
+                {floor ? "≥" : ""}
+                {b.total}
+              </b>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
