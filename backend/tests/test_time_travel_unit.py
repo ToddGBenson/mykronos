@@ -17,8 +17,11 @@ Two halves, tested separately:
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -54,10 +57,29 @@ def _job(pipeline: dict[str, Any]) -> dict[str, Any]:
     return jobs[JOB]
 
 
-def _script(job: dict[str, Any]) -> str:
-    tasks = [s for s in job["plan"] if "task" in s and s["task"] != "preflight"]
-    assert len(tasks) == 1
-    return tasks[0]["config"]["run"]["args"][-1]
+SUITE_TASK = "pytest-time-travel"
+FILING_TASK = "file-hub-story"
+CANARY = "tests/test_time_travel_canary.py"
+
+
+def _task(job: dict[str, Any], name: str) -> dict[str, Any]:
+    tasks = [s for s in job["plan"] if s.get("task") == name]
+    assert len(tasks) == 1, f"time-travel should have one task named {name}"
+    return tasks[0]
+
+
+def _script(job: dict[str, Any], name: str = SUITE_TASK) -> str:
+    return _task(job, name)["config"]["run"]["args"][-1]
+
+
+def _all_scripts(job: dict[str, Any]) -> str:
+    return "\n".join(
+        s["config"]["run"]["args"][-1] for s in job["plan"] if "task" in s and "config" in s
+    )
+
+
+def _lines(script: str) -> list[str]:
+    return [line.strip() for line in script.splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -77,23 +99,70 @@ class TestTheJob:
 
     def test_the_suite_runs_under_libfaketime_at_the_offset_var(self, pipeline) -> None:
         job = _job(pipeline)
-        task = next(s for s in job["plan"] if s.get("task") == "pytest-time-travel")
+        task = _task(job, SUITE_TASK)
         assert task["params"]["TIME_TRAVEL_OFFSET"] == "((time-travel-offset))"
         script = _script(job)
         assert "apt-get install -y -qq git faketime" in script
-        pytest_lines = [line for line in script.splitlines() if "-m pytest" in line]
-        assert len(pytest_lines) == 1
-        assert pytest_lines[0].lstrip().startswith('faketime -f "$TIME_TRAVEL_OFFSET"')
+        # One definition of the faketime invocation, which the canary and the
+        # suite both go through, so they cannot drift apart. `-m`: the
+        # multi-threaded library, for xdist's execnet threads, asyncio, DuckDB.
+        lines = _lines(script)
+        faketime = [line for line in lines if "faketime -" in line]
+        assert faketime == ['under_faketime() { faketime -m -f "$TIME_TRAVEL_OFFSET" "$@"; }']
+        for line in lines:
+            if "-m pytest" in line:
+                assert "under_faketime python -m pytest" in line, line
+
+    def test_a_canary_proves_the_clock_moved_before_the_suite_runs(self, pipeline) -> None:
+        # Finding 1 of the #1056 review: without this, an unshifted clock is a
+        # green night, and a green night is a false all-clear.
+        lines = _lines(_script(_job(pipeline)))
+        real_now = next(i for i, x in enumerate(lines) if "TIME_TRAVEL_REAL_NOW=" in x)
+        assert lines[real_now] == 'export TIME_TRAVEL_REAL_NOW="$(date +%s)"'
+        suite = next(i for i, x in enumerate(lines) if "--junitxml" in x)
+        main = next(i for i, x in enumerate(lines) if CANARY in x and "-n 0" in x)
+        worker = next(i for i, x in enumerate(lines) if CANARY in x and "-n 2" in x)
+        assert real_now < main < suite and real_now < worker < suite
+        assert "TIME_TRAVEL_CANARY_IN_WORKER=0" in lines[main]
+        assert "TIME_TRAVEL_CANARY_IN_WORKER=1" in lines[worker]
+        failed = "\n".join(lines[worker:suite])
+        assert "::error::time-travel CANARY" in failed and "exit 1" in failed
+
+    def test_the_canary_checks_python_and_duckdb(self) -> None:
+        text = (ROOT / "backend" / CANARY).read_text(encoding="utf-8")
+        assert "def test_python_reads_the_moved_clock" in text
+        assert "def test_duckdb_reads_the_moved_clock" in text
+        assert "def test_it_ran_where_the_job_said" in text
+
+    def test_the_hub_token_never_reaches_pytest_or_pip(self, pipeline) -> None:
+        # Finding 2: the token is TheHub's, and a public job's suite and its
+        # dependencies are exactly what should not hold it. Only the filing
+        # task has it, and that task runs the reporter and nothing else.
+        job = _job(pipeline)
+        for step in job["plan"]:
+            if "task" not in step:
+                continue
+            params = step.get("params") or {}
+            script = step["config"]["run"]["args"][-1]
+            if "HUB_STORY_TOKEN" in params or "HUB_URL" in params:
+                assert step["task"] == FILING_TASK, step["task"]
+                assert "pytest" not in script and "pip " not in script
+        filing = _task(job, FILING_TASK)
+        assert filing["params"]["HUB_STORY_TOKEN"] == "((hub-story-token))"
+        assert "HUB_STORY_TOKEN" not in (_task(job, SUITE_TASK).get("params") or {})
 
     def test_the_install_and_the_filing_run_on_the_real_clock(self, pipeline) -> None:
         # pip under a moved clock can refuse a certificate that is valid today,
         # and the story must say when it was really filed.
-        script = _script(_job(pipeline))
+        script = _all_scripts(_job(pipeline))
         for line in script.splitlines():
             if "pip install" in line or "time_travel_report.py" in line:
                 assert "faketime" not in line, line
 
-    def test_the_offset_is_longer_than_the_longest_window(self) -> None:
+    def test_the_offset_is_longer_than_the_nvd_retry_window(self) -> None:
+        # The window that made #1034's bomb. This guards that one window only,
+        # and the pipeline's comment says so: a longer window elsewhere
+        # (credential rotation is 90 days) is a bomb this offset cannot reach.
         offset = yaml.safe_load(VARS.read_text(encoding="utf-8"))["time-travel-offset"]
         match = re.fullmatch(r"\+(\d+)d", str(offset))
         assert match, f"time-travel-offset should read +<days>d, not {offset!r}"
@@ -117,15 +186,68 @@ class TestTheJob:
 
     def test_it_reports_nothing_to_mykronos(self, pipeline) -> None:
         # An upload as `unit` would put tomorrow's failures on today's lane.
-        assert "mykronos.upload" not in _script(_job(pipeline))
+        assert "mykronos.upload" not in _all_scripts(_job(pipeline))
 
     def test_it_exits_with_the_suites_code_not_the_filings(self, pipeline) -> None:
-        script = _script(_job(pipeline))
-        assert "|| rc=$?" in script
-        assert script.rstrip().endswith('exit "$rc"')
+        job = _job(pipeline)
+        suite = _script(job)
+        assert "|| rc=$?" in suite
+        assert 'echo "$rc" > ../../results/rc' in suite
+        filing = _script(job, FILING_TASK)
+        assert 'rc="$(cat results/rc)"' in filing
+        assert filing.rstrip().endswith('exit "$rc"')
 
     def test_it_is_in_a_group(self, pipeline) -> None:
         assert any(JOB in g["jobs"] for g in pipeline["groups"])
+
+
+# ---------------------------------------------------------------------------
+# The canary, run the way the job runs it
+# ---------------------------------------------------------------------------
+
+DAY = 86400
+
+
+def _canary(real_now: float, *, workers: int, in_worker: str) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env.update(
+        TIME_TRAVEL_REAL_NOW=str(int(real_now)),
+        TIME_TRAVEL_OFFSET="+45d",
+        TIME_TRAVEL_CANARY_IN_WORKER=in_worker,
+    )
+    argv = ["-q", "-p", "no:cacheprovider", "-n", str(workers), CANARY]
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", *argv],
+        cwd=ROOT / "backend",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+
+class TestTheCanary:
+    # No libfaketime here, so the "moved" clock is simulated the other way
+    # round: a real epoch given as 46 days ago is what a +45d clock looks like.
+
+    @pytest.mark.parametrize(("workers", "in_worker"), [(0, "0"), (2, "1")])
+    def test_it_fails_on_an_unshifted_clock(self, workers: int, in_worker: str) -> None:
+        result = _canary(time.time(), workers=workers, in_worker=in_worker)
+        assert result.returncode == 1, result.stdout
+        out = result.stdout
+        assert "time.time() reads" in out and "DuckDB now() reads" in out
+        assert "the clock did not move" in out
+
+    @pytest.mark.parametrize(("workers", "in_worker"), [(0, "0"), (2, "1")])
+    def test_it_passes_on_a_moved_clock(self, workers: int, in_worker: str) -> None:
+        result = _canary(time.time() - 46 * DAY, workers=workers, in_worker=in_worker)
+        assert result.returncode == 0, result.stdout
+        assert "3 passed" in result.stdout
+
+    def test_it_fails_when_it_did_not_run_where_the_job_said(self) -> None:
+        result = _canary(time.time() - 46 * DAY, workers=0, in_worker="1")
+        assert result.returncode == 1, result.stdout
+        assert "asked for an xdist worker" in result.stdout
 
 
 # ---------------------------------------------------------------------------
