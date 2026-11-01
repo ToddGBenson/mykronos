@@ -73,6 +73,9 @@ export const NAV: {
       // say whose health this is. The route keeps its old name so bookmarks
       // and runbooks still land.
       { label: "MyKronos Health", href: "/platform-health" },
+      // Agent credentials, delegations and the sampling queue (TheHub #61144):
+      // how this platform's agents are set up and running.
+      { label: "Agents", href: "/agents" },
     ],
   },
 ];

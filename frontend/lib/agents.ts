@@ -30,6 +30,15 @@ export function ttlHours(c: AgentCredential): number {
   return (utcMs(c.expires_at) - utcMs(c.minted_at)) / 3_600_000;
 }
 
+/** "20m lifetime", "12h lifetime", "7d lifetime": minutes under an hour,
+ *  so a short-lived credential never reads as "0h". */
+export function lifetimeLabel(c: AgentCredential): string {
+  const hours = ttlHours(c);
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m lifetime`;
+  if (hours < 48) return `${Math.round(hours)}h lifetime`;
+  return `${Math.round(hours / 24)}d lifetime`;
+}
+
 export function isDefaultTtl(c: AgentCredential): boolean {
   return Math.abs(ttlHours(c) - DEFAULT_TTL_HOURS) < 0.05;
 }

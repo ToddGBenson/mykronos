@@ -11,8 +11,8 @@ import {
   delegationState,
   descendants,
   isDefaultTtl,
+  lifetimeLabel,
   orderCredentials,
-  ttlHours,
   type AgentCredential,
   type CredentialState,
   type DelegationRow,
@@ -80,11 +80,6 @@ const CREDENTIAL_PILL: Record<CredentialState, { tone: "pass" | "muted" | "criti
   revoked: { tone: "critical", word: "revoked" },
 };
 
-function lifetime(c: AgentCredential): string {
-  const hours = ttlHours(c);
-  return hours >= 48 ? `${Math.round(hours / 24)}d lifetime` : `${Math.round(hours)}h lifetime`;
-}
-
 function CredentialRow({ c, all }: { c: AgentCredential; all: AgentCredential[] }) {
   const state = credentialState(c);
   const note = credentialNote(c);
@@ -104,7 +99,7 @@ function CredentialRow({ c, all }: { c: AgentCredential; all: AgentCredential[] 
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[12px] text-ink-3">
         <span className={isDefaultTtl(c) && state !== "revoked" ? "font-bold text-high" : ""}>
-          {lifetime(c)}
+          {lifetimeLabel(c)}
           {isDefaultTtl(c) ? " (default)" : ""}
         </span>
         <span>for {c.on_behalf_of}</span>
