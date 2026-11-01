@@ -2167,6 +2167,14 @@ jobs:
   # deploy that enforces it, so the two cannot drift; this job only finds the
   # head and reports the verdict.
   #
+  # [TheHub #61159] And deploy.sh's process gates, DEV-B (threat-model trailer)
+  # and DEV-D (a test per new backend/services or backend/api module), on the
+  # pull request's range, merge-base..head. Their logic is the BASE branch's,
+  # never the PR's: the pick reads develop's scripts/lib/devb_gate.py and
+  # deploy.sh out of the base commit's tree, and the gates task ports DEV-D,
+  # which is inline in deploy.sh, with a check that develop's deploy.sh still
+  # reads the way it was ported from. See the gates task.
+  #
   # The verdict is `Concourse / thehub` on the PR head (see `check_params`).
   # That is the check to require on develop. Requiring it is the operator's
   # call, and it should wait until this job has gone green on a real PR.
@@ -2369,6 +2377,42 @@ jobs:
                   git -C pr checkout -q --detach "$SHA"
                   test "$(git -C pr rev-parse HEAD)" = "$SHA"
                   echo "$NUM" > pr/.git/pr-number
+
+                  # [TheHub #61159] deploy.sh's process gates (DEV-B, DEV-D)
+                  # grade the pull request's own range, merge-base..head. So
+                  # this needs the base branch's tip and enough history on both
+                  # sides to find where they meet: deepened 50 commits at a time
+                  # rather than cloned, because TheHub's full history is minutes.
+                  BASE_SHA=$(awk -v r="refs/heads/$THEHUB_BRANCH" '$2 == r { print $1 }' /tmp/refs)
+                  test -n "$BASE_SHA"
+                  GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --depth 1 "$REPO_URI" "$BASE_SHA"
+                  deepened=0
+                  until MERGE_BASE=$(git -C pr merge-base "$SHA" "$BASE_SHA" 2>/dev/null); do
+                    deepened=$((deepened + 1))
+                    if [ "$deepened" -gt 20 ]; then
+                      echo "::error::#$NUM shares no commit with $THEHUB_BRANCH in 1000 commits of history,"
+                      echo "          so its range cannot be graded. Rebase it onto $THEHUB_BRANCH."
+                      exit 1
+                    fi
+                    GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --deepen 50 "$REPO_URI" "$SHA" "$BASE_SHA"
+                  done
+
+                  # The gates task runs the branch's code and holds no
+                  # credential; this one holds the deploy key and runs nothing
+                  # from the branch. So the process gates' inputs are made here,
+                  # as data, and the gate logic is read out of the BASE commit's
+                  # tree: a pull request that edits scripts/lib/devb_gate.py or
+                  # deploy.sh is still judged by develop's copies.
+                  # -- process-gate inputs, begin
+                  pg=pr/.git/process-gates
+                  mkdir -p "$pg"
+                  git -C pr show "$BASE_SHA:scripts/lib/devb_gate.py" > "$pg/devb_gate.py"
+                  git -C pr show "$BASE_SHA:scripts/deploy.sh" > "$pg/deploy.sh"
+                  git -C pr diff --name-only "$MERGE_BASE" "$SHA" > "$pg/changed"
+                  git -C pr diff --name-only --diff-filter=A "$MERGE_BASE" "$SHA" > "$pg/added"
+                  git -C pr log --format=%B "$MERGE_BASE..$SHA" > "$pg/bodies"
+                  printf '%s %s %s\n' "$BASE_SHA" "$MERGE_BASE" "$SHA" > "$pg/range"
+                  # -- process-gate inputs, end
                 fi
       - task: gates
         container_limits: {cpu: 512}
@@ -2404,12 +2448,138 @@ jobs:
                   exit 0
                 fi
                 echo "Pull request #$(cat pr/.git/pr-number) at $(cat pr/.git/HEAD)"
+
+                # [TheHub #61159] deploy.sh's process gates, DEV-B (#4944) and
+                # DEV-D (#4946), on the pull request's range. #531 merged green
+                # with two new backend/services modules tested in one combined
+                # file, and the first place DEV-D saw it was prod deploy 6710.
+                #
+                # Graded the way a squash merge lands, because that is the
+                # commit deploy.sh grades: the combined diff merge-base..head,
+                # against the bodies of every branch commit (TheHub squashes
+                # with COMMIT_MESSAGES, so each body is in the squash body, and
+                # a trailer on any branch commit is a trailer on the deploy's).
+                #
+                # None of the logic is the branch's. DEV-B is develop's
+                # scripts/lib/devb_gate.py, which deploy.sh's Step 2.5 also
+                # calls, read from the base commit by `pick`. DEV-D is inline in
+                # deploy.sh, so it is ported here, and develop's deploy.sh is
+                # checked for every line the port follows: a change there turns
+                # this red rather than letting the two disagree in silence.
+                # deploy.sh's own stages are untouched and still run at deploy.
+                #
+                # Every gate runs, and the verdict counts only after the deploy
+                # gates below have run too, so one red check names every reason.
+                PROCESS_RC=0
+                python3 -I - <<'PROCESS' || PROCESS_RC=$?
+                import os, re, subprocess, sys, tempfile
+
+                pg = os.path.join("pr", ".git", "process-gates")
+
+
+                def read(name):
+                    with open(os.path.join(pg, name), encoding="utf-8", errors="replace") as fh:
+                        return fh.read()
+
+
+                try:
+                    base, merge_base, head = read("range").split()
+                    deploy_sh = read("deploy.sh")
+                    changed = [ln.strip() for ln in read("changed").splitlines() if ln.strip()]
+                    added = [ln.strip() for ln in read("added").splitlines() if ln.strip()]
+                    bodies = read("bodies").replace("\r\n", "\n")
+                except (OSError, ValueError) as exc:
+                    print(f"::error::The process gates' inputs are missing ({exc}); failing closed.")
+                    sys.exit(1)
+
+                print(f"Process gates on {merge_base[:12]}..{head[:12]} "
+                      f"({len(changed)} changed path(s)), with the gate logic of {base[:12]}")
+                failed = False
+
+                # The lines of deploy.sh's Step 2.5 this port follows, verbatim.
+                PORTED = (
+                    r'grep -qE "^Bypass-Process-Gate:"',
+                    r'DEVB_COMMIT_MESSAGE="$COMMIT_BODY"',
+                    r"python3 scripts/lib/devb_gate.py",
+                    r"git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null"
+                    r" | grep -E '^backend/(services|api)/.+\.py$'",
+                    r'grep -qE "tests/.+/test_${base}\.py$|tests/test_${base}\.py$"',
+                )
+                drift = [line for line in PORTED if line not in deploy_sh]
+                if drift:
+                    failed = True
+                    print(f"::error::deploy.sh on {base[:12]} no longer reads the way pr-gates' process")
+                    print("          gates were ported from it. Missing:")
+                    for line in drift:
+                        print(f"            {line}")
+                    print("          Bring the port in mykronos's deploy/concourse/pipelines/thehub.yml")
+                    print("          (`pr-gates`, task `gates`) up to date with deploy.sh's Step 2.5.")
+
+                # -- DEV-B: deploy.sh's backstop invocation, on the squash -------
+                env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT") if k in os.environ}
+                env.update(PYTHONUTF8="1", DEVB_COMMIT_MESSAGE=bodies)
+                with tempfile.TemporaryDirectory() as empty:
+                    try:
+                        r = subprocess.run(
+                            [sys.executable, "-I", os.path.abspath(os.path.join(pg, "devb_gate.py"))],
+                            input="\n".join(changed) + "\n", env=env, cwd=empty,
+                            capture_output=True, text=True, timeout=120)
+                        code, out = r.returncode, (r.stdout + r.stderr).strip()
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        code, out = 1, f"the gate could not run, failing closed: {exc}"
+                if code == 0:
+                    print(out or "DEV-B: no sensitive path in this pull request")
+                else:
+                    failed = True
+                    print("::error::DEV-B (#4944): this pull request touches a sensitive path and no")
+                    print("          branch commit carries a Threat-Model-MD: or Bypass-Process-Gate:")
+                    print("          trailer. deploy.sh would refuse the squash commit.")
+                    print(out)
+
+                # -- DEV-D: a new module in backend/services or backend/api ------
+                bypass = re.search(r"^Bypass-Process-Gate:[ \t]*(.*)$", bodies, re.M)
+                new_py = [f for f in added if re.search(r"^backend/(services|api)/.+\.py$", f)]
+                missing = []
+                for f in new_py:
+                    name = os.path.basename(f)[:-3]
+                    try:
+                        want = re.compile(rf"tests/.+/test_{name}\.py$|tests/test_{name}\.py$")
+                    except re.error:
+                        esc = re.escape(name)
+                        want = re.compile(rf"tests/.+/test_{esc}\.py$|tests/test_{esc}\.py$")
+                    if not any(want.search(c) for c in changed):
+                        missing.append(f"{f} has no test_{name}.py")
+                if not new_py:
+                    print("DEV-D: no new module under backend/services or backend/api")
+                elif not missing:
+                    print(f"DEV-D: {len(new_py)} new module(s), each with its test_<name>.py")
+                elif bypass:
+                    print(f"DEV-D: BYPASSED by Bypass-Process-Gate: {bypass.group(1).strip() or '(no reason given)'}")
+                    for line in missing:
+                        print(f"  {line}")
+                else:
+                    failed = True
+                    for line in missing:
+                        print(f"::error::DEV-D (#4946): {line} in this pull request")
+                    print("          deploy.sh wants a test_<name>.py, under tests/, for each new .py in")
+                    print("          backend/services or backend/api. Add one per module, or put")
+                    print("          'Bypass-Process-Gate: <reason>' on a branch commit.")
+
+                sys.exit(1 if failed else 0)
+                PROCESS
+
                 if [ ! -f pr/scripts/pr_deploy_gates.sh ]; then
                   echo "::error::This branch predates scripts/pr_deploy_gates.sh (TheHub #61102),"
                   echo "          so the deploy's gates cannot be run on it. Rebase it onto develop."
                   exit 1
                 fi
-                bash pr/scripts/pr_deploy_gates.sh --mykronos "$PWD/live-pipeline"
+                DEPLOY_RC=0
+                bash pr/scripts/pr_deploy_gates.sh --mykronos "$PWD/live-pipeline" || DEPLOY_RC=$?
+                if [ "$PROCESS_RC" -ne 0 ]; then
+                  echo "::error::deploy.sh's process gates refused this pull request (see above)."
+                  exit 1
+                fi
+                exit "$DEPLOY_RC"
       # Last, so a refused report is a failed job and the hooks above say so
       # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
       # owes no report.
