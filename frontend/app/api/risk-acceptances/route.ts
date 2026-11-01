@@ -2,7 +2,8 @@
  * Proxy for proposing a risk acceptance (TheHub #61140, spec 33).
  *
  * The proposal opens its own approval request; nothing is accepted until a
- * person independent of the requester approves it. The admin token stays on
+ * second party approves it, or, on a single-operator estate, the same person
+ * after a cooling-off interval (spec 33 section 2.3). The admin token stays on
  * this server.
  */
 

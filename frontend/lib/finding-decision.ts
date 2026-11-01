@@ -150,15 +150,19 @@ export type ScopeSource = {
 };
 
 /**
- * The narrowest scope the backend accepts for this finding. A container scope
- * names its image (D-127); a code scope names its rule and, when it has one,
- * its file, because a scope matching a whole repository is refused.
+ * The scope of a decision about this one finding. A container scope names its
+ * image (D-127) and its CVE: `match_scope` filters container findings by
+ * `rule_ids` too, and without them the proposal would cover every open
+ * finding on the image, take the worst one's severity as its floor, and be
+ * refused as a vendor dependency whenever any other one has a fix (review of
+ * #1065). A code scope names its rule and, when it has one, its file, because
+ * a scope matching a whole repository is refused.
  */
 export function defaultScope(f: ScopeSource): Record<string, unknown> {
   if (f.capability === "containers") {
     const raw = (f.raw_finding_json ?? {}) as Record<string, unknown>;
     const image = typeof raw.image === "string" ? raw.image : "";
-    return { capability: f.capability, image };
+    return { capability: f.capability, image, rule_ids: [f.rule_id] };
   }
   return {
     capability: f.capability,

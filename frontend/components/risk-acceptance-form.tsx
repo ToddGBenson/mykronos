@@ -14,7 +14,8 @@
  * shows the server's own refusal verbatim when the policy differs.
  *
  * Proposing is not accepting. The response names the approval request, and a
- * person independent of the requester has to approve it.
+ * second party has to approve it, or, on a single-operator estate, the same
+ * person after a cooling-off interval (spec 33 section 2.3).
  */
 
 import Link from "next/link";
@@ -37,12 +38,23 @@ import {
   type Level,
 } from "@/lib/finding-decision";
 
+/** A flag `risk_acceptance.propose` raised: `premise_flags()`'s `base_os_eol`,
+ *  `unverified_controls`, `toxic_combination_member`. Each carries more
+ *  fields by code; every one has a `code` and a `reason` a person can read. */
+export type ProposalFlag = { code: string; reason: string };
+
 export type Proposed = {
   risk_acceptance: { id: string; findings: number };
   approval_request_id: string;
   tier: string;
-  flags: string[];
+  flags: ProposalFlag[];
 };
+
+/** Who approves, without promising more than the engine does: a second party,
+ *  or, on a single-operator estate, the same person after a cooling-off
+ *  interval, flagged as a documented deviation (spec 33 section 2.3). */
+export const APPROVAL_NOTE =
+  "Nothing is in force until a second party approves it. On a single-operator estate that can be you, after a cooling-off interval, and the approval is recorded as a documented deviation.";
 
 /** What a person sees once the proposal is filed: what it covers, the approval
  *  request it waits on, and anything the server flagged about it. */
@@ -51,14 +63,14 @@ export function ProposedNotice({ proposed, repoId }: { proposed: Proposed; repoI
     <div className="flex flex-col gap-1.5 text-[13px]">
       <p className="text-pass">
         Proposed. It covers {proposed.risk_acceptance.findings} finding
-        {proposed.risk_acceptance.findings === 1 ? "" : "s"} and is not in force until someone
-        independent of you approves request{" "}
+        {proposed.risk_acceptance.findings === 1 ? "" : "s"} and waits on approval request{" "}
         <span className="font-mono">{proposed.approval_request_id}</span> ({proposed.tier}).
       </p>
-      {proposed.flags.length ? (
+      <p className="text-[12px] text-ink-3">{APPROVAL_NOTE}</p>
+      {proposed.flags?.length ? (
         <ul className="ml-4 list-disc text-high">
-          {proposed.flags.map((flag) => (
-            <li key={flag}>{flag}</li>
+          {proposed.flags.map((flag, i) => (
+            <li key={`${flag.code}-${i}`}>{flag.reason || flag.code}</li>
           ))}
         </ul>
       ) : null}
@@ -357,8 +369,7 @@ export function RiskAcceptanceForm({
         {busy ? "Proposing…" : "Propose the acceptance"}
       </button>
       <p className="text-[12px] text-ink-3">
-        This opens an approval request. Nothing is accepted until someone independent of you
-        approves it.
+        This opens an approval request. {APPROVAL_NOTE}
       </p>
     </form>
   );
