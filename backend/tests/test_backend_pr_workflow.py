@@ -97,3 +97,65 @@ def test_the_secret_hygiene_test_needs_only_the_standard_library() -> None:
     )
     imports = re.findall(r"^(?:from|import) (\w+)", source, re.MULTILINE)
     assert set(imports) <= {"__future__", "re", "pathlib"}, imports
+
+
+# TheHub #61011: #1014 changed .gitleaks.toml and merged while gitleaks had
+# never run against the new config. `secret-hygiene` is required, so it is
+# where gitleaks proves every allowlist entry.
+
+GITLEAKS_SHA256 = "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb"
+
+
+def _secret_hygiene_run(document: dict[str, Any]) -> str:
+    return "\n".join(str(step.get("run", "")) for step in document["jobs"]["secret-hygiene"]["steps"])
+
+
+def test_secret_hygiene_installs_the_pinned_gitleaks_by_checksum(
+    document: dict[str, Any],
+) -> None:
+    """The version the Concourse lane pins, and its bytes, not only its tag."""
+    run = _secret_hygiene_run(document)
+    assert "/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz" in run
+    assert f"{GITLEAKS_SHA256}  " in run and "sha256sum -c" in run
+    pipeline = (WORKFLOW.parents[2] / "deploy" / "concourse" / "pipelines" / "mykronos.yml").read_text(
+        encoding="utf-8"
+    )
+    assert GITLEAKS_SHA256 in pipeline, "the Concourse lane moved; move this pin with it"
+
+
+def test_secret_hygiene_proves_every_allowlist_entry_over_the_history(
+    document: dict[str, Any],
+) -> None:
+    job = document["jobs"]["secret-hygiene"]
+    checkout = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    # The fixtures an entry exists for live in history (a branch commit and its
+    # squash-merge), so a shallow clone would call a needed entry unused.
+    assert checkout.get("with", {}).get("fetch-depth") == 0
+    run = _secret_hygiene_run(document)
+    assert "scripts/check_gitleaks_allowlist.py" in run
+    assert "--config .gitleaks.toml" in run
+    assert "--mode git" in run
+
+
+def test_secret_hygiene_runs_the_allowlist_check_tests_against_real_gitleaks(
+    document: dict[str, Any],
+) -> None:
+    run = _secret_hygiene_run(document)
+    assert "tests/test_gitleaks_allowlist_check.py" in run
+    # Set, so the real-gitleaks tests fail rather than skip if the install broke.
+    assert "MYKRONOS_REQUIRE_GITLEAKS=1" in run
+
+
+def test_the_allowlist_check_tests_need_only_the_standard_library() -> None:
+    source = (Path(__file__).parent / "test_gitleaks_allowlist_check.py").read_text(
+        encoding="utf-8"
+    )
+    imports = set(re.findall(r"^(?:from|import) (\w+)", source, re.MULTILINE))
+    assert imports <= {
+        "__future__", "importlib", "os", "shutil", "subprocess", "sys", "tomllib", "pathlib", "pytest",
+    }, imports
+    script = (WORKFLOW.parents[2] / "scripts" / "check_gitleaks_allowlist.py").read_text(
+        encoding="utf-8"
+    )
+    imports = set(re.findall(r"^(?:from|import) (\w+)", script, re.MULTILINE))
+    assert "pytest" not in imports and "mykronos" not in imports, imports
