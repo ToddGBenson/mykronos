@@ -8026,6 +8026,16 @@ export interface components {
              */
             source_note?: string | null;
             /**
+             * Source Stale
+             * @description The stale-source flag (TheHub #60921): true when a manifest the committed SBOM document covers was committed after the document's date, false when none was, null for other findings and when it could not be told. Filled on the detail and record routes only.
+             */
+            source_stale?: boolean | null;
+            /**
+             * Source Observations
+             * @description For a finding read out of a committed SBOM document: what the platform has observed about what runs, beside it (TheHub #60921) - the deployment probe's revision and container scans naming the same package. Empty when nothing was observed, and for other findings. Filled on the detail and record routes only.
+             */
+            source_observations?: components["schemas"]["SourceObservationOut"][];
+            /**
              * Address
              * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.
              */
@@ -12290,6 +12300,32 @@ export interface components {
              */
             reason: string;
         };
+        /**
+         * SourceObservationOut
+         * @description One observation of what runs, beside a finding read out of a committed
+         *     SBOM document (TheHub #60921).
+         */
+        SourceObservationOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "deployment_probe" | "image_scan";
+            /** Summary */
+            summary: string;
+            /** Observed At */
+            observed_at?: string | null;
+            /** Revision */
+            revision?: string | null;
+            /** Matches Scan */
+            matches_scan?: boolean | null;
+            /** Image */
+            image?: string | null;
+            /** Package Version */
+            package_version?: string | null;
+            /** Status */
+            status?: string | null;
+        };
         /** SprintProgressOut */
         SprintProgressOut: {
             /** Done */
@@ -13171,6 +13207,11 @@ export interface components {
              * @description For an atlas finding read out of a committed SBOM document: its date, its age at the scan and whether the manifests changed after it (TheHub #60921). Null otherwise.
              */
             source_note?: string | null;
+            /**
+             * Source Stale
+             * @description The stale-source flag (TheHub #60921): true when a manifest the committed SBOM document covers was committed after the document's date. Null for other findings and when it could not be told.
+             */
+            source_stale?: boolean | null;
             /**
              * Address
              * @description A network finding's host or IP (spec 14 §5). Null for anything with a file.

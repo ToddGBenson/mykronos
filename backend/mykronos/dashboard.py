@@ -2299,6 +2299,9 @@ class DashboardQueries:
             decision = decisions.get(repo)
             record["repo_recommendation"] = str(decision[1]) if decision else None
             record["asset"] = asset_label(record.get("address"), record.get("port"))
+            record["source_stale"] = atlas_source.stale(
+                record.get("source_kind"), record.get("source_document")
+            )
             record["source_note"] = atlas_source.note(
                 record.get("source_kind"), record.pop("source_document", None)
             )
@@ -3421,6 +3424,9 @@ class DashboardQueries:
             return None
         record = dict(zip(columns, rows[0], strict=True))
         record["asset"] = asset_label(record.get("address"), record.get("port"))
+        record["source_stale"] = atlas_source.stale(
+            record.get("source_kind"), record.get("source_document")
+        )
         record["source_note"] = atlas_source.note(
             record.get("source_kind"), record.pop("source_document", None)
         )
