@@ -208,10 +208,12 @@ class TestTheJob:
 DAY = 86400
 
 
-def _canary(real_now: float, *, workers: int, in_worker: str) -> subprocess.CompletedProcess:
+def _canary(
+    real_now: float | None, *, workers: int, in_worker: str
+) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
     env.update(
-        TIME_TRAVEL_REAL_NOW=str(int(real_now)),
+        TIME_TRAVEL_REAL_NOW="" if real_now is None else str(int(real_now)),
         TIME_TRAVEL_OFFSET="+45d",
         TIME_TRAVEL_CANARY_IN_WORKER=in_worker,
     )
@@ -248,6 +250,18 @@ class TestTheCanary:
         result = _canary(time.time() - 46 * DAY, workers=0, in_worker="1")
         assert result.returncode == 1, result.stdout
         assert "asked for an xdist worker" in result.stdout
+
+    @pytest.mark.parametrize(("workers", "in_worker"), [(0, "0"), (2, "1")])
+    def test_it_fails_rather_than_skips_when_the_job_lost_the_real_epoch(
+        self, workers: int, in_worker: str
+    ) -> None:
+        # Re-review of #1056: a skipped canary is pytest exit 0, so an edit
+        # that dropped or moved the export would make the canary pass on
+        # nothing. Asked to run (IN_WORKER set) without an epoch, it fails.
+        result = _canary(None, workers=workers, in_worker=in_worker)
+        assert result.returncode == 1, result.stdout
+        assert "skipped" not in result.stdout
+        assert "TIME_TRAVEL_REAL_NOW is empty" in result.stdout
 
 
 # ---------------------------------------------------------------------------
