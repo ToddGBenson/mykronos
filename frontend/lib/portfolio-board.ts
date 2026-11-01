@@ -28,7 +28,7 @@ export const BOARD_CAPABILITIES = [
   { capability: "sast", short: "SAST", label: "Static analysis (SAST)" },
   { capability: "secrets", short: "Secrets", label: "Secret scanning" },
   { capability: "atlas", short: "SCA", label: "Dependencies (SCA)" },
-  { capability: "containers", short: "Container", label: "Container scanning" },
+  { capability: "containers", short: "Image", label: "Container scanning" },
   { capability: "iac", short: "IaC", label: "Infrastructure as code" },
   { capability: "functional", short: "Func", label: "Functional tests" },
   { capability: "dast", short: "DAST", label: "Dynamic analysis (DAST)" },
