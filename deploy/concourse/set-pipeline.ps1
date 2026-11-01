@@ -133,6 +133,9 @@ $fallbacks = [ordered]@{
     "mykronos-gate-token"      = { Read-EnvValue $backendEnv "MYKRONOS_GATE_TOKEN" }
     "minio-access-key"         = { Read-EnvValue $stackEnv "MINIO_ROOT_USER" }
     "minio-secret-key"         = { Read-EnvValue $stackEnv "MINIO_ROOT_PASSWORD" }
+    # TheHub #61109: the token `time-travel` files its Hub story with. The
+    # backend's own Hub token, which already files briefing-signal stories.
+    "hub-story-token"          = { Read-EnvValue $backendEnv "MYKRONOS_HUB_API_TOKEN" }
 }
 
 $fromVault = @()
@@ -242,6 +245,13 @@ try {
         # reference and never fires. Same value and same name as
         # set-thehub-pipeline.ps1 and set-personal-soc-pipeline.ps1 use.
         "scan-timezone: America/Phoenix",
+        # How far forward the nightly `time-travel` job moves the clock
+        # (TheHub #61109). Longer than NVD_RETRY_DAYS (30), the window behind
+        # #1034's bomb; it reaches only windows shorter than itself.
+        "time-travel-offset: +45d",
+        # Where `time-travel` files its story; the same value
+        # set-thehub-pipeline.ps1 gives thehub's `thehub-url`.
+        "thehub-url: http://192.168.65.254:8000",
         # MinIO is on the compose network, so the task container reaches it by
         # service name rather than through the host.
         "minio-endpoint: http://192.168.65.254:9000",
