@@ -115,6 +115,33 @@ class TestClaims:
         )
         assert d.check(root).claims_checked == 0
 
+    def test_a_numbered_prefix_names_the_numbered_document(self, tmp_path: Path) -> None:
+        # keel's docs say "`docs/09`" for docs/09-retrospective-and-improvement.md.
+        root = _repo(tmp_path, {"README.md": "`docs/09` and `docs/12`", "docs/09-retro.md": "x"})
+        assert [x.claim for x in d.check(root).drift] == ["docs/12"]
+
+    def test_an_action_ref_is_not_a_path(self, tmp_path: Path) -> None:
+        root = _repo(tmp_path, {"README.md": "`actions/checkout@v4`", "actions/a.yml": ""})
+        assert d.check(root).claims_checked == 0
+
+    def test_a_gitignored_runtime_file_is_not_drift(self, tmp_path: Path) -> None:
+        # `backend/.env` is named by every operator doc and is never committed.
+        root = _repo(
+            tmp_path,
+            {".gitignore": ".env\n*.jsonl\n", "README.md": "Set it in `backend/.env` and `deploy/log.jsonl`.",
+             "backend/app.py": "", "deploy/x": ""},
+        )
+        assert d.check(root).drift == []
+
+    def test_backlog_decision_log_and_changelog_are_records(self, tmp_path: Path) -> None:
+        root = _repo(
+            tmp_path,
+            {"docs/BACKLOG.md": "x", "docs/DECISIONS.md": "x", "CHANGELOG.md": "x", "docs/GUIDE.md": "x"},
+        )
+        living, records = d.documents(root)
+        assert [p.name for p in living] == ["GUIDE.md"]
+        assert sorted(p.name for p in records) == ["BACKLOG.md", "DECISIONS.md"]
+
     def test_the_line_number_is_reported(self, tmp_path: Path) -> None:
         root = _repo(tmp_path, {"README.md": "one\ntwo\n[x](missing.md)\n", "docs/a.md": "x"})
         (item,) = d.check(root).drift
