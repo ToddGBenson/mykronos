@@ -217,3 +217,33 @@ class TestDecideAnyRequest:
         )
         assert response.status_code == 403
         assert audit_entries(client, "po.approval_decision") == []
+
+    def test_an_agent_cannot_decide_even_its_own_request(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        """The console's decisions are the operator's (spec 35 §8.8). An agent
+        decides through the approvals API, where independence is enforced;
+        here it is refused outright, including on a request it raised."""
+        minted = client.post(
+            "/api/agents/credentials",
+            json={"family": "claude-opus-5.5", "purpose": "packet-decide"},
+            headers=admin_auth,
+        )
+        assert minted.status_code == 201, minted.text
+        agent = {"Authorization": f"Bearer {minted.json()['token']}"}
+        actor = client.get("/api/agents/whoami", headers=agent).json()["actor"]
+        request_id, digest = pr_request(client, repo="example-org/other")
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            session.get(ApprovalRequest, request_id).requested_by = actor
+        for verdict in ("approve", "reject"):
+            response = client.post(
+                DECIDE.format(request_id),
+                json={"verdict": verdict, "rationale": RATIONALE, "evidence_digest": digest},
+                headers=agent,
+            )
+            assert response.status_code == 403, response.text
+            assert "requires the 'admin' role" in response.json()["detail"]
+        assert audit_entries(client, "po.approval_decision") == []
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            assert session.get(ApprovalRequest, request_id).state == "pending"
+            assert session.query(ApprovalDecision).count() == 0
