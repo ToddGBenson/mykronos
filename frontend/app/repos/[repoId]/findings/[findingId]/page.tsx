@@ -126,6 +126,7 @@ export default async function FindingRecordPage({
             scope: defaultScope(finding),
             noFixPublished: Boolean(pkg && !pkg.fixable),
             controls,
+            findingSeverity: finding.severity,
           }}
         />
       </aside>

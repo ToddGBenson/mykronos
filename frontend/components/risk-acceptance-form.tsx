@@ -27,6 +27,7 @@ import {
   LEVEL_LABEL,
   SIMPLE_PREMISES,
   buildProposal,
+  effectiveResidual,
   interimReviewOwed,
   maxDurationDays,
   proposalProblems,
@@ -58,11 +59,15 @@ export function RiskAcceptanceForm({
   scope,
   noFixPublished,
   controls,
+  findingSeverity,
 }: {
   repo: string;
   repoId: string;
   scope: Record<string, unknown>;
   noFixPublished: boolean;
+  /** The finding's own severity: the residual's floor unless the reason is a
+   *  risk adjustment, as on the server. */
+  findingSeverity?: string;
   controls: { control_id: string; description: string; kind: string }[];
 }) {
   const [draft, setDraft] = useState<AcceptanceDraft>(() => ({
@@ -79,6 +84,7 @@ export function RiskAcceptanceForm({
     milestone_title: noFixPublished ? "Apply the fix within 30 days of its release" : "",
     milestone_due: isoDay(30),
     response: "accept",
+    finding_severity: findingSeverity,
   }));
   const [today] = useState(() => isoDay(0));
   const [tried, setTried] = useState(false);
@@ -96,7 +102,8 @@ export function RiskAcceptanceForm({
         : [...d.premises, type],
     }));
 
-  const residual = residualSeverity(draft.residual_likelihood, draft.residual_impact);
+  const matrix = residualSeverity(draft.residual_likelihood, draft.residual_impact);
+  const residual = effectiveResidual(draft);
   const problems = proposalProblems(draft, today);
   const interim = interimReviewOwed(
     draft.deviation_type,
@@ -226,6 +233,12 @@ export function RiskAcceptanceForm({
         </label>
         <p className="self-end pb-2 text-[13px] text-ink-2">
           Residual <strong>{residual}</strong>: at most {maxDurationDays(residual)} days.
+          {residual !== matrix ? (
+            <span className="block text-[12px] text-ink-3">
+              Not {matrix}: only a risk adjustment can go below the finding&apos;s own
+              severity.
+            </span>
+          ) : null}
         </p>
       </div>
 

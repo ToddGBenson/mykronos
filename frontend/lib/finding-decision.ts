@@ -95,6 +95,32 @@ export function residualSeverity(likelihood: Level, impact: Level): string {
   return "critical";
 }
 
+const SEVERITIES = ["low", "medium", "high", "critical"] as const;
+
+/**
+ * The residual the server governs by, as far as the form can know it.
+ * `risk_acceptance.propose` floors every deviation but a risk adjustment at
+ * the worst covered finding's own severity: waiting on a vendor, or needing
+ * the thing to run, says nothing about how bad it is. The form knows this
+ * finding's severity; a wider scope, an unverified control or a combination
+ * can floor it further, and the server says so when it does.
+ */
+export function effectiveResidual(
+  d: Pick<
+    AcceptanceDraft,
+    "deviation_type" | "residual_likelihood" | "residual_impact" | "finding_severity"
+  >,
+): string {
+  const matrix = residualSeverity(d.residual_likelihood, d.residual_impact);
+  const floor = (d.finding_severity ?? "").toLowerCase();
+  if (d.deviation_type === "risk_adjustment" || !SEVERITIES.includes(floor as never)) {
+    return matrix;
+  }
+  return SEVERITIES.indexOf(floor as never) > SEVERITIES.indexOf(matrix as never)
+    ? floor
+    : matrix;
+}
+
 export function maxDurationDays(residual: string): number {
   return MAX_DAYS[residual] ?? 30;
 }
@@ -160,6 +186,9 @@ export type AcceptanceDraft = {
   milestone_title: string;
   milestone_due: string;
   response: "accept" | "transfer";
+  /** This finding's own severity, the floor `effectiveResidual` applies.
+   *  Never sent: the server reads the covered findings from the lake. */
+  finding_severity?: string;
 };
 
 function addDays(isoDate: string, days: number): string {
@@ -171,14 +200,14 @@ function addDays(isoDate: string, days: number): string {
 /** What stops the draft from being proposed, in the order the form asks. */
 export function proposalProblems(d: AcceptanceDraft, today: string): string[] {
   const problems: string[] = [];
-  const residual = residualSeverity(d.residual_likelihood, d.residual_impact);
+  const residual = effectiveResidual(d);
   if (!d.justification.trim()) problems.push("Give the reason this risk is acceptable.");
   if (
     d.deviation_type === "operational_requirement" &&
     residual === "critical"
   ) {
     problems.push(
-      "A critical residual risk cannot be an operational requirement: that is an architecture conversation.",
+      "A critical residual risk cannot be an operational requirement: that is a conversation about the architecture, not an acceptance.",
     );
   }
   if (d.deviation_type === "risk_adjustment" && d.premises.length === 0) {
