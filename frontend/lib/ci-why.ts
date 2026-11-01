@@ -10,6 +10,8 @@ import type { CiJob } from "@/lib/api";
 
 export type CiWhy = NonNullable<CiJob["why"]>;
 
+export type CiRecent = NonNullable<CiJob["recent"]>;
+
 export type WhyLines = {
   /** "Step `scan` exited 2", or "reason unavailable: …". */
   headline: string;
@@ -45,6 +47,17 @@ export function whyLines(why: CiWhy): WhyLines {
     url: why.url ?? null,
     source,
   };
+}
+
+/**
+ * The recent record printed beside the reason: "3 of last 10 failed", read
+ * from the job's own finished builds. A first red build and a tenth in a row
+ * call for different responses, and the reason alone cannot tell them apart.
+ */
+export function recentLine(recent: CiRecent | null | undefined): string | null {
+  if (!recent) return null;
+  if (recent.unavailable) return `recent record unavailable: ${recent.unavailable}`;
+  return `${recent.failed} of last ${recent.of} failed`;
 }
 
 /** The failing jobs that carry a reason, in the order the page lists jobs. */

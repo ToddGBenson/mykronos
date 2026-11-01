@@ -5735,6 +5735,8 @@ export interface components {
             finished_at?: string | null;
             /** @description Why this job's last build failed, for a job whose status is failed; null for every other job (TheHub #60913). */
             why?: components["schemas"]["CiFailureWhyOut"] | null;
+            /** @description For a failed job, how many of its last ten finished builds failed, read from the CI's build list; null for every other job (TheHub #60913). */
+            recent?: components["schemas"]["CiRecentRecordOut"] | null;
         };
         /**
          * CiLaneOut
@@ -5792,6 +5794,35 @@ export interface components {
              * @description Each configured gating lane the red-main poll last recorded red on main, with when it went red and the first failing commit. Empty when none is red or none is configured for this repository.
              */
             red_gating_lanes?: components["schemas"]["RedGatingLaneOut"][];
+        };
+        /**
+         * CiRecentRecordOut
+         * @description How many of a failing job's last finished builds failed (TheHub #60913).
+         */
+        CiRecentRecordOut: {
+            /**
+             * Failed
+             * @description Builds among the counted ones that failed or errored.
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Of
+             * @description Finished builds counted, newest first: `window`, or fewer if the job has fewer.
+             * @default 0
+             */
+            of: number;
+            /**
+             * Window
+             * @description The most builds counted.
+             * @default 10
+             */
+            window: number;
+            /**
+             * Unavailable
+             * @description Why the build list could not be read, when it could not; shown as 'recent record unavailable: <this>'.
+             */
+            unavailable?: string | null;
         };
         /** CiReportingOut */
         CiReportingOut: {

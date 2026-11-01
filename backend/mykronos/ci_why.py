@@ -32,6 +32,12 @@ cached by build id (`WhyCache`, successes only). Each read has a short
 timeout, the Concourse stream stops at a byte and a line cap, and at most
 `MAX_EXPLAINED` failing jobs are looked up per request, concurrently.
 
+**The recent record beside it.** A reason says what broke this time; it does
+not say whether this is the first red build in weeks or the tenth in a row.
+`recent_records` counts how many of the job's last `RECENT_WINDOW` finished
+builds failed, from the CI's build list only (Concourse's `/builds`, the
+workflow's `/runs`): statuses and ids, never events or logs.
+
 **Degrades, never raises.** Every failure becomes a `FailureWhy` with
 `unavailable` saying why, which the page renders as "reason unavailable: ...".
 """
@@ -49,7 +55,7 @@ from dataclasses import dataclass, replace
 
 import httpx2
 
-from mykronos.ci import JobStatus
+from mykronos.ci import ConcourseClient, JobStatus, status_from_conclusion
 from mykronos.github.client import CheckAnnotation, GitHubClient, WorkflowJob
 from mykronos.logsafe import scrub
 
@@ -567,4 +573,165 @@ async def explain_failures(
     for (job, key), why in zip(pending, results, strict=True):
         cache.put(key, why)
         out[job.name] = why
+    return out
+
+
+# --- The recent record --------------------------------------------------
+
+#: How many of a job's most recent finished builds its record counts.
+RECENT_WINDOW = 10
+
+#: Builds asked for per job: more than the window, because a Concourse build
+#: list starts with any build still running, and those have no outcome yet.
+RECENT_FETCH = RECENT_WINDOW + 5
+
+#: Statuses that are a finished build. `skipped` is not: a skipped Actions
+#: run never executed, so it neither passed nor failed.
+_FINISHED = frozenset({"succeeded", "failed", "errored", "aborted"})
+
+#: Statuses counted as failed. `errored` is a build that could not complete,
+#: which is red on every page that shows it; `aborted` is somebody stopping it.
+_RED = frozenset({"failed", "errored"})
+
+#: A workflow file name as GitHub lists it: never a path, never a query.
+_WORKFLOW_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$")
+
+
+@dataclass(frozen=True)
+class RecentRecord:
+    """How many of a job's last finished builds failed (TheHub #60913)."""
+
+    #: Builds among the counted ones that failed or errored.
+    failed: int = 0
+    #: Finished builds counted: `window` or fewer, if the job has fewer.
+    of: int = 0
+    window: int = RECENT_WINDOW
+    #: Set when the build list could not be read; the page prefixes
+    #: "recent record unavailable".
+    unavailable: str | None = None
+
+
+def record_from_statuses(statuses: Iterable[str | None]) -> RecentRecord:
+    """Count the failures among the newest `RECENT_WINDOW` finished builds.
+
+    `statuses` is newest first, in the platform's status vocabulary.
+    """
+    finished = [s for s in statuses if s in _FINISHED][:RECENT_WINDOW]
+    if not finished:
+        return RecentRecord(unavailable="the CI listed no finished build for this job")
+    return RecentRecord(failed=sum(1 for s in finished if s in _RED), of=len(finished))
+
+
+class RecordCache:
+    """Records by a job's latest finished build, successes only.
+
+    A record is the window of finished builds ending at the latest one, so it
+    cannot change until a newer build finishes, and a newer build is a new
+    key. Successes only, for `WhyCache`'s reason.
+    """
+
+    def __init__(self, limit: int = 512) -> None:
+        self.limit = limit
+        self._entries: OrderedDict[tuple[str, str, str, str], RecentRecord] = OrderedDict()
+
+    def get(self, key: tuple[str, str, str, str]) -> RecentRecord | None:
+        value = self._entries.get(key)
+        if value is not None:
+            self._entries.move_to_end(key)
+        return value
+
+    def put(self, key: tuple[str, str, str, str], value: RecentRecord) -> None:
+        if value.unavailable is not None:
+            return
+        self._entries[key] = value
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.limit:
+            self._entries.popitem(last=False)
+
+
+def concourse_record(concourse: ConcourseClient, pipeline: str, job: str) -> RecentRecord:
+    """One Concourse job's record, from its build list. Never raises."""
+    builds = concourse.job_builds(pipeline, job, limit=RECENT_FETCH)
+    if builds is None:
+        return RecentRecord(unavailable="Concourse did not return this job's builds")
+    return record_from_statuses(
+        str(b["status"]) if isinstance(b.get("status"), str) else None for b in builds
+    )
+
+
+async def github_record(
+    github: GitHubClient, repo_full_name: str, workflow_file: str
+) -> RecentRecord:
+    """One workflow's record, from its completed runs. Never raises."""
+    try:
+        runs = await asyncio.wait_for(
+            github.workflow_runs(repo_full_name, workflow_file, limit=RECENT_WINDOW),
+            timeout=GITHUB_DEADLINE,
+        )
+    except Exception as exc:  # noqa: BLE001 - degrades, never raises
+        logger.warning(
+            "Runs read for %s %s failed: %s",
+            scrub(repo_full_name),
+            scrub(workflow_file),
+            scrub(str(exc) or type(exc).__name__),
+        )
+        return RecentRecord(unavailable="GitHub did not return this workflow's runs")
+    return record_from_statuses(status_from_conclusion(run.conclusion) for run in runs)
+
+
+async def recent_records(
+    repo_full_name: str,
+    jobs: list[JobStatus],
+    *,
+    source: str,
+    cache: RecordCache,
+    pipeline: str | None = None,
+    concourse: ConcourseClient | None = None,
+    github: GitHubClient | None = None,
+) -> dict[str, RecentRecord]:
+    """A recent record for each failed job, keyed by job name.
+
+    Bounded as `explain_failures` is: at most `MAX_EXPLAINED` lookups per
+    request, concurrently, each cached by the job's latest build.
+    """
+    failed = [job for job in jobs if job.status == "failed"]
+    out: dict[str, RecentRecord] = {}
+    pending: list[tuple[JobStatus, tuple[str, str, str, str]]] = []
+
+    for index, job in enumerate(failed):
+        if index >= MAX_EXPLAINED:
+            out[job.name] = RecentRecord(
+                unavailable=(
+                    f"not looked up: only the first {MAX_EXPLAINED} failing jobs "
+                    "are counted per request"
+                )
+            )
+            continue
+        key = (source, repo_full_name, job.name, job.build_id or job.build_name or "")
+        cached = cache.get(key) if key[3] else None
+        if cached is not None:
+            out[job.name] = cached
+            continue
+        pending.append((job, key))
+
+    async def one(job: JobStatus) -> RecentRecord:
+        if source == "github":
+            if github is None:
+                return RecentRecord(
+                    unavailable="no GitHub App installation to read this workflow with"
+                )
+            if not _WORKFLOW_FILE.match(job.workflow_file):
+                return RecentRecord(unavailable="GitHub gave no workflow file for this lane")
+            return await github_record(github, repo_full_name, job.workflow_file)
+        if concourse is None or not concourse.configured:
+            return RecentRecord(unavailable="no Concourse is configured for this deployment")
+        if not pipeline:
+            return RecentRecord(unavailable="Concourse named no pipeline for this job")
+        return await asyncio.to_thread(concourse_record, concourse, pipeline, job.name)
+
+    results = await asyncio.gather(*(one(job) for job, _key in pending))
+    for (job, key), record in zip(pending, results, strict=True):
+        if key[3]:
+            cache.put(key, record)
+        out[job.name] = record
     return out

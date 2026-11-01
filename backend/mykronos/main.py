@@ -75,7 +75,7 @@ from mykronos.approvals import sampling as approval_sampling
 from mykronos.approvals.policy import PolicyError as ApprovalPolicyError
 from mykronos.approvals.policy import cached_policy as cached_approval_policy
 from mykronos.ci import ConcourseClient, StatusCache
-from mykronos.ci_why import WhyCache
+from mykronos.ci_why import RecordCache, WhyCache
 from mykronos.config import Settings, get_settings
 from mykronos.db import Database
 from mykronos.db.models import JobRun
@@ -444,6 +444,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Failure reasons by build id (TheHub #60913). A finished build's reason
     # cannot change, so this has no TTL, only a size bound.
     app.state.ci_why_cache = WhyCache()
+    # Each failing job's recent record, by its latest build: the window
+    # ending at a finished build cannot change until a newer one finishes.
+    app.state.ci_record_cache = RecordCache()
     # Loaded once at startup and held: spec 09 §10 requires an evaluation
     # to use whichever version was active when it began, so the file
     # changing under a running request must not change its result.
