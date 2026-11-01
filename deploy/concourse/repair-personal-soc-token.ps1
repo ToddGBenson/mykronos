@@ -137,7 +137,11 @@ Write-Ok "Rotated. The previous token stays valid for the overlap window."
 Write-Step "Delivering to both readers..."
 
 # Reader 1: the GitHub Actions secret.
-$token | gh secret set $SecretName --repo $Repo --body -
+# No --body: gh reads the value from stdin only when --body is absent.
+# `--body -` stored the literal one-character secret `-` and reported
+# success; binnacle's uploads all 401'd on it (TheHub #61209). Stdin, not
+# argv, keeps the token off the command line (mykronos #817).
+$token | gh secret set $SecretName --repo $Repo
 if ($LASTEXITCODE -ne 0) {
     throw ("Rotated, but the GitHub secret write FAILED. The previous token " +
            "is still valid for the overlap window - re-run this script.")
