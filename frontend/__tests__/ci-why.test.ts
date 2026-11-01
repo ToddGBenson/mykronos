@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { failuresWithWhy, whyLines, type CiWhy } from "@/lib/ci-why";
+import { failuresWithWhy, recentLine, whyLines, type CiRecent, type CiWhy } from "@/lib/ci-why";
 import type { CiJob } from "@/lib/api";
 
 const why = (over: Partial<CiWhy>): CiWhy => ({
@@ -69,5 +69,34 @@ describe("failuresWithWhy", () => {
     ] as CiJob[];
 
     expect(failuresWithWhy(jobs).map((j) => j.name)).toEqual(["sast"]);
+  });
+});
+
+describe("recentLine", () => {
+  const recent = (over: Partial<CiRecent>): CiRecent => ({
+    failed: 0,
+    of: 0,
+    window: 10,
+    unavailable: null,
+    ...over,
+  });
+
+  it("says how many of the last ten builds failed", () => {
+    expect(recentLine(recent({ failed: 3, of: 10 }))).toBe("3 of last 10 failed");
+  });
+
+  it("counts against the builds there are when there are fewer than ten", () => {
+    expect(recentLine(recent({ failed: 1, of: 1 }))).toBe("1 of last 1 failed");
+  });
+
+  it("degrades to record unavailable with the reason", () => {
+    expect(recentLine(recent({ unavailable: "Concourse did not return this job's builds" }))).toBe(
+      "recent record unavailable: Concourse did not return this job's builds",
+    );
+  });
+
+  it("prints nothing for a job with no record", () => {
+    expect(recentLine(null)).toBeNull();
+    expect(recentLine(undefined)).toBeNull();
   });
 });
