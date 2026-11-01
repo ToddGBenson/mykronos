@@ -172,6 +172,14 @@ class TestMerge:
         [b] = self.merge([pr(mergeable=None)]).items
         assert a.state == rs.UNKNOWN and b.state == rs.UNKNOWN
 
+    def test_no_check_reported_yet_waits_on_ci_never_ready(self) -> None:
+        # Start-Here skips a PR with no checks at all (`$checks.Count -eq 0`):
+        # nothing has judged it yet, so it is not offered.
+        [item] = self.merge([pr(checks=ChecksSummary(total=0))]).items
+        assert item.state == rs.WAITING
+        assert item.reason == "no check has reported on it yet"
+        assert item.owner == rs.OWNER_CI
+
     def test_a_stacked_pull_request_waits(self) -> None:
         [item] = self.merge([pr(base_branch="feature")]).items
         assert item.state == rs.WAITING and item.reason == "stacked on feature; it merges after"
