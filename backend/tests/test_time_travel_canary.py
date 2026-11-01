@@ -31,10 +31,24 @@ import pytest
 
 REAL_NOW = os.environ.get("TIME_TRAVEL_REAL_NOW", "")
 OFFSET = os.environ.get("TIME_TRAVEL_OFFSET", "")
+# Set only by the job's two canary runs. When it is set, the canary must run:
+# a skip is pytest exit 0, so an edit that dropped or moved the REAL_NOW
+# export would otherwise make the canary pass on nothing.
+ASKED = os.environ.get("TIME_TRAVEL_CANARY_IN_WORKER", "")
 
 pytestmark = pytest.mark.skipif(
-    not REAL_NOW, reason="the time-travel canary runs only inside the time-travel job"
+    not REAL_NOW and not ASKED,
+    reason="the time-travel canary runs only inside the time-travel job",
 )
+
+
+@pytest.fixture(autouse=True)
+def _the_real_epoch_was_given() -> None:
+    assert REAL_NOW, (
+        "TIME_TRAVEL_REAL_NOW is empty but the job asked for the canary "
+        "(TIME_TRAVEL_CANARY_IN_WORKER is set): with no real epoch there is "
+        "nothing to compare the clock against"
+    )
 
 # An hour short of the full offset still proves the move: an unshifted clock
 # is days short, and the hour absorbs any rounding in how the offset is applied.
