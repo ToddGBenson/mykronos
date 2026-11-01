@@ -1,57 +1,123 @@
 import Link from "next/link";
 
-import { getPortfolio } from "@/lib/server";
+import { getBoardCounts, getPortfolio } from "@/lib/server";
 import {
-  CapabilityGrid,
-  CapabilityGridHeader,
-  CapabilityLegend,
-  Crumb,
-  EmptyState,
-  ErrorPanel,
-  Pill,
-  RelativeTime,
-  ScoreMeter,
-  StatTile,
-  Verdict,
-} from "@/components/primitives";
+  buildBoard,
+  severityLine,
+  TILE_ORDER,
+  TILE_WORD,
+  type BoardCounts,
+  type BoardSort,
+} from "@/lib/portfolio-board";
+import { EmptyState, ErrorPanel, Pill, StatTile, Verdict } from "@/components/primitives";
+import { BoardLegend, BoardTile } from "@/components/portfolio-board";
 import { ProdLag } from "@/components/prod-lag";
 
 export const dynamic = "force-dynamic";
 
+type Params = { removed?: string; sort?: string; benchmark?: string };
+
+/** The link for these view settings, with `patch` applied. */
+function viewHref(params: Params, patch: Partial<Params>): string {
+  const merged = { ...params, ...patch };
+  const query = new URLSearchParams();
+  if (merged.sort === "az") query.set("sort", "az");
+  if (merged.benchmark === "1") query.set("benchmark", "1");
+  if (merged.removed === "1") query.set("removed", "1");
+  const qs = query.toString();
+  return qs ? `/?${qs}` : "/";
+}
+
+const TOGGLE =
+  "inline-flex min-h-11 items-center border px-3 font-mono text-[12px] sm:min-h-9";
+
+/**
+ * Portfolio: a status board (TheHub #61138, design v2 P4 and P6).
+ *
+ * Each product is a band of twelve tiles, one per capability or lane, and a
+ * band with problems sorts first. It replaces the table of 15px capability
+ * cells, which had to be hovered one by one to be read. The repository page
+ * still has all fifteen capabilities and the full row of numbers.
+ */
 export default async function PortfolioPage({
   searchParams,
 }: {
-  searchParams: Promise<{ removed?: string }>;
+  searchParams: Promise<Params>;
 }) {
   const params = await searchParams;
   const includeRemoved = params.removed === "1";
+  const showBenchmark = params.benchmark === "1";
+  const sort: BoardSort = params.sort === "az" ? "az" : "problems";
   const result = await getPortfolio(includeRemoved);
 
   if (!result.ok) {
     return <ErrorPanel title="Portfolio unavailable" detail={result.error} />;
   }
 
-  const { summary, repos } = result.data;
+  const { summary, repos: all } = result.data;
+  const benchmarks = all.filter((repo) => repo.synthetic).length;
+  const shown = showBenchmark ? all : all.filter((repo) => !repo.synthetic);
+
+  // Two reads per repository, side by side. A failure leaves that band's
+  // tiles on their run state alone, and the page says so.
+  const fetched = await Promise.all(shown.map((repo) => getBoardCounts(repo.repo_id)));
+  const counts: Record<string, BoardCounts | null> = {};
+  let countsMissing = 0;
+  shown.forEach((repo, i) => {
+    const got = fetched[i];
+    counts[repo.repo_id] = got?.ok ? got.data : null;
+    if (!got?.ok) countsMissing += 1;
+  });
+
+  const { now, bands, summary: board } = buildBoard(shown, sort, counts);
+  const summaryLine = TILE_ORDER.filter((state) => state !== "healthy" && board[state] > 0)
+    .map((state) => `${board[state]} ${TILE_WORD[state]}`)
+    .join(" · ");
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-xl font-bold tracking-tight">Portfolio</h1>
-        <span className="font-mono text-[13px] text-ink-3">
-          {summary.active_repos} active
-          {repos.length !== summary.active_repos
-            ? ` · ${repos.length - summary.active_repos} other`
-            : ""}
-        </span>
-        <Link
-          href={includeRemoved ? "/" : "/?removed=1"}
-          className="ml-auto border border-rule px-2 py-1 font-mono text-[12px] text-ink-3 hover:border-accent hover:text-accent"
-        >
-          {includeRemoved ? "hide removed" : "include removed"}
-        </Link>
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="font-bold tracking-tight">Portfolio</h1>
+          <span className="font-mono text-[13px] text-ink-2">
+            {summaryLine || `${bands.length} products, every tile healthy`}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex" role="group" aria-label="Sort">
+            <Link
+              href={viewHref(params, { sort: undefined })}
+              aria-current={sort === "problems" ? "true" : undefined}
+              className={`${TOGGLE} ${sort === "problems" ? "border-accent bg-accent-wash text-ink" : "border-rule text-ink-3 hover:text-accent"}`}
+            >
+              Problems first
+            </Link>
+            <Link
+              href={viewHref(params, { sort: "az" })}
+              aria-current={sort === "az" ? "true" : undefined}
+              className={`${TOGGLE} -ml-px ${sort === "az" ? "border-accent bg-accent-wash text-ink" : "border-rule text-ink-3 hover:text-accent"}`}
+            >
+              A–Z
+            </Link>
+          </span>
+          {benchmarks ? (
+            <Link
+              href={viewHref(params, { benchmark: showBenchmark ? undefined : "1" })}
+              className={`${TOGGLE} border-rule text-ink-3 hover:border-accent hover:text-accent`}
+            >
+              {showBenchmark ? "Hide benchmark" : `Show benchmark (${benchmarks})`}
+            </Link>
+          ) : null}
+          <Link
+            href={viewHref(params, { removed: includeRemoved ? undefined : "1" })}
+            className={`${TOGGLE} border-rule text-ink-3 hover:border-accent hover:text-accent`}
+          >
+            {includeRemoved ? "Hide removed" : "Include removed"}
+          </Link>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile
           label="Open critical"
           value={summary.open_critical}
@@ -73,14 +139,7 @@ export default async function PortfolioPage({
           value={summary.repos_awaiting_first_scan}
           sub="onboarded, never scanned"
         />
-        <StatTile
-          label="Stale > 7d"
-          value={summary.repos_with_stale_scans}
-          sub="repos"
-        />
-        {/* A deadline this organisation set, or one CISA set in KEV, that has
-            passed. Distinct from age: a large backlog inside its windows shows
-            zero here, which is the whole point of having targets. */}
+        <StatTile label="Stale > 7d" value={summary.repos_with_stale_scans} sub="repos" />
         <StatTile
           label="Overdue"
           value={summary.overdue_findings}
@@ -89,7 +148,13 @@ export default async function PortfolioPage({
         />
       </div>
 
-      {repos.length === 0 ? (
+      {countsMissing ? (
+        <p role="status" className="border border-high bg-high-wash px-3 py-2 text-[13px] text-ink">
+          {`For ${countsMissing} of ${bands.length} products the overdue and accepted counts could not be read, so those tiles show their last run only.`}
+        </p>
+      ) : null}
+
+      {bands.length === 0 ? (
         <EmptyState
           title="No repositories onboarded yet"
           detail={
@@ -101,82 +166,51 @@ export default async function PortfolioPage({
           }
         />
       ) : (
-        <div className="scroll-x border border-rule">
-          <table className="w-full min-w-[860px] border-collapse bg-paper-2 font-mono text-[13px]">
-            <thead>
-              <tr className="border-b-2 border-ink-2 text-left">
-                {["Repository", "Capabilities", "Risk", "Risk decision", "Open", "Last scan"].map(
-                  (heading) => (
-                    <th
-                      key={heading}
-                      className={`whitespace-nowrap px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3 ${
-                        heading === "Open" ? "text-right" : ""
-                      }`}
-                    >
-                      {heading}
-                      {/* The capability names live in the header, read once,
-                          rather than in a tooltip on each of fifteen cells in
-                          every row. This is the half of the fix that removes
-                          the hovering; the cells below carry only state. */}
-                      {heading === "Capabilities" ? (
-                        <span className="mt-1 block font-normal normal-case tracking-normal">
-                          <CapabilityGridHeader />
-                        </span>
-                      ) : null}
-                    </th>
-                  ),
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {repos.map((repo) => (
-                <tr
-                  key={repo.repo_id}
-                  className="border-b border-rule-soft last:border-b-0 hover:bg-paper-3"
+        <ol className="flex flex-col gap-3">
+          {bands.map(({ repo, tiles, needs }) => {
+            const headingId = `band-${repo.repo_id}`;
+            return (
+              <li key={repo.repo_id}>
+                <section
+                  aria-labelledby={headingId}
+                  className={`flex flex-col gap-2 border bg-paper-2 p-3 ${needs ? "border-ink-3" : "border-rule"}`}
                 >
-                  <td className="px-2 py-2">
-                    <Link
-                      href={`/repos/${repo.repo_id}`}
-                      className="tap font-semibold text-ink hover:text-accent"
-                    >
-                      {repo.repo_full_name}
-                    </Link>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    <h2 id={headingId} className="text-[15px] font-semibold">
+                      <Link href={`/repos/${repo.repo_id}`} className="tap text-ink hover:text-accent">
+                        {repo.repo_full_name}
+                      </Link>
+                    </h2>
                     {repo.status !== "active" ? (
-                      <span className="ml-2">
-                        <Pill tone={repo.status === "removed" ? "muted" : "warn"}>
-                          {repo.status.replace("_", " ")}
-                        </Pill>
-                      </span>
+                      <Pill tone={repo.status === "removed" ? "muted" : "warn"}>
+                        {repo.status.replace("_", " ")}
+                      </Pill>
                     ) : null}
-                    {/* Said on the row rather than left to be discovered
-                        (spec 23 §1.5). A repository whose findings are
-                        excluded from every number above it, with nothing on
-                        the page saying so, is how somebody comes to distrust
-                        the numbers. */}
                     {repo.synthetic ? (
-                      <span className="ml-2">
-                        <Pill tone="muted">
-                          <span title="A seeded benchmark corpus. Scanned like any other repository and counted in no portfolio total.">
-                            benchmark
-                          </span>
-                        </Pill>
-                      </span>
+                      <Pill tone="muted">
+                        <span title="A seeded benchmark corpus. Scanned like any other repository and counted in no portfolio total.">
+                          benchmark
+                        </span>
+                      </Pill>
                     ) : null}
-                    {/* #452: production behind its branch, from the
-                        deployment probe and the GitHub compare. Absent for a
-                        repository with no probe. */}
-                    {repo.deploy_lag ? (
-                      <span className="ml-2">
-                        <ProdLag lag={repo.deploy_lag} />
-                      </span>
-                    ) : null}
-                    <span className="ml-2 inline-flex gap-1.5 align-baseline">
+                    <ProdLag lag={repo.deploy_lag} />
+                    <Verdict recommendation={repo.recommendation} score={repo.risk_score} />
+                    <span className="tabular font-mono text-[12px] text-ink-2">
+                      {repo.awaiting_first_scan
+                        ? "awaiting first scan"
+                        : severityLine(repo.severity_counts)}
+                    </span>
+                    <span
+                      className={`font-mono text-[12px] ${needs ? "font-semibold text-ink" : "text-ink-3"}`}
+                    >
+                      {`${needs} need${needs === 1 ? "s" : ""} a look`}
+                    </span>
+                    <span className="ml-auto inline-flex gap-3">
                       <a
                         href={repo.github_url}
                         target="_blank"
                         rel="noreferrer"
-                        title={`${repo.repo_full_name} on GitHub`}
-                        className="tap text-[11px] text-ink-3 underline decoration-dotted hover:text-accent"
+                        className="tap font-mono text-[11px] text-ink-3 underline decoration-dotted hover:text-accent"
                       >
                         github
                       </a>
@@ -185,91 +219,45 @@ export default async function PortfolioPage({
                           href={repo.pipeline_url}
                           target="_blank"
                           rel="noreferrer"
-                          title="Concourse pipeline"
-                          className="tap text-[11px] text-ink-3 underline decoration-dotted hover:text-accent"
+                          className="tap font-mono text-[11px] text-ink-3 underline decoration-dotted hover:text-accent"
                         >
                           pipeline
                         </a>
                       ) : null}
                     </span>
-                  </td>
-
-                  <td className="px-2 py-2">
-                    <CapabilityGrid
-                      repoId={repo.repo_id}
-                      enabled={repo.enabled_capabilities}
-                      pending={repo.pending_capabilities ?? []}
-                      states={repo.capability_states}
-                    />
-                  </td>
-
-                  {/* Null, not zero — "not assessed" is its own state, and
-                      Oracle is opt-in, so plenty of repos stay here. */}
-                  <td className="px-2 py-2">
-                    {typeof repo.risk_score === "number" ? (
-                      <ScoreMeter score={repo.risk_score} />
-                    ) : (
-                      <span className="text-ink-3">—</span>
-                    )}
-                  </td>
-                  <td className="px-2 py-2">
-                    <Verdict
-                      recommendation={repo.recommendation}
-                      score={repo.risk_score}
-                    />
-                  </td>
-
-                  {/* One number, as asked. The severity mix lives on the
-                      repo page and the triage queue; here the question is
-                      only "how much is open". */}
-                  <td className="tabular px-2 py-2 text-right">
-                    {repo.awaiting_first_scan ? (
-                      <Pill tone="muted">awaiting 1st scan</Pill>
-                    ) : (
-                      <span
-                        className={
-                          repo.total_open > 0 ? "font-semibold text-ink" : "text-ink-3"
-                        }
-                      >
-                        {repo.total_open}
-                      </span>
-                    )}
-                  </td>
-
-                  <td
-                    className={`whitespace-nowrap px-2 py-2 ${
-                      repo.is_stale ? "text-high" : "text-ink-2"
-                    }`}
-                  >
-                    <RelativeTime value={repo.last_scan_at} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 sm:grid-cols-6 xl:grid-cols-12">
+                    {tiles.map((t) => (
+                      <BoardTile
+                        key={t.capability}
+                        repoId={repo.repo_id}
+                        capability={t.capability}
+                        short={t.short}
+                        label={t.label}
+                        tile={t.tile}
+                        now={now}
+                      />
+                    ))}
+                  </div>
+                </section>
+              </li>
+            );
+          })}
+        </ol>
       )}
 
-      {/* This used to be 130 words of prose explaining how to decode the
-          capability column, and it was the receipt for that column being
-          undecodable. Most of it is now carried by the display itself: the
-          header names the fifteen slots, and the legend below says what the
-          three cell states mean, next to the cells that use them.
-
-          What survives here is the part that was never about decoding —
-          where to go next, and the fact that `not assessed` is a choice
-          somebody made rather than a gap in the data. */}
       <div className="flex flex-col gap-2">
-        <CapabilityLegend />
+        <BoardLegend />
         <p className="max-w-prose text-[14px] leading-relaxed text-ink-3">
-          Capability slots read in pipeline-stage order, so coverage gaps read
-          down the column. Open is the count of open findings; the severity
-          breakdown lives on each repo&rsquo;s page. Risk is Oracle&rsquo;s
-          standing score, refreshed daily — a repo showing{" "}
-          <span className="font-mono">not assessed</span> has not enabled{" "}
-          <span className="font-mono">oracle</span>, which is a choice rather
-          than a gap. For what to work on next rather than which repo is worst,
-          use the <Crumb href="/triage">triage queue</Crumb>.
+          A tile shows the age of its check&rsquo;s last run, its count of accepted findings,
+          or its count of overdue findings and the oldest one&rsquo;s age, and opens that run
+          history or those findings. Stale means no report for more than seven days, or none
+          ever from an enabled check. The repository page has all fifteen capabilities and the
+          severity mix; for what to work on next, use the{" "}
+          <Link href="/triage" className="text-accent underline">
+            triage queue
+          </Link>
+          .
         </p>
       </div>
     </div>
