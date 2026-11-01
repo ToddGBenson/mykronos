@@ -11,7 +11,8 @@
  */
 export const PO_TABS = [
   { id: "estate", label: "Estate" },
-  { id: "review", label: "Review queue" },
+  // The review queue was a tab here until TheHub #61137 made it Approvals,
+  // the first item in the rail; `?tab=review` redirects there.
   { id: "pull-requests", label: "Pull requests" },
 ] as const;
 

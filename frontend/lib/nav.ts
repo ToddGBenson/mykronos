@@ -7,31 +7,27 @@
  * a blank. As of Phase 7 there is nothing left to label, so the branch that
  * rendered those is gone rather than kept warm for a case that no longer
  * arises.
+ *
+ * Grouped by job since TheHub #61137 (P2, P5): fourteen items in one "Views"
+ * group gave no sense of which were work and which were reading. Work is what
+ * the operator acts on, Platform is how this product itself is set up and
+ * running, and Reading is what they read.
  */
 export const NAV: {
   section: string;
   items: { label: string; href: string }[];
 }[] = [
   {
-    section: "Views",
+    section: "Work",
     items: [
+      // First, because a pending decision is the one thing on this site that
+      // blocks other people (P2). It was a tab under Product Owner, and the
+      // only nav label that sounded like it, "Decisions", meant the scoring
+      // policy. `/product-owner/review-queue` and `/product-owner?tab=review`
+      // redirect here.
+      { label: "Approvals", href: "/approvals" },
       { label: "Portfolio", href: "/" },
-      // What changed overnight, so what, and whether it is work (TheHub
-      // #60864). Near the top because it is the page read first, and the one
-      // the 07:00 Slack DM links to.
-      { label: "Briefing", href: "/briefing" },
-      // The Monday intelligence page per application (TheHub #60865), beside
-      // the daily one: the same reader, the slower question.
-      { label: "Weekly intelligence", href: "/briefing/weekly" },
       { label: "Triage queue", href: "/triage" },
-      // Incident lookup lives here too: "what does the outside world think
-      // matters" and "is it here" are two views of one question, and a KEV row
-      // is exactly where the second one gets asked.
-      { label: "Threat intelligence", href: "/threat-intel" },
-      // Beside threat intelligence, not under a repository: the question it
-      // answers is estate-wide by construction — how many distinct libraries
-      // are we maintaining, and which are we carrying at several versions.
-      { label: "Libraries", href: "/libraries" },
       // Beside the triage queue, not the portfolio: the queue is what to do
       // next, and this is the standing account of what is outstanding and
       // what was decided against — the two halves of the same job.
@@ -39,40 +35,54 @@ export const NAV: {
         label: "Vulnerability management",
         href: "/vulnerability-management",
       },
-      // Directly after it, because it is the same backlog asked a different
-      // question. Vulnerability management reports what is outstanding;
-      // this answers which of it is work *today* — and on the day it was
-      // written the honest split was 109 free, 316 frozen, 0 auto-fixable.
-      //
-      // One entry for remediation, not two. "Remediate today" and
-      // "Remediation library" sat side by side and both answered "what do I
-      // do about the fixes": the worklist, and the open Patchwork pull
-      // requests that are part of that same work. The page now leads with
-      // the worklist and carries the library as a labelled section below it
-      // (#library), the way #60820 folded the repository page's Patchwork
-      // history into its Remediate today tab. Same label as that tab, so the
-      // estate view and the repository view are called the same thing.
+      // The same backlog asked a different question: which of it is work
+      // *today*. One entry for remediation, not two: the library is a
+      // labelled section of this page (#library), the way #60820 folded the
+      // repository page's Patchwork history into its Remediate today tab.
       // `/remediation` redirects here (`lib/retired-routes.ts`).
       { label: "Remediate today", href: "/remediate" },
-      { label: "Decisions", href: "/decisions" },
-      { label: "Trends", href: "/trends" },
-      { label: "Retros", href: "/retro" },
       // The work rather than the code (spec 35 §8.7): every repository's
-      // declared process and sprint, one row each, linking to its tab. One
-      // entry (TheHub #60884): the review queue (D-163) and the open pull
-      // requests are its tabs, not nav items of their own, and their old
-      // paths redirect there (`lib/retired-routes.ts`).
+      // declared process and sprint, one row each, linking to its tab. The
+      // open pull requests are its tab (TheHub #60884), and `/pull-requests`
+      // redirects there.
       { label: "Product Owner", href: "/product-owner" },
-      // Last, and the only item about this platform rather than the estate it
-      // watches. It reports on four repositories and had no page reporting on
-      // itself; a job that stopped here is invisible in exactly the way a
-      // stopped scan lane is, and with the same consequence.
+    ],
+  },
+  {
+    section: "Platform",
+    items: [
+      // The Oracle's scoring policy, what blocking mode would have cost, and
+      // which terms move scores. Called "Decisions" until TheHub #61137,
+      // which read as "approvals"; `/decisions` redirects here.
+      { label: "Risk policy", href: "/risk-policy" },
+      // The only item about this platform rather than the estate it watches.
+      // A job that stopped here is invisible in exactly the way a stopped
+      // scan lane is, and with the same consequence.
       //
       // Named for the product rather than "Platform health" (TheHub #60883):
-      // the estate it watches has platforms of its own, and the label should
-      // say whose health this is. The route keeps its old name so bookmarks
-      // and runbooks still land.
+      // the estate it watches has platforms of its own. The route keeps its
+      // old name so bookmarks and runbooks still land.
       { label: "MyKronos Health", href: "/platform-health" },
+    ],
+  },
+  {
+    section: "Reading",
+    items: [
+      // What changed overnight, so what, and whether it is work (TheHub
+      // #60864). The page the 07:00 Slack DM links to.
+      { label: "Briefing", href: "/briefing" },
+      // The Monday intelligence page per application (TheHub #60865), beside
+      // the daily one: the same reader, the slower question.
+      { label: "Weekly intelligence", href: "/briefing/weekly" },
+      // Incident lookup lives here too: "what does the outside world think
+      // matters" and "is it here" are two views of one question, and a KEV row
+      // is exactly where the second one gets asked.
+      { label: "Threat intelligence", href: "/threat-intel" },
+      // Estate-wide by construction: how many distinct libraries are we
+      // maintaining, and which are we carrying at several versions.
+      { label: "Libraries", href: "/libraries" },
+      { label: "Trends", href: "/trends" },
+      { label: "Retros", href: "/retro" },
     ],
   },
 ];
@@ -89,5 +99,5 @@ export const NAV: {
  * the active-state highlight cannot be correct for both, and a reader building
  * a model of the product quietly gets a worse one. Deleting the aliases is
  * honest; the pages they pointed at all remain reachable under their real
- * names, one line above.
+ * names.
  */

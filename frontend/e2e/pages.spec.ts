@@ -59,7 +59,7 @@ test("the product-owner console lists every seeded repository", async ({ page })
   }
 });
 
-test("product owner is one page: estate, review queue and pull requests as tabs", async ({
+test("product owner is one page: estate and pull requests as tabs", async ({
   page,
 }) => {
   // One nav entry, not Product Owner beside Review queue and Pull requests.
@@ -72,10 +72,13 @@ test("product owner is one page: estate, review queue and pull requests as tabs"
   await expect(rail.getByRole("link", { name: "Review queue" })).toHaveCount(0);
   await expect(rail.getByRole("link", { name: "Pull requests" })).toHaveCount(0);
 
-  // Old bookmarks land on their tab.
+  // Old bookmarks land where the list now lives: the review queue is
+  // Approvals, first in the rail (TheHub #61137).
   await page.goto("/product-owner/review-queue");
-  await expect(page).toHaveURL(/\/product-owner\?tab=review$/);
-  await expect(page.getByRole("heading", { name: "Review queue" })).toBeVisible();
+  await expect(page).toHaveURL(/\/approvals$/);
+  await expect(page.getByRole("heading", { name: "Approvals", level: 1 })).toBeVisible();
+  await page.goto("/decisions");
+  await expect(page).toHaveURL(/\/risk-policy$/);
 
   await page.goto("/pull-requests");
   await expect(page).toHaveURL(/\/product-owner\?tab=pull-requests$/);

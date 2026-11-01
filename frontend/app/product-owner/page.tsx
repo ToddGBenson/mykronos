@@ -1,8 +1,8 @@
 import Link from "next/link";
+import { permanentRedirect } from "next/navigation";
 
 import { PoEstateTab } from "@/components/po-estate";
 import { PullRequestsTab } from "@/components/po-pull-requests";
-import { ReviewQueueTab } from "@/components/po-review-queue";
 import { ErrorPanel } from "@/components/primitives";
 import { PO_TABS, isPoTab, poTabHref } from "@/lib/po-tabs";
 
@@ -14,6 +14,8 @@ export const dynamic = "force-dynamic";
  * entries. Each tab is the page it replaced, unchanged; `/product-owner/review-queue`
  * and `/pull-requests` redirect to their tab.
  *
+ * The review queue left for Approvals in TheHub #61137, so two tabs remain.
+ *
  * The per-repository Product Owner tab is a different page and is untouched.
  */
 export default async function ProductOwnerPage({
@@ -22,6 +24,10 @@ export default async function ProductOwnerPage({
   searchParams: Promise<{ tab?: string; pr?: string }>;
 }) {
   const { tab = "estate", pr } = await searchParams;
+
+  // The review queue was a tab here; it is Approvals now (TheHub #61137), and
+  // a bookmark to the tab is a bookmark to it.
+  if (tab === "review") permanentRedirect("/approvals");
 
   // As on the repository page (B-006): a wrong link that rendered Estate would
   // look like a working one.
@@ -55,9 +61,7 @@ export default async function ProductOwnerPage({
           </Link>
         ))}
       </nav>
-      {tab === "review" ? (
-        <ReviewQueueTab />
-      ) : tab === "pull-requests" ? (
+      {tab === "pull-requests" ? (
         <PullRequestsTab selectedNumber={pr} />
       ) : (
         <PoEstateTab />

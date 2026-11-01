@@ -14,7 +14,7 @@ import { test, expect } from "./fixtures";
  * console error, so each page below is checked for all three by loading it.
  */
 
-const PAGES = ["/", "/triage", "/trends", "/decisions", "/product-owner"];
+const PAGES = ["/", "/triage", "/trends", "/risk-policy", "/product-owner"];
 
 for (const path of PAGES) {
   test(`${path} is served with a nonce CSP and loads without a violation`, async ({

@@ -105,7 +105,6 @@ describe("the nav rail has one Product Owner entry (TheHub #60884)", () => {
 describe("poTabHref", () => {
   it("lands Estate on the bare path and the others on ?tab=", () => {
     expect(poTabHref("estate")).toBe("/product-owner");
-    expect(poTabHref("review")).toBe("/product-owner?tab=review");
     expect(poTabHref("pull-requests")).toBe("/product-owner?tab=pull-requests");
   });
 
@@ -115,30 +114,25 @@ describe("poTabHref", () => {
     );
   });
 
-  it("knows exactly three tabs, and refuses inherited keys", () => {
-    expect(PO_TABS.map((entry) => entry.id)).toEqual(["estate", "review", "pull-requests"]);
-    expect(isPoTab("review")).toBe(true);
+  // The review queue moved to /approvals (TheHub #61137).
+  it("knows exactly two tabs, and refuses inherited keys", () => {
+    expect(PO_TABS.map((entry) => entry.id)).toEqual(["estate", "pull-requests"]);
+    expect(isPoTab("review")).toBe(false);
     expect(isPoTab("review-queue")).toBe(false);
     expect(isPoTab("toString")).toBe(false);
   });
 });
 
-describe("/product-owner renders three tabs", () => {
-  it("opens on Estate, with all three tabs linked", async () => {
+describe("/product-owner renders two tabs", () => {
+  it("opens on Estate, with both tabs linked and the queue pointed at Approvals", async () => {
     const html = await render();
     expect(html).toContain("Product Owner</h1>");
     expect(html).toContain("Product Owner · estate");
-    expect(html).toContain('href="/product-owner?tab=review"');
+    expect(html).toContain('href="/approvals"');
+    expect(html).not.toContain('href="/product-owner?tab=review"');
     expect(html).toContain('href="/product-owner?tab=pull-requests"');
     expect(html).toMatch(/aria-current="page"[^>]*>Estate</);
     expect(getReviewQueue).not.toHaveBeenCalled();
-  });
-
-  it("shows the review queue on ?tab=review", async () => {
-    const html = await render({ tab: "review" });
-    expect(html).toContain("Review queue</h2>");
-    expect(html).toContain("Pending decisions");
-    expect(html).toMatch(/aria-current="page"[^>]*>Review queue</);
   });
 
   it("shows the pull requests on ?tab=pull-requests, rows linking within the tab", async () => {
@@ -157,15 +151,15 @@ describe("/product-owner renders three tabs", () => {
 
 describe("retired paths redirect permanently to their tab", () => {
   it("maps both in RETIRED_ROUTES", () => {
-    expect(retiredRoute("/product-owner/review-queue")).toBe("/product-owner?tab=review");
+    expect(retiredRoute("/product-owner/review-queue")).toBe("/approvals");
     expect(retiredRoute("/pull-requests")).toBe("/product-owner?tab=pull-requests");
     for (const item of items) expect(Object.hasOwn(RETIRED_ROUTES, item.href)).toBe(false);
   });
 
-  it("/product-owner/review-queue goes to the Review queue tab", async () => {
+  it("/product-owner/review-queue goes to Approvals (TheHub #61137)", async () => {
     const { default: ReviewQueuePage } = await import("../app/product-owner/review-queue/page");
     expect(() => ReviewQueuePage()).toThrow("NEXT_REDIRECT");
-    expect(permanentRedirect).toHaveBeenCalledExactlyOnceWith("/product-owner?tab=review");
+    expect(permanentRedirect).toHaveBeenCalledExactlyOnceWith("/approvals");
   });
 
   it("/pull-requests goes to the Pull requests tab", async () => {
