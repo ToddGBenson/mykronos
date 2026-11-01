@@ -300,8 +300,11 @@ def test_an_entry_gitleaks_honours_passes(tmp_path: Path, planted: Path) -> None
 def test_an_entry_matching_no_fixture_fails_the_check(tmp_path: Path, planted: Path) -> None:
     result = run_check(tmp_path, planted, USED + MATCHES_NOTHING)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "a file that does not exist" in result.stdout
-    assert "the planted fixture" not in result.stdout.replace("a file that does not exist", "")
+    unused = [line.split(None, 1)[1] for line in result.stdout.splitlines()
+              if line.strip().startswith("UNUSED")]
+    assert unused == ["rules[generic-api-key].allowlists[1] (a file that does not exist)"], (
+        result.stdout
+    )
 
 
 @needs_gitleaks
