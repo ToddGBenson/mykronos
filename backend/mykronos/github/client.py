@@ -94,6 +94,8 @@ METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "dispatch_workflow": (("actions", "write"),),
     "list_workflows": (("actions", "read"),),
     "latest_workflow_runs": (("actions", "read"),),
+    # One workflow's newest run on one commit, any status (TheHub #61141).
+    "workflow_run_for_commit": (("actions", "read"),),
     # Why a run failed (TheHub #60913): its jobs and steps, then the failed
     # job's check-run annotations. Both reads, both already held.
     "workflow_run_jobs": (("actions", "read"),),
@@ -668,6 +670,18 @@ class GitHubClient(Protocol):
         has merely been quiet, and this is the reason.
         """
 
+    async def workflow_run_for_commit(
+        self, repo_full_name: str, workflow_file: str, head_sha: str
+    ) -> tuple[str, str | None] | None:
+        """`(status, conclusion)` of `workflow_file`'s newest run on `head_sha`,
+        in any status, or None when it has no run on that commit (TheHub #61141).
+
+        The run sheet's "Delivery on main" guard, as `gh run list --workflow
+        delivery.yml --commit <sha>` answers it for Start-Here. `conclusion`
+        is None while the run is queued or in progress.
+        """
+        ...
+
     async def workflow_run_jobs(self, repo_full_name: str, run_id: int) -> list[WorkflowJob]:
         """The jobs of one run, latest attempt, with their steps (TheHub #60913).
 
@@ -775,6 +789,9 @@ class FakeRepo:
     #: the workflow exists and has never finished a run — which is a real
     #: state (`not_run`) and not an error.
     workflow_runs: dict[str, WorkflowRun] = field(default_factory=dict)
+    #: (workflow file, head sha) -> (status, conclusion) of its newest run on
+    #: that commit (TheHub #61141). Absent means no run on that commit.
+    commit_runs: dict[tuple[str, str], tuple[str, str | None]] = field(default_factory=dict)
     #: Run id -> its jobs, and check-run id -> its annotations (TheHub #60913).
     run_jobs: dict[int, list[WorkflowJob]] = field(default_factory=dict)
     annotations: dict[int, list[CheckAnnotation]] = field(default_factory=dict)
@@ -1190,6 +1207,15 @@ class FakeGitHubClient:
             for name, run in sorted(repo.workflow_runs.items())
             if f"{WORKFLOW_PATH_PREFIX}{name}" in repo.files
         ]
+
+    async def workflow_run_for_commit(
+        self, repo_full_name: str, workflow_file: str, head_sha: str
+    ) -> tuple[str, str | None] | None:
+        self.calls.append(
+            ("workflow_run_for_commit", f"{repo_full_name}:{workflow_file}@{head_sha}")
+        )
+        self._require("actions", "read", "Reading workflow runs")
+        return self._repo(repo_full_name).commit_runs.get((workflow_file, head_sha))
 
     async def workflow_run_jobs(self, repo_full_name: str, run_id: int) -> list[WorkflowJob]:
         self.calls.append(("workflow_run_jobs", f"{repo_full_name}#{run_id}"))
@@ -2076,6 +2102,21 @@ class RestGitHubClient:
                 run_id=int(item["id"]) if isinstance(item.get("id"), int) else None,
             )
         return list(latest.values())
+
+    async def workflow_run_for_commit(
+        self, repo_full_name: str, workflow_file: str, head_sha: str
+    ) -> tuple[str, str | None] | None:
+        payload = await self._json(
+            "GET",
+            f"/repos/{repo_full_name}/actions/workflows/{workflow_file}/runs",
+            params={"head_sha": head_sha, "per_page": 1},
+        )
+        runs = payload.get("workflow_runs", []) or []
+        if not runs:
+            return None
+        run = runs[0]
+        conclusion = run.get("conclusion")
+        return str(run.get("status") or ""), str(conclusion) if conclusion else None
 
     async def workflow_run_jobs(self, repo_full_name: str, run_id: int) -> list[WorkflowJob]:
         payload = await self._json(

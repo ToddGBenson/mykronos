@@ -376,6 +376,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/today": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Today
+         * @description Today's run sheet: decide, merge, deploy, tasks (TheHub #61141).
+         *
+         *     What Start-Here computes, computed here: pending approvals minus the
+         *     superseded ones, each open pull request's readiness, the production
+         *     deploy's guards, and the operator's actions on the board. Every line has a
+         *     state, a reason and an owner. A source that could not be read makes its
+         *     step `partial` or `unavailable` with the reason, never an empty step.
+         *     Red and silent lanes are the briefing's (`GET /api/dashboard/briefing`).
+         *     Read-only.
+         */
+        get: operations["today_api_dashboard_today_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/portfolio": {
         parameters: {
             query?: never;
@@ -11814,6 +11842,81 @@ export interface components {
              */
             note: string;
         };
+        /** RunSheetItemOut */
+        RunSheetItemOut: {
+            /** Text */
+            text: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "waiting" | "blocked" | "done" | "unknown";
+            /** Reason */
+            reason: string;
+            /**
+             * Owner
+             * @description Whose move it is: you, an agent, Delivery, CI, the reviewer.
+             */
+            owner: string;
+            /**
+             * Ref
+             * @description A request id, `repo#number` or a story `#id`.
+             * @default
+             */
+            ref: string;
+            /**
+             * Url
+             * @default
+             */
+            url: string;
+        };
+        /** RunSheetOut */
+        RunSheetOut: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Steps */
+            steps: components["schemas"]["RunSheetStepOut"][];
+        };
+        /** RunSheetStepOut */
+        RunSheetStepOut: {
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "decide" | "merge" | "deploy" | "tasks";
+            /** Title */
+            title: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "waiting" | "blocked" | "done" | "unknown";
+            /** Summary */
+            summary: string;
+            /** Items */
+            items: components["schemas"]["RunSheetItemOut"][];
+            /**
+             * Hidden
+             * @description What was left out and why: superseded requests, drafts, done tasks.
+             */
+            hidden: string[];
+            /**
+             * Status
+             * @description Whether the step's sources were read. Anything but ok carries a reason.
+             * @enum {string}
+             */
+            status: "ok" | "partial" | "unavailable";
+            /** Reason */
+            reason: string;
+            /**
+             * Notes
+             * @description Guards the server cannot check, named, never guessed.
+             */
+            notes: string[];
+        };
         /** SampleVerdictIn */
         SampleVerdictIn: {
             /** Verdict */
@@ -14117,6 +14220,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    today_api_dashboard_today_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSheetOut"];
                 };
             };
         };
