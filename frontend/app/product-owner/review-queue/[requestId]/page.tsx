@@ -1,9 +1,11 @@
 import { PacketDecide } from "@/components/packet-decide";
 import { Crumb, ErrorPanel, Pill, Section } from "@/components/primitives";
-import { concurRationale, evidenceFields, nextLabel, nextRequestHref } from "@/lib/approval-packet";
-import { getReviewPacket, getReviewQueue } from "@/lib/po-console";
+import { getReviewPacket } from "@/lib/po-console";
 import { poTabHref } from "@/lib/po-tabs";
 import { reviewerStanding } from "@/lib/review-queue";
+
+import { concurRationale, evidenceFields, nextLabel, nextRequestHref } from "@/lib/approval-packet";
+import { pendingRequestIds } from "@/lib/approval-queue";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +43,10 @@ export default async function ReviewPacketPage({
   params: Promise<{ requestId: string }>;
 }) {
   const { requestId } = await params;
-  const [result, queue] = await Promise.all([getReviewPacket(requestId), getReviewQueue()]);
+  const [result, pendingIds] = await Promise.all([
+    getReviewPacket(requestId),
+    pendingRequestIds(),
+  ]);
   if (!result.ok) {
     return <ErrorPanel title="Review packet unavailable" detail={result.error} />;
   }
@@ -50,7 +55,6 @@ export default async function ReviewPacketPage({
   const checks = (packet.reviewer?.checks ?? []) as Check[];
   const verification = packet.verification ?? null;
   const overall = verdictOf(verification?.holds ?? null);
-  const pendingIds = queue.ok ? queue.data.pending.map((item) => item.id) : [];
   const concur =
     packet.superseded && packet.reviewer?.verdict === "approve"
       ? null
