@@ -37,12 +37,40 @@ import {
   type Level,
 } from "@/lib/finding-decision";
 
-type Proposed = {
+export type Proposed = {
   risk_acceptance: { id: string; findings: number };
   approval_request_id: string;
   tier: string;
   flags: string[];
 };
+
+/** What a person sees once the proposal is filed: what it covers, the approval
+ *  request it waits on, and anything the server flagged about it. */
+export function ProposedNotice({ proposed, repoId }: { proposed: Proposed; repoId: string }) {
+  return (
+    <div className="flex flex-col gap-1.5 text-[13px]">
+      <p className="text-pass">
+        Proposed. It covers {proposed.risk_acceptance.findings} finding
+        {proposed.risk_acceptance.findings === 1 ? "" : "s"} and is not in force until someone
+        independent of you approves request{" "}
+        <span className="font-mono">{proposed.approval_request_id}</span> ({proposed.tier}).
+      </p>
+      {proposed.flags.length ? (
+        <ul className="ml-4 list-disc text-high">
+          {proposed.flags.map((flag) => (
+            <li key={flag}>{flag}</li>
+          ))}
+        </ul>
+      ) : null}
+      <Link
+        href={`/repos/${repoId}/risk/${proposed.risk_acceptance.id}`}
+        className="text-accent underline-offset-2 hover:underline"
+      >
+        Open the acceptance
+      </Link>
+    </div>
+  );
+}
 
 function isoDay(offsetDays: number): string {
   const d = new Date();
@@ -141,31 +169,7 @@ export function RiskAcceptanceForm({
     }
   }
 
-  if (proposed) {
-    return (
-      <div className="flex flex-col gap-1.5 text-[13px]">
-        <p className="text-pass">
-          Proposed. It covers {proposed.risk_acceptance.findings} finding
-          {proposed.risk_acceptance.findings === 1 ? "" : "s"} and is not in force until someone
-          independent of you approves request{" "}
-          <span className="font-mono">{proposed.approval_request_id}</span> ({proposed.tier}).
-        </p>
-        {proposed.flags.length ? (
-          <ul className="ml-4 list-disc text-high">
-            {proposed.flags.map((flag) => (
-              <li key={flag}>{flag}</li>
-            ))}
-          </ul>
-        ) : null}
-        <Link
-          href={`/repos/${repoId}/risk/${proposed.risk_acceptance.id}`}
-          className="text-accent underline-offset-2 hover:underline"
-        >
-          Open the acceptance
-        </Link>
-      </div>
-    );
-  }
+  if (proposed) return <ProposedNotice proposed={proposed} repoId={repoId} />;
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-3" noValidate>
