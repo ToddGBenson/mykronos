@@ -78,7 +78,7 @@ export default async function PortfolioPage({
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h1 className="font-bold tracking-tight">Portfolio</h1>
+          <h1 className="text-xl font-bold tracking-tight">Portfolio</h1>
           <span className="font-mono text-[13px] text-ink-2">
             {summaryLine || `${bands.length} products, every tile healthy`}
           </span>

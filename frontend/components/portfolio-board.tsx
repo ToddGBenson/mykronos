@@ -118,7 +118,7 @@ export function BoardTile({
       data-tile={capability}
       aria-label={`${label}: ${words}`}
       title={`${label}: ${words}`}
-      className={`relative flex min-h-11 flex-col justify-between overflow-hidden border px-1.5 pb-1.5 pt-1 font-mono focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent hover:outline hover:outline-1 hover:outline-accent sm:min-h-14 ${SKIN[tile.state]}`}
+      className={`relative flex min-h-11 flex-col justify-between overflow-hidden border px-1.5 pt-1 font-mono ${tile.state === "stale" ? "pb-3" : "pb-1.5"} focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent hover:outline hover:outline-1 hover:outline-accent sm:min-h-14 ${SKIN[tile.state]}`}
     >
       <span className="flex items-center justify-between gap-1 text-[11px] font-semibold leading-tight">
         <span className="truncate">{short}</span>
