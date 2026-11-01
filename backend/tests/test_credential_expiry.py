@@ -404,7 +404,9 @@ class TestTheComposeMount:
 
     def _mount(self) -> dict:
         [mount] = [
-            v for v in self._backend()["volumes"] if isinstance(v, dict) and v.get("target") == self.TARGET
+            v
+            for v in self._backend()["volumes"]
+            if isinstance(v, dict) and v.get("target") == self.TARGET
         ]
         return mount
 
@@ -417,7 +419,8 @@ class TestTheComposeMount:
         assert mount["bind"]["create_host_path"] is False
 
     def test_unset_it_mounts_dev_null(self) -> None:
-        assert self._mount()["source"] == "${MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_HOST_PATH:-/dev/null}"
+        expected = "${MYKRONOS_CREDENTIAL_EXPIRY_PRIVATE_HOST_PATH:-/dev/null}"
+        assert self._mount()["source"] == expected
 
     def test_the_container_path_is_the_one_the_backend_reads(self) -> None:
         env = self._backend()["environment"]
