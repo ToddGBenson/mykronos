@@ -52,7 +52,7 @@ Known gaps, stated rather than implied:
 
 | Area | State |
 |---|---|
-| Network scanning | **Not started.** The authorization model and the ingest path exist; no scanner does, so no CIDR would be scanned if one were authorized |
+| Network scanning | **Built, never run.** The authorization model, the ingest path and a scanner exist: `backend/mykronos/lan_scan.py` (2026-10-18) runs nmap against only the ranges it is given, with an authorization reference. The lake holds no network scan run as of 2026-11-01 |
 | Cloud posture | Enabled on one repository and structurally unable to run — no Azure principal (B-018). The lake holds no cloud scan run as of 2026-11-01 |
 | ZAP active scanning | Paused. It measured 548% CPU and 7 GiB on the shared host and took production down while it ran (D-053). Passive DAST still runs |
 | Notifications | The notifier is built, the severity threshold is set, and no webhook URL is configured — so everything is pull (B-035) |
