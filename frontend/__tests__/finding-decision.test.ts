@@ -12,6 +12,7 @@ import {
   acceptanceActionProblem,
   buildProposal,
   defaultScope,
+  effectiveResidual,
   dispositionProblem,
   interimReviewOwed,
   maxDurationDays,
@@ -173,7 +174,7 @@ describe("proposalProblems", () => {
         TODAY,
       ),
     ).toContain(
-      "A critical residual risk cannot be an operational requirement: that is an architecture conversation.",
+      "A critical residual risk cannot be an operational requirement: that is a conversation about the architecture, not an acceptance.",
     );
   });
 });
@@ -261,5 +262,57 @@ describe("acceptanceActionProblem", () => {
       "Say why it should run longer.",
     );
     expect(acceptanceActionProblem("renew", { text: "still no fix", until: "2026-12-01" })).toBeNull();
+  });
+});
+
+describe("effectiveResidual", () => {
+  // risk_acceptance.propose: for any deviation but a risk adjustment, the
+  // residual is never below the worst covered finding's own severity.
+  it("floors a vendor dependency or an operational requirement at the finding's severity", () => {
+    expect(effectiveResidual(draft({ finding_severity: "high" }))).toBe("high");
+    expect(
+      effectiveResidual(
+        draft({ deviation_type: "operational_requirement", finding_severity: "critical" }),
+      ),
+    ).toBe("critical");
+  });
+
+  it("does not floor a risk adjustment, which is the one that argues it lower", () => {
+    expect(
+      effectiveResidual(draft({ deviation_type: "risk_adjustment", finding_severity: "critical" })),
+    ).toBe("low");
+  });
+
+  it("is the matrix alone when the finding's severity is not known", () => {
+    expect(effectiveResidual(draft())).toBe("low");
+  });
+});
+
+describe("proposalProblems with the finding's severity", () => {
+  it("caps a vendor dependency on a high finding at 90 days, not the matrix's 365", () => {
+    expect(
+      proposalProblems(draft({ finding_severity: "high", requested_until: "2027-03-01" }), TODAY),
+    ).toContain("A high acceptance runs at most 90 days, so it expires by 2027-01-30.");
+  });
+
+  it("refuses an operational requirement on a critical finding, whatever residual is chosen", () => {
+    expect(
+      proposalProblems(
+        draft({
+          deviation_type: "operational_requirement",
+          finding_severity: "critical",
+          requested_until: "2026-11-20",
+        }),
+        TODAY,
+      ),
+    ).toContain(
+      "A critical residual risk cannot be an operational requirement: that is a conversation about the architecture, not an acceptance.",
+    );
+  });
+
+  it("never sends the finding's severity: the server reads it from the lake", () => {
+    expect(buildProposal(draft({ finding_severity: "high" }))).not.toHaveProperty(
+      "finding_severity",
+    );
   });
 });
