@@ -25,7 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, s
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from mykronos import read_coverage
+from mykronos import read_coverage, risk_gate_notice
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.api.refusals import CapabilityRefusedError
@@ -34,7 +34,7 @@ from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
-from mykronos.oracle.service import OracleService, decision_to_row
+from mykronos.oracle.service import OracleService, PublishedDecision, decision_to_row
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -212,9 +212,10 @@ async def evaluate(
     )
 
     # A no_go is the one decision that stops a deploy, and the pipeline that
-    # asked has already exited by the time anyone looks at it. Sent as a
-    # background task so a slow webhook cannot add latency to a gate every
-    # build waits on (spec 16 §14).
+    # asked has already exited by the time anyone looks at it. Posted when the
+    # repo's decision changes rather than per commit (TheHub #61197), and sent
+    # as a background task so a slow webhook cannot add latency to a gate
+    # every build waits on (spec 16 §14).
     # The severity floor. Deliberately a constant rather than policy: a floor
     # an operator can lower under pressure is a floor that reaches zero.
     queries = DashboardQueries(request.app.state.catalog)
@@ -231,25 +232,16 @@ async def evaluate(
     if disclosure:
         reasoning = f"{reasoning} {disclosure}".strip()
 
-    if published.decision.recommendation == "no_go":
-        background.add_task(
-            request.app.state.notifier.send,
-            Notification(
-                title="A risk decision refused a commit",
-                detail=(
-                    f"Score {published.decision.overall_risk_score}. "
-                    f"{reasoning or 'No reasoning recorded.'}\n"
-                    f"Commit `{body.commit_sha}`. "
-                    + (
-                        "Blocking is on: the check run is red."
-                        if published.blocking
-                        else "Advisory only: blocking is off for this repository."
-                    )
-                ),
-                repo_full_name=token.repo_full_name,
-                level="critical",
-            ),
-        )
+    note = _gate_notice(
+        request,
+        token.repo_full_name,
+        published,
+        reasoning=reasoning,
+        commit_sha=body.commit_sha,
+        introduced_blocking=introduced_blocking,
+    )
+    if note is not None:
+        background.add_task(request.app.state.notifier.send, note)
 
     return EvaluateResult(
         decision_id=published.decision.decision_id,
@@ -266,6 +258,83 @@ async def evaluate(
         remediates=remediates,
         introduced_blocking=introduced_blocking,
     )
+
+
+def _gate_notice(
+    request: Request,
+    repo_full_name: str,
+    published: PublishedDecision,
+    *,
+    reasoning: str,
+    commit_sha: str,
+    introduced_blocking: bool,
+) -> Notification | None:
+    """The Slack post this decision earns, if any (TheHub #61197).
+
+    Posted when the repo's decision for this scope changes, not per commit:
+    `risk_gate_notice` holds the rule and the stored state. If that store
+    fails, every refusal posts, as it did before: a duplicate beats silence.
+    """
+    decision = published.decision
+    score = decision.overall_risk_score
+    refused_detail = (
+        f"Commit `{commit_sha}`. Score {score}. "
+        + (
+            "Blocking is on: the check run is red. "
+            if published.blocking
+            else "Advisory only: blocking is off for this repository. "
+        )
+        + (reasoning or "No reasoning recorded.")
+    )
+    try:
+        outcome = risk_gate_notice.record(
+            request.app.state.db,
+            repo_full_name,
+            risk_gate_notice.subject_of(decision.decision_type, decision.pr_number),
+            recommendation=decision.recommendation,
+            introduced_blocking=introduced_blocking,
+            commit_sha=commit_sha,
+            score=score,
+        )
+    except Exception:  # noqa: BLE001 - bookkeeping must never fail the gate
+        logger.warning(
+            "Could not read or record the risk gate's notice state for %s; "
+            "posting every refusal until it can.",
+            scrub(repo_full_name),
+            exc_info=True,
+        )
+        outcome = risk_gate_notice.Outcome(
+            post=risk_gate_notice.POST_REFUSED if decision.recommendation == "no_go" else None
+        )
+
+    if outcome.post == risk_gate_notice.POST_REFUSED:
+        return Notification(
+            title="A risk decision refused a commit",
+            detail=refused_detail
+            + " Further refusals at any score are not posted until it passes.",
+            repo_full_name=repo_full_name,
+            level="critical",
+        )
+    if outcome.post == risk_gate_notice.POST_NEW_BLOCKING:
+        return Notification(
+            title="A refused commit added a new blocking finding",
+            detail=refused_detail,
+            repo_full_name=repo_full_name,
+            level="critical",
+        )
+    if outcome.post == risk_gate_notice.POST_CLEARED:
+        since = outcome.previous_since_sha
+        return Notification(
+            title="The risk gate passes again",
+            detail=(
+                f"Commit `{commit_sha}`. Score {score}, {decision.recommendation}. "
+                + (f"Refused since commit `{since}`; " if since else "")
+                + f"{outcome.previous_held} later refusal(s) were not posted."
+            ),
+            repo_full_name=repo_full_name,
+            level="info",
+        )
+    return None
 
 
 def disclosure_sentence(disclosed: dict[str, int], remediates: dict[str, int]) -> str:
