@@ -27,6 +27,10 @@ export const NAV: {
       // redirect here.
       { label: "Approvals", href: "/approvals" },
       { label: "Portfolio", href: "/" },
+      // Products as rows and health as columns: gate, prod lag, severity,
+      // age against target, overdue, lanes, acceptances, needs-you (TheHub
+      // #61139). "Is anything broken?" on one page instead of three.
+      { label: "Risk", href: "/risk" },
       { label: "Triage queue", href: "/triage" },
       // Beside the triage queue, not the portfolio: the queue is what to do
       // next, and this is the standing account of what is outstanding and
