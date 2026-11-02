@@ -34,7 +34,7 @@ import pytest
 BACKEND = Path(__file__).resolve().parents[1]
 SEED = BACKEND.parent / "deploy" / "demo" / "seed.py"
 
-#: Runs the real `seed()` against a recording client and a stubbed CLI, then
+#: Runs the real `main()` against a recording client and a stubbed CLI, then
 #: derives each submission's identity with the platform's own fingerprint.
 DRIVER = r"""
 import importlib.util, json, subprocess, sys
@@ -48,7 +48,7 @@ from mykronos.fingerprint import compute_finding_id
 events = []
 
 class Recorder(seed.Client):
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         pass
 
     def call(self, method, path, body=None, token=""):
@@ -60,7 +60,9 @@ def fake_run(argv, **kwargs):
     return subprocess.CompletedProcess(argv, 0, stdout="Token     : demo-token\n", stderr="")
 
 seed.subprocess.run = fake_run
-seed.seed(Recorder())
+seed.Client = Recorder
+# `main`, not `seed()`: settling is part of what the rebuild runs.
+assert seed.main([]) == 0
 
 runs = {}
 for event in events:
