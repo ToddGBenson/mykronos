@@ -182,7 +182,7 @@ export type RiskPage = {
 
 const DAY_MS = 86_400_000;
 const SILENT_AFTER_DAYS = 7;
-const REVIEW_HREF = "/product-owner?tab=review";
+const REVIEW_HREF = "/approvals";
 const NOT_READ: Read<never> = { ok: false, error: "not read" };
 
 function plural(n: number, word: string): string {
@@ -673,10 +673,10 @@ export function buildRiskPage(
   const pending = inputs.approvals.ok ? liveApprovals(inputs.approvals.data, now).length : null;
 
   const estate: RiskPage["estate"] = {
-    gate: estateState(all.map((r) => r.gate), "/decisions", "the gate", () => ({
+    gate: estateState(all.map((r) => r.gate), "/risk-policy", "the gate", () => ({
       text: `${noGo} no-go`,
       tone: noGo ? "fail" : "ok",
-      href: "/decisions",
+      href: "/risk-policy",
       label: `${plural(noGo, "product")} the gate refuses at the newest commit it judged`,
     })),
     lag: estateState(all.map((r) => r.lag), "/platform-health", "prod lag", () => ({

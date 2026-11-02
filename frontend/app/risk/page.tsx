@@ -55,7 +55,7 @@ export default async function RiskPage({
           <Link href={href({ problems: true })} className={chip(problemsOnly)} aria-current={problemsOnly ? "true" : undefined}>
             Problems only
           </Link>
-          <Link href={href({ benchmark: !benchmark })} className={chip(benchmark)} aria-pressed={benchmark}>
+          <Link href={href({ benchmark: !benchmark })} className={chip(benchmark)} aria-current={benchmark ? "true" : undefined}>
             Include benchmark
           </Link>
         </nav>
@@ -86,8 +86,8 @@ export default async function RiskPage({
           <h2 className="text-[15px] font-semibold text-ink">How to read it</h2>
           <p className="text-[13px] leading-relaxed text-ink-3">
             Columns run from &ldquo;can it ship&rdquo; on the left to &ldquo;what is old&rdquo; on
-            the right. Gate is the verdict on the newest commit the gate judged on the default
-            branch. Oldest is the oldest open high or critical against its own remediation target.
+            the right. Gate is the verdict on the newest commit the gate judged, on any
+            branch: a decision record does not say which. Oldest is the oldest open high or critical against its own remediation target.
             Every cell opens the matching filtered view: a count opens the findings filtered to
             it, one red lane opens that lane&rsquo;s run history, and Needs you opens the review
             queue. A cell that could not be read says <span className="font-mono">unknown</span>,
