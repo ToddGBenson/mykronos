@@ -401,9 +401,16 @@ def _short(sha: str) -> str:
     return sha[:7]
 
 
+# git's default abbreviation. A shorter revision prefix-matches too many
+# commits to say that this one is what runs.
+_MIN_SHA_PREFIX = 7
+
+
 def _same_commit(a: str, b: str) -> bool:
     a, b = a.strip().lower(), b.strip().lower()
-    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+    if min(len(a), len(b)) < _MIN_SHA_PREFIX:
+        return False
+    return a.startswith(b) or b.startswith(a)
 
 
 def _when(value: Any) -> str:
