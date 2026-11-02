@@ -702,8 +702,11 @@ jobs:
                 # xdist worker, measured nothing about this commit: say so,
                 # upload nothing, and leave judged/verdict unwritten so the
                 # next step errors the build. A real failure anywhere in the
-                # report (unit #486) is a verdict and goes on as before.
-                OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)"
+                # report (unit #486) is a verdict and goes on as before. A
+                # classifier that cannot run says so and changes nothing: it
+                # must never turn a green suite red (review F2 on #1084).
+                OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
+                  || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
                 if [ -n "$OOM" ]; then
                   echo "::error::${OOM}"
                   echo "Not uploaded: a run killed for memory judged nothing on this commit."
@@ -1065,8 +1068,10 @@ jobs:
                 # [TheHub #61117] `Killed  python -m mypy mykronos` (#462, #466)
                 # is exit 137 and judged nothing: say so, upload nothing, and
                 # leave judged/verdict unwritten so the next step errors the
-                # build. A real ruff or mypy failure beside it is a verdict.
-                OOM="$(python ../scripts/memory_kill.py lint --rc-ruff "$rc_ruff" --rc-mypy "$rc_mypy")"
+                # build. A real ruff or mypy failure beside it is a verdict. A
+                # classifier that cannot run says so and changes nothing.
+                OOM="$(python ../scripts/memory_kill.py lint --rc-ruff "$rc_ruff" --rc-mypy "$rc_mypy")" \
+                  || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
                 if [ -n "$OOM" ]; then
                   echo "::error::${OOM}"
                   echo "Not uploaded: a run killed for memory judged nothing on this commit."

@@ -70,14 +70,19 @@ def _script(task: dict[str, Any]) -> str:
 
 def _junit(path: Path, *, crashes: int = 0, real: int = 0, passed: int = 5) -> Path:
     cases = [f'<testcase classname="t" name="ok{i}"/>' for i in range(passed)]
-    # xdist reports a crashed worker's test as an error on 3.x and as a
-    # failure on older releases; both shapes are what a crash looks like.
+    # The two shapes pytest's junitxml writes for an xdist crash report
+    # (when="???"): append_error wraps it as `failed on setup with "<msg>"`,
+    # which is what #485 recorded, and append_failure writes it bare. The body
+    # is str(longrepr), the same message.
     for n in range(crashes):
-        tag = "error" if n % 2 == 0 else "failure"
         msg = CRASH.format(n=n)
+        if n % 2 == 0:
+            tag, attr = "error", f"failed on setup with &quot;{msg}&quot;"
+        else:
+            tag, attr = "failure", msg
         cases.append(
-            f'<testcase classname="t" name="crash{n}"><{tag} message="{msg}">'
-            f"[gw{n}] node down: Not properly terminated</{tag}></testcase>"
+            f'<testcase classname="t" name="crash{n}"><{tag} message="{attr}">'
+            f"{msg}</{tag}></testcase>"
         )
     for n in range(real):
         cases.append(
@@ -145,6 +150,53 @@ class TestTheClassifier:
         junit = _junit(tmp_path / "unit.xml", crashes=2, real=1)
         assert _classify("pytest", "--rc", "1", "--junit", str(junit)) == ""
 
+    def test_a_failure_that_quotes_the_reason_is_a_verdict(self, tmp_path: Path) -> None:
+        # Review B1 on #1084: a real failure of a test in this file carries the
+        # classifier's own output - the reason string, and a crash line - in
+        # its body. Only the structured xdist message attribute is a crash.
+        quoted = (
+            "INFRASTRUCTURE, NOT A VERDICT: killed: out of memory - 2 xdist worker(s) were "
+            "killed from outside (node down: Not properly terminated) and no test failed "
+            "on its own. worker 'gw1' crashed while running 'tests/test_x.py::test_1'"
+        )
+        junit = tmp_path / "unit.xml"
+        junit.write_text(
+            '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">'
+            '<testcase classname="t" name="quotes">'
+            '<failure message="AssertionError: assert 99 == 0">'
+            f"{quoted}</failure></testcase>"
+            '<testcase classname="t" name="mentions">'
+            "<failure message=\"AssertionError: worker 'gw1' crashed while running 'x'\">"
+            "assert False</failure></testcase>"
+            "</testsuite></testsuites>",
+            encoding="utf-8",
+        )
+        assert _classify("pytest", "--rc", "1", "--junit", str(junit)) == ""
+
+    def test_a_real_xdist_crash_report_is_a_memory_kill(self, tmp_path: Path) -> None:
+        # The report pytest-xdist itself writes when a worker dies, so the
+        # classifier is held to the real shape and not only to this file's.
+        pytest.importorskip("xdist")
+        (tmp_path / "test_dies.py").write_text(
+            "import os\n\ndef test_ok():\n    pass\n\n"
+            "def test_dies():\n    os._exit(9)\n",
+            encoding="utf-8",
+        )
+        junit = tmp_path / "unit.xml"
+        run = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-n", "2",
+             "--max-worker-restart=0", f"--junitxml={junit}", "test_dies.py"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert run.returncode == 1, run.stdout + run.stderr
+        assert "crashed while running" in junit.read_text(encoding="utf-8")
+        reason = _classify("pytest", "--rc", str(run.returncode), "--junit", str(junit))
+        assert "INFRASTRUCTURE, NOT A VERDICT" in reason
+
     def test_a_plain_failure_is_a_verdict(self, tmp_path: Path) -> None:
         junit = _junit(tmp_path / "unit.xml", real=1)
         assert _classify("pytest", "--rc", "1", "--junit", str(junit)) == ""
@@ -166,6 +218,10 @@ class TestTheClassifier:
         reason = _classify("lint", "--rc-ruff", "0", "--rc-mypy", "137")
         assert "INFRASTRUCTURE, NOT A VERDICT" in reason and "mypy" in reason
 
+    def test_both_killed_reads_as_plural(self) -> None:
+        reason = _classify("lint", "--rc-ruff", "137", "--rc-mypy", "137")
+        assert "ruff and mypy were SIGKILLed" in reason
+
     def test_a_ruff_failure_beside_a_killed_mypy_is_a_verdict(self) -> None:
         assert _classify("lint", "--rc-ruff", "1", "--rc-mypy", "137") == ""
 
@@ -183,7 +239,9 @@ def _tail(job: str, task: str) -> str:
     return "\n".join(lines[start : end + 1])
 
 
-def _run_tail(tmp_path: Path, job: str, task: str, prelude: str) -> tuple[int, str, bool]:
+def _run_tail(
+    tmp_path: Path, job: str, task: str, prelude: str, classifier: str | None = None
+) -> tuple[int, str, bool]:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("no bash on this host")
@@ -192,7 +250,10 @@ def _run_tail(tmp_path: Path, job: str, task: str, prelude: str) -> tuple[int, s
     backend = tmp_path / "source" / "backend"
     backend.mkdir(parents=True)
     (tmp_path / "source" / "scripts").mkdir()
-    shutil.copy(SCRIPT, tmp_path / "source" / "scripts" / "memory_kill.py")
+    if classifier is None:
+        shutil.copy(SCRIPT, tmp_path / "source" / "scripts" / "memory_kill.py")
+    else:
+        (tmp_path / "source" / "scripts" / "memory_kill.py").write_text(classifier)
     (tmp_path / "results").mkdir()
     (tmp_path / "judged").mkdir()
     body = f"set -e\n{prelude}\n{_tail(job, task)}\necho REACHED-THE-UPLOAD\n"
@@ -257,3 +318,19 @@ class TestTheJobErrorsInsteadOfFailing:
             pytest.fail("scripts/memory_kill.py does not exist")
         rc, out, judged = _run_tail(tmp_path, *LINT, "rc_ruff=0\nrc_mypy=1")
         assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
+
+    # Review F2 on #1084: the classifier is an extra step after the verdict.
+    # If it cannot run, the run goes on as if it had said nothing, with a
+    # warning, rather than turning a green suite red under `bash -e`.
+    BROKEN = "raise RuntimeError('classifier broke')\n"
+
+    def test_unit_goes_on_when_the_classifier_breaks(self, tmp_path: Path) -> None:
+        prelude = "rc=0\nmkdir -p ../../results"
+        rc, out, judged = _run_tail(tmp_path, "unit", "pytest", prelude, self.BROKEN)
+        assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
+        assert "::warning::" in out, out
+
+    def test_lint_goes_on_when_the_classifier_breaks(self, tmp_path: Path) -> None:
+        rc, out, judged = _run_tail(tmp_path, *LINT, "rc_ruff=0\nrc_mypy=0", self.BROKEN)
+        assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
+        assert "::warning::" in out, out

@@ -14,8 +14,9 @@ What counts as killed for memory:
 
 - pytest itself exited 137 (`Killed  python -m pytest -q -n 6`, unit #479);
 - pytest exited 1 and EVERY failure or error in its JUnit report is an xdist
-  worker crash (`[gwN] node down: Not properly terminated`, reported as
-  "worker 'gwN' crashed while running ...": unit #484 and #485);
+  worker crash (`[gwN] node down: Not properly terminated` in the log, which
+  xdist records as "worker 'gwN' crashed while running '<test>'": unit #484
+  and #485);
 - ruff or mypy exited 137 (`Killed  python -m mypy mykronos`, lint #462/#466).
 
 A real result anywhere wins over a kill: a failing test beside a crashed
@@ -36,7 +37,15 @@ from defusedxml import ElementTree as SafeElementTree
 from defusedxml.common import DefusedXmlException
 
 KILLED = 137
-CRASHED = re.compile(r"worker '[^']+' crashed while running|node down: Not properly terminated")
+# The whole `message` attribute of the report xdist writes for a dead worker,
+# and nothing else: never the body, which for a real failure can quote
+# anything, this script's own output included (review B1 on #1084). xdist's
+# report has when="???", so pytest's junitxml writes it through append_error
+# as `failed on setup with "<msg>"` (#485's shape), or bare through
+# append_failure.
+CRASHED = re.compile(
+    r"""(failed on (setup|teardown) with ")?worker '[^']+' crashed while running '[^']*'"?"""
+)
 TAIL = "This is not a test failure and not a red commit: re-run the job (TheHub #61117)."
 
 
@@ -55,8 +64,7 @@ def _crashes_and_real(junit: Path) -> tuple[int, int] | None:
     crashes = real = 0
     for case in root.iter("testcase"):
         for bad in list(case.findall("failure")) + list(case.findall("error")):
-            text = f"{bad.get('message') or ''}\n{bad.text or ''}"
-            if CRASHED.search(text):
+            if CRASHED.fullmatch(bad.get("message") or ""):
                 crashes += 1
             else:
                 real += 1
@@ -88,7 +96,8 @@ def lint_verdict(rc_ruff: int, rc_mypy: int) -> str:
     if not killed:
         return ""
     names = " and ".join(killed)
-    return _reason(f"{names} was SIGKILLed (exit {KILLED}) before it reached a verdict")
+    verb = "were" if len(killed) > 1 else "was"
+    return _reason(f"{names} {verb} SIGKILLed (exit {KILLED}) before it reached a verdict")
 
 
 def main(argv: list[str] | None = None) -> int:
