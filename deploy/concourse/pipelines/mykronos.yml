@@ -951,6 +951,17 @@ jobs:
                 # through it, so the canary proves the clock the suite runs on.
                 under_faketime() { faketime -m -f "$TIME_TRAVEL_OFFSET" "$@"; }
 
+                # [TheHub #61230] `source` is the newest commit to pass `unit`,
+                # and this script is the pipeline's, applied from main. When
+                # `unit` has been red since before the canary landed (#1056),
+                # the tree here predates it, and pytest's "file or directory
+                # not found" read as the clock not moving. Say what it is.
+                commit="$(git -C .. rev-parse --short=12 HEAD)"
+                if [ ! -f tests/test_time_travel_canary.py ]; then
+                  echo "::error::time-travel SOURCE TOO OLD: $commit, the newest commit to pass unit, has no tests/test_time_travel_canary.py (added by #1056). Nothing ran. The job runs properly on the first night after unit passes a newer commit."
+                  exit 1
+                fi
+
                 echo "Clock moved to now${TIME_TRAVEL_OFFSET} for the suite (TheHub #61109)."
                 export TIME_TRAVEL_REAL_NOW="$(date +%s)"
                 if ! TIME_TRAVEL_CANARY_IN_WORKER=0 under_faketime python -m pytest -q -p no:cacheprovider -n 0 tests/test_time_travel_canary.py \

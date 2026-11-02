@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -127,6 +128,58 @@ class TestTheJob:
         assert "TIME_TRAVEL_CANARY_IN_WORKER=1" in lines[worker]
         failed = "\n".join(lines[worker:suite])
         assert "::error::time-travel CANARY" in failed and "exit 1" in failed
+
+    def test_a_source_older_than_the_canary_is_named_as_such(self, pipeline) -> None:
+        # TheHub #61230: builds 1 and 2 got `source` at 603e0f0, the newest
+        # commit to pass `unit` then, which predates #1056 and so has no
+        # canary file. pytest said "file or directory not found" and the job
+        # blamed the clock. The tree is checked first, and its own error names
+        # the commit and never the clock.
+        lines = _lines(_script(_job(pipeline)))
+        guard = next(i for i, x in enumerate(lines) if x == f"if [ ! -f {CANARY} ]; then")
+        first_canary = next(i for i, x in enumerate(lines) if CANARY in x and "pytest" in x)
+        assert guard < first_canary
+        block = "\n".join(lines[guard : lines.index("fi", guard) + 1])
+        assert "::error::time-travel SOURCE" in block and "exit 1" in block
+        assert "$commit" in block and "clock" not in block.lower()
+
+    def test_the_source_guard_runs_and_names_the_commit(self, pipeline, tmp_path) -> None:
+        # The guard itself, run the way the job runs it: from backend/ in a
+        # checkout, once without the canary file and once with it.
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("no bash on this machine")
+        lines = _lines(_script(_job(pipeline)))
+        start = next(i for i, x in enumerate(lines) if x.startswith("commit="))
+        guard = next(i for i, x in enumerate(lines) if x == f"if [ ! -f {CANARY} ]; then")
+        snippet = "\n".join(lines[start : lines.index("fi", guard) + 1]) + "\necho GUARD-PASSED\n"
+        repo = tmp_path / "source"
+        (repo / "backend" / "tests").mkdir(parents=True)
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "old"], check=True)
+        sha = subprocess.run(
+            [*git, "rev-parse", "--short=12", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        def run() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [bash, "-ec", snippet],
+                cwd=repo / "backend",
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+        old = run()
+        assert old.returncode == 1, old.stdout + old.stderr
+        assert sha in old.stdout and "GUARD-PASSED" not in old.stdout
+        assert "clock did not move" not in old.stdout
+
+        (repo / "backend" / CANARY).write_text("", encoding="utf-8")
+        new = run()
+        assert new.returncode == 0, new.stdout + new.stderr
+        assert "GUARD-PASSED" in new.stdout
 
     def test_the_canary_checks_python_and_duckdb(self) -> None:
         text = (ROOT / "backend" / CANARY).read_text(encoding="utf-8")
