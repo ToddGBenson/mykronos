@@ -294,7 +294,7 @@ describe("needsYouCell", () => {
   it("counts this product's pull requests and acceptances awaiting a decision, not lapsed ones", () => {
     const cell = needsYouCell("o/beacon", ok([{ id: "a2", state: "pending_approval", days_left: null }]), approvals, NOW);
     expect(cell.value).toBe(2);
-    expect(cell.href).toBe("/product-owner?tab=review");
+    expect(cell.href).toBe("/approvals");
   });
 
   it("a failed approvals read is unknown", () => {
@@ -430,7 +430,11 @@ describe("RiskMatrix and AgeChart render", () => {
     expect(html).toContain('href="/repos/r1?tab=decisions"');
     expect(html).toContain('href="/repos/r1?tab=findings&amp;due=overdue"');
     expect(html).toContain('href="/repos/r1?tab=findings&amp;severity=critical"');
-    expect(html).toContain('href="/product-owner?tab=review"');
+    expect(html).toContain('href="/approvals"');
+    // Link the live route, never one that only redirects (TheHub #61137).
+    expect(html).toContain('href="/risk-policy"');
+    expect(html).not.toContain('href="/product-owner?tab=review"');
+    expect(html).not.toContain('href="/decisions"');
     expect(html).toMatch(/aria-label="o\/beacon gate: failing[^"]*"/);
     expect(html).toContain("NO-GO · 1 blocking");
   });
