@@ -597,7 +597,16 @@ jobs:
 
   - name: unit
     public: true
-    serial_groups: [worker-a]
+    # [TheHub #61117] `pytest-memory`, beside the worker lane: the jobs that
+    # run the full backend suite (unit, coverage, time-travel) and mypy
+    # (lint-and-types) never run at once. unit #479 and lint-and-types #462
+    # started in the same second on one worker, which D-174 caps at 3 GiB,
+    # and both were SIGKILLed with nothing failing. They sat in different
+    # lanes (worker-a, worker-b), and a lane is not a worker: Concourse put
+    # both on one. Every job here stays in its lane, so the group can only
+    # make one of them wait; it never adds concurrency. thehub.yml's group of
+    # the same name does this for TheHub's suites (#61106).
+    serial_groups: [worker-a, pytest-memory]
     plan:
       - get: source
         attempts: *retry_fetch
@@ -638,6 +647,9 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
+          # [TheHub #61117] Holds `verdict` only when the run reached one;
+          # the load_var step after this task reads it.
+          outputs: [{ name: judged }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
@@ -667,17 +679,37 @@ jobs:
                 # anything" are different facts and the second is worse.
                 mkdir -p ../../results
                 rc=0
-                # -n 6: the suite is dominated by per-test fixture setup - a
+                # -n 4: the suite is dominated by per-test fixture setup - a
                 # fresh DuckDB catalog per test - and that work is already
                 # isolated, so it parallelises without touching a test. 32
-                # minutes to 6 on this host.
+                # minutes to 6 on this host at -n 6.
+                # [TheHub #61117] 4, not 6: unit #485 and #486 lost xdist
+                # workers to memory (`[gwN] node down: Not properly
+                # terminated`) with lint-and-types not running, so the serial
+                # group alone does not fit six workers in a 3 GiB worker that
+                # other pipelines' jobs share. Fewer workers is slower, not
+                # weaker: every test still runs.
                 # No --cov here, deliberately (D-117): this worker measured the
                 # same suite at 218s clean against 541s with coverage - 2.5x, on
                 # a lane that carries `trigger: true` with seven jobs gating on
                 # `passed: [unit, ...]`. Coverage is collected by the weekly
                 # `coverage` job below instead (D-121), where nothing waits on it.
                 # (It was on the Actions unit lane until D-118 retired that lane.)
-                python -m pytest -q -n 6 --junitxml=../../results/unit.xml || rc=$?
+                python -m pytest -q -n 4 --junitxml=../../results/unit.xml || rc=$?
+
+                # [TheHub #61117] Killed for memory is not a verdict. pytest
+                # SIGKILLed (137), or exit 1 where every failure is a crashed
+                # xdist worker, measured nothing about this commit: say so,
+                # upload nothing, and leave judged/verdict unwritten so the
+                # next step errors the build. A real failure anywhere in the
+                # report (unit #486) is a verdict and goes on as before.
+                OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)"
+                if [ -n "$OOM" ]; then
+                  echo "::error::${OOM}"
+                  echo "Not uploaded: a run killed for memory judged nothing on this commit."
+                  exit 0
+                fi
+                printf '%s\n' "$rc" > ../../judged/verdict
 
                 bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
@@ -701,6 +733,14 @@ jobs:
                   echo "::error::The unit result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
                   exit "$upload_rc"
                 fi
+      # [TheHub #61117] ERRORED, not FAILED, when the task above was killed
+      # for memory and judged nothing. The task then writes no
+      # judged/verdict, so this step cannot read it and Concourse errors the
+      # build here: the step's name is what the build page shows. Start-Here's
+      # deploy check and the overnight loop re-trigger an errored build once
+      # and stop on a failed one, so a memory kill no longer stops them.
+      - load_var: killed-for-memory-not-a-test-failure-re-run
+        file: judged/verdict
 
   # Coverage, deliberately not on the lane that gates seven jobs (D-121).
   #
@@ -728,7 +768,8 @@ jobs:
   # suite is also not a figure: the failed tests' lines read as uncovered.
   - name: coverage
     public: true
-    serial_groups: [worker-a]
+    # [TheHub #61117] The full suite: see `pytest-memory` on `unit`.
+    serial_groups: [worker-a, pytest-memory]
     plan:
       - get: weekly
         attempts: *retry_fetch
@@ -864,7 +905,8 @@ jobs:
   # threads.
   - name: time-travel
     public: true
-    serial_groups: [worker-a]
+    # [TheHub #61117] The full suite: see `pytest-memory` on `unit`.
+    serial_groups: [worker-a, pytest-memory]
     plan:
       - get: nightly
         attempts: *retry_fetch
@@ -944,7 +986,8 @@ jobs:
 
   - name: lint-and-types
     public: true
-    serial_groups: [worker-b]
+    # [TheHub #61117] mypy: see `pytest-memory` on `unit`.
+    serial_groups: [worker-b, pytest-memory]
     plan:
       - get: source
         attempts: *retry_fetch
@@ -965,7 +1008,9 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
+          # [TheHub #61117] `judged` holds `verdict` only when ruff and mypy
+          # reached one; the load_var step after this task reads it.
+          outputs: [{ name: results }, { name: judged }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
@@ -1017,6 +1062,18 @@ jobs:
                 rc_mypy=${PIPESTATUS[0]}
                 set -e
 
+                # [TheHub #61117] `Killed  python -m mypy mykronos` (#462, #466)
+                # is exit 137 and judged nothing: say so, upload nothing, and
+                # leave judged/verdict unwritten so the next step errors the
+                # build. A real ruff or mypy failure beside it is a verdict.
+                OOM="$(python ../scripts/memory_kill.py lint --rc-ruff "$rc_ruff" --rc-mypy "$rc_mypy")"
+                if [ -n "$OOM" ]; then
+                  echo "::error::${OOM}"
+                  echo "Not uploaded: a run killed for memory judged nothing on this commit."
+                  exit 0
+                fi
+                printf '%s %s\n' "$rc_ruff" "$rc_mypy" > ../../judged/verdict
+
                 # The working tree's own module, installed editable two lines
                 # up - so this lane does not wait on a new `mykronos-ref` tag
                 # to start reporting.
@@ -1044,6 +1101,14 @@ jobs:
                   echo "::error::The lint-and-types result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
                   exit "$upload_rc"
                 fi
+      # [TheHub #61117] ERRORED, not FAILED, when the task above was killed
+      # for memory and judged nothing. The task then writes no
+      # judged/verdict, so this step cannot read it and Concourse errors the
+      # build here: the step's name is what the build page shows. Start-Here's
+      # deploy check and the overnight loop re-trigger an errored build once
+      # and stop on a failed one, so a memory kill no longer stops them.
+      - load_var: killed-for-memory-not-a-test-failure-re-run
+        file: judged/verdict
 
   - name: qa-spec-links
     public: true

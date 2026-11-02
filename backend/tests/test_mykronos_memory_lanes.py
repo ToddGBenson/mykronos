@@ -1,4 +1,4 @@
-"""mykronos `unit` and `lint-and-types` killed for memory are an outage, not a red commit (TheHub #61117).
+"""mykronos unit and lint-and-types killed for memory: an outage, not a red commit (#61117).
 
 2026-10-31 18:45Z: unit #479 (pytest -n 6) and lint-and-types #462 (mypy)
 started in the same second on one worker, which D-174 caps at 3 GiB, and both
@@ -46,6 +46,7 @@ MEMORY_JOBS = {"unit", "coverage", "time-travel", "lint-and-types"}
 # page shows as the errored step, so it says what to do.
 ERRORED_STEP = "killed-for-memory-not-a-test-failure-re-run"
 MAX_UNIT_WORKERS = 4
+LINT = ("lint-and-types", "ruff-and-mypy")
 
 CRASH = "worker 'gw{n}' crashed while running 'tests/test_x.py::test_{n}'"
 
@@ -109,7 +110,9 @@ def _classify(*args: str) -> str:
 class TestTheyNeverShareAWorker:
     def test_every_memory_job_is_in_the_memory_group(self) -> None:
         missing = {
-            name for name in MEMORY_JOBS if MEMORY_GROUP not in (_job(name).get("serial_groups") or [])
+            name
+            for name in MEMORY_JOBS
+            if MEMORY_GROUP not in (_job(name).get("serial_groups") or [])
         }
         assert not missing, (
             f"{sorted(missing)} can run beside another full suite or mypy on one 3 GiB "
@@ -205,8 +208,12 @@ def _run_tail(tmp_path: Path, job: str, task: str, prelude: str) -> tuple[int, s
 
 
 class TestTheJobErrorsInsteadOfFailing:
-    @pytest.mark.parametrize(("job", "task"), [("unit", "pytest"), ("lint-and-types", "ruff-and-mypy")])
-    def test_the_task_records_a_verdict_and_the_next_step_reads_it(self, job: str, task: str) -> None:
+    @pytest.mark.parametrize(
+        ("job", "task"), [("unit", "pytest"), ("lint-and-types", "ruff-and-mypy")]
+    )
+    def test_the_task_records_a_verdict_and_the_next_step_reads_it(
+        self, job: str, task: str
+    ) -> None:
         plan = _job(job)["plan"]
         i = next(n for n, s in enumerate(plan) if s.get("task") == task)
         outputs = {o["name"] for o in plan[i]["config"].get("outputs") or []}
@@ -217,15 +224,17 @@ class TestTheJobErrorsInsteadOfFailing:
             "judged/verdict, so a run with no verdict ERRORS instead of failing"
         )
 
-    def test_unit_killed_for_memory_records_no_verdict_and_skips_the_upload(self, tmp_path: Path) -> None:
+    def test_unit_killed_for_memory_records_no_verdict_and_skips_the_upload(
+        self, tmp_path: Path
+    ) -> None:
         if not SCRIPT.exists():
             pytest.fail("scripts/memory_kill.py does not exist")
         junit = _junit(tmp_path / "pre.xml", crashes=3)
         prelude = f"rc=1\nmkdir -p ../../results && cp '{junit.as_posix()}' ../../results/unit.xml"
         rc, out, judged = _run_tail(tmp_path / "t", "unit", "pytest", prelude)
         assert rc == 0, out
-        assert not judged, "a run killed for memory recorded a verdict, so the build would not error"
-        assert "REACHED-THE-UPLOAD" not in out, "a run that measured nothing was uploaded as a result"
+        assert not judged, "killed for memory, yet a verdict was recorded: no error"
+        assert "REACHED-THE-UPLOAD" not in out, "a run that measured nothing was uploaded"
         assert "not a test failure" in out
 
     def test_unit_with_a_real_failure_records_it(self, tmp_path: Path) -> None:
@@ -239,12 +248,12 @@ class TestTheJobErrorsInsteadOfFailing:
     def test_lint_with_mypy_killed_records_no_verdict(self, tmp_path: Path) -> None:
         if not SCRIPT.exists():
             pytest.fail("scripts/memory_kill.py does not exist")
-        rc, out, judged = _run_tail(tmp_path, "lint-and-types", "ruff-and-mypy", "rc_ruff=0\nrc_mypy=137")
+        rc, out, judged = _run_tail(tmp_path, *LINT, "rc_ruff=0\nrc_mypy=137")
         assert rc == 0, out
         assert not judged and "REACHED-THE-UPLOAD" not in out, out
 
     def test_lint_with_a_mypy_error_records_it(self, tmp_path: Path) -> None:
         if not SCRIPT.exists():
             pytest.fail("scripts/memory_kill.py does not exist")
-        rc, out, judged = _run_tail(tmp_path, "lint-and-types", "ruff-and-mypy", "rc_ruff=0\nrc_mypy=1")
+        rc, out, judged = _run_tail(tmp_path, *LINT, "rc_ruff=0\nrc_mypy=1")
         assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
