@@ -830,7 +830,7 @@ jobs:
   # and asserts that time.time() has moved by the offset in the main pytest
   # process (-n 0), in an xdist worker (-n 2), and in DuckDB's now(). If any
   # has not, the job stops with a CANARY error and never runs the suite. A
-  # canary failure turns the job red and posts to Slack (on_failure), but it
+  # canary failure turns the job red, which the red-main poll posts, but it
   # files no Hub story: the filing task never runs, because a clock that did
   # not move is a fault in this job, not a time bomb in the code. Given an
   # empty TIME_TRAVEL_REAL_NOW, the canary fails rather than skips.
@@ -865,12 +865,6 @@ jobs:
   - name: time-travel
     public: true
     serial_groups: [worker-a]
-    on_failure:
-      <<: *slack_alert
-      params: { <<: *slack_params, JOB: time-travel }
-    on_error:
-      <<: *slack_alert
-      params: { <<: *slack_params, OUTCOME: errored, JOB: time-travel }
     plan:
       - get: nightly
         attempts: *retry_fetch
