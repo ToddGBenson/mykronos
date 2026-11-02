@@ -673,3 +673,22 @@ class TestStaleSourceAndWhatRuns:
         body = client.get(f"/api/dashboard/findings/{finding_id}", headers=admin_auth).json()
         assert body["source_stale"] is None
         assert body["source_observations"] == []
+
+
+@pytest.mark.parametrize(
+    ("deployed", "scanned", "expected"),
+    [
+        ("ce924c0", "ce924c00888b5ea045ec440b55a16442c9de5543", True),
+        ("CE924C00888B", "ce924c0", True),
+        ("ce924c0", "603e0f0f", False),
+        # A probe that read back only a few characters would otherwise
+        # prefix-match almost any scanned commit and claim it is what runs.
+        ("ce9", "ce924c00888b5ea045ec440b55a16442c9de5543", False),
+        ("ce924c00888b", "ce92", False),
+        ("", "ce924c0", False),
+    ],
+)
+def test_same_commit_needs_an_abbreviated_sha_on_both_sides(
+    deployed: str, scanned: str, expected: bool
+) -> None:
+    assert atlas_source._same_commit(deployed, scanned) is expected
