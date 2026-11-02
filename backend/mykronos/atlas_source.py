@@ -365,3 +365,189 @@ def note_for(raw: Any) -> str | None:
     """`note` read off a finding's whole raw record."""
     record = _as_dict(raw) or {}
     return note(record.get("source_kind"), record.get("source_document"))
+
+
+#: What a surface renders when `stale` is True.
+STALE_SOURCE = "stale-source"
+
+
+def stale(kind: Any, document: Any) -> bool | None:
+    """The stale-source flag: True when a manifest of the document's ecosystem
+    was committed after the document's own date.
+
+    None for anything that is not an SBOM document, and for a document whose
+    staleness could not be told (undated, no git, a shallow clone). "Could not
+    tell" is not "current", so it is never False.
+    """
+    if kind != "sbom_document":
+        return None
+    changed = (_as_dict(document) or {}).get("manifests_changed_after")
+    return changed if isinstance(changed, bool) else None
+
+
+# -- What runs, beside it ----------------------------------------------------
+#
+# A document's version is a claim about whatever it was generated from. The
+# platform sometimes holds a better one: the deployment probe's revision
+# (`mykronos.deployments`), or a container scan of an image that names the
+# same package. Either, when present, is served beside the finding. Neither
+# is folded into severity, and neither is invented when absent.
+
+#: At most this many images are listed. A repository builds a handful.
+_MAX_IMAGES = 5
+
+
+def _short(sha: str) -> str:
+    return sha[:7]
+
+
+# git's default abbreviation. A shorter revision prefix-matches too many
+# commits to say that this one is what runs.
+_MIN_SHA_PREFIX = 7
+
+
+def _same_commit(a: str, b: str) -> bool:
+    a, b = a.strip().lower(), b.strip().lower()
+    if min(len(a), len(b)) < _MIN_SHA_PREFIX:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def _when(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M UTC")
+    return str(value or "")[:16].replace("T", " ")
+
+
+def _lag_phrase(lag: Any, revision: str) -> str:
+    """How far the deployment is behind its branch, from the sweep's stored
+    answer -- and only when that answer is about this same revision."""
+    data = lag if isinstance(lag, dict) else {}
+    if not _same_commit(str(data.get("deployed_revision") or ""), revision):
+        return ""
+    branch = str(data.get("branch") or "its branch")
+    status = str(data.get("status") or "")
+    behind = data.get("behind_by")
+    if status == "behind" and isinstance(behind, int) and behind > 0:
+        return f"{behind} commit{'s' if behind != 1 else ''} behind {branch}"
+    if status == "at_head":
+        return f"at the head of {branch}"
+    if status == "diverged":
+        return f"diverged from {branch}"
+    return ""
+
+
+def deployment_observation(onboarding: Any, scanned_commit: str | None) -> dict[str, Any] | None:
+    """What the deployment probe last read, when it read one.
+
+    Only a probe whose last sweep answered (`ok`): a revision left over from
+    an earlier sweep is what *was* running, and presenting it as what runs is
+    the confident wrong answer `mykronos.deployments` exists to prevent.
+    """
+    if onboarding is None or getattr(onboarding, "deployment_probe_status", "") != "ok":
+        return None
+    revision = str(getattr(onboarding, "deployed_revision", "") or "").strip()
+    if not revision:
+        return None
+    observed_at = getattr(onboarding, "deployed_revision_at", None)
+    matches = _same_commit(revision, scanned_commit) if scanned_commit else None
+    details = [f"probe read {_when(observed_at)}"] if observed_at else []
+    if lag := _lag_phrase(getattr(onboarding, "deployment_lag", None), revision):
+        details.append(lag)
+    suffix = f" ({'; '.join(details)})" if details else ""
+    if matches is True:
+        scan = "the commit this finding was scanned at"
+    elif matches is False and scanned_commit:
+        scan = f"not {_short(scanned_commit)}, the commit this finding was scanned at"
+    else:
+        scan = "the scanned commit is not recorded"
+    return {
+        "kind": "deployment_probe",
+        "summary": f"The deployment runs {_short(revision)}{suffix}: {scan}.",
+        "observed_at": observed_at,
+        "revision": revision,
+        "matches_scan": matches,
+        "image": None,
+        "package_version": None,
+        "status": None,
+    }
+
+
+def _scanned_commit(catalog: Any, finding_id: str) -> str | None:
+    if not catalog.all_files("scan_runs"):
+        return None
+    rows = catalog.query(
+        "SELECT s.commit_sha FROM findings f "
+        "JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id "
+        "WHERE f.finding_id = ? LIMIT 1",
+        [finding_id],
+    )
+    return str(rows[0][0]) if rows and rows[0][0] else None
+
+
+def image_observations(
+    catalog: Any, repo_full_name: str, package_name: str | None
+) -> list[dict[str, Any]]:
+    """Container scans of this repository's images that name the package.
+
+    The newest report per image. A container lane scans the image in the
+    registry, which is not proof of the image that runs, and the sentence
+    says so.
+    """
+    if not package_name or not catalog.all_files("findings"):
+        return []
+    rows = catalog.query(
+        "SELECT json_extract_string(raw_finding_json, '$.image') AS image, "
+        "package_version, status, last_seen_at FROM findings "
+        "WHERE capability = 'containers' AND repo_full_name = ? "
+        "AND lower(package_name) = lower(?) "
+        "ORDER BY last_seen_at DESC",
+        [repo_full_name, package_name],
+    )
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for image, version, status, last_seen in rows:
+        name = str(image or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        when = f", last seen {_when(last_seen)[:10]}" if last_seen else ""
+        out.append(
+            {
+                "kind": "image_scan",
+                "summary": (
+                    f"A container scan of {name} in the registry reported "
+                    f"{package_name} {version or '(version unreported)'} "
+                    f"({status or 'unknown'}{when}). That is the registry's "
+                    "image, not necessarily the one running."
+                ),
+                "observed_at": last_seen,
+                "revision": None,
+                "matches_scan": None,
+                "image": name,
+                "package_version": str(version) if version else None,
+                "status": str(status) if status else None,
+            }
+        )
+        if len(out) >= _MAX_IMAGES:
+            break
+    return out
+
+
+def observations(catalog: Any, onboarding: Any, row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Everything observed about what runs, for a finding read out of a
+    committed SBOM document. Empty for any other finding, and when nothing
+    was observed."""
+    if row.get("source_kind") != "sbom_document":
+        return []
+    finding_id = str(row.get("finding_id") or "")
+    out: list[dict[str, Any]] = []
+    probe = deployment_observation(onboarding, _scanned_commit(catalog, finding_id))
+    if probe is not None:
+        out.append(probe)
+    out.extend(
+        image_observations(
+            catalog, str(row.get("repo_full_name") or ""), row.get("package_name")
+        )
+    )
+    return out

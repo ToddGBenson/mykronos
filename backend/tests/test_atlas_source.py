@@ -416,3 +416,279 @@ def test_the_finding_detail_says_it_to_every_reader(
         assert body["severity"] == "critical"
     viewed = client.get(f"/api/dashboard/findings/{finding_id}", headers=viewer_auth).json()
     assert viewed["raw_finding_json"] is None
+
+
+# -- Stale source, and what runs beside it -----------------------------------
+#
+# The note above says the manifests changed after the document; a reader
+# scanning a queue still has to read the sentence to learn it. So the same
+# fact is a flag (`source_stale`, rendered "stale-source"), and whatever the
+# platform has observed about what runs -- the deployment probe's revision, a
+# container scan of an image naming the same package -- is served beside it.
+
+
+@pytest.mark.parametrize(
+    ("kind", "document", "expected"),
+    [
+        ("sbom_document", RAW["source_document"], True),
+        ("sbom_document", {**RAW["source_document"], "manifests_changed_after": False}, False),
+        # Undated, or a shallow clone: could not tell, which is not "current".
+        ("sbom_document", {**RAW["source_document"], "manifests_changed_after": None}, None),
+        ("sbom_document", None, None),
+        ("manifest", RAW["source_document"], None),
+        (None, None, None),
+    ],
+)
+def test_a_document_older_than_its_manifests_is_stale(kind, document, expected) -> None:
+    assert atlas_source.stale(kind, document) is expected
+    assert atlas_source.stale(kind, json.dumps(document) if document else document) is expected
+
+
+DEPLOYED = "d" * 40
+IMAGE = "ghcr.io/example-org/payments-api:1.4"
+
+
+def _onboard(client, **fields) -> str:
+    from mykronos.db.models import Organization, RepoOnboarding
+
+    with client.app.state.db.session() as session:
+        org = Organization(github_org_login=REPO.split("/")[0])
+        session.add(org)
+        session.flush()
+        row = RepoOnboarding(
+            org_id=org.id,
+            github_repo_full_name=REPO,
+            github_installation_id=1,
+            status="active",
+            enabled_capabilities=["sast", "atlas", "containers"],
+            default_branch="main",
+            **fields,
+        )
+        session.add(row)
+        session.commit()
+        return str(row.id)
+
+
+def _post_sbom_finding(client, auth, raw: dict = RAW) -> None:
+    post_scan(client, auth)
+    post_findings(
+        client,
+        auth,
+        [
+            finding_payload(
+                file_path=SBOM,
+                package_name="certifi",
+                package_version="2026.10.18",
+                raw_finding_json=raw,
+            )
+        ],
+    )
+
+
+def _post_image_finding(client, image: str, version: str) -> None:
+    from tests.conftest import issue_token
+
+    headers = {"Authorization": "Bearer " + issue_token(client, REPO, "containers")}
+    scan_run_id = "22222222-2222-2222-2222-222222222222"
+    post_scan(
+        client,
+        headers,
+        scan_run_id=scan_run_id,
+        capability="containers",
+        tool_name="trivy",
+        tool_version="0.60.0",
+    )
+    post_findings(
+        client,
+        headers,
+        [
+            finding_payload(
+                rule_id="PYSEC-2026-4320",
+                file_path=None,
+                line_start=None,
+                line_end=None,
+                symbol=None,
+                code_snippet=None,
+                package_name="certifi",
+                package_version=version,
+                raw_finding_json={"image": image},
+            )
+        ],
+        scan_run_id=scan_run_id,
+        capability="containers",
+    )
+
+
+def _sbom_finding_id(catalog) -> str:
+    return str(
+        catalog.query("SELECT finding_id FROM findings WHERE file_path = ?", [SBOM])[0][0]
+    )
+
+
+class TestStaleSourceAndWhatRuns:
+    def test_the_detail_flags_a_stale_source_for_every_reader(
+        self, client, auth, admin_auth, viewer_auth, catalog, run_compaction
+    ) -> None:
+        _post_sbom_finding(client, auth)
+        run_compaction()
+        finding_id = _sbom_finding_id(catalog)
+
+        for headers in (admin_auth, viewer_auth):
+            body = client.get(f"/api/dashboard/findings/{finding_id}", headers=headers).json()
+            assert body["source_stale"] is True
+            record = client.get(
+                f"/api/dashboard/findings/{finding_id}/record", headers=headers
+            ).json()
+            assert record["finding"]["source_stale"] is True
+
+    def test_a_current_document_is_not_flagged(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        current = {
+            **RAW,
+            "source_document": {**RAW["source_document"], "manifests_changed_after": False},
+        }
+        _post_sbom_finding(client, auth, current)
+        run_compaction()
+        body = client.get(
+            f"/api/dashboard/findings/{_sbom_finding_id(catalog)}", headers=admin_auth
+        ).json()
+        assert body["source_stale"] is False
+        assert body["source_observations"] == []
+
+    def test_the_triage_queue_carries_the_flag(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        _onboard(client)
+        _post_sbom_finding(client, auth)
+        run_compaction()
+
+        items = client.get("/api/dashboard/triage", headers=admin_auth).json()["items"]
+        (item,) = [i for i in items if i["file_path"] == SBOM]
+        assert item["source_stale"] is True
+        assert item["source_note"] == atlas_source.note_for(RAW)
+
+    def test_nothing_observed_is_said_as_nothing(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """No probe and no image scan: an empty list, never an invented one."""
+        _onboard(client)
+        _post_sbom_finding(client, auth)
+        run_compaction()
+        body = client.get(
+            f"/api/dashboard/findings/{_sbom_finding_id(catalog)}", headers=admin_auth
+        ).json()
+        assert body["source_observations"] == []
+
+    def test_the_deployment_probe_and_an_image_scan_sit_beside_it(
+        self, client, auth, admin_auth, viewer_auth, catalog, run_compaction
+    ) -> None:
+        _onboard(
+            client,
+            deployment_probe_url="https://app.example.invalid/health",
+            deployment_probe_status="ok",
+            deployed_revision=DEPLOYED,
+            deployed_revision_at=datetime(2026, 10, 30, 3, 0),
+            deployment_lag={
+                "status": "behind",
+                "branch": "main",
+                "deployed_revision": DEPLOYED,
+                "behind_by": 3,
+                "checked_at": "2026-10-30T03:00:00+00:00",
+            },
+        )
+        _post_sbom_finding(client, auth)
+        _post_image_finding(client, IMAGE, "2026.10.18")
+        run_compaction()
+        finding_id = _sbom_finding_id(catalog)
+
+        for headers in (admin_auth, viewer_auth):
+            body = client.get(f"/api/dashboard/findings/{finding_id}", headers=headers).json()
+            by_kind = {o["kind"]: o for o in body["source_observations"]}
+            assert set(by_kind) == {"deployment_probe", "image_scan"}
+
+            probe = by_kind["deployment_probe"]
+            assert probe["revision"] == DEPLOYED
+            assert probe["observed_at"].startswith("2026-10-30T03:00")
+            # The finding's scan was of commit a91f2c7, not the deployed one.
+            assert probe["matches_scan"] is False
+            assert DEPLOYED[:7] in probe["summary"]
+            assert "3 commits behind main" in probe["summary"]
+
+            image = by_kind["image_scan"]
+            assert image["image"] == IMAGE
+            assert image["package_version"] == "2026.10.18"
+            assert "certifi 2026.10.18" in image["summary"]
+            # A container lane scans the image in the registry, which is not
+            # proof of what runs, and the sentence says so.
+            assert "registry" in image["summary"]
+
+            record = client.get(
+                f"/api/dashboard/findings/{finding_id}/record", headers=headers
+            ).json()
+            assert record["finding"]["source_observations"] == body["source_observations"]
+
+    def test_an_unreadable_probe_is_not_reported_as_what_runs(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        """A revision left over from an earlier sweep is not an observation."""
+        _onboard(
+            client,
+            deployment_probe_url="https://app.example.invalid/health",
+            deployment_probe_status="unreachable",
+            deployed_revision=DEPLOYED,
+            deployed_revision_at=datetime(2026, 10, 20, 3, 0),
+        )
+        _post_sbom_finding(client, auth)
+        run_compaction()
+        body = client.get(
+            f"/api/dashboard/findings/{_sbom_finding_id(catalog)}", headers=admin_auth
+        ).json()
+        assert body["source_observations"] == []
+
+    def test_a_manifest_finding_gets_no_flag_and_no_observations(
+        self, client, auth, admin_auth, catalog, run_compaction
+    ) -> None:
+        _onboard(
+            client,
+            deployment_probe_url="https://app.example.invalid/health",
+            deployment_probe_status="ok",
+            deployed_revision=DEPLOYED,
+            deployed_revision_at=datetime(2026, 10, 30, 3, 0),
+        )
+        post_scan(client, auth)
+        post_findings(
+            client,
+            auth,
+            [
+                finding_payload(
+                    file_path="backend/requirements.txt",
+                    package_name="certifi",
+                    raw_finding_json={"source_kind": "manifest"},
+                )
+            ],
+        )
+        run_compaction()
+        finding_id = str(catalog.query("SELECT finding_id FROM findings")[0][0])
+        body = client.get(f"/api/dashboard/findings/{finding_id}", headers=admin_auth).json()
+        assert body["source_stale"] is None
+        assert body["source_observations"] == []
+
+
+@pytest.mark.parametrize(
+    ("deployed", "scanned", "expected"),
+    [
+        ("ce924c0", "ce924c00888b5ea045ec440b55a16442c9de5543", True),
+        ("CE924C00888B", "ce924c0", True),
+        ("ce924c0", "603e0f0f", False),
+        # A probe that read back only a few characters would otherwise
+        # prefix-match almost any scanned commit and claim it is what runs.
+        ("ce9", "ce924c00888b5ea045ec440b55a16442c9de5543", False),
+        ("ce924c00888b", "ce92", False),
+        ("", "ce924c0", False),
+    ],
+)
+def test_same_commit_needs_an_abbreviated_sha_on_both_sides(
+    deployed: str, scanned: str, expected: bool
+) -> None:
+    assert atlas_source._same_commit(deployed, scanned) is expected

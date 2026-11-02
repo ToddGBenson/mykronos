@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mykronos import (
+    atlas_source,
     briefing,
     briefing_sources,
     ci_stall,
@@ -471,6 +472,14 @@ class TriageItem(BaseModel):
             "(TheHub #60921). Null otherwise."
         ),
     )
+    source_stale: bool | None = Field(
+        default=None,
+        description=(
+            "The stale-source flag (TheHub #60921): true when a manifest the "
+            "committed SBOM document covers was committed after the document's "
+            "date. Null for other findings and when it could not be told."
+        ),
+    )
     address: str | None = Field(
         default=None,
         description="A network finding's host or IP (spec 14 §5). Null for anything with a file.",
@@ -648,6 +657,25 @@ class AutoTriageDigestOut(BaseModel):
     actions: list[AutoTriageActionOut]
 
 
+class SourceObservationOut(BaseModel):
+    """One observation of what runs, beside a finding read out of a committed
+    SBOM document (TheHub #60921)."""
+
+    kind: Literal["deployment_probe", "image_scan"]
+    summary: str
+    observed_at: datetime | None = None
+    #: The deployed revision, for a `deployment_probe`.
+    revision: str | None = None
+    #: Whether the deployed revision is the commit this finding was scanned
+    #: at; null when either is unknown.
+    matches_scan: bool | None = None
+    #: The image and the version it reported, for an `image_scan`.
+    image: str | None = None
+    package_version: str | None = None
+    #: That container finding's status.
+    status: str | None = None
+
+
 class FindingOut(BaseModel):
     """One finding as the dashboard serves it.
 
@@ -695,6 +723,25 @@ class FindingOut(BaseModel):
             "For a finding read out of a committed SBOM document: the document's "
             "date, its age at the scan and whether the manifests changed after it. "
             "Null otherwise. Filled on the detail and record routes only."
+        ),
+    )
+    source_stale: bool | None = Field(
+        default=None,
+        description=(
+            "The stale-source flag (TheHub #60921): true when a manifest the "
+            "committed SBOM document covers was committed after the document's "
+            "date, false when none was, null for other findings and when it "
+            "could not be told. Filled on the detail and record routes only."
+        ),
+    )
+    source_observations: list[SourceObservationOut] = Field(
+        default_factory=list,
+        description=(
+            "For a finding read out of a committed SBOM document: what the "
+            "platform has observed about what runs, beside it (TheHub #60921) - "
+            "the deployment probe's revision and container scans naming the same "
+            "package. Empty when nothing was observed, and for other findings. "
+            "Filled on the detail and record routes only."
         ),
     )
     address: str | None = Field(
@@ -5409,6 +5456,28 @@ async def scan_run_raw_file(
     return FileResponse(path, filename=path.name, media_type="application/octet-stream")
 
 
+def _source_observations(
+    request: Request, session: Any, record: dict[str, Any]
+) -> list[SourceObservationOut]:
+    """What runs, beside a finding read out of a committed SBOM document
+    (TheHub #60921). Empty for any other finding."""
+    if record.get("source_kind") != "sbom_document":
+        return []
+    onboarding = (
+        session.execute(
+            select(RepoOnboarding).where(
+                RepoOnboarding.github_repo_full_name == str(record.get("repo_full_name") or "")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return [
+        SourceObservationOut.model_validate(o)
+        for o in atlas_source.observations(request.app.state.catalog, onboarding, record)
+    ]
+
+
 @router.get("/findings/{finding_id}", response_model=FindingOut)
 async def finding_detail(
     request: Request, finding_id: str, principal: PrincipalDep
@@ -5434,6 +5503,7 @@ async def finding_detail(
     # What the platform did to it by itself, so the undo sits beside the
     # status it explains (TheHub #60888).
     with request.app.state.db.session() as session:
+        out.source_observations = _source_observations(request, session, record)
         out.auto_triage = [
             AutoTriageActionOut.model_validate(action)
             for action in session.execute(
@@ -6725,8 +6795,11 @@ async def whole_finding_record(
             fixed_version=(pkg_found or {}).get("fixed_version"),
         )
 
+    finding_out = FindingOut.model_validate(row)
+    with request.app.state.db.session() as session:
+        finding_out.source_observations = _source_observations(request, session, row)
     return FindingRecordOut(
-        finding=FindingOut.model_validate(row),
+        finding=finding_out,
         repo_full_name=repo_full_name,
         severity_here=_severity_here(request, row, profile),
         # Evidence that this finding re-asks a decision already made, where a

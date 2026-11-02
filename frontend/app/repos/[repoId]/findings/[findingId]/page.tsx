@@ -143,6 +143,21 @@ export default async function FindingRecordPage({
             <SeverityText severity={finding.severity as Severity} />
             <Pill tone="muted">{finding.capability}</Pill>
             <Pill tone={finding.status === "open" ? "warn" : "pass"}>{finding.status}</Pill>
+            {/* A committed SBOM is a document, not this commit's dependency
+                list, and one older than its manifests is flagged (TheHub #60921). */}
+            {finding.source_kind === "sbom_document" ? (
+              <Pill tone="muted" title="Read out of a committed SBOM document, not a manifest.">
+                document
+              </Pill>
+            ) : null}
+            {finding.source_stale ? (
+              <Pill
+                tone="warn"
+                title="A manifest this document covers was committed after the document's date."
+              >
+                stale-source
+              </Pill>
+            ) : null}
             {finding.owner ? (
               <span className="font-mono text-[12px] text-ink-3">
                 {finding.owner}
@@ -176,6 +191,23 @@ export default async function FindingRecordPage({
             <p className="max-w-4xl border-l-2 border-warn px-2 text-[13px] leading-relaxed text-ink-2">
               {finding.source_note}
             </p>
+          ) : null}
+          {/* What the platform has observed about what runs, beside the
+              document's claim (TheHub #60921). Absent when nothing was. */}
+          {finding.source_observations && finding.source_observations.length > 0 ? (
+            <div className="max-w-4xl px-2">
+              <Label as="h2">What runs</Label>
+              <ul className="flex flex-col gap-0.5">
+                {finding.source_observations.map((o) => (
+                  <li
+                    key={`${o.kind}:${o.revision ?? o.image ?? ""}`}
+                    className="text-[13px] leading-relaxed text-ink-2"
+                  >
+                    {o.summary}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </header>
 
