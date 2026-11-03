@@ -35,7 +35,14 @@ from mykronos.db.models import RepoOnboarding, RepoSurface
 from mykronos.oracle import OracleEngine, load_policy
 from mykronos.patchwork import correlate
 from mykronos.surface_match import normalize_selectors
-from tests.conftest import REPO, dependency_finding, finding_payload, post_findings, post_scan
+from tests.conftest import (
+    REPO,
+    dependency_finding,
+    finding_payload,
+    issue_token,
+    post_findings,
+    post_scan,
+)
 
 AUTH_FILE = "backend/api/orders.py"
 LOCKFILE = "backend/requirements.txt"
@@ -185,6 +192,8 @@ def _surface(
 
 
 def _post(client, auth, capability: str, payload: dict[str, Any]) -> None:
+    if capability != "sast":
+        auth = {"Authorization": f"Bearer {issue_token(client, REPO, capability)}"}
     run = str(uuid.uuid4())
     post_scan(client, auth, scan_run_id=run, capability=capability)
     response = post_findings(client, auth, [payload], scan_run_id=run, capability=capability)
@@ -402,6 +411,15 @@ class TestTheRiskDecision:
         )
 
 
+def _activate(client, admin_auth) -> None:
+    from tests.test_onboarding import onboard
+
+    onboard(client, admin_auth)
+    with client.app.state.db.session() as session:
+        for onboarding in session.scalars(select(RepoOnboarding)):
+            onboarding.status = "active"
+
+
 class TestTheRank:
     def _item(self, **overrides: Any) -> dict[str, Any]:
         item: dict[str, Any] = {"severity": "medium"}
@@ -428,11 +446,9 @@ class TestTheRank:
         self, client, auth, admin_auth, run_compaction
     ) -> None:
         db = client.app.state.db
+        _activate(client, admin_auth)
         _surface(db)
         _seed_code_chain(client, auth, run_compaction)
-        with db.session() as session:
-            for onboarding in session.scalars(select(RepoOnboarding)):
-                onboarding.status = "active"
 
         response = client.get(
             "/api/dashboard/triage", params={"order": "rank"}, headers=admin_auth
@@ -448,10 +464,8 @@ class TestTheRank:
     def test_the_queue_without_entry_points_has_no_chain_term(
         self, client, auth, admin_auth, run_compaction
     ) -> None:
+        _activate(client, admin_auth)
         _seed_code_chain(client, auth, run_compaction)
-        with client.app.state.db.session() as session:
-            for onboarding in session.scalars(select(RepoOnboarding)):
-                onboarding.status = "active"
 
         items = client.get(
             "/api/dashboard/triage", params={"order": "rank"}, headers=admin_auth
