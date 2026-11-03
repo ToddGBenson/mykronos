@@ -63,7 +63,7 @@ def test_the_recorder_code_is_ascii():
     BOM-less file as the ANSI code page). Three older lines already break it;
     this keeps the new code from adding more."""
     raw = SCRIPT.read_text(encoding="utf-8").replace(chr(13), "")
-    END = chr(10) + "}" + chr(10)
+    end = chr(10) + "}" + chr(10)
     for name in ("function Get-RunningBuildSha", "function Invoke-DeployRecorder"):
         body = raw[raw.index(name):]
-        body.split(END)[0].encode("ascii")
+        body.split(end)[0].encode("ascii")
