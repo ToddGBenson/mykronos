@@ -769,7 +769,7 @@ class TestTheRoute:
 # ---------------------------------------------------------------------------
 # B-051 in the queue (TheHub #60798, decision option A)
 
-#: 219 000 of 313 000 bytes are shell, which CodeQL does not implement: 69%.
+#: 219 000 of 313 000 bytes are shell, which CodeQL does not implement: 70%.
 MOSTLY_SHELL = {"Shell": 219000, "Python": 66000, "JavaScript": 28000}
 ALL_READ = {"Python": 50000, "TypeScript": 10000}
 
@@ -793,10 +793,10 @@ class TestAnalyserGap:
         [evidence] = gap.evidence
         assert evidence.source == "read_coverage"
         assert evidence.ref == REPO
-        assert "69%" in evidence.detail
+        assert "70%" in evidence.detail
         assert "Shell" in evidence.detail
         assert "codeql" in evidence.detail
-        assert "69%" in gap.title
+        assert "70%" in gap.title
 
     def test_a_fully_read_repository_is_not_work(self) -> None:
         queue = _build(analyser_coverage=[_measured(ALL_READ)])
@@ -875,7 +875,7 @@ class TestTheRouteReadsTheBriefingsCache:
         body = self._work(client, admin_auth)
         gaps = [i for i in body["items"] if i["kind"] == "analyser_gap"]
         assert [g["repo_full_name"] for g in gaps] == [onboarded]
-        assert "69%" in gaps[0]["evidence"][0]["detail"]
+        assert "70%" in gaps[0]["evidence"][0]["detail"]
         assert gaps[0]["actions"][0]["path"].endswith("/coverage")
         assert self._named(body) == []
         assert client.app.state.live_reads == []
