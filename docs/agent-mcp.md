@@ -87,17 +87,20 @@ id-only (TheHub #60739). `repos()` maps one to the other. `accept` and `request_
 | `scorecard(family?, instance?)` | `GET /api/agent/scorecard` | The agents' track record per model family and per instance (spec 36 §6). Both filters are passed through. A metric the records cannot support is `unavailable`, never zero. |
 | `surfaces(repo_id)` | `GET /api/dashboard/repos/{id}/surfaces` | Assets, entry points, trust boundaries, each with `selectors` and CR/IR/AR overrides (TheHub #60825). `read_only: true` rows come from the repository's `.sdlc/threat-model.yaml`. |
 | `controls(repo_id)` | `GET /api/dashboard/repos/{id}/controls` | The controls register as a flat list, with the kinds a control can be. |
+| `rule_vectors(repo_id)` | `GET /api/dashboard/repos/{id}/rule-vectors` | Rules whose open findings no published source gives a CVSS vector (SAST, DAST, secrets: no CVE), with finding counts, the CWE template that would pre-fill each, and any vector proposed or confirmed (TheHub #60832). `applies: null` means the rule's findings are unscored. |
 | `claim(finding_id)` | `POST /api/dashboard/triage/{id}/claim` | Claimed in the agent's actor name. |
 | `disposition(finding_id, status, reason)` | `PATCH /api/dashboard/findings/{id}/status`, or `POST …/disposition-requests` | Reads severity first. Critical, high, medium or low goes to the governed route (`finding_disposition`, #713, TheHub #61158); info is set directly. `status` is `false_positive` or `suppressed`. |
 | `accept(...)` | `POST /api/risk-acceptances` | The route's own rules: a deviation type (the reason code), a review date (`requested_until`, required, since this route has no indefinite option), a named person as risk owner, and a milestone that ends the weakness. |
 | `request_pr_review(repo, number, statement)` | `POST /api/approvals/pull-requests` | |
 | `declare_surface(repo_id, kind, name, ...)` | `POST /api/dashboard/repos/{id}/surfaces` | Direct write in the agent's name, audited `surface.declare`. Takes `selectors` and, for an asset, `cr`/`ir`/`ar`. Where the repository has a `.sdlc/threat-model.yaml`, a pull request to it is the better route (D4). |
 | `declare_control(repo_id, stride, kind, ...)` | `POST /api/dashboard/repos/{id}/controls` | Direct write, audited `control.declare`. Optional `applies_to_surface_id`. |
+| `propose_rule_vector(capability, tool, rule_id, ...)` | `POST /api/dashboard/rule-vectors` | A CVSS 3.1 base vector for one rule with no CVE, from a template (`template_id`), a `vector`, or a template edited. Recorded in the agent's name, audited `rule_vector.propose`, and inert: it changes no score until a person confirms it, and an agent credential is refused at the confirm route. Omit `repo_id` for an estate-wide vector. |
 
 Every write tool takes `dry_run`. A dry run returns the method, path, body and `governed_by` the real
 call would meet, and sends no write. `disposition` still reads the finding, because its route
 depends on the severity. `governed_by: null` is a direct write. Anything else names the duty in
-`approval-policy-v1.yaml` that someone independent will weigh before it takes effect.
+`approval-policy-v1.yaml` that someone independent will weigh before it takes effect. `propose_rule_vector` is a direct
+write that takes no effect: its `governed_by_means` says the proposal changes no score.
 
 Errors are the API's own `detail`, with the method, path and status. Nothing is retried. A 403 from
 a governed route says what to do instead, so read it.

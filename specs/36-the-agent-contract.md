@@ -163,6 +163,11 @@ experience; this spec adds the queue in front of them:
 Every write tool takes `dry_run`, which answers with the `governed_by` the real call would meet and makes no
 change.
 
+Later stories added read tools for `repos()`, `scan_run(id)`, `playbook(kind)`, `scorecard()`, `surfaces(repo)`,
+`controls(repo)` and `rule_vectors(repo)`, and direct writes `declare_surface`, `declare_control` and
+`propose_rule_vector`, the last of which changes no score until a person confirms it. The full set is pinned by
+`backend/tests/test_mcp_server.py`, and [docs/agent-mcp.md](../docs/agent-mcp.md) lists exactly that set.
+
 ## 5. Playbooks as data (phase 3)
 
 `agent-playbooks-v1.yaml` at the repository root, reviewed in a pull request like the other policies. One
@@ -303,6 +308,23 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 - **No completion by assertion.** Nothing here lets an agent mark an item done.
 
 ## 8. Implementation status
+
+### 8.1 Follow-up stories
+
+After the four phases, a reconciliation round compared this spec with the code and filed what differed as
+TheHub stories tagged `spec36-followup`. Each one's outcome:
+
+| Story | What it asked | Outcome |
+|---|---|---|
+| TheHub #60793 | MCP `playbook(kind)` and `scorecard()` tools | Built (#874). Both are in the pinned tool set and in [docs/agent-mcp.md](../docs/agent-mcp.md). |
+| TheHub #60794 | Compaction records which findings it reopened, not only how many | Built (#874): one `finding.reopened_by_scan` audit entry per finding, actor kind `automation`, no new table. `findings.reported_fixed_reopened` stays `unavailable` (§6). |
+| TheHub #60795 | Back `coverage()` and `pipeline()` (#318) | Decided option B: `GET /api/dashboard/repos/{id}/coverage` and the `coverage(repo_id)` tool (#1015). `pipeline()` dropped, because `lane_health` already wraps `/ci`. |
+| TheHub #60796 | Measure an agent's pull requests closed without merging | Decided option A: a close is attributed by the agent's own `pull_request_merge` request for that repository, number and head commit, read against the gate outcome the webhook records (#1097). That PR also replaces §6's statement that nothing stores a pull request closed without merging. |
+| TheHub #60797 | The work queue lists the agent's own pull requests that need attention | Decided option B: `pull_request_attention`, from the agent's `pull_request_merge` requests and Patchwork drafts, with no GitHub call, and a playbook (#1098). |
+| TheHub #60798 | The work queue shows what the scanners cannot read (B-051) | Decided option A: `analyser_gap`, read from the briefing's cached language mix; no cache is `unknown`, never an empty list (#1099). |
+| TheHub #60799 | This spec and [docs/agent-mcp.md](../docs/agent-mcp.md) match what is built | This table; the docs' tool table gains `rule_vectors` and `propose_rule_vector` and is now pinned to the tool set by `test_mcp_server.py`. |
+
+### 8.2 Phases
 
 | Phase | Scope | Status |
 |---|---|---|
