@@ -191,6 +191,71 @@ function Read-EnvValue {
     return $line.Line.Split('=', 2)[1].Trim()
 }
 
+function Get-RunningBuildSha {
+    # The commit mykronos-backend is running, from the image's own
+    # MYKRONOS_BUILD_SHA stamp, or $null. Read twice (TheHub #61046): before
+    # the pull, for what this deploy replaces, and after it, to confirm what
+    # it delivered. See the confirmation step below for why the stamp and
+    # not /healthz.
+    param([switch]$Quiet)
+    try {
+        $stamp = docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mykronos-backend 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "docker inspect failed" }
+        $found = $null
+        foreach ($line in $stamp) {
+            if ($line -match '^MYKRONOS_BUILD_SHA=(.*)$') { $found = $Matches[1].Trim() }
+        }
+        if ($found) { return $found }
+    } catch {
+        if (-not $Quiet) {
+            Write-Host "Could not read MYKRONOS_BUILD_SHA from mykronos-backend to confirm the running commit." -ForegroundColor Yellow
+        }
+    }
+    return $null
+}
+
+function Invoke-DeployRecorder {
+    # TheHub #61046. Tell the backlog which stories this deploy put live.
+    #
+    # Nothing a deploy here did reached the Hub's story lifecycle, so a story
+    # whose code was running sat at "tested" until someone moved it by hand:
+    # 53 stall reports were open on 2026-10-27 and 16 stories had been moved
+    # by hand in 30 days. The recorder reads the commits between the previous
+    # and the new running commit in this checkout and posts the stories they
+    # name.
+    #
+    # The recorder is NAMED IN backend/.env, not here: it lives outside this
+    # repository and carries its own credential, so this script holds neither
+    # an address nor a secret for it. A .py path runs under python; anything
+    # else is invoked directly. Absent, misnamed or failing, it warns and the
+    # deploy stands: the deploy happened whatever the record says.
+    param([string]$Sha, [string]$PreviousSha)
+    $recorder = Read-EnvValue $backendEnv "MYKRONOS_DEPLOY_RECORDER"
+    if (-not $recorder) {
+        Write-Host "No MYKRONOS_DEPLOY_RECORDER in backend/.env: the stories this deploy shipped stay at their gate until moved by hand." -ForegroundColor DarkGray
+        return
+    }
+    if (-not (Test-Path $recorder)) {
+        Write-Host "MYKRONOS_DEPLOY_RECORDER names $recorder, which does not exist; this deploy was not recorded." -ForegroundColor Yellow
+        return
+    }
+    $checkout = (Resolve-Path (Join-Path $here "..\..")).Path
+    $recorderArgs = @("--repo", "mykronos", "--sha", $Sha, "--checkout", $checkout)
+    if ($PreviousSha) { $recorderArgs += @("--since", $PreviousSha) }
+    try {
+        if ($recorder -like "*.py") {
+            & python $recorder @recorderArgs
+        } else {
+            & $recorder @recorderArgs
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "The deploy recorder exited $LASTEXITCODE. The deploy is fine; its stories were not recorded." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "The deploy recorder could not run: $($_.Exception.Message). The deploy is fine; its stories were not recorded." -ForegroundColor Yellow
+    }
+}
+
 # ---------------------------------------------------------------------------
 # THE RISK GATE (#60487, D-126). Runs before anything is pulled, so a refusal
 # costs nothing and leaves the host exactly as it was.
@@ -640,6 +705,13 @@ if ($Force -and $verdict.State -notin @("refused", "unjudged")) {
     Write-Host "-Force was passed but the gate did not refuse $Tag; there was nothing to override." -ForegroundColor DarkGray
 }
 
+# [TheHub #61046] What this deploy replaces, read before anything changes, so
+# the recorder can name the range of commits it shipped. Null on a first
+# deploy or an image too old to carry the stamp; the recorder then reads the
+# tip commit alone.
+$previousSha = Get-RunningBuildSha -Quiet
+if ($previousSha -notmatch '^[0-9a-f]{7,40}$') { $previousSha = $null }
+
 Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
 foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
     docker pull "$Registry/$name`:$Tag"
@@ -849,20 +921,14 @@ try {
     # internet which commit to diff), and the stamp needs no token. It is the
     # same MYKRONOS_BUILD_SHA the backend serves as `build.sha`: the image's
     # ENV, which compose does not override.
-    $running = $null
-    try {
-        $stamp = docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' mykronos-backend 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "docker inspect failed" }
-        foreach ($line in $stamp) {
-            if ($line -match '^MYKRONOS_BUILD_SHA=(.*)$') { $running = $Matches[1].Trim() }
-        }
-    } catch {
-        Write-Host "Could not read MYKRONOS_BUILD_SHA from mykronos-backend to confirm the running commit." -ForegroundColor Yellow
-    }
+    $running = Get-RunningBuildSha
     if (-not $running) {
         Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
     } elseif ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag)) {
         Write-Host "Confirmed: the backend is running $Tag." -ForegroundColor Green
+        # [TheHub #61046] Only a confirmed deploy is recorded: on a mismatch
+        # the stories in the range are not what is running.
+        Invoke-DeployRecorder -Sha $running -PreviousSha $previousSha
     } else {
         # Not a throw. The stack is up and healthy; what failed is the
         # deploy's intent, and the operator needs both facts.
