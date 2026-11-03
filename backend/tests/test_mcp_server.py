@@ -140,7 +140,9 @@ async def test_the_tool_set_is_exactly_this() -> None:
 
 
 #: A row of the tools table in docs/agent-mcp.md: "| `name(args)` | `METHOD /path` ...".
-_DOC_ROW = re.compile(r"^\| `(?P<name>[a-z_]+)\(.*?\)` \| `(?P<method>[A-Z]+) (?P<path>[^`]+)`", re.M)
+_DOC_ROW = re.compile(
+    r"^\| `(?P<name>[a-z_]+)\(.*?\)` \| `(?P<method>[A-Z]+) (?P<path>[^`]+)`", re.M
+)
 
 
 def _documented_tools() -> dict[str, tuple[str, str]]:
@@ -156,8 +158,10 @@ def test_the_docs_list_exactly_the_tool_set() -> None:
     """TheHub #60799: docs/agent-mcp.md is the agent's reference, so a tool the
     server has and the table does not (or the reverse) is a defect."""
     documented = set(_documented_tools())
-    assert not EXPECTED_TOOLS - documented, f"undocumented: {sorted(EXPECTED_TOOLS - documented)}"
-    assert not documented - EXPECTED_TOOLS, f"documented, not built: {sorted(documented - EXPECTED_TOOLS)}"
+    undocumented = sorted(EXPECTED_TOOLS - documented)
+    not_built = sorted(documented - EXPECTED_TOOLS)
+    assert not undocumented, f"undocumented: {undocumented}"
+    assert not not_built, f"documented, not built: {not_built}"
 
 
 async def test_each_documented_route_is_one_the_tool_calls() -> None:
