@@ -628,6 +628,83 @@ playbooks:
       - "Approve or decide your own request."
       - "Ask another agent of your own lineage to approve it."
 
+  pull_request_attention:
+    purpose: >-
+      A pull request needs you. Either your pull_request_merge request on it
+      was rejected or answered needs_info, or Patchwork opened a draft that
+      nobody has asked to have reviewed. An approval covers one head commit,
+      so the answer is always a new head and a new request, never an edit to
+      the old one. Done is a request naming a newer head (or, for a draft,
+      any request), or the webhook recording the pull request merged or
+      closed. Built from the platform's own records: nothing here asked
+      GitHub, so read the pull request before acting on it.
+    steps:
+      - id: read-the-verdict
+        do: >-
+          For your own request, read the request, its decisions and the frozen
+          evidence, and find exactly what the approver rejected or asked for.
+          For a Patchwork draft, read the finding and the fixer's rationale in
+          the item's evidence.
+        check: >-
+          You can state in one sentence what must change, or, for a draft,
+          what the fix claims to do.
+        routes:
+          - "GET /api/approvals/{request_id}"
+          - "GET /api/approvals/{request_id}/evidence"
+          - "GET /api/dashboard/findings/{finding_id}"
+      - id: confirm-it-is-still-open
+        do: >-
+          Read the pull request on GitHub. The platform records a close only
+          for Patchwork's own pull requests (the close_not_recorded caveat).
+        check: >-
+          The pull request is open and its head is the one the item names, or
+          you know which head it moved to.
+        outside:
+          - "gh pr view <number> --repo <owner/repo> --json state,headRefOid,isDraft"
+        if_found: >-
+          It is merged or closed. There is nothing to request; the item ends
+          when a newer request names it or, for Patchwork, when the webhook
+          records the close.
+        then: stop
+      - id: answer-it
+        do: >-
+          Push what the approver asked for as a new commit on the same branch,
+          with a test that fails without it. For a draft, check the fix is
+          right before asking anyone to review it; a human_edited draft has
+          someone else's change on it, so read that first.
+        check: >-
+          The new head contains what was asked for, and its required checks
+          are green or running, never red.
+        outside:
+          - "gh pr checks <number> --repo <owner/repo>"
+        if_found: >-
+          The rejection says the change is wrong, not incomplete. Do not push
+          a variation of it; tell a person.
+        then: escalate
+      - id: request-review-of-the-new-head
+        do: >-
+          Ask for an independent review at the pull request's current head.
+          The platform reads the diff and computes the tier itself.
+        check: >-
+          The new request exists and names the new head; the item leaves the
+          queue on the next read.
+        routes:
+          - "POST /api/approvals/pull-requests"
+    stop_when:
+      - "A request names a newer head of the pull request."
+      - "The pull request is merged or closed."
+    escalate:
+      when:
+        - "The rejection disputes the change itself rather than asking for more."
+        - "The same pull request has been rejected twice."
+        - "A Patchwork fix is wrong and closing it needs a rejection reason a person states."
+      evidence:
+        - "The request id, the approver's rationale, the head you pushed and its checks."
+    never:
+      - "Approve, merge or decide your own pull request, or ask another agent of your lineage to."
+      - "Move a head that already has an approval; open a follow-up pull request instead."
+      - "Re-request the same head that was rejected."
+
   # -------------------------------------------------------------------------
   # Band 4: acceptances
   # -------------------------------------------------------------------------

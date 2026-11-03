@@ -206,6 +206,79 @@ def _own_requests(db: Any, principal: Principal) -> list[dict[str, Any]] | None:
         return None
 
 
+def _pull_request_requests(db: Any) -> list[dict[str, Any]] | None:
+    """Every `pull_request_merge` request that can still matter, any requester.
+
+    Another principal's request is read too: a newer request on the same pull
+    request is what answers a rejection, and any request claims a Patchwork
+    draft (TheHub #60797). Expired requests are left out; they decided nothing.
+    """
+    try:
+        with db.session() as session:
+            requests = list(
+                session.execute(
+                    select(ApprovalRequest).where(
+                        ApprovalRequest.duty == agent_work.PULL_REQUEST_DUTY,
+                        ApprovalRequest.state.in_(("pending", "approved", "rejected")),
+                    )
+                ).scalars()
+            )
+            out = []
+            for req in requests:
+                latest = session.execute(
+                    select(ApprovalDecision)
+                    .where(ApprovalDecision.request_id == req.id)
+                    .order_by(ApprovalDecision.created_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                out.append(
+                    {
+                        "id": req.id,
+                        "duty": req.duty,
+                        "subject_ref": req.subject_ref,
+                        "requested_by": req.requested_by,
+                        "state": req.state,
+                        "created_at": req.created_at,
+                        "last_verdict": latest.verdict if latest else None,
+                        "last_rationale": latest.rationale if latest else "",
+                    }
+                )
+            return out
+    except Exception:  # noqa: BLE001 - reported as unknown, not as none
+        logger.debug("Could not read pull request approval requests for the work queue")
+        return None
+
+
+_PATCHWORK_COLUMNS = (
+    "event_id",
+    "repo_full_name",
+    "finding_id",
+    "fix_pr_number",
+    "fix_pr_url",
+    "pr_status",
+    "fixer_name",
+    "rationale",
+)
+
+
+def _patchwork_prs(catalog: Any, repo: str | None) -> list[dict[str, Any]] | None:
+    """Patchwork's remediation events that reached a pull request, any status.
+
+    From the lake, not GitHub: the pull_request webhook keeps `pr_status`
+    current, which is what `_open_draft_count` already relies on.
+    """
+    where = "fix_pr_number IS NOT NULL" + (" AND repo_full_name = ?" if repo else "")
+    try:
+        rows = catalog.query(
+            f"SELECT {', '.join(_PATCHWORK_COLUMNS)} FROM remediation_events WHERE {where}",
+            [repo] if repo else [],
+        )
+    except Exception:  # noqa: BLE001 - reported as unknown, not as none
+        logger.debug("Could not read Patchwork's pull requests for the work queue")
+        return None
+    return [dict(zip(_PATCHWORK_COLUMNS, row, strict=True)) for row in rows]
+
+
 def _triage_rows(request: Request, repo: str | None, limit: int) -> list[dict[str, Any]] | None:
     try:
         with request.app.state.db.session() as session:
@@ -289,6 +362,8 @@ async def work(
     triage_rows = await asyncio.to_thread(_triage_rows, request, repo, findings)
     acceptances = await asyncio.to_thread(_acceptances, state.db, state.catalog, repo)
     own = await asyncio.to_thread(_own_requests, state.db, principal)
+    pr_requests = await asyncio.to_thread(_pull_request_requests, state.db)
+    patchwork_prs = await asyncio.to_thread(_patchwork_prs, state.catalog, repo)
 
     queue = agent_work.build(
         report,
@@ -296,6 +371,8 @@ async def work(
         triage_rows=triage_rows,
         acceptances=acceptances,
         approval_requests=own,
+        pull_request_requests=pr_requests,
+        patchwork_prs=patchwork_prs,
         now=utcnow(),
         probe_interval_seconds=int(settings.exposure_probe_interval_seconds),
         playbook_version=playbook_version,
