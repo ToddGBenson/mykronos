@@ -542,7 +542,8 @@ class TestIngest:
     def test_it_needs_the_sast_capability(
         self, client: TestClient, admin_auth, tmp_path: Path
     ) -> None:
-        activate(client, admin_auth)
+        # Grants are per repository, so this one is onboarded without `sast`.
+        onboard(client, admin_auth, REPO)
         other = {"Authorization": f"Bearer {issue_token(client, REPO, 'containers')}"}
 
         response = post_dataflow(
@@ -664,9 +665,10 @@ class TestTheWorkflow:
         step = self._step(render_sast())
 
         assert "steps.init.outputs.codeql-path" in step
-        assert "python -m mykronos.reachability_dataflow queries" in step
+        assert "python -m mykronos.reachability_dataflow" in step
+        assert "--write-queries" in step
         assert "database analyze" in step
-        assert "python -m mykronos.reachability_dataflow report" in step
+        assert "--sarif" in step and "--analysis-sarif-dir" in step
         assert "/api/ingest/reachability/dataflow" in step
 
     def test_it_never_fails_the_scan(self) -> None:
