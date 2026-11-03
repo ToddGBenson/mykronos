@@ -222,7 +222,7 @@ that tells agents when to escalate is not one an agent should approve edits to.
 
 Computed per model family and per instance from records that already exist. No new events and no new
 tables: every number is a read over `approval_requests`, `approval_decisions`, `audit_log`,
-`triage_state` and finding status in the lake (`mykronos/agent_scorecard.py`). Any principal may read it,
+`triage_state`, and finding status and gate outcomes in the lake (`mykronos/agent_scorecard.py`). Any principal may read it,
 because it is the record a delegation (spec 34 §5) rests on, and an agent should read the same numbers
 the operator does. It carries counts, never rationales or review notes.
 
@@ -249,6 +249,7 @@ fails to read is also named in `unknown`.
 | `requester.needs_info` | requests answered `needs_info` at least once / requests made | `approval_requests` + `approval_decisions` |
 | `dispositions.reopened` | reopened / `false_positive` and `suppressed` dispositions the agent applied | `audit_log` `finding.status` (`actor_kind = agent`) and `finding.reopened` |
 | `claims.lapsed_open` | lapsed claims on a finding still `open` / claims recorded under the agent's actor | `triage_state` and lake `findings.status` |
+| `pull_requests.closed_unmerged` | closed without merging / pull requests the agent asked to merge whose outcome the gate recorded on the head commit it asked about | `approval_requests` (`pull_request_merge`, `requester_kind = agent`) and lake `risk_decisions.gate_outcome` |
 
 `requests_by_duty` repeats `rejected` and `needs_info` for each duty, so `pull_request_merge` rejections
 appear separately. A pending request past its expiry counts as `expired`, because the engine only marks
@@ -268,8 +269,20 @@ a delegation across every family it trusts, not on a family.
   agent's own.
 - `unattributed_dispositions` counts the `finding.status` entries that name no actor kind: entries
   written before spec 34 §1, or by a CLI or script. No agent's record includes them.
+- `pull_requests.closed_unmerged` attributes a close by the agent's own request, not by who pressed a
+  button on GitHub (decided 2026-10-22, TheHub #60796, option A). When a pull request closes, the
+  `pull_request` webhook records `merged` or `closed_unmerged` on the newest `pr_gate` decision for it
+  (`risk_decisions.gate_outcome`). The pull request is the agent's when the agent's
+  `pull_request_merge` request has the subject `repo#number@sha` with that decision's repository,
+  number and `commit_sha`. Each pull request counts once, however many requests named that commit.
+  `breakdown` holds `merged`, `closed_unmerged` and `not_settled` (still open, closed on a later head
+  than any the agent asked about, or never judged by the gate). Only the settled ones are the
+  denominator, so an agent with none is `no_data`. The lake is read only when an agent has made a
+  `pull_request_merge` request. If it cannot be read, the metric is `unavailable` and `lake
+  risk_decisions` is named in `unknown`. Requests the platform opens itself for unclaimed pull
+  requests are `automation`, so they count against no agent.
 
-**Two items from the original list cannot be derived. Each is reported `unavailable` with its reason on
+**One item from the original list cannot be derived. It is reported `unavailable` with its reason on
 every group:**
 
 - `findings.reported_fixed_reopened`: no principal reports a finding fixed. `fixed` is an observation the
@@ -281,15 +294,10 @@ every group:**
   credited, and the metric stays unavailable: the entry is a record, not a measure. It is deliberately not
   `finding.reopened`, which `dispositions.reopened` reads. `dispositions.reopened` is the measurable
   version.
-- `pull_requests.closed_unmerged`: the platform records an approval request for each head commit, not
-  what happened to the pull request on GitHub, so nothing stores a pull request closed without merging.
-  Every GitHub action also comes from one shared account (spec 34 §1.2), so a close could not be
-  attributed to an agent even if it were stored. Rejected `pull_request_merge` requests are measured.
-  Requests the platform opens itself for unclaimed pull requests are `automation`, so they appear on no
-  agent's record.
 
-Closing either gap would need a new record. Compaction's per-finding reopen entry now exists but names
-no claimant, so it does not close the first; the second would need the PR stamp job recording a close.
+Closing that gap would need a new record. Compaction's per-finding reopen entry exists but names no
+claimant, so it does not close it. (`pull_requests.closed_unmerged` was on this list until TheHub #60796:
+the gate outcome the webhook records, matched to the agent's own merge request, derives it.)
 
 A delegation is then granted against a published record rather than on trust, and sampling and
 suspension (`suspend_below_agreement`) already turn a falling record into consequences.
@@ -309,4 +317,4 @@ suspension (`suspend_below_agreement`) already turn a falling record into conseq
 | 1 | §2 work queue, §3 caveats | Merged (#799) |
 | 2 | §4 MCP server (#319) | Merged (#803): `backend/mykronos/mcp_server/`, `mykronos-mcp`, [docs/agent-mcp.md](../docs/agent-mcp.md). `coverage()` built on `GET /api/dashboard/repos/{id}/coverage` (TheHub #60795, decision option B). `pipeline()` dropped by that decision: `lane_health` already wraps `/ci` |
 | 3 | §5 playbooks | Built (§5.1): `agent-playbooks-v1.yaml`, `mykronos.playbooks`, `GET /api/agent/playbooks[/{kind}]`, `WorkItem.playbook` |
-| 4 | §6 track record: `GET /api/agent/scorecard` | Merged (#802); two §6 items are reported `unavailable` with the reason (§6) |
+| 4 | §6 track record: `GET /api/agent/scorecard` | Merged (#802); `pull_requests.closed_unmerged` derived from gate outcomes (TheHub #60796); one §6 item is reported `unavailable` with the reason (§6) |

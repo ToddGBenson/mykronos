@@ -9,7 +9,8 @@ dispositions somebody had to reopen, how many claims it walked away from.
 **No new events, no new tables.** Every number here is a read over rows the
 platform already writes: `approval_requests` and `approval_decisions` (the
 engine), `audit_log` with the actor kind and provenance spec 34 §1 added,
-`triage_state` (the worklist) and finding status in the lake. A metric the
+`triage_state` (the worklist), finding status in the lake, and the gate
+outcome the `pull_request` webhook records on `risk_decisions`. A metric the
 existing records cannot support is reported as `unavailable` with the reason,
 never as zero: "could not compute" must not read as "nothing happened".
 
@@ -69,9 +70,19 @@ SOURCE_DECISIONS = "approval_decisions (approver_kind = agent)"
 SOURCE_REQUESTS = "approval_requests (requester_kind = agent) + approval_decisions"
 SOURCE_DISPOSITIONS = "audit_log finding.status (actor_kind = agent) + finding.reopened"
 SOURCE_CLAIMS = "triage_state.claimed_by = agent actor + findings.status (lake)"
+SOURCE_PULL_REQUESTS = (
+    "approval_requests (duty = pull_request_merge, requester_kind = agent) "
+    "+ risk_decisions.gate_outcome (lake)"
+)
 
-#: Spec 36 §6 lists these. The records do not support them; the reason is the
-#: output, so nobody reads their absence as a clean record.
+#: The duty whose requests name a pull request (`approvals/pull_requests.py`).
+PR_DUTY = "pull_request_merge"
+
+#: (repo, number, head sha), the parts of a merge request's subject.
+PullRequestKey = tuple[str, int, str]
+
+#: Spec 36 §6 lists this. The records do not support it; the reason is the
+#: output, so nobody reads its absence as a clean record.
 NOT_DERIVABLE: dict[str, tuple[str, str]] = {
     "findings.reported_fixed_reopened": (
         "lake findings.status, compaction",
@@ -82,14 +93,6 @@ NOT_DERIVABLE: dict[str, tuple[str, str]] = {
         "automation), but nothing stores which change claimed to fix it, so nobody can be "
         "credited. Dispositions an agent "
         "made that were later reopened are measured instead: `dispositions.reopened`.",
-    ),
-    "pull_requests.closed_unmerged": (
-        "none",
-        "The platform records an approval request per head commit, not what happened to "
-        "the pull request on GitHub: nothing stores a pull request closed without "
-        "merging. Every GitHub action also reads as one shared account (spec 34 §1.2), so "
-        "a close could not be attributed to an agent if it were stored. Rejected "
-        "`pull_request_merge` requests are measured: see `requests_by_duty`.",
     ),
 }
 
@@ -145,6 +148,8 @@ class RequestRow:
     state: str
     expires_at: datetime
     verdicts: tuple[str, ...]
+    #: `repo#number@sha` for a `pull_request_merge` request.
+    subject_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -186,6 +191,9 @@ class Gathered:
     #: Disposition entries no agent can be read from: written before the
     #: actor kind existed, or by a CLI or script (`unattributed`).
     unattributed_dispositions: int | None
+    #: The settled outcome of every pull request the gate judged, by repo,
+    #: number and the head commit it judged. None: the lake could not be read.
+    pr_outcomes: dict[PullRequestKey, str] | None = field(default_factory=dict)
     unknown: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -442,6 +450,64 @@ def _requester_metrics(
     return [rejected, needs_info], by_duty
 
 
+# -- Pull requests ---------------------------------------------------------------
+
+
+def parse_pr_subject(subject_ref: str) -> PullRequestKey | None:
+    """`repo#number@sha` (`approvals.pull_requests.subject_ref`), or None."""
+    repo, sep, rest = subject_ref.partition("#")
+    number, at, sha = rest.partition("@")
+    if not (repo and sep and at and sha and number.isdigit()):
+        return None
+    return repo, int(number), sha
+
+
+def _pull_request_metric(
+    rows: list[RequestRow], outcomes: dict[PullRequestKey, str] | None
+) -> Metric:
+    """Closed without merging / this agent's pull requests with a settled outcome.
+
+    Decided 2026-10-22 (TheHub #60796, option A): a closed pull request is the
+    agent's when its own `pull_request_merge` request names the repository,
+    number and head commit of the gate decision the close was recorded on.
+    Every GitHub action reads as one shared account (spec 34 §1.2); the
+    request is the agent's own record, so that does not matter.
+    """
+    name = "pull_requests.closed_unmerged"
+    if outcomes is None:
+        return _unavailable(
+            name,
+            SOURCE_PULL_REQUESTS,
+            "The lake's risk_decisions could not be read, so no pull request's outcome "
+            "is known.",
+        )
+    keys = {
+        key
+        for r in rows
+        if r.duty == PR_DUTY and (key := parse_pr_subject(r.subject_ref)) is not None
+    }
+    breakdown: dict[str, int] = defaultdict(int)
+    for key in keys:
+        breakdown[outcomes.get(key, "not_settled")] += 1
+    settled = breakdown.get("merged", 0) + breakdown.get("closed_unmerged", 0)
+    return _ratio(
+        name,
+        SOURCE_PULL_REQUESTS,
+        breakdown.get("closed_unmerged", 0),
+        settled,
+        "pull requests this agent asked to merge whose close the gate recorded, "
+        "on the head commit it asked about",
+        empty_note="No pull request this agent asked to merge has a recorded outcome.",
+        breakdown=dict(breakdown),
+        note=(
+            "Each pull request counts once, on the head commit its request named. "
+            "`not_settled` is still open, closed on a later head, or never judged by "
+            "the gate. Requests the platform opened itself are automation and count "
+            "against no agent."
+        ),
+    )
+
+
 # -- Dispositions ----------------------------------------------------------------
 
 
@@ -619,6 +685,16 @@ def compute(
         else:
             req_metrics, by_duty = _requester_metrics(r_rows, now)
             metrics += req_metrics
+        if gathered.requests is None:
+            metrics.append(
+                _unavailable(
+                    "pull_requests.closed_unmerged",
+                    SOURCE_PULL_REQUESTS,
+                    "approval_requests could not be read.",
+                )
+            )
+        else:
+            metrics.append(_pull_request_metric(r_rows, gathered.pr_outcomes))
         if gathered.status_events is None:
             metrics.append(
                 _unavailable(
@@ -732,6 +808,28 @@ def _finding_status(catalog: Any, ids: Iterable[str]) -> dict[str, str]:
     return out
 
 
+def _pr_outcomes(catalog: Any) -> dict[PullRequestKey, str]:
+    """Every settled pr_gate decision, keyed as a merge request's subject is.
+
+    The webhook marks only the newest decision for a pull request, so its
+    `commit_sha` is the head the gate last judged.
+    """
+    if not catalog.all_files("risk_decisions"):
+        return {}
+    out: dict[PullRequestKey, str] = {}
+    for repo, number, sha, outcome in catalog.query(
+        """
+        SELECT repo_full_name, pr_number, commit_sha, gate_outcome
+        FROM risk_decisions
+        WHERE decision_type = 'pr_gate'
+          AND gate_outcome IN ('merged', 'closed_unmerged')
+        """
+    ):
+        if repo and number is not None and sha:
+            out[(str(repo), int(number), str(sha))] = str(outcome)
+    return out
+
+
 def gather(db: Any, catalog: Any, policy: ApprovalPolicy, *, now: datetime) -> Gathered:
     """Read the rows `compute` needs. A source that fails is `None` and named
     in `unknown`; the others are still read."""
@@ -799,6 +897,7 @@ def gather(db: Any, catalog: Any, policy: ApprovalPolicy, *, now: datetime) -> G
                         state=r.state,
                         expires_at=r.expires_at,
                         verdicts=tuple(verdicts.get(r.id, ())),
+                        subject_ref=r.subject_ref,
                     )
                 )
             return out
@@ -862,6 +961,15 @@ def gather(db: Any, catalog: Any, policy: ApprovalPolicy, *, now: datetime) -> G
         else {}
     )
 
+    # Read only when an agent asked to merge something: an estate with no
+    # such request has nothing to attribute, and should not fail on the lake.
+    asked_to_merge = any(r.duty == PR_DUTY for r in request_rows or [])
+    pr_outcomes = (
+        _read("lake risk_decisions", unknown, lambda: _pr_outcomes(catalog))
+        if asked_to_merge
+        else {}
+    )
+
     stats: dict[str, dict[str, Any]] = {}
     for did in sorted({d.delegation_id for d in decision_rows or [] if d.delegation_id}):
         found = _read(
@@ -879,5 +987,6 @@ def gather(db: Any, catalog: Any, policy: ApprovalPolicy, *, now: datetime) -> G
         finding_status=finding_status,
         delegation_stats=stats,
         unattributed_dispositions=events[1] if events is not None else None,
+        pr_outcomes=pr_outcomes,
         unknown=unknown,
     )
