@@ -88,6 +88,8 @@ def _build(
     inputs.setdefault("triage_rows", [])
     inputs.setdefault("acceptances", [])
     inputs.setdefault("approval_requests", [])
+    inputs.setdefault("pull_request_requests", [])
+    inputs.setdefault("patchwork_prs", [])
     inputs.setdefault("playbook_version", "1.0")
     return agent_work.build(
         briefing or _briefing(),
@@ -158,6 +160,8 @@ class TestUnknownIsNotEmpty:
             triage_rows=None,
             acceptances=None,
             approval_requests=None,
+            pull_request_requests=None,
+            patchwork_prs=None,
         )
         assert {u.source for u in queue.unknown} == {
             "job_runs",
@@ -167,6 +171,8 @@ class TestUnknownIsNotEmpty:
             "triage",
             "risk_acceptances",
             "approval_requests",
+            "pull_request_requests",
+            "patchwork",
         }
 
     def test_a_clean_read_reports_nothing_unknown(self) -> None:
@@ -459,9 +465,9 @@ class TestWaiting:
     def test_needs_info_is_work_and_pending_is_not(self) -> None:
         queue = _build(
             approval_requests=[
-                {"id": "r1", "duty": "pull_request_merge", "subject_ref": "x#1",
+                {"id": "r1", "duty": "finding_disposition", "subject_ref": "f1",
                  "last_verdict": "needs_info", "last_rationale": "Which test covers it?"},
-                {"id": "r2", "duty": "pull_request_merge", "subject_ref": "x#2",
+                {"id": "r2", "duty": "finding_disposition", "subject_ref": "f2",
                  "last_verdict": None, "last_rationale": ""},
             ]
         )
@@ -481,6 +487,158 @@ class TestWaiting:
         )
         assert queue.items == []
         assert queue.waiting[0].kind == "awaiting_closure"
+
+
+def _pr_request(
+    request_id: str,
+    number: int = 7,
+    *,
+    state: str = "rejected",
+    verdict: str | None = "reject",
+    by: str = AGENT.actor,
+    age_hours: int = 2,
+    repo: str = REPO,
+) -> dict[str, Any]:
+    return {
+        "id": request_id,
+        "duty": "pull_request_merge",
+        "subject_ref": f"{repo}#{number}@{(request_id * 40)[:40]}",
+        "requested_by": by,
+        "state": state,
+        "created_at": NOW - timedelta(hours=age_hours),
+        "last_verdict": verdict,
+        "last_rationale": "No test covers the parser change.",
+    }
+
+
+def _draft(number: int = 40, status: str = "draft_open", repo: str = REPO) -> dict[str, Any]:
+    return {
+        "event_id": f"ev-{number}",
+        "repo_full_name": repo,
+        "finding_id": f"f-{number}",
+        "fix_pr_number": number,
+        "fix_pr_url": f"https://github.com/{repo}/pull/{number}",
+        "pr_status": status,
+        "fixer_name": "pin_action",
+        "rationale": "Pinned to a sha.",
+    }
+
+
+def _governed(item: agent_work.WorkItem) -> set[str | None]:
+    return {a.governed_by for a in item.actions}
+
+
+class TestPullRequestAttention:
+    """TheHub #60797: the agent's own pull requests that need it, and the
+    Patchwork drafts nobody has asked to have reviewed. Option B: both from
+    records the platform already holds, no GitHub call."""
+
+    def test_it_is_a_kind(self) -> None:
+        assert "pull_request_attention" in agent_work.KINDS
+
+    def test_a_rejected_request_is_work_governed_by_the_merge_duty(self) -> None:
+        [item] = _build(pull_request_requests=[_pr_request("a")]).items
+        assert item.kind == "pull_request_attention"
+        assert item.item_id == f"pull_request_attention:{REPO}#7"
+        assert item.band == agent_work.BAND_APPROVAL
+        assert "pull_request_merge" in _governed(item)
+        assert item.done_when
+        assert "rejected" in item.title
+        assert "No test covers" in item.summary
+        assert any(a.path == "/api/approvals/a" for a in item.actions)
+
+    def test_needs_info_on_a_pull_request_is_this_kind_not_the_generic_one(self) -> None:
+        queue = _build(
+            pull_request_requests=[_pr_request("b", state="pending", verdict="needs_info")]
+        )
+        assert [i.kind for i in queue.items] == ["pull_request_attention"]
+        assert "pull_request_merge" in _governed(queue.items[0])
+
+    def test_a_pull_request_in_approval_requests_is_not_listed_twice(self) -> None:
+        pending = _pr_request("b", state="pending", verdict="needs_info")
+        queue = _build(approval_requests=[pending], pull_request_requests=[pending])
+        assert [i.kind for i in queue.items] == ["pull_request_attention"]
+
+    def test_an_open_request_with_no_question_waits(self) -> None:
+        queue = _build(pull_request_requests=[_pr_request("c", state="pending", verdict=None)])
+        assert queue.items == []
+        assert [(w.kind, w.ref) for w in queue.waiting] == [("approval_pending", "c")]
+
+    def test_a_rejection_answered_by_a_newer_head_is_not_work(self) -> None:
+        queue = _build(
+            pull_request_requests=[
+                _pr_request("d", age_hours=5),
+                _pr_request("e", state="pending", verdict=None, age_hours=1),
+            ]
+        )
+        assert queue.items == []
+        assert [w.ref for w in queue.waiting] == ["e"]
+
+    def test_another_principals_requests_are_not_yours(self) -> None:
+        queue = _build(pull_request_requests=[_pr_request("f", by="agent:other:xyz")])
+        assert queue.items == []
+        assert queue.waiting == []
+
+    def test_an_approved_request_is_not_work(self) -> None:
+        queue = _build(pull_request_requests=[_pr_request("g", state="approved", verdict="approve")])
+        assert queue.items == []
+
+    def test_an_open_patchwork_draft_nobody_requested_is_work(self) -> None:
+        [item] = _build(patchwork_prs=[_draft(40)]).items
+        assert item.kind == "pull_request_attention"
+        assert item.item_id == f"pull_request_attention:{REPO}#40"
+        assert "pull_request_merge" in _governed(item)
+        assert item.done_when
+        assert any(e.source == "remediation_events" for e in item.evidence)
+
+    def test_a_human_edited_draft_is_work_and_says_so(self) -> None:
+        [item] = _build(patchwork_prs=[_draft(41, status="human_edited")]).items
+        assert "human_edited" in _caveats(item)
+
+    def test_a_draft_already_under_review_is_not(self) -> None:
+        queue = _build(
+            patchwork_prs=[_draft(7)],
+            pull_request_requests=[
+                _pr_request("h", state="pending", verdict=None, by="agent:other:xyz")
+            ],
+        )
+        assert queue.items == []
+
+    def test_settled_patchwork_pull_requests_are_not_work(self) -> None:
+        queue = _build(patchwork_prs=[_draft(42, "merged"), _draft(43, "closed_unmerged")])
+        assert queue.items == []
+
+    def test_a_patchwork_pull_request_that_closed_ends_its_rejection(self) -> None:
+        queue = _build(
+            pull_request_requests=[_pr_request("i", number=44)],
+            patchwork_prs=[_draft(44, "closed_unmerged")],
+        )
+        assert queue.items == []
+
+    def test_a_rejection_outside_patchwork_says_a_close_is_not_seen(self) -> None:
+        [item] = _build(pull_request_requests=[_pr_request("j")]).items
+        assert "close_not_recorded" in _caveats(item)
+
+    def test_an_unreadable_source_is_unknown_not_empty(self) -> None:
+        requests_unread = _build(pull_request_requests=None, patchwork_prs=[_draft(40)])
+        assert [u.source for u in requests_unread.unknown] == ["pull_request_requests"]
+        # A draft cannot be shown as unrequested when the requests were not read.
+        assert requests_unread.items == []
+
+        drafts_unread = _build(pull_request_requests=[_pr_request("k")], patchwork_prs=None)
+        assert [u.source for u in drafts_unread.unknown] == ["patchwork"]
+        assert [i.kind for i in drafts_unread.items] == ["pull_request_attention"]
+
+    def test_the_same_state_gives_the_same_order(self) -> None:
+        requests = [_pr_request("m", number=9), _pr_request("n", number=3, age_hours=1)]
+        drafts = [_draft(50), _draft(12), _draft(31, "human_edited")]
+        first = _build(pull_request_requests=requests, patchwork_prs=drafts)
+        second = _build(
+            pull_request_requests=list(reversed(requests)), patchwork_prs=list(reversed(drafts))
+        )
+        assert [i.item_id for i in first.items] == [i.item_id for i in second.items]
+        assert len(first.items) == 5
+        assert [i.item_id for i in first.items] == sorted(i.item_id for i in first.items)
 
 
 class TestExposure:
@@ -531,3 +689,75 @@ class TestTheRoute:
 
     def test_it_needs_a_credential(self, client) -> None:
         assert client.get("/api/agent/work").status_code == 401
+
+    def test_an_agents_rejected_pull_request_and_an_open_draft_reach_its_queue(
+        self, client, admin_auth, buffer, run_compaction
+    ) -> None:
+        """TheHub #60797, end to end: the gatherer reads the agent's own
+        `pull_request_merge` requests and Patchwork's open drafts from the
+        platform's records, with no GitHub call."""
+        from mykronos.db.models import ApprovalDecision, ApprovalRequest
+        from mykronos.schemas import utcnow
+
+        minted = client.post(
+            "/api/agents/credentials", json={"family": "claude-opus-5.5"}, headers=admin_auth
+        ).json()
+        now = utcnow()
+        with client.app.state.db.session() as session:
+            session.add(
+                ApprovalRequest(
+                    id="req-60797",
+                    duty="pull_request_merge",
+                    subject_ref=f"{REPO}#7@{'a' * 40}",
+                    requested_by=minted["actor"],
+                    requester_kind="agent",
+                    state="rejected",
+                    created_at=now - timedelta(hours=1),
+                    expires_at=now + timedelta(days=6),
+                    decided_at=now,
+                )
+            )
+            session.add(
+                ApprovalDecision(
+                    request_id="req-60797",
+                    approver="operator",
+                    verdict="reject",
+                    rationale="No test covers the parser change.",
+                    created_at=now,
+                )
+            )
+        buffer.append(
+            "remediation_events",
+            [
+                {
+                    "event_id": "ev-60797",
+                    "repo_full_name": REPO,
+                    "finding_id": "f-60797",
+                    "fix_pr_number": 40,
+                    "fix_pr_url": f"https://github.com/{REPO}/pull/40",
+                    "pr_status": "draft_open",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            ],
+        )
+        run_compaction()
+
+        response = client.get(
+            "/api/agent/work", headers={"Authorization": f"Bearer {minted['token']}"}
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        attention = {
+            i["item_id"]: i for i in body["items"] if i["kind"] == "pull_request_attention"
+        }
+        assert set(attention) == {
+            f"pull_request_attention:{REPO}#7",
+            f"pull_request_attention:{REPO}#40",
+        }
+        for item in attention.values():
+            assert "pull_request_merge" in {a["governed_by"] for a in item["actions"]}
+            assert item["playbook"].startswith("pull_request_attention@")
+        sources = {u["source"] for u in body["unknown"]}
+        assert not sources & {"pull_request_requests", "patchwork"}

@@ -303,9 +303,15 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
             {"id": "a1", "status": "review_due", "review_by": "2026-10-01", "repo": REPO}
         ],
         approval_requests=[
-            {"id": "r1", "duty": "pull_request_merge", "subject_ref": "x#1",
+            {"id": "r1", "duty": "finding_disposition", "subject_ref": "f1",
              "last_verdict": "needs_info", "last_rationale": "Which test?"}
         ],
+        pull_request_requests=[
+            {"id": "r2", "duty": "pull_request_merge", "subject_ref": f"{REPO}#7@{'a' * 40}",
+             "requested_by": AGENT.actor, "state": "rejected", "created_at": NOW,
+             "last_verdict": "reject", "last_rationale": "No test."}
+        ],
+        patchwork_prs=[],
         now=NOW,
         probe_interval_seconds=21_600,
         playbook_version=version,
