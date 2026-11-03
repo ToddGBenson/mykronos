@@ -580,7 +580,8 @@ class TestPullRequestAttention:
         assert queue.waiting == []
 
     def test_an_approved_request_is_not_work(self) -> None:
-        queue = _build(pull_request_requests=[_pr_request("g", state="approved", verdict="approve")])
+        approved = _pr_request("g", state="approved", verdict="approve")
+        queue = _build(pull_request_requests=[approved])
         assert queue.items == []
 
     def test_an_open_patchwork_draft_nobody_requested_is_work(self) -> None:

@@ -101,7 +101,8 @@ cannot disagree. The agent learns before it asks whether a person will be involv
 | 1 | `platform_job_unhealthy` | `job_runs`, assessed by `platform_health` | The job's next run succeeds |
 | 2 | `toxic_combination` | `toxic.detect` | Any one member closes and the combination stops firing |
 | 2 | `public_exposure` | `exposure.summary`, endpoints with a high or critical observation | The next probe observes nothing at that severity |
-| 3 | `approval_needs_info` | The principal's own requests answered `needs_info` | The request is decided |
+| 3 | `approval_needs_info` | The principal's own requests answered `needs_info`, other than pull requests | The request is decided |
+| 3 | `pull_request_attention` | The principal's own `pull_request_merge` requests answered `needs_info` or rejected, and Patchwork draft pull requests no request names (TheHub #60797) | A request names a newer head, or the webhook records the pull request merged or closed |
 | 4 | `acceptance_attention` | Acceptances `review_due`, `premise_failed`, with scope drift, or expiring within 14 days | Renewed, revoked or closed; for `premise_failed`, which neither renew nor revoke accepts, every covered finding fixed or held by a new acceptance with corrected premises |
 | 5 | `token_delivery` | Tokens the rotation sweep deferred to a person | Rotated (`due`) or a scan confirmed arriving (`unverified`) |
 | 6 | `triage` | The ranked triage queue, unclaimed or claimed by this principal | The finding is dispositioned or two scans observe it gone |
@@ -123,7 +124,11 @@ offers no action for a repository with no onboarding row rather than a dead one.
 ### 2.3 What the queue does not include, yet
 
 `unread` lanes (B-051) need a live GitHub read per repository and are left to the briefing. Patchwork's
-draft pull requests and an agent's own open PRs are phase 3, where playbooks give them steps. Network and
+draft pull requests and an agent's own pull requests arrived after phase 3 as `pull_request_attention`
+(TheHub #60797, the operator's option B): built from `approval_requests` and `remediation_events`, with no
+GitHub call. A rejection stays work until a request names a newer head of the same pull request; the
+platform records a close only for Patchwork's own pull requests, so other rejections carry the
+`close_not_recorded` caveat. A pending request with no question is `waiting`. Network and
 cloud findings are absent because the lake has never held any; `toxic.coverage()` already reports that, and
 the queue carries its uncovered rules as a caveat.
 
@@ -143,6 +148,8 @@ improve.
 | `partly_accepted` | `toxic_combination` | A member is an accepted risk; the combination still counts. |
 | `rules_cannot_fire` | `toxic_combination` | Rules whose inputs never reach the lake; "no combination" from them is not evidence. |
 | `probe_stale` | `public_exposure` | The last probe is older than two probe intervals. |
+| `close_not_recorded` | `pull_request_attention`, a rejection | The platform records a close only for Patchwork's own pull requests; the item is not evidence the pull request is open. |
+| `human_edited` | `pull_request_attention`, a Patchwork draft | A person pushed to the draft; read their change before asking for review. |
 
 ## 4. Tools — the MCP server (phase 2, closes #319)
 

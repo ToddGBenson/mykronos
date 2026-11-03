@@ -62,6 +62,7 @@ KINDS: tuple[str, ...] = (
     "toxic_combination",
     "public_exposure",
     "approval_needs_info",
+    "pull_request_attention",
     "acceptance_attention",
     "token_delivery",
     "triage",
@@ -465,6 +466,10 @@ def _approval_items(requests: list[dict[str, Any]]) -> tuple[list[WorkItem], lis
     items: list[WorkItem] = []
     waiting: list[Waiting] = []
     for req in requests:
+        if req.get("duty") == PULL_REQUEST_DUTY:
+            # A pull request is `pull_request_attention`'s, from its own input,
+            # so one request is never two items (TheHub #60797).
+            continue
         if req.get("last_verdict") == "needs_info":
             items.append(
                 WorkItem(
@@ -503,6 +508,210 @@ def _approval_items(requests: list[dict[str, Any]]) -> tuple[list[WorkItem], lis
                 )
             )
     return items, waiting
+
+
+# ---------------------------------------------------------------------------
+# Band 3: pull requests that need the principal (TheHub #60797, spec 36 §2.3)
+#
+# Two sources, both already recorded, and no GitHub call (the operator's
+# option B): the principal's own `pull_request_merge` requests, and the draft
+# pull requests Patchwork opened that nobody has asked to have reviewed.
+
+PULL_REQUEST_DUTY = "pull_request_merge"
+
+#: Patchwork pull requests still waiting for a person (`_open_draft_count`).
+PATCHWORK_OPEN = ("draft_open", "human_edited")
+#: Patchwork pull requests the webhook recorded as finished.
+PATCHWORK_SETTLED = ("merged", "closed_unmerged")
+
+
+def pull_request_key(subject_ref: str) -> str | None:
+    """`owner/repo#number` from a request's `owner/repo#number@sha` subject."""
+    head, _, _ = str(subject_ref or "").partition("@")
+    repo, sep, number = head.rpartition("#")
+    if not sep or not repo or not number.isdigit():
+        return None
+    return f"{repo}#{int(number)}"
+
+
+def _created(req: dict[str, Any]) -> tuple[datetime, str]:
+    value = req.get("created_at")
+    when = value if isinstance(value, datetime) else datetime.min
+    return (_aware(when), str(req.get("id") or ""))
+
+
+def _pull_request_action(label: str, effect: str) -> ActionRef:
+    return ActionRef(
+        label=label,
+        method="POST",
+        path="/api/approvals/pull-requests",
+        effect=effect,
+        governed_by=PULL_REQUEST_DUTY,
+    )
+
+
+def _pull_request_items(
+    requests: list[dict[str, Any]] | None,
+    patchwork: list[dict[str, Any]] | None,
+    principal: Principal,
+) -> tuple[list[WorkItem], list[Waiting]]:
+    """Items and waits for one principal's pull requests.
+
+    A request is answered once a newer request names the same pull request
+    (any requester, any state): that is the agent pushing a new head and
+    asking again, and the old head's verdict no longer covers anything. A
+    rejection is otherwise work until that happens, or until the webhook
+    records the pull request merged or closed, which it does for Patchwork's
+    pull requests only. A Patchwork draft is work only when no request names
+    it at all; one with a request belongs to whoever asked. `None` for either
+    input means it was not read, and nothing is inferred from its absence.
+    """
+    items: dict[str, WorkItem] = {}
+    waiting: list[Waiting] = []
+    ordered = sorted(requests or [], key=_created)
+    latest: dict[str, dict[str, Any]] = {}
+    for req in ordered:
+        key = pull_request_key(str(req.get("subject_ref") or ""))
+        if key is not None:
+            latest[key] = req
+    settled = {
+        f"{row.get('repo_full_name')}#{int(row['fix_pr_number'])}": str(row.get("pr_status"))
+        for row in patchwork or []
+        if row.get("fix_pr_number") is not None and row.get("pr_status") in PATCHWORK_SETTLED
+    }
+
+    for req in ordered:
+        key = pull_request_key(str(req.get("subject_ref") or ""))
+        if key is None or req.get("requested_by") != principal.actor:
+            continue
+        if latest[key] is not req:
+            continue
+        repo = key.rpartition("#")[0]
+        request_id = str(req["id"])
+        state = str(req.get("state") or "")
+        verdict = req.get("last_verdict")
+        if state == "pending" and verdict != "needs_info":
+            waiting.append(
+                Waiting(
+                    kind="approval_pending",
+                    ref=request_id,
+                    repo_full_name=repo,
+                    detail=(
+                        f"{PULL_REQUEST_DUTY} on {req.get('subject_ref')} is with an "
+                        "approver. You cannot approve your own request."
+                    ),
+                )
+            )
+            continue
+        if state == "pending":
+            asked = "needs information"
+        elif state == "rejected":
+            if key in settled:
+                continue
+            asked = "was rejected"
+        else:
+            continue
+        caveats = []
+        if state == "rejected":
+            caveats.append(
+                Caveat(
+                    "close_not_recorded",
+                    "The platform records a pull request closing only for Patchwork's "
+                    "own. If you closed this one, this item stays until a newer head "
+                    "is requested; it is not evidence the pull request is open.",
+                )
+            )
+        items[key] = WorkItem(
+            item_id=f"pull_request_attention:{key}",
+            kind="pull_request_attention",
+            band=BAND_APPROVAL,
+            repo_full_name=repo,
+            weight=1,
+            title=f"Your pull request {key} {asked}",
+            summary=str(req.get("last_rationale") or "")
+            or f"The {PULL_REQUEST_DUTY} request {request_id} {asked}, with no rationale.",
+            done_when=(
+                ("The request is decided, or " if state == "pending" else "")
+                + "a request names a newer head of the pull request"
+                + ("" if state == "pending" else ", or the webhook records it merged or closed")
+                + "."
+            ).capitalize(),
+            evidence=[
+                Evidence(
+                    source="approval_requests",
+                    ref=request_id,
+                    detail=f"{state}; {req.get('subject_ref')}; last verdict {verdict}",
+                )
+            ],
+            actions=[
+                ActionRef(
+                    label="Read the request and its decisions",
+                    method="GET",
+                    path=f"/api/approvals/{request_id}",
+                    effect="A read. The approver's question or reason is in the decisions.",
+                ),
+                _pull_request_action(
+                    "Request review of the new head",
+                    "After you push what was asked for: a new request at the pull "
+                    "request's current head, decided by someone independent.",
+                ),
+            ],
+            caveats=caveats,
+        )
+
+    if requests is not None:
+        rows = sorted(
+            (r for r in patchwork or [] if r.get("fix_pr_number") is not None),
+            key=lambda r: (str(r.get("repo_full_name")), int(r["fix_pr_number"])),
+        )
+        for row in rows:
+            if row.get("pr_status") not in PATCHWORK_OPEN:
+                continue
+            repo = str(row.get("repo_full_name") or "")
+            key = f"{repo}#{int(row['fix_pr_number'])}"
+            if key in latest or key in items:
+                continue
+            caveats = []
+            if row.get("pr_status") == "human_edited":
+                caveats.append(
+                    Caveat(
+                        "human_edited",
+                        "A person has pushed to this draft. Read their change before "
+                        "asking for review; the fixer's rationale may no longer describe it.",
+                    )
+                )
+            items[key] = WorkItem(
+                item_id=f"pull_request_attention:{key}",
+                kind="pull_request_attention",
+                band=BAND_APPROVAL,
+                repo_full_name=repo,
+                weight=1,
+                title=f"Patchwork's draft pull request {key} has no review request",
+                summary=(
+                    f"{row.get('fixer_name') or 'A fixer'} opened it for finding "
+                    f"{row.get('finding_id')}. {row.get('rationale') or ''}"
+                ).strip(),
+                done_when=(
+                    "A review request names it, or the webhook records it merged or closed."
+                ),
+                evidence=[
+                    Evidence(
+                        source="remediation_events",
+                        ref=str(row.get("event_id") or ""),
+                        detail=f"{row.get('pr_status')}; {row.get('fix_pr_url') or key}",
+                    ),
+                    Evidence(source="findings", ref=str(row.get("finding_id") or "")),
+                ],
+                actions=[
+                    _pull_request_action(
+                        "Request review of the draft",
+                        "A request at its current head, decided by someone independent. "
+                        "Nothing merges until it is approved.",
+                    )
+                ],
+                caveats=caveats,
+            )
+    return list(items.values()), waiting
 
 
 # ---------------------------------------------------------------------------
@@ -913,11 +1122,19 @@ def build(
     triage_rows: list[dict[str, Any]] | None,
     acceptances: list[dict[str, Any]] | None,
     approval_requests: list[dict[str, Any]] | None,
+    pull_request_requests: list[dict[str, Any]] | None,
+    patchwork_prs: list[dict[str, Any]] | None,
     now: datetime,
     probe_interval_seconds: int,
     playbook_version: str,
 ) -> WorkQueue:
     """The queue for one principal. `None` for any input means it was not read.
+
+    `pull_request_requests` is every `pull_request_merge` request in the
+    states that can still matter (pending, approved, rejected), whoever made
+    it: another principal's request is what answers this one's, or claims a
+    Patchwork draft. `patchwork_prs` is Patchwork's remediation events that
+    reached a pull request, in every status.
 
     Paths come from the briefing, which names them by onboarding id (#60739).
     `playbook_version` is the loaded `agent-playbooks-v1.yaml`'s version; every
@@ -947,6 +1164,22 @@ def build(
         approval_items, approval_waiting = _approval_items(approval_requests)
         items += approval_items
         queue.waiting += approval_waiting
+
+    if pull_request_requests is None:
+        queue.unknown.append(
+            Unknown(
+                "pull_request_requests",
+                "Pull request approval requests could not be read, so neither your pull "
+                "requests nor Patchwork's unrequested drafts are listed.",
+            )
+        )
+    if patchwork_prs is None:
+        queue.unknown.append(
+            Unknown("patchwork", "Patchwork's draft pull requests could not be read.")
+        )
+    pr_items, pr_waiting = _pull_request_items(pull_request_requests, patchwork_prs, principal)
+    items += pr_items
+    queue.waiting += pr_waiting
 
     if acceptances is None:
         queue.unknown.append(Unknown("risk_acceptances", "Acceptances could not be read."))
