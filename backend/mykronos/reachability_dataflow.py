@@ -23,7 +23,10 @@ already builds, so no second analyser is installed and nothing is fetched.
   dynamic import exists, the package's import name is known, it is a direct
   runtime dependency, and a lockfile's dependency graph shows nothing else in
   the tree requires it -- because a package nothing in *this* code imports is
-  still loaded by the dependency that does (`urllib3` under `requests`).
+  still loaded by the dependency that does (`urllib3` under `requests`). It
+  is also never said of a package that runs without being imported (a server
+  or worker started by name, a database driver loaded from a URL, an npm
+  executable), nor when CodeQL extracted only part of the tree.
 - `unknown` - everything else, with the reason. Imported but no path found,
   transitive, a development dependency, an import name this module cannot
   confirm (PyPI's `PyYAML` is imported as `yaml`), no lockfile. Saying so is
@@ -531,6 +534,81 @@ def _installed_import_names() -> dict[str, set[str]]:
     return _INSTALLED
 
 
+#: Packages that run without the code importing them: a server or worker
+#: started by name (`gunicorn app:app`, `celery -A app worker`), the libraries
+#: such a server loads for itself, and database drivers SQLAlchemy or an ORM
+#: loads from a connection URL. Never imported is not never executed, so none
+#: of these is ever `unreachable` (review of #1102). For npm, any locked
+#: package with a `bin` counts as well: package.json's scripts can run it.
+LOADED_WITHOUT_IMPORT: dict[str, frozenset[str]] = {
+    "pypi": frozenset(
+        {
+            "aiomysql",
+            "aiosqlite",
+            "alembic",
+            "asyncpg",
+            "celery",
+            "circus",
+            "cx-oracle",
+            "daphne",
+            "eventlet",
+            "flower",
+            "gevent",
+            "granian",
+            "gunicorn",
+            "honcho",
+            "httptools",
+            "hypercorn",
+            "mysqlclient",
+            "oracledb",
+            "psycopg",
+            "psycopg-binary",
+            "psycopg2",
+            "psycopg2-binary",
+            "pymssql",
+            "pymysql",
+            "pyodbc",
+            "supervisor",
+            "uvicorn",
+            "uvloop",
+            "waitress",
+            "watchfiles",
+        }
+    ),
+    "npm": frozenset(
+        {
+            "better-sqlite3",
+            "concurrently",
+            "cross-env",
+            "forever",
+            "http-server",
+            "mysql",
+            "mysql2",
+            "next",
+            "nodemon",
+            "npm-run-all",
+            "oracledb",
+            "pg",
+            "pg-native",
+            "pm2",
+            "react-scripts",
+            "serve",
+            "sqlite3",
+            "tedious",
+            "ts-node",
+            "tsx",
+            "vite",
+        }
+    ),
+}
+
+
+def loaded_without_import(ecosystem: str, package: str, graph: DependencyGraph) -> bool:
+    """Whether `package` can run, or be loaded, without any import of it."""
+    key = normalise_package(ecosystem, package)
+    return key in LOADED_WITHOUT_IMPORT.get(ecosystem, frozenset()) or key in graph.executables
+
+
 def _imports_package(ecosystem: str, names: Iterable[str], imported: Iterable[str]) -> bool:
     """Whether any imported module or specifier is one of `names`."""
     wanted = set(names)
@@ -564,6 +642,9 @@ class DependencyGraph:
     lockfiles: list[str] = field(default_factory=list)
     #: Packages a manifest declares, lockfile or not.
     declared: set[str] = field(default_factory=set)
+    #: Locked packages that install an executable (npm's `bin`), which a
+    #: script can run without anything importing them.
+    executables: set[str] = field(default_factory=set)
 
 
 def _walk(root: Path, names: set[str]) -> list[Path]:
@@ -632,6 +713,8 @@ def npm_graph(root: Path) -> DependencyGraph:
                 continue
             # `node_modules/a/node_modules/@s/b` -> `@s/b`
             name = str(entry.get("name") or location.rsplit("node_modules/", 1)[-1])
+            if entry.get("bin"):
+                graph.executables.add(name)
             if not location.startswith("node_modules/") and "node_modules/" not in location:
                 # A workspace member: its own declarations are direct too.
                 for key in ("dependencies", "optionalDependencies", "peerDependencies"):
@@ -713,6 +796,20 @@ def pypi_graph(root: Path) -> DependencyGraph:
                     for d in deps
                     if isinstance(d, dict)
                 ]
+            # An extra is an edge too: `celery[redis]` beside a direct `redis`
+            # means celery loads redis at run time. uv.lock records it under
+            # `[package.optional-dependencies]`, poetry.lock under
+            # `[package.extras]` as requirement strings.
+            extras: list[str] = []
+            for table in ("optional-dependencies", "extras"):
+                section = entry.get(table)
+                if not isinstance(section, dict):
+                    continue
+                for specs in section.values():
+                    for spec in specs if isinstance(specs, list) else []:
+                        raw = spec.get("name") if isinstance(spec, dict) else spec
+                        if (extra := _req_name(str(raw or ""))) is not None:
+                            extras.append(extra)
             if is_root:
                 graph.direct |= set(dep_names)
                 for group in (entry.get("dev-dependencies") or {}).values():
@@ -720,8 +817,9 @@ def pypi_graph(root: Path) -> DependencyGraph:
                         if isinstance(d, dict):
                             graph.dev.add(normalise_package("pypi", str(d.get("name") or "")))
                 continue
-            for dep in dep_names:
-                graph.dependents.setdefault(dep, set()).add(name)
+            for dep in [*dep_names, *extras]:
+                if dep != name:
+                    graph.dependents.setdefault(dep, set()).add(name)
     if graph.lockfiles and not graph.direct:
         # poetry.lock has no root entry; its direct runtime set is pyproject's.
         graph.direct |= runtime_from_pyproject
@@ -840,10 +938,13 @@ def read_observations(document: Mapping[str, Any], language: str) -> Observation
 def location_verdicts(documents: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """A `reachable` verdict for every CodeQL security result with a code flow.
 
-    A path-problem result's flow runs from a source -- for the security
-    queries, overwhelmingly a remote flow source -- to the sink the finding
-    is about. That flow is the recorded path. A result without one gets no
-    verdict: its absence says nothing about reachability.
+    A path-problem result's flow runs from a source to the sink the finding
+    is about, and that flow is the recorded path. Not every stock query's
+    source is a remote one, so the verdict claims a traced flow and no more:
+    its basis is `codeql_code_flow`, its source is named, and the finding
+    page shows it as a traced flow rather than as remote reach. It only ever
+    vetoes a suppression. A result without a flow gets no verdict: its
+    absence says nothing about reachability.
     """
     verdicts: list[dict[str, Any]] = []
     seen: set[tuple[str, str, int | None]] = set()
@@ -868,11 +969,12 @@ def location_verdicts(documents: Iterable[Mapping[str, Any]]) -> list[dict[str, 
                     "line": line,
                     "verdict": "reachable",
                     "reason": (
-                        f"CodeQL traced a flow of {len(path)} step(s) from a source to "
-                        "this result."
-                    ),
+                        f"CodeQL traced a flow of {len(path)} step(s) from "
+                        f"{path[0]['label'] or 'a source'} to this result. The query "
+                        "decides what counts as a source, and it may be local."
+                    )[:1000],
                     "path": path,
-                    "evidence": {"basis": "codeql_code_flow"},
+                    "evidence": {"basis": "codeql_code_flow", "source_label": path[0]["label"]},
                 }
             )
     return verdicts
@@ -907,7 +1009,26 @@ def unreachable_gaps(evidence: Mapping[str, Any] | None) -> list[str]:
         gaps.append("no lockfile dependency graph was read")
     if ev.get("dependents") != []:
         gaps.append("another package in the dependency tree requires it")
+    if ev.get("loaded_without_import") is not False:
+        gaps.append("it can run without being imported (a server, worker, driver or CLI)")
+    if ev.get("scoped") is not False:
+        gaps.append("CodeQL analysed only part of the repository (paths_include/paths_exclude)")
     return gaps
+
+
+def entry_kind(path: list[dict[str, Any]]) -> str:
+    """What kind of entry point a reachable path starts at.
+
+    A module's top level runs whenever the module loads, which includes a
+    test or a one-off script, so a path that starts there says less than
+    one that starts in a function a request or a call reaches.
+    """
+    label = str((path[0] if path else {}).get("label") or "")
+    if label.startswith(("module ", "top level of ")):
+        return "module_top_level"
+    if label:
+        return "function"
+    return "unknown"
 
 
 def package_verdict(
@@ -915,6 +1036,8 @@ def package_verdict(
     ecosystem: str,
     seen: Observations,
     graph: DependencyGraph,
+    *,
+    scoped: bool = False,
 ) -> dict[str, Any]:
     """One package's verdict, with its path or its evidence."""
     names, basis = import_names(ecosystem, package)
@@ -939,7 +1062,11 @@ def package_verdict(
             "verdict": "reachable",
             "reason": f"A call path from an entry point reaches a call into {package}.",
             "path": path,
-            "evidence": {"basis": "codeql_call_path", "import_names": sorted(names)},
+            "evidence": {
+                "basis": "codeql_call_path",
+                "import_names": sorted(names),
+                "entry_kind": entry_kind(path),
+            },
         }
 
     dependents = sorted(graph.dependents.get(package, set()))
@@ -953,6 +1080,8 @@ def package_verdict(
         "direct_runtime_dependency": package in graph.direct and package not in graph.dev,
         "lockfiles": list(graph.lockfiles),
         "dependents": dependents,
+        "loaded_without_import": loaded_without_import(ecosystem, package, graph),
+        "scoped": bool(scoped),
     }
     gaps = unreachable_gaps(evidence)
     if not gaps:
@@ -977,8 +1106,19 @@ def package_verdict(
             f"{' and others' if len(dependents) > 5 else ''}: it is reached through "
             "them, which this analysis does not follow."
         )
+    elif evidence["loaded_without_import"]:
+        reason = (
+            f"{package} runs without being imported (a server or worker started by "
+            "name, a driver loaded from a URL, or an executable), so not importing it "
+            "proves nothing."
+        )
     elif package in graph.dev:
         reason = "A development dependency: run by tooling, so not importing it proves nothing."
+    elif scoped:
+        reason = (
+            "CodeQL analysed only the configured paths, so an import elsewhere in the "
+            "repository would not be seen."
+        )
     else:
         reason = "Not proven unreachable: " + "; ".join(gaps) + "."
     return {**base, "verdict": "unknown", "reason": reason, "path": [], "evidence": evidence}
@@ -991,14 +1131,19 @@ def build_submission(
     *,
     commit_sha: str = "",
     analysis_documents: Iterable[Mapping[str, Any]] = (),
+    scoped: bool = False,
 ) -> dict[str, Any]:
-    """The body `POST /api/ingest/reachability/dataflow` takes."""
+    """The body `POST /api/ingest/reachability/dataflow` takes.
+
+    `scoped` is set when the CodeQL config limited extraction to some paths:
+    the source-file count then covers only those, and no absence is proven.
+    """
     lang = canonical_language(language)
     ecosystem = LANGUAGES[lang]
     seen = read_observations(reach_document, lang)
     graph = dependency_graph(root, ecosystem)
     packages = sorted(graph.declared | graph.direct | graph.dev)
-    verdicts = [package_verdict(p, ecosystem, seen, graph) for p in packages]
+    verdicts = [package_verdict(p, ecosystem, seen, graph, scoped=scoped) for p in packages]
     verdicts += location_verdicts(analysis_documents)
     return {
         "language": lang,
@@ -1008,6 +1153,7 @@ def build_submission(
         "files_analysed": seen.files_analysed if seen.counted else 0,
         "dynamic_imports": seen.dynamic_imports,
         "lockfiles": list(graph.lockfiles),
+        "scoped": bool(scoped),
         "verdicts": verdicts[:MAX_VERDICTS],
     }
 
@@ -1037,6 +1183,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--analysis-sarif-dir", default="", help="the scan's own SARIF")
     parser.add_argument("--root", default=".", help="the checkout, for its lockfiles")
     parser.add_argument("--commit-sha", default="")
+    parser.add_argument(
+        "--scoped",
+        action="store_true",
+        help="CodeQL extracted only configured paths, so no absence is proven",
+    )
     args = parser.parse_args(argv)
 
     if args.write_queries:
@@ -1056,6 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.root),
         commit_sha=args.commit_sha,
         analysis_documents=analysis,
+        scoped=args.scoped,
     )
     json.dump(body, sys.stdout, ensure_ascii=False)
     return 0

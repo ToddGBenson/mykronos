@@ -115,9 +115,16 @@
         # re-checks that evidence before anything acts on it.
         #
         # Never fails the scan: reachability is an input to triage, and losing
-        # it must not lose the findings the scan already uploaded.
-        if: matrix.language == 'python' || matrix.language == 'javascript-typescript'
+        # it must not lose the findings the scan already uploaded. Its own time
+        # limit keeps a slow pass over a large database from running the job
+        # into the job's limit after those findings were uploaded.
+        #
+        # Default branch only: the platform keeps one report per repository and
+        # language, with no ref, so a pull request's tree would replace the
+        # default branch's verdicts and triage would act on a branch.
+        if: (matrix.language == 'python' || matrix.language == 'javascript-typescript') && github.event_name != 'pull_request' && github.ref == 'refs/heads/<< default_branch >>'
         continue-on-error: true
+        timeout-minutes: << config.dataflow_reachability_timeout_minutes | default(10) >>
         env:
           CODEQL: ${{ steps.init.outputs.codeql-path }}
           MATRIX_LANGUAGE: ${{ matrix.language }}
@@ -143,7 +150,10 @@
           python -m mykronos.reachability_dataflow --language "$lang" \
             --sarif "$RUNNER_TEMP/mykronos-reachability.sarif" \
             --analysis-sarif-dir "${{ runner.temp }}/mykronos-results" \
-            --root . --commit-sha "${{ github.sha }}" > dataflow-reachability.json || exit 0
+            --root . --commit-sha "${{ github.sha }}"
+{%- if config.get('paths_include') or config.get('paths_exclude') %} \
+            --scoped
+{%- endif %} > dataflow-reachability.json || exit 0
 
           for verdict in reachable unreachable unknown; do
             echo "Dataflow reachability ($lang): $(jq --arg v "$verdict" \

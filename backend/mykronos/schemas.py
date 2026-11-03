@@ -608,6 +608,9 @@ class DataflowReachabilitySubmission(BaseModel):
     files_analysed: int = Field(default=0, ge=0)
     dynamic_imports: int = Field(default=0, ge=0)
     lockfiles: list[str] = Field(default_factory=list, max_length=200)
+    #: CodeQL extracted only configured paths, so `files_analysed` covers
+    #: those alone and no absence is proven; each verdict's evidence says so.
+    scoped: bool = False
     verdicts: list[DataflowVerdict] = Field(default_factory=list, max_length=5000)
 
 

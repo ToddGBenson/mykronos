@@ -188,6 +188,28 @@ const REACH_TONE: Record<Reachability["verdict"], "critical" | "pass" | "muted">
   unknown: "muted",
 };
 
+/**
+ * The pill for one verdict. A security result's code flow is a traced flow,
+ * not proof of remote reach: some stock queries start from a local source,
+ * so it is shown as such rather than as a red `reachable` (review of #1102).
+ */
+function reachPill(
+  verdict: Reachability["verdict"],
+  evidence: Record<string, unknown>,
+): { label: string; tone: "critical" | "warn" | "pass" | "muted" } {
+  if (verdict === "reachable" && evidence.basis === "codeql_code_flow") {
+    return { label: "flow traced", tone: "warn" };
+  }
+  return { label: REACH_LABEL[verdict], tone: REACH_TONE[verdict] };
+}
+
+/** What kind of entry point a reachable path starts at. */
+const ENTRY_KIND: Record<string, string> = {
+  function: "entry: a function",
+  module_top_level:
+    "entry: module top level, which runs whenever the module loads, so tests and scripts count",
+};
+
 /** Which evidence fields an `unreachable` rests on, in reading order. */
 const REACH_EVIDENCE: [string, string][] = [
   ["files_analysed", "files analysed"],
@@ -196,6 +218,8 @@ const REACH_EVIDENCE: [string, string][] = [
   ["dynamic_imports", "dynamic imports"],
   ["lockfiles", "lockfiles"],
   ["dependents", "required by"],
+  ["loaded_without_import", "runs without import"],
+  ["scoped", "path-scoped analysis"],
 ];
 
 function evidenceValue(value: unknown): string {
@@ -213,6 +237,9 @@ function evidenceValue(value: unknown): string {
 export function ReachabilityPanel({ data }: { data: Reachability }) {
   const path = data.path ?? [];
   const evidence = (data.evidence ?? {}) as Record<string, unknown>;
+  const pill = reachPill(data.verdict, evidence);
+  const entry =
+    typeof evidence.entry_kind === "string" ? ENTRY_KIND[evidence.entry_kind] : undefined;
   return (
     <section className="border border-rule bg-paper-2">
       <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-1.5">
@@ -230,9 +257,10 @@ export function ReachabilityPanel({ data }: { data: Reachability }) {
       </div>
       <div className="flex flex-col gap-1.5 px-3 py-2.5">
         <span>
-          <Pill tone={REACH_TONE[data.verdict]}>{REACH_LABEL[data.verdict]}</Pill>
+          <Pill tone={pill.tone}>{pill.label}</Pill>
         </span>
         <p className="text-[13px] leading-relaxed text-ink-2">{data.reason}</p>
+        {entry ? <p className="text-[12px] text-ink-3">{entry}</p> : null}
         {path.length > 0 ? (
           <ol className="flex flex-col gap-0.5" aria-label="Path from the entry point">
             {path.map((step, index) => (
