@@ -21,7 +21,11 @@ to it.
 
 from __future__ import annotations
 
+import contextlib
 import re
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -36,15 +40,35 @@ REPAIR_SCRIPTS = [
 # Everything an operator or a pipeline runs. Tests and docs are left out: they
 # may quote the broken form to explain it.
 SCANNED_SUFFIXES = {".ps1", ".psm1", ".sh", ".py", ".yml", ".yaml"}
-SKIPPED_PARTS = {".git", "node_modules", ".venv", "tests", "docs", ".next"}
+SKIPPED_PARTS = {"tests", "docs"}
 
 GH_SECRET_SET = re.compile(r"\bgh\s+secret\s+set\b[^\n]*")
 BODY_DASH = re.compile(r"(?:--body|-b)(?:\s+|=)[\"']?-[\"']?(?=\s|$)")
 
 
+def _tracked_files() -> list[Path]:
+    """Files git tracks, not whatever sits under the checkout (TheHub #61211).
+
+    A filesystem walk also read untracked copies, such as a stale Claude
+    worktree under .claude/worktrees/ holding the pre-fix scripts, and failed
+    locally on code that can never reach main. `git ls-files` also drops
+    node_modules, .venv and build output without a skip list.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover
+        # Never degrade to "scanned nothing, found nothing".
+        pytest.fail(f"could not list tracked files, so nothing was scanned: {exc}")
+    return [ROOT / raw.decode("utf-8") for raw in out.split(b"\0") if raw]
+
+
 def _secret_set_lines() -> list[tuple[Path, int, str]]:
     found = []
-    for path in ROOT.rglob("*"):
+    for path in _tracked_files():
         if path.suffix not in SCANNED_SUFFIXES or not path.is_file():
             continue
         if SKIPPED_PARTS.intersection(path.relative_to(ROOT).parts):
@@ -77,6 +101,33 @@ def test_the_scan_sees_the_repair_scripts() -> None:
     scanned = {path for path, _, _ in _secret_set_lines()}
     for script in REPAIR_SCRIPTS:
         assert script in scanned, f"{script.name} has no `gh secret set` the scan can see"
+
+
+def test_an_untracked_stale_copy_does_not_fail_the_scan() -> None:
+    """TheHub #61211. The scan judges what is tracked, not whatever sits
+    under the checkout. A stale Claude worktree under .claude/worktrees/
+    holding the pre-fix script made the test above fail locally while CI,
+    on a clean checkout, passed. Plant such a copy and check the scan
+    does not see it."""
+    planted_dir = ROOT / ".claude" / "worktrees" / f"stale-{uuid.uuid4().hex}"
+    planted = planted_dir / "deploy" / "concourse" / "repair-ingestion-token.ps1"
+    created_parents = [
+        parent for parent in (ROOT / ".claude", ROOT / ".claude" / "worktrees")
+        if not parent.exists()
+    ]
+    planted.parent.mkdir(parents=True)
+    try:
+        planted.write_text(
+            "$token | gh secret set MYKRONOS_INGESTION_TOKEN --body -\n",
+            encoding="utf-8",
+        )
+        scanned = {path for path, _, _ in _secret_set_lines()}
+        assert planted not in scanned, "an untracked file was scanned"
+    finally:
+        shutil.rmtree(planted_dir)
+        for parent in reversed(created_parents):
+            with contextlib.suppress(OSError):
+                parent.rmdir()
 
 
 @pytest.mark.parametrize("script", REPAIR_SCRIPTS, ids=lambda p: p.name)
