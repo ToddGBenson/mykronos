@@ -1,7 +1,7 @@
 """Was this lane killed for memory, rather than judged? (TheHub #61117)
 
-The mykronos pipeline's `unit` and `lint-and-types` tasks call this after the
-suite and before the upload:
+The mykronos pipeline's `unit`, `coverage` (TheHub #61210) and `lint-and-types`
+tasks call this after the suite and before the upload:
 
     python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml
     python ../scripts/memory_kill.py lint --rc-ruff "$rc_ruff" --rc-mypy "$rc_mypy"

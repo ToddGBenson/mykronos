@@ -615,6 +615,12 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: pytest
+        # [TheHub #61210] CPU shares, as every thehub.yml task carries them
+        # (#61009, D-174): 512 is cpu.weight 59 inside the worker, so the
+        # suite yields to sibling tasks there. Never `memory:` - runc refuses
+        # the task container on these workers - so memory is bounded by -n
+        # and the serial group instead.
+        container_limits: {cpu: 512}
         timeout: 120m
         image: python
         # Worker-local pip cache. These tasks reinstall the same dependency
@@ -784,6 +790,8 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: pytest-cov
+        # [TheHub #61210] The same CPU shares as `unit`'s task; see there.
+        container_limits: {cpu: 512}
         # 120m, the same as `unit`, which it is: the suite plus coverage
         # tracing, measured at 541s on this worker.
         timeout: 120m
@@ -795,6 +803,9 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
+          # [TheHub #61210] Holds `verdict` only when the run reached one, as
+          # on `unit`; the load_var step after this task reads it.
+          outputs: [{ name: judged }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
@@ -820,10 +831,27 @@ jobs:
                 # and the dashboard reads that as a measured 0% — publishing a
                 # number nobody measured, which is the failure B-042 spent a
                 # paragraph on.
-                python -m pytest -q -n 6 \
+                # [TheHub #61210] -n 4, not 6, for `unit`'s reason (#61117):
+                # coverage #8 ran 8,583 tests green and went red on one
+                # "worker 'gw5' crashed" at -n 6 under host memory pressure.
+                python -m pytest -q -n 4 \
                   --cov=mykronos --cov-branch \
                   --cov-report=xml:../../results/coverage.xml \
                   --junitxml=../../results/unit.xml || rc=$?
+
+                # [TheHub #61210] Killed for memory is not a verdict, exactly
+                # as on `unit`: no upload (a figure with a dead worker's tests
+                # missing reads their lines as uncovered), no judged/verdict,
+                # and the step after this task errors the build. A real
+                # failure anywhere in the report is still a verdict.
+                OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
+                  || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
+                if [ -n "$OOM" ]; then
+                  echo "::error::${OOM}"
+                  echo "Not uploaded: a run killed for memory judged nothing on this commit."
+                  exit 0
+                fi
+                printf '%s\n' "$rc" > ../../judged/verdict
 
                 bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 # Uploaded as `unit`, because that is the capability whose
@@ -849,6 +877,10 @@ jobs:
                   echo "::error::The coverage result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
                   exit "$upload_rc"
                 fi
+      # [TheHub #61210] ERRORED, not FAILED, when the task above was killed
+      # for memory: see the same step on `unit`.
+      - load_var: killed-for-memory-not-a-test-failure-re-run
+        file: judged/verdict
 
   # -- Time travel: the suite, with the clock moved forward (TheHub #61109) --
   #
