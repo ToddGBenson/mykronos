@@ -277,7 +277,7 @@ class TestDetectionReadsTheThreatModel:
         links = combo.to_dict()["chain"]["links"]
         assert links[1]["capability"] == "dast"
         assert links[1]["located_by"] == "hostnames `pay.example.net`"
-        assert links[2]["located_by"] == "images `ghcr.io/example-org/payments-api`"
+        assert links[2]["located_by"] == "images `example-org/payments-api`"
 
     @pytest.mark.parametrize("exposure", ["internal", "local", "unknown"])
     def test_an_entry_point_not_declared_internet_facing_forms_nothing(
