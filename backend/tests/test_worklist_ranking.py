@@ -134,6 +134,12 @@ class TestEveryTermSaysWhatInputItIs:
             "blast_radius_repos": 4,
             "repo_recommendation": "no_go",
             "effort": "one_click",
+            # A link in a toxic chain on an internet-facing entry point
+            # (TheHub #60894).
+            "entry_point_chain": {
+                "combination_id": "c", "name": "chain", "severity": "critical",
+                "entry_point": "Public API",
+            },
         }
 
     def test_every_term_the_rank_can_produce_is_declared(self, policy: Any) -> None:
