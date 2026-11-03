@@ -2527,6 +2527,59 @@ class OracleEngine:
             raw_score = sum(term.contribution for term in terms)
         score = max(0, min(100, round(raw_score)))
 
+        # 10b. Environmental severity live for this repository (TheHub #60904).
+        #      Only where the policy file carries its switch record: the
+        #      shadow is computed now, from the settled scanner-counted score,
+        #      and its recount replaces the finding terms. Every other
+        #      repository is untouched here and shadowed at step 11 as before.
+        env_block: dict[str, Any] | None = None
+        switch = self.policy.environmental.live_for(repo_full_name)
+        if switch is not None:
+            provisional = self.policy.recommendation_for(score)
+            if provisional == "go" and not evidence["available"]:
+                provisional = NOT_ASSESSED
+            elif provisional == "go" and lane_evidence["insufficient"]:
+                provisional = INSUFFICIENT_EVIDENCE
+            env_block, recounted = self._environmental_shadow_terms(
+                repo_full_name,
+                for_gate=for_gate,
+                terms=terms,
+                raw_score=raw_score,
+                score=score,
+                recommendation=provisional,
+                counts=counts,
+                aged=aged,
+                dampened_counts=dampened_counts,
+                covered_counts=covered_counts,
+                unfixable_counts=unfixable_counts,
+                dampened_rules=set(dampened),
+                covered=covered,
+                toxic_snapshot=toxic_snapshot,
+                evidence_available=bool(evidence["available"]),
+            )
+            record: dict[str, Any] = {"applied": False, **switch.as_dict(), "trimmed": []}
+            if recounted is not None and env_block.get("available"):
+                from mykronos.oracle import environmental
+
+                record["scanner_counted"] = {
+                    "raw_score": round(raw_score, 2),
+                    "overall_risk_score": score,
+                    "recommendation": provisional,
+                }
+                terms, record["trimmed"] = environmental.live_terms(
+                    terms, env_block, recounted, self.policy
+                )
+                raw_score = sum(term.contribution for term in terms)
+                score = max(0, min(100, round(raw_score)))
+                record["applied"] = True
+            else:
+                record["reason"] = (
+                    "Switched to environmental severity, but the environmental count "
+                    f"could not be computed ({env_block.get('reason', 'unavailable')}). "
+                    "This decision counts findings by the scanner's severity."
+                )
+            env_block["live_switch"] = record
+
         # The verdict, and the one place a score is allowed not to be the whole
         # answer (issue #341). `go` is a recommendation to ship; it should
         # require evidence rather than merely the absence of contrary evidence,
@@ -2626,30 +2679,37 @@ class OracleEngine:
         # 11. Environmental severity, in shadow (TheHub #60830). Computed only
         #     now, from the settled decision, and written beside it: nothing
         #     here can reach `terms`, `score` or `recommendation`, and
-        #     `render_reasoning` does not read this block.
-        snapshot["environmental"] = self._environmental_shadow(
-            repo_full_name,
-            for_gate=for_gate,
-            terms=terms,
-            raw_score=raw_score,
-            score=score,
-            recommendation=recommendation,
-            counts=counts,
-            aged=aged,
-            dampened_counts=dampened_counts,
-            covered_counts=covered_counts,
-            unfixable_counts=unfixable_counts,
-            dampened_rules=set(dampened),
-            covered=covered,
-            toxic_snapshot=toxic_snapshot,
-            evidence_available=bool(evidence["available"]),
-        )
+        #     `render_reasoning` does not read this block - except, for a
+        #     repository switched live at 10b, its `live_switch` record.
+        if env_block is None:
+            env_block = self._environmental_shadow(
+                repo_full_name,
+                for_gate=for_gate,
+                terms=terms,
+                raw_score=raw_score,
+                score=score,
+                recommendation=recommendation,
+                counts=counts,
+                aged=aged,
+                dampened_counts=dampened_counts,
+                covered_counts=covered_counts,
+                unfixable_counts=unfixable_counts,
+                dampened_rules=set(dampened),
+                covered=covered,
+                toxic_snapshot=toxic_snapshot,
+                evidence_available=bool(evidence["available"]),
+            )
+        snapshot["environmental"] = env_block
 
         # 12. The shared evidence model (TheHub #60901): every category this
         #     decision read, through the same functions a risk acceptance
         #     reads, and which of them the score above used. Written after
         #     the verdict is final; it changes nothing above.
-        snapshot["risk_evidence"] = self._risk_evidence(repo_full_name, for_gate=for_gate)
+        snapshot["risk_evidence"] = self._risk_evidence(
+            repo_full_name,
+            for_gate=for_gate,
+            live=bool((env_block or {}).get("live_switch", {}).get("applied")),
+        )
 
         decision = Decision(
             decision_id=decision_id or str(uuid.uuid4()),
@@ -2692,7 +2752,45 @@ class OracleEngine:
         toxic_snapshot: dict[str, Any],
         evidence_available: bool,
     ) -> dict[str, Any]:
-        """The `environmental` snapshot block (TheHub #60830).
+        """The `environmental` snapshot block (TheHub #60830)."""
+        return self._environmental_shadow_terms(
+            repo_full_name,
+            for_gate=for_gate,
+            terms=terms,
+            raw_score=raw_score,
+            score=score,
+            recommendation=recommendation,
+            counts=counts,
+            aged=aged,
+            dampened_counts=dampened_counts,
+            covered_counts=covered_counts,
+            unfixable_counts=unfixable_counts,
+            dampened_rules=dampened_rules,
+            covered=covered,
+            toxic_snapshot=toxic_snapshot,
+            evidence_available=evidence_available,
+        )[0]
+
+    def _environmental_shadow_terms(
+        self,
+        repo_full_name: str,
+        *,
+        for_gate: bool,
+        terms: list[Term],
+        raw_score: float,
+        score: int,
+        recommendation: str,
+        counts: dict[str, int],
+        aged: dict[str, int],
+        dampened_counts: dict[str, int],
+        covered_counts: dict[str, int],
+        unfixable_counts: dict[str, int],
+        dampened_rules: set[str],
+        covered: set[str],
+        toxic_snapshot: dict[str, Any],
+        evidence_available: bool,
+    ) -> tuple[dict[str, Any], list[Term] | None]:
+        """The block, and the recounted terms (None when not computed).
 
         Imported here rather than at module level: `oracle.environmental`
         builds on this module's term helpers. Any failure is recorded as the
@@ -2702,7 +2800,7 @@ class OracleEngine:
         from mykronos.oracle import environmental
 
         try:
-            return environmental.shadow(
+            return environmental.shadow_with_terms(
                 self.catalog,
                 self.db,
                 self.policy,
@@ -2735,7 +2833,7 @@ class OracleEngine:
                 self.policy,
                 f"The shadow could not be computed ({type(exc).__name__}). The live "
                 "decision is unaffected.",
-            )
+            ), None
 
     #: The categories the live score reads (`risk_evidence.CATEGORIES`).
     #: Environmental scoring and verified controls go live per repository
@@ -2746,6 +2844,19 @@ class OracleEngine:
         "toxic_combinations",
         "asset_sensitivity",
     )
+    #: ...and, for a repository switched live (TheHub #60904), these too: the
+    #: environmental score is what reads the verified controls.
+    RISK_EVIDENCE_SCORED_LIVE = (*RISK_EVIDENCE_SCORED, "environmental", "verified_controls")
+    RISK_EVIDENCE_NOTES_LIVE = {
+        "environmental": (
+            "Scored: this repository is switched to environmental severity "
+            "(environmental.live_switch has the record)."
+        ),
+        "verified_controls": (
+            "Scored through the environmental score, which reads them, since this "
+            "repository's switch (TheHub #60904)."
+        ),
+    }
     RISK_EVIDENCE_NOTES = {
         "environmental": (
             "Shadow only: the `environmental` block says what it would change. Not scored "
@@ -2760,7 +2871,9 @@ class OracleEngine:
         ),
     }
 
-    def _risk_evidence(self, repo_full_name: str, *, for_gate: bool) -> dict[str, Any]:
+    def _risk_evidence(
+        self, repo_full_name: str, *, for_gate: bool, live: bool = False
+    ) -> dict[str, Any]:
         """The `risk_evidence` block (TheHub #60901). Never costs the decision:
         a failure is recorded as the block being unavailable."""
         if self.db is None:
@@ -2800,8 +2913,12 @@ class OracleEngine:
                     findings=findings,
                     as_of=self._as_of,
                     escalate_steps=self.policy.toxic_combinations.escalate_steps,
-                    scored=self.RISK_EVIDENCE_SCORED,
-                    notes=self.RISK_EVIDENCE_NOTES,
+                    scored=self.RISK_EVIDENCE_SCORED_LIVE if live else self.RISK_EVIDENCE_SCORED,
+                    notes=(
+                        {**self.RISK_EVIDENCE_NOTES, **self.RISK_EVIDENCE_NOTES_LIVE}
+                        if live
+                        else self.RISK_EVIDENCE_NOTES
+                    ),
                     combinations=getattr(self, "_toxic_scored", None),
                 )
             return {"available": True, **gathered.as_dict()}
@@ -3064,6 +3181,21 @@ def render_reasoning(snapshot: dict[str, Any]) -> str:
     body = "; ".join(parts)
 
     sentence = f"{opening} {body}."
+    switch = (snapshot.get("environmental") or {}).get("live_switch") or {}
+    if switch.get("applied"):
+        before = switch.get("scanner_counted") or {}
+        sentence += (
+            " Findings are counted by environmental severity: this repository was "
+            f"switched on {switch.get('switched_on')} (approved by "
+            f"{switch.get('approved_by')}; TheHub #60904). Counted by the scanner's "
+            f"severity it would score {before.get('overall_risk_score')}/100 "
+            f"({before.get('recommendation')})."
+        )
+        if switch.get("trimmed"):
+            sentence += (
+                " Not counted again, because the environmental score already does: "
+                + ", ".join(switch["trimmed"]) + "."
+            )
     if totals["clamped"]:
         sentence += (
             f" Raw score {totals['raw_score']:.1f} was clamped to 100; the "

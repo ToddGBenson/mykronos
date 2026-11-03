@@ -174,15 +174,24 @@ def shadow(
     catalog: Any, db: Any, policy: Policy, live: LiveDecision
 ) -> dict[str, Any]:
     """The `environmental` block of one decision's inputs_snapshot."""
+    return shadow_with_terms(catalog, db, policy, live)[0]
+
+
+def shadow_with_terms(
+    catalog: Any, db: Any, policy: Policy, live: LiveDecision
+) -> tuple[dict[str, Any], list[Term] | None]:
+    """The block, and the recounted terms at full precision (None when the
+    shadow was not computed). The terms are what a switched repository is
+    scored by (TheHub #60904); the block only carries them rounded."""
     if not policy.environmental.shadow:
-        return off_snapshot(policy)
+        return off_snapshot(policy), None
     if db is None:
         return unavailable(
             policy,
             "No operational database is configured for this evaluation, so no "
             "environmental score could be read. The shadow is not computed "
             "rather than reported equal to live.",
-        )
+        ), None
 
     statuses = ", ".join(f"'{s}'" for s in live.statuses)
     rows = catalog.query(
@@ -316,7 +325,7 @@ def shadow(
     would_differ = shadow_recommendation != live.recommendation
     why = _why(live, tallies.moved, toxic_shadow, shadow_score, shadow_recommendation)
 
-    return {
+    block = {
         "mode": policy.environmental.mode,
         "available": True,
         "reason": (
@@ -376,10 +385,75 @@ def shadow(
             "other term carried over from live"
         ),
     }
+    return block, shadow_terms
 
 
 def _recounted(key: str) -> bool:
     return key.startswith(_RECOUNTED_PREFIXES) or key in _RECOUNTED_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Live, per repository (TheHub #60904)
+# ---------------------------------------------------------------------------
+
+#: Risk-profile terms a repository's environmental scores already count:
+#: exposure moves MAV and data classification sets CR (oracle-policy-v1.yaml).
+#: Trimmed for a switched repository only when at least one of its findings
+#: was counted by a current environmental score; kept otherwise, because then
+#: nothing else counts them.
+DOUBLE_COUNTED = ("risk_profile.internet_facing", "risk_profile.data_classification")
+
+
+def live_terms(
+    terms: list[Term], block: dict[str, Any], recounted: list[Term], policy: Policy
+) -> tuple[list[Term], list[str]]:
+    """The terms a switched repository is scored by, and the keys trimmed.
+
+    The live decision's terms with the shadow's recounted ones in place of
+    the scanner-counted finding bands, aging, KEV boost and toxic terms. The
+    two safety rules travel with the recount: the KEV floor is in its tallies,
+    and a critical combination (rated max(scanner, effective)) still forces
+    no_go - re-lifted here, after any trim, so the lift is never short.
+    """
+    scored = int(block.get("scored_findings") or 0) > 0
+    trimmed = [t.key for t in terms if scored and t.key in DOUBLE_COUNTED]
+    kept = [t for t in terms if t.key not in trimmed]
+    live_recounted = [t for t in terms if _recounted(t.key)]
+    if len(recounted) == len(live_recounted) and all(
+        a is b for a, b in zip(recounted, live_recounted, strict=True)
+    ):
+        # Nothing moved: the shadow handed back live's own terms. Keep them in
+        # place rather than re-adding them, so the sum is the same float.
+        if trimmed:
+            kept = _relift(kept, block, policy)
+        return kept, trimmed
+
+    first = next((i for i, t in enumerate(kept) if _recounted(t.key)), len(kept))
+    carried = [t for t in kept if not _recounted(t.key)]
+    replaced = [t for t in recounted if t.key != "toxic_combination_no_go"]
+    out = [*carried[:first], *replaced, *carried[first:]]
+    return _relift(out, block, policy), trimmed
+
+
+def _relift(terms: list[Term], block: dict[str, Any], policy: Policy) -> list[Term]:
+    """Re-apply the critical-combination no_go lift to a settled term list."""
+    out = [t for t in terms if t.key != "toxic_combination_no_go"]
+    if len(out) == len(terms) and not block.get("toxic_combinations", {}).get("forces_no_go"):
+        return terms
+    raw = sum(t.contribution for t in out)
+    if block.get("toxic_combinations", {}).get("forces_no_go") and raw < policy.no_go:
+        out.append(
+            Term(
+                key="toxic_combination_no_go",
+                label="Critical toxic combination",
+                contribution=policy.no_go - raw,
+                detail=(
+                    "A critical toxic combination forces no_go, rated with "
+                    "max(scanner, effective) per member."
+                ),
+            )
+        )
+    return out
 
 
 def _aged_under(severity: str, first_seen: Any, as_of: datetime) -> bool:
@@ -542,12 +616,132 @@ def _why(
 DIFFERENCES_LISTED = 100
 
 
-def build_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+#: Operator decision 2026-10-22 (epic #60882): two weeks of shadow per
+#: repository before it may be switched.
+SHADOW_DAYS = 14
+
+_VERDICT_RANK = {"go": 0, "review_recommended": 1, "no_go": 2}
+
+
+def _when(value: Any) -> datetime | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+    return None
+
+
+def _by_repo(
+    rows: list[dict[str, Any]], live_repos: tuple[Any, ...], min_days: int
+) -> dict[str, dict[str, Any]]:
+    """Per repository: did the shadow comparison hold (TheHub #60904)?
+
+    Machine-checkable conditions only, each a blocker when it fails: at least
+    `min_days` between the first and last shadowed decision; at least one
+    decision that counted a finding by a current environmental score (else
+    going live changes nothing); and no decision where the shadow said `go`
+    and live said `no_go` (the safety rules make that impossible by
+    construction; this shows it). Holding is necessary, not sufficient: the
+    differing decisions are still for a person to read before switching.
+    A switched repository's decisions from its switch date on are scored by
+    environmental severity already, so they are counted apart, not compared.
+    """
+    records = {r.repo: r for r in live_repos}
+    acc: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        repo = str(row.get("repo_full_name") or "")
+        env = row.get("environmental")
+        if not repo or not isinstance(env, dict) or not env.get("available"):
+            continue
+        if "shadow" not in env:
+            continue
+        entry = acc.setdefault(repo, {
+            "shadowed": 0, "agree": 0, "differ": 0, "harsher": 0, "milder": 0,
+            "shadow_go_on_live_no_go": 0, "with_environmental_scores": 0,
+            "after_switch": 0, "_first": None, "_last": None,
+        })
+        when = _when(row.get("evaluated_at"))
+        record = records.get(repo)
+        if record is not None and when is not None and when.date() >= record.switched_on:
+            entry["after_switch"] += 1
+            continue
+        entry["shadowed"] += 1
+        live = str(row.get("recommendation") or "")
+        shadow_rec = str(env["shadow"].get("recommendation") or "")
+        if shadow_rec == live:
+            entry["agree"] += 1
+        else:
+            entry["differ"] += 1
+            if live in _VERDICT_RANK and shadow_rec in _VERDICT_RANK:
+                if _VERDICT_RANK[shadow_rec] > _VERDICT_RANK[live]:
+                    entry["harsher"] += 1
+                else:
+                    entry["milder"] += 1
+        if live == "no_go" and shadow_rec == "go":
+            entry["shadow_go_on_live_no_go"] += 1
+        if int(env.get("scored_findings") or 0) > 0:
+            entry["with_environmental_scores"] += 1
+        if when is not None:
+            if entry["_first"] is None or when < entry["_first"]:
+                entry["_first"] = when
+            if entry["_last"] is None or when > entry["_last"]:
+                entry["_last"] = when
+
+    out: dict[str, dict[str, Any]] = {}
+    for repo in sorted(acc):
+        entry = acc[repo]
+        first, last = entry.pop("_first"), entry.pop("_last")
+        days = (last - first).days if first is not None and last is not None else 0
+        blockers: list[str] = []
+        if days < min_days:
+            blockers.append(f"Shadowed for {days} day(s); the comparison needs {min_days}.")
+        if entry["with_environmental_scores"] == 0:
+            blockers.append(
+                "No decision counted a finding by a current environmental score: "
+                "going live would change nothing here."
+            )
+        if entry["shadow_go_on_live_no_go"]:
+            blockers.append(
+                f"{entry['shadow_go_on_live_no_go']} decision(s) where the shadow "
+                "said go and live said no_go."
+            )
+        record = records.get(repo)
+        out[repo] = {
+            **entry,
+            "first": first.isoformat() if first else None,
+            "last": last.isoformat() if last else None,
+            "days_observed": days,
+            "comparison_holds": not blockers,
+            "blockers": blockers,
+            "live": record.as_dict() if record is not None else None,
+        }
+    for repo, record in records.items():
+        out.setdefault(repo, {
+            "shadowed": 0,
+            "days_observed": 0,
+            "comparison_holds": False,
+            "blockers": ["No shadowed decision in this window."],
+            "live": record.as_dict(),
+        })
+    return out
+
+
+def build_report(
+    rows: list[dict[str, Any]],
+    *,
+    live_repos: tuple[Any, ...] = (),
+    min_days: int = SHADOW_DAYS,
+) -> dict[str, Any]:
     """Shadow against live, and both against `gate_outcome`, over decisions.
 
     `rows` are risk_decisions rows with `environmental` already parsed (None
     for a decision from before policy 1.13). A decision whose shadow was off
-    or unavailable is counted as not shadowed, never as agreeing.
+    or unavailable is counted as not shadowed, never as agreeing. `by_repo`
+    (TheHub #60904) says per repository whether the comparison held;
+    `live_repos` are the policy's switch records.
     """
     shadowed = 0
     agree = 0
@@ -629,6 +823,9 @@ def build_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "shadow_no_go_merged": shadow_no_go_merged,
             "live_no_go_merged": live_no_go_merged,
         },
+        "by_repo": _by_repo(rows, tuple(live_repos), min_days),
+        "live_repos": [r.as_dict() for r in live_repos],
+        "comparison_days": min_days,
         "interpretation": (
             "Every difference is a verdict environmental severity would have "
             "changed. `why` names the findings that moved band and the context "
@@ -637,7 +834,9 @@ def build_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "is a review it would have spared - whether that was right needs "
             "the facts behind it, which the context ids lead to. This is the "
             "evidence the go-live conditions in oracle-policy-v1.yaml ask for, "
-            "not the decision."
+            "not the decision. `by_repo` applies the machine-checkable ones per "
+            "repository; a repository whose comparison holds is switched by a "
+            "person adding its record to environmental.live_repos."
         ),
     }
 

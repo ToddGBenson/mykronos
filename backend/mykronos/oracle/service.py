@@ -675,7 +675,7 @@ class OracleService:
             "mode": self.policy.environmental.mode,
             "policy_version": self.policy.version,
             "limit": limit,
-            **build_report(records),
+            **build_report(records, live_repos=self.policy.environmental.live_repos),
         }
 
     def _repos_for_commits(

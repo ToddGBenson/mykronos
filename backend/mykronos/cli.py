@@ -524,6 +524,33 @@ def _shadow_report(
         )
         if report["differences_not_listed"]:
             print(f"...and {report['differences_not_listed']} more; use --json.")
+    by_repo = report.get("by_repo") or {}
+    if by_repo:
+        # TheHub #60904: per repository, whether the comparison held.
+        print(
+            f"\nPer repository ({report.get('comparison_days')} day(s) of shadow "
+            "needed; holding is necessary, not sufficient - read the differences):"
+        )
+        _print_table(
+            [
+                "repo", "shadowed", "days", "differ", "harsher", "milder",
+                "holds", "live", "blockers",
+            ],
+            [
+                [
+                    repo,
+                    r.get("shadowed", 0),
+                    r.get("days_observed", 0),
+                    r.get("differ", 0),
+                    r.get("harsher", 0),
+                    r.get("milder", 0),
+                    "yes" if r.get("comparison_holds") else "no",
+                    (r.get("live") or {}).get("switched_on") or "-",
+                    "; ".join(r.get("blockers") or []) or "-",
+                ]
+                for repo, r in sorted(by_repo.items())
+            ],
+        )
     return 0
 
 
