@@ -20,7 +20,7 @@ import pytest
 import yaml
 from fastapi import FastAPI
 
-from mykronos import agent_work, playbooks
+from mykronos import agent_work, playbooks, read_coverage
 from mykronos.adminauth import ActorKind, Principal, Role
 from mykronos.briefing import (
     Briefing,
@@ -312,6 +312,10 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
              "last_verdict": "reject", "last_rationale": "No test."}
         ],
         patchwork_prs=[],
+        analyser_coverage=[
+            read_coverage.measure(REPO, {"Shell": 219000, "Python": 66000}, "codeql")
+        ],
+        repo_ids={REPO: REPO_ID},
         now=NOW,
         probe_interval_seconds=21_600,
         playbook_version=version,

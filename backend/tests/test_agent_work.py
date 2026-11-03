@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from mykronos import agent_work, briefing_sources
+from mykronos import agent_work, briefing_sources, read_coverage
 from mykronos.adminauth import ActorKind, Principal, Role
 from mykronos.briefing import AwaitingClosure, Briefing, StalledLane, TokenDelivery
 
@@ -90,6 +90,7 @@ def _build(
     inputs.setdefault("approval_requests", [])
     inputs.setdefault("pull_request_requests", [])
     inputs.setdefault("patchwork_prs", [])
+    inputs.setdefault("analyser_coverage", [])
     inputs.setdefault("playbook_version", "1.0")
     return agent_work.build(
         briefing or _briefing(),
@@ -162,8 +163,10 @@ class TestUnknownIsNotEmpty:
             approval_requests=None,
             pull_request_requests=None,
             patchwork_prs=None,
+            analyser_coverage=None,
         )
         assert {u.source for u in queue.unknown} == {
+            "analyser_coverage",
             "job_runs",
             "ingestion_tokens",
             "toxic",
@@ -762,3 +765,155 @@ class TestTheRoute:
             assert item["playbook"].startswith("pull_request_attention@")
         sources = {u["source"] for u in body["unknown"]}
         assert not sources & {"pull_request_requests", "patchwork"}
+
+# ---------------------------------------------------------------------------
+# B-051 in the queue (TheHub #60798, decision option A)
+
+#: 219 000 of 313 000 bytes are shell, which CodeQL does not implement: 69%.
+MOSTLY_SHELL = {"Shell": 219000, "Python": 66000, "JavaScript": 28000}
+ALL_READ = {"Python": 50000, "TypeScript": 10000}
+
+
+def _measured(counts: dict[str, int] | None, repo: str = REPO) -> read_coverage.ReadCoverage:
+    return read_coverage.measure(repo, counts, "codeql")
+
+
+class TestAnalyserGap:
+    def test_unread_source_is_an_item_ranked_below_the_findings(self) -> None:
+        queue = _build(triage_rows=[_finding()], analyser_coverage=[_measured(MOSTLY_SHELL)])
+        assert [i.kind for i in queue.items] == ["triage", "analyser_gap"]
+        gap = queue.items[-1]
+        assert gap.band > agent_work.BAND_FINDING
+        assert gap.item_id == f"analyser_gap:{REPO}"
+        assert gap.repo_full_name == REPO
+        assert gap.playbook == "analyser_gap@1.0"
+
+    def test_its_evidence_cites_the_share_no_analyser_reads(self) -> None:
+        [gap] = _build(analyser_coverage=[_measured(MOSTLY_SHELL)]).items
+        [evidence] = gap.evidence
+        assert evidence.source == "read_coverage"
+        assert evidence.ref == REPO
+        assert "69%" in evidence.detail
+        assert "Shell" in evidence.detail
+        assert "codeql" in evidence.detail
+        assert "69%" in gap.title
+
+    def test_a_fully_read_repository_is_not_work(self) -> None:
+        queue = _build(analyser_coverage=[_measured(ALL_READ)])
+        assert queue.items == []
+        assert queue.unknown == []
+
+    def test_the_larger_gap_comes_first(self) -> None:
+        small = _measured({"Python": 90000, "Shell": 10000}, repo="acme/small")
+        large = _measured(MOSTLY_SHELL, repo="acme/large")
+        queue = _build(analyser_coverage=[small, large])
+        assert [i.repo_full_name for i in queue.items] == ["acme/large", "acme/small"]
+
+    def test_unread_analyser_data_is_unknown_never_an_empty_list(self) -> None:
+        queue = _build(analyser_coverage=None)
+        assert [u.source for u in queue.unknown] == ["analyser_coverage"]
+        assert queue.items == []
+
+    def test_a_repository_that_could_not_be_measured_is_named(self) -> None:
+        queue = _build(
+            analyser_coverage=[_measured(None, repo="acme/dark"), _measured(ALL_READ)]
+        )
+        assert queue.items == []
+        [unknown] = queue.unknown
+        assert unknown.source == "analyser_coverage"
+        assert "acme/dark" in unknown.detail
+
+    def test_its_action_names_the_onboarding_id(self) -> None:
+        [gap] = _build(
+            analyser_coverage=[_measured(MOSTLY_SHELL)], repo_ids={REPO: REPO_ID}
+        ).items
+        assert [a.path for a in gap.actions] == [f"/api/dashboard/repos/{REPO_ID}/coverage"]
+        assert all(a.method == "GET" for a in gap.actions)
+
+    def test_no_dead_path_without_an_onboarding_row(self) -> None:
+        [gap] = _build(analyser_coverage=[_measured(MOSTLY_SHELL)]).items
+        assert gap.actions == []
+
+
+class TestTheRouteReadsTheBriefingsCache:
+    """Option A: the queue reads what the briefing cached, and never GitHub."""
+
+    @pytest.fixture
+    def onboarded(self, client, admin_auth, monkeypatch) -> str:
+        from mykronos import analysers
+        from mykronos.api import dashboard
+        from tests.conftest import REPO as ONBOARDED
+        from tests.test_onboarding import onboard
+
+        response = onboard(client, admin_auth)
+        assert response.status_code in (200, 201), response.text
+        live_reads: list[str] = []
+
+        async def no_live_read(github: Any, repo_full_name: str) -> None:
+            live_reads.append(repo_full_name)
+            raise AssertionError(f"the queue read GitHub for {repo_full_name}")
+
+        monkeypatch.setattr(analysers, "read_languages", no_live_read)
+        monkeypatch.setattr(dashboard, "read_languages", no_live_read)
+        client.app.state.live_reads = live_reads
+        return ONBOARDED
+
+    def _work(self, client, admin_auth) -> dict[str, Any]:
+        response = client.get("/api/agent/work", headers=admin_auth)
+        assert response.status_code == 200, response.text
+        return dict(response.json())
+
+    def _named(self, body: dict[str, Any]) -> list[str]:
+        return [u["detail"] for u in body["unknown"] if u["source"] == "analyser_coverage"]
+
+    def test_a_cached_gap_is_an_item_and_github_is_not_asked(
+        self, client, admin_auth, onboarded
+    ) -> None:
+        import time
+
+        client.app.state.languages_cache = {onboarded: (time.monotonic(), MOSTLY_SHELL)}
+        body = self._work(client, admin_auth)
+        gaps = [i for i in body["items"] if i["kind"] == "analyser_gap"]
+        assert [g["repo_full_name"] for g in gaps] == [onboarded]
+        assert "69%" in gaps[0]["evidence"][0]["detail"]
+        assert gaps[0]["actions"][0]["path"].endswith("/coverage")
+        assert self._named(body) == []
+        assert client.app.state.live_reads == []
+
+    def test_no_cache_is_unknown_naming_the_repository(
+        self, client, admin_auth, onboarded
+    ) -> None:
+        client.app.state.languages_cache = {}
+        body = self._work(client, admin_auth)
+        assert not [i for i in body["items"] if i["kind"] == "analyser_gap"]
+        [detail] = self._named(body)
+        assert onboarded in detail
+        assert client.app.state.live_reads == []
+
+    def test_a_cache_older_than_the_briefings_ttl_is_unknown(
+        self, client, admin_auth, onboarded
+    ) -> None:
+        import time
+
+        from mykronos.api.dashboard import LANGUAGES_TTL_SECONDS
+
+        old = time.monotonic() - LANGUAGES_TTL_SECONDS - 60
+        client.app.state.languages_cache = {onboarded: (old, MOSTLY_SHELL)}
+        body = self._work(client, admin_auth)
+        assert not [i for i in body["items"] if i["kind"] == "analyser_gap"]
+        [detail] = self._named(body)
+        assert onboarded in detail
+        assert client.app.state.live_reads == []
+
+    def test_a_failed_read_of_the_analyser_data_is_unknown_not_a_500(
+        self, client, admin_auth, onboarded, monkeypatch
+    ) -> None:
+        from mykronos.api import dashboard
+
+        def broken(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("catalog unavailable")
+
+        monkeypatch.setattr(dashboard, "_sast_tools", broken)
+        body = self._work(client, admin_auth)
+        assert self._named(body)
+        assert "catalog unavailable" not in str(body)

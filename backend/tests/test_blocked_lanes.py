@@ -322,6 +322,7 @@ def _queue(report: briefing.Briefing) -> agent_work.WorkQueue:
         approval_requests=[],
         pull_request_requests=[],
         patchwork_prs=[],
+        analyser_coverage=[],
         now=NOW,
         probe_interval_seconds=21_600,
         playbook_version="1.0",
