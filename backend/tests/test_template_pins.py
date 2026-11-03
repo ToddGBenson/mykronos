@@ -50,7 +50,8 @@ TEMPLATE = (
 
 
 def _source(*lines: str) -> dict[str, str]:
-    return {".github/workflows/ci.yml": "steps:\n" + "".join(f"  - uses: {line}\n" for line in lines)}
+    body = "".join(f"  - uses: {line}\n" for line in lines)
+    return {".github/workflows/ci.yml": "steps:\n" + body}
 
 
 class TestRefresh:
@@ -121,6 +122,23 @@ class TestRefresh:
         content, _, _ = refresh_template("sast.yml.j2", TEMPLATE, best)
 
         assert f"actions/checkout@{NEW}  # v4.5.1" in content
+
+    def test_a_new_major_elsewhere_does_not_hide_a_same_major_bump(self) -> None:
+        """This repository runs checkout v7 while the onboarded repositories
+        run v4. Comparing only the newest release per repository would see
+        v7, refuse it as a major, and never apply the v4 patch beside it."""
+        best, _ = collect_source_pins(
+            {
+                "mykronos/ci.yml": f"- uses: actions/checkout@{OTHER} # v7.0.1\n",
+                "keel/ci.yml": f"- uses: actions/checkout@{NEW} # v4.5.1\n",
+            }
+        )
+
+        content, changes, skips = refresh_template("sast.yml.j2", TEMPLATE, best)
+
+        assert f"actions/checkout@{NEW}  # v4.5.1" in content
+        assert [c.new_version for c in changes] == ["v4.5.1"]
+        assert [s.source_version for s in skips] == ["v7.0.1"]
 
     def test_two_shas_for_one_release_is_not_guessed(self) -> None:
         """A moved tag looks exactly like this. Picking either SHA would be
@@ -277,7 +295,8 @@ class TestTheScript:
         templates, estate = self._tree(tmp_path, "v3.37.9")
 
         result = subprocess.run(
-            [sys.executable, str(SCRIPT), "--templates", str(templates), "--source", str(estate), "--check"],
+            [sys.executable, str(SCRIPT), "--templates", str(templates)]
+            + ["--source", str(estate), "--check"],
             capture_output=True,
             text=True,
             check=False,
