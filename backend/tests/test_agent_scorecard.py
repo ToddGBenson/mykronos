@@ -561,3 +561,214 @@ class TestTheRoute:
 
     def test_it_needs_a_credential(self, client) -> None:
         assert client.get("/api/agent/scorecard").status_code == 401
+
+
+# -- Pull requests closed without merging (TheHub #60796) ------------------------
+#
+# Decided 2026-10-22, option A: a pull request closed without merging is the
+# agent's when that agent's own `pull_request_merge` request names the same
+# repository, number and head commit as the gate decision that recorded the
+# close. The request is the agent's own record, so the one shared GitHub
+# account does not matter.
+
+PR_METRIC = "pull_requests.closed_unmerged"
+
+
+def _pr_request(repo: str, number: int, sha: str, **overrides: Any) -> sc.RequestRow:
+    values: dict[str, Any] = {
+        "duty": "pull_request_merge",
+        "state": "approved",
+        "subject_ref": f"{repo}#{number}@{sha}",
+    }
+    values.update(overrides)
+    return _request(**values)
+
+
+class TestPullRequestsClosedUnmerged:
+    def test_it_is_derived_from_gate_outcomes_on_the_agents_own_requests(self) -> None:
+        requests = [
+            _pr_request("acme/api", 1, "aaa"),
+            _pr_request("acme/api", 2, "bbb", state="rejected"),
+            # A second request for the same commit, after the first expired,
+            # is still one pull request.
+            _pr_request("acme/api", 2, "bbb", state="expired"),
+            _pr_request("acme/api", 3, "ccc"),
+            # Still open, or never judged by the gate: not settled, not counted.
+            _pr_request("acme/api", 4, "ddd", state="pending"),
+            # The gate recorded its outcome on a later head than this request
+            # named: another commit, so not this request's to answer for.
+            _pr_request("acme/web", 5, "old"),
+            # Another duty naming the same subject is not a merge request.
+            _request(subject_ref="acme/api#6@eee"),
+        ]
+        outcomes = {
+            ("acme/api", 1, "aaa"): "merged",
+            ("acme/api", 2, "bbb"): "closed_unmerged",
+            ("acme/api", 3, "ccc"): "closed_unmerged",
+            ("acme/web", 5, "new"): "closed_unmerged",
+            ("acme/api", 6, "eee"): "closed_unmerged",
+        }
+        [group] = sc.compute(
+            _gathered(requests=requests, pr_outcomes=outcomes), _policy(), now=NOW
+        ).instances
+
+        metric = _metric(group, PR_METRIC)
+        assert metric.status == sc.COMPUTED
+        assert (metric.value, metric.denominator) == (2, 3)
+        assert metric.rate == round(2 / 3, 4)
+        assert metric.breakdown == {"merged": 1, "closed_unmerged": 2, "not_settled": 2}
+        assert metric.source == sc.SOURCE_PULL_REQUESTS
+        assert PR_METRIC not in sc.NOT_DERIVABLE
+
+    def test_no_request_with_a_recorded_outcome_is_no_data(self) -> None:
+        for requests in (
+            [_request()],
+            [_pr_request("acme/api", 4, "ddd", state="pending")],
+        ):
+            [group] = sc.compute(
+                _gathered(requests=requests, pr_outcomes={}), _policy(), now=NOW
+            ).instances
+            metric = _metric(group, PR_METRIC)
+            assert metric.status == sc.NO_DATA
+            assert metric.denominator == 0
+            assert metric.rate is None
+            assert metric.note
+
+    def test_an_unreadable_lake_is_unavailable(self) -> None:
+        [group] = sc.compute(
+            _gathered(requests=[_pr_request("acme/api", 1, "aaa")], pr_outcomes=None),
+            _policy(),
+            now=NOW,
+        ).instances
+        metric = _metric(group, PR_METRIC)
+        assert metric.status == sc.UNAVAILABLE
+        assert metric.value is None
+        assert "could not be read" in metric.note
+
+    def test_unreadable_requests_are_unavailable(self) -> None:
+        card = sc.compute(
+            _gathered(
+                requests=None,
+                decisions=[_decision()],
+                pr_outcomes={("acme/api", 1, "aaa"): "closed_unmerged"},
+            ),
+            _policy(),
+            now=NOW,
+        )
+        [group] = card.instances
+        assert _metric(group, PR_METRIC).status == sc.UNAVAILABLE
+
+
+class _BrokenLake:
+    """A catalog whose every read fails, as an unmounted lake does."""
+
+    def all_files(self, table: str) -> list[str]:
+        raise OSError("the lake is not mounted")
+
+    def query(self, sql: str, params: Any = None) -> list[Any]:
+        raise OSError("the lake is not mounted")
+
+
+def _judge(client, run_compaction, repo: str, number: int, sha: str) -> None:
+    """A pr_gate decision on that head, in the lake, as Oracle writes it."""
+    from mykronos.oracle.engine import Decision
+    from mykronos.oracle.service import decision_to_row
+
+    decision = Decision(
+        decision_id=f"dec-{number}",
+        repo_full_name=repo,
+        decision_type="pr_gate",
+        commit_sha=sha,
+        pr_number=number,
+        release_tag=None,
+        overall_risk_score=10,
+        recommendation="go",
+        reasoning="",
+        inputs_snapshot={},
+        policy_version="test",
+        evaluated_at=utcnow(),
+    )
+    client.app.state.buffer.append("risk_decisions", [decision_to_row(decision)])
+    run_compaction()
+
+
+class TestPullRequestsAsTheRecordsSayIt:
+    def test_gather_attributes_a_close_to_the_requesting_agent_only(
+        self, client, admin_auth, run_compaction, stand_in_adapters
+    ) -> None:
+        from mykronos.api.webhooks import _record_gate_outcome
+
+        state = client.app.state
+        db = state.db
+        policy = cached_policy(state.settings.approval_policy_path)
+        minted = client.post(
+            "/api/agents/credentials", json={"family": OPUS}, headers=admin_auth
+        ).json()
+        author = resolve_agent_credential(db, minted["token"])
+        assert author is not None
+
+        for number in (11, 12, 13):
+            _judge(client, run_compaction, "acme/api", number, f"abc{number}")
+        for number, outcome in ((11, "closed_unmerged"), (12, "merged"), (13, "closed_unmerged")):
+            # The webhook's own path: GitHub says the pull request closed.
+            assert _record_gate_outcome(state, "acme/api", number, outcome) == f"dec-{number}"
+        run_compaction()
+
+        for number in (11, 12):
+            engine.create_request(
+                db, policy, duty="pull_request_merge",
+                subject_ref=f"acme/api#{number}@abc{number}", requested_by=author,
+                context={"tier": "routine"},
+            )
+        # The platform opened the request for #13 itself, for a pull request
+        # no agent claimed: automation, on nobody's record.
+        with db.session() as session:
+            session.add(
+                ApprovalRequest(
+                    duty="pull_request_merge",
+                    tier="routine",
+                    subject_ref="acme/api#13@abc13",
+                    requested_by="job:pr-stamp",
+                    requester_kind="automation",
+                    expires_at=utcnow() + timedelta(days=1),
+                )
+            )
+
+        gathered = sc.gather(db, state.catalog, policy, now=utcnow())
+        assert gathered.unknown == []
+        card = sc.compute(gathered, policy, now=utcnow())
+        [group] = card.instances
+        assert group.instance == minted["instance"]
+        metric = _metric(group, PR_METRIC)
+        assert metric.status == sc.COMPUTED
+        assert (metric.value, metric.denominator) == (1, 2)
+        assert metric.breakdown == {"merged": 1, "closed_unmerged": 1}
+
+        # And the same number through the route.
+        body = client.get("/api/agent/scorecard", headers=admin_auth).json()
+        [route_group] = body["instances"]
+        [route_metric] = [m for m in route_group["metrics"] if m["name"] == PR_METRIC]
+        assert (route_metric["value"], route_metric["denominator"]) == (1, 2)
+
+    def test_a_lake_that_cannot_be_read_is_unavailable_and_named_in_unknown(
+        self, client, admin_auth, stand_in_adapters
+    ) -> None:
+        state = client.app.state
+        db = state.db
+        policy = cached_policy(state.settings.approval_policy_path)
+        minted = client.post(
+            "/api/agents/credentials", json={"family": OPUS}, headers=admin_auth
+        ).json()
+        author = resolve_agent_credential(db, minted["token"])
+        assert author is not None
+        engine.create_request(
+            db, policy, duty="pull_request_merge", subject_ref="acme/api#21@abc21",
+            requested_by=author, context={"tier": "routine"},
+        )
+
+        gathered = sc.gather(db, _BrokenLake(), policy, now=utcnow())
+        assert [source for source, _ in gathered.unknown] == ["lake risk_decisions"]
+        [group] = sc.compute(gathered, policy, now=utcnow()).instances
+        metric = _metric(group, PR_METRIC)
+        assert metric.status == sc.UNAVAILABLE
+        assert metric.value is None
