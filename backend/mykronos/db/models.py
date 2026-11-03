@@ -279,6 +279,51 @@ class ReachabilityReport(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class DataflowReachabilityReport(Base):
+    """What CodeQL's dataflow said about one repository, in one language
+    (TheHub #60891, `mykronos.reachability_dataflow`).
+
+    Operational and superseded whole by the next analysis, for the reason
+    `ReachabilityReport` above gives; one row per repository *and language*,
+    because the Python and JS/TS legs of the `sast` matrix post separately and
+    one must not overwrite the other.
+
+    `verdicts` holds every verdict as submitted, after ingest has downgraded
+    any `unreachable` whose evidence falls short (`unreachable_gaps`). A
+    `reachable` carries its path; an `unreachable` carries its evidence; and
+    the auto-triage lane re-checks that evidence before acting on it, so a row
+    that reached this table some other way still cannot close a finding.
+
+    Absence means the analysis never ran for this language, never that
+    everything is reachable or that nothing is.
+    """
+
+    __tablename__ = "dataflow_reachability_reports"
+    __table_args__ = (
+        UniqueConstraint(
+            "repo_onboarding_id", "language", name="uq_dataflow_reachability_repo_language"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_onboarding_id: Mapped[str] = mapped_column(
+        ForeignKey("repo_onboardings.id"), index=True
+    )
+    #: `python` or `javascript` (CodeQL's name for JS/TS).
+    language: Mapped[str] = mapped_column(String(32))
+    analyser: Mapped[str] = mapped_column(String(32), default="codeql")
+    analyser_version: Mapped[str] = mapped_column(String(64), default="")
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    #: Source files in the CodeQL database: the denominator of every absence.
+    files_analysed: Mapped[int] = mapped_column(Integer, default=0)
+    #: Imports by computed name. While any exists, nothing is unreachable.
+    dynamic_imports: Mapped[int] = mapped_column(Integer, default=0)
+    #: The lockfiles whose dependency graph was read.
+    lockfiles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    verdicts: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class CapabilityConfig(Base):
     """Per-repo, per-capability overrides (spec 02 §3)."""
 

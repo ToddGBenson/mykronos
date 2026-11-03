@@ -26,11 +26,16 @@ on the action.
   version. The finding takes that verdict -
   `false_positive` or `suppressed` only; an acceptance is a governed record
   with a review date (spec 33) and is never copied.
-- `unreachable` - the repository's import-graph report
-  (`ReachabilityReport`, spec 19 §2.1) lists the finding's Python file as
-  orphaned, and every file parsed. The finding becomes `suppressed`. This is
-  the only reachability evidence the platform records; nothing else is read
-  as reachability.
+- `unreachable` - one of two records says the code cannot run. Either the
+  repository's import-graph report (`ReachabilityReport`, spec 19 §2.1) lists
+  the finding's Python file as orphaned, and every file parsed; or, for a
+  dependency finding, CodeQL dataflow (`DataflowReachabilityReport`, TheHub
+  #60891) found the package never imported, and the lane re-checks the
+  stored evidence with `reachability_dataflow.unreachable_gaps` - a direct
+  runtime dependency, nothing else in the lockfile graph requiring it, no
+  dynamic import, a confirmed import name, a non-empty database - before
+  believing it. A path CodeQL traced through a file vetoes the import graph's
+  "orphaned" for that file. The finding becomes `suppressed`.
 
 **Never a serious finding on weak evidence.** A critical or high finding is
 closed only by `fix_verified` or `vex_not_affected`: a scan of the fixing
@@ -60,16 +65,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import clusters
+from mykronos import clusters, reachability_evidence
 from mykronos.db.models import (
     AuditLogEntry,
     AutoTriageAction,
+    DataflowReachabilityReport,
     ReachabilityReport,
     RepoOnboarding,
     VexStatement,
 )
 from mykronos.lake.catalog import Catalog
 from mykronos.lake.mutate import locate_findings, update_findings
+from mykronos.reachability_dataflow import unreachable_gaps
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -303,6 +310,19 @@ def _orphaned(
     return found
 
 
+def _dataflow(
+    session: Session, repos: Mapping[str, str]
+) -> dict[str, reachability_evidence.Index]:
+    """repo_full_name -> its CodeQL dataflow verdicts, every language."""
+    by_id = {onboarding_id: repo for repo, onboarding_id in repos.items()}
+    grouped: dict[str, list[DataflowReachabilityReport]] = {}
+    for report in session.execute(select(DataflowReachabilityReport)).scalars():
+        repo = by_id.get(str(report.repo_onboarding_id))
+        if repo is not None:
+            grouped.setdefault(repo, []).append(report)
+    return {repo: reachability_evidence.index(reports) for repo, reports in grouped.items()}
+
+
 # --------------------------------------------------------------------------
 # Proposing
 # --------------------------------------------------------------------------
@@ -336,6 +356,7 @@ def propose(
     statements = _vex_statements(session)
     precedents = _precedents(catalog, auto_closed)
     orphaned = _orphaned(session, repos)
+    dataflow = _dataflow(session, repos)
 
     for row in open_rows:
         finding_id = str(row["finding_id"])
@@ -346,7 +367,7 @@ def propose(
         for rule in RULES:
             if (finding_id, rule) in tried:
                 continue
-            match = _match(rule, row, fixes, statements, precedents, orphaned)
+            match = _match(rule, row, fixes, statements, precedents, orphaned, dataflow)
             if match is None:
                 continue
             if severity in SERIOUS and rule not in SERIOUS_EVIDENCE:
@@ -383,6 +404,7 @@ def _match(
     statements: list[VexStatement],
     precedents: Mapping[tuple[str, ...], dict[str, Any]],
     orphaned: Mapping[str, tuple[ReachabilityReport, set[str]]],
+    dataflow: Mapping[str, reachability_evidence.Index] | None = None,
 ) -> tuple[str, dict[str, Any], str] | None:
     finding_id = str(row["finding_id"])
     if rule == FIX_VERIFIED:
@@ -453,14 +475,24 @@ def _match(
             f"auto-triage did not make (cluster {cluster_id}).",
         )
     if rule == UNREACHABLE:
+        traced = (dataflow or {}).get(str(row.get("repo_full_name") or ""))
         if row.get("package_name"):
-            return None
+            return _unreachable_package(row, traced)
         path = clusters.normalise_path(row.get("file_path"))
         if not path.endswith(".py"):
             return None
         entry = orphaned.get(str(row.get("repo_full_name") or ""))
         if entry is None or path not in entry[1]:
             return None
+        if traced is not None:
+            found = reachability_evidence.for_finding(traced, row)
+            if path in traced.reached_files or (
+                found is not None and found[1].get("verdict") == "reachable"
+            ):
+                # CodeQL traced a call into this file from an entry point -
+                # a framework loading it by name, say. The recorded path is
+                # stronger evidence than "nothing imports it".
+                return None
         report = entry[0]
         return (
             "suppressed",
@@ -477,6 +509,49 @@ def _match(
             f"{report.files_analysed} files, all parsed).",
         )
     return None
+
+
+def _unreachable_package(
+    row: Mapping[str, Any], traced: reachability_evidence.Index | None
+) -> tuple[str, dict[str, Any], str] | None:
+    """A dependency CodeQL found never imported, on evidence re-checked here.
+
+    Ingest already downgraded any short `unreachable`; this checks again,
+    because the lane must not rest on how a row reached the table.
+    """
+    if traced is None:
+        return None
+    found = reachability_evidence.for_finding(traced, row)
+    if found is None:
+        return None
+    report, verdict = found
+    evidence = dict(verdict.get("evidence") or {})
+    if verdict.get("verdict") != "unreachable" or unreachable_gaps(evidence):
+        return None
+    package = str(verdict.get("package_name") or row.get("package_name") or "")
+    sha = str(report.commit_sha or "")
+    return (
+        "suppressed",
+        {
+            "type": "dataflow_reachability",
+            "ref": report.id,
+            "language": report.language,
+            "analyser": report.analyser,
+            "analyser_version": report.analyser_version,
+            "commit_sha": sha,
+            "package_name": package,
+            "ecosystem": verdict.get("ecosystem"),
+            "files_analysed": evidence.get("files_analysed"),
+            "import_names": evidence.get("import_names"),
+            "import_name_basis": evidence.get("import_name_basis"),
+            "lockfiles": evidence.get("lockfiles"),
+        },
+        f"{package} is imported nowhere in {evidence.get('files_analysed')} analysed "
+        f"{report.language} file(s), is a direct runtime dependency, and nothing else in "
+        f"{', '.join(evidence.get('lockfiles') or [])} requires it "
+        f"(CodeQL {report.analyser_version or 'unknown version'} at "
+        f"{sha[:12] or 'unknown commit'}).",
+    )
 
 
 # --------------------------------------------------------------------------

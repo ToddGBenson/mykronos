@@ -26,6 +26,7 @@ import {
 import {
   DossierPanel,
   ExploitabilityPanel,
+  ReachabilityPanel,
   RescoreSteps,
 } from "@/components/finding-workbench";
 import { FindingDecision } from "@/components/finding-decision";
@@ -238,6 +239,10 @@ export default async function FindingRecordPage({
 
         {result.data.exploitability ? (
           <ExploitabilityPanel data={result.data.exploitability} />
+        ) : null}
+
+        {result.data.reachability ? (
+          <ReachabilityPanel data={result.data.reachability} />
         ) : null}
 
         {dossierResult.ok ? (

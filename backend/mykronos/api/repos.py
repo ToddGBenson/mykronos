@@ -31,6 +31,7 @@ from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db.models import (
     CapabilityConfig,
     CapabilityGrant,
+    DataflowReachabilityReport,
     ReachabilityReport,
     RepoOnboarding,
     RiskProfile,
@@ -266,6 +267,25 @@ class RiskProfileOut(BaseModel):
     updated_at: datetime | None = None
 
 
+class DataflowReportOut(BaseModel):
+    """One language's CodeQL dataflow analysis, as counts (TheHub #60891).
+
+    The verdicts themselves, with their paths, are on each finding's record.
+    """
+
+    language: str
+    analyser: str
+    analyser_version: str = ""
+    commit_sha: str = ""
+    files_analysed: int = 0
+    dynamic_imports: int = 0
+    lockfiles: list[str] = Field(default_factory=list)
+    reachable: int = 0
+    unreachable: int = 0
+    unknown: int = 0
+    updated_at: datetime | None = None
+
+
 class ReachabilityOut(BaseModel):
     """Which files nothing in the repository imports (spec 19 §2.1).
 
@@ -293,6 +313,9 @@ class ReachabilityOut(BaseModel):
     taint_rules: list[str] = Field(default_factory=list)
     taint_matches: int = 0
     updated_at: datetime | None = None
+    #: CodeQL dataflow reachability, one entry per analysed language (TheHub
+    #: #60891). Empty when it has never run, which says nothing either way.
+    dataflow: list[DataflowReportOut] = Field(default_factory=list)
     note: str = Field(
         default=(
             "Import reachability only, and Python only: whether anything in "
@@ -1409,10 +1432,32 @@ async def get_reachability(
             .scalars()
             .first()
         )
+        dataflow = [
+            DataflowReportOut(
+                language=d.language,
+                analyser=d.analyser,
+                analyser_version=d.analyser_version,
+                commit_sha=d.commit_sha,
+                files_analysed=d.files_analysed,
+                dynamic_imports=d.dynamic_imports,
+                lockfiles=list(d.lockfiles or []),
+                updated_at=d.updated_at,
+                **{
+                    name: sum(1 for v in d.verdicts or [] if v.get("verdict") == name)
+                    for name in ("reachable", "unreachable", "unknown")
+                },
+            )
+            for d in session.execute(
+                select(DataflowReachabilityReport)
+                .where(DataflowReachabilityReport.repo_onboarding_id == row.id)
+                .order_by(DataflowReachabilityReport.language)
+            ).scalars()
+        ]
         if report is None:
-            return ReachabilityOut(analysed=False)
+            return ReachabilityOut(analysed=False, dataflow=dataflow)
         return ReachabilityOut(
             analysed=True,
+            dataflow=dataflow,
             language=report.language,
             commit_sha=report.commit_sha,
             files_analysed=report.files_analysed,

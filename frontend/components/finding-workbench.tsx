@@ -7,6 +7,7 @@ import type { FindingDossier } from "@/lib/server";
 type Step = components["schemas"]["RescoreStepOut"];
 type StepFact = components["schemas"]["RescoreStepFactOut"];
 type Exploitability = components["schemas"]["ExploitabilityOut"];
+type Reachability = components["schemas"]["FindingReachabilityOut"];
 
 const FRESHNESS_TONE: Record<StepFact["freshness"], "pass" | "warn" | "critical" | "muted"> = {
   fresh: "pass",
@@ -170,6 +171,93 @@ export function ExploitabilityPanel({ data }: { data: Exploitability }) {
           <span className="font-semibold">Fix: </span>
           {data.fix.detail}
         </p>
+      </div>
+    </section>
+  );
+}
+
+const REACH_LABEL: Record<Reachability["verdict"], string> = {
+  reachable: "reachable",
+  unreachable: "never imported",
+  unknown: "not proven either way",
+};
+
+const REACH_TONE: Record<Reachability["verdict"], "critical" | "pass" | "muted"> = {
+  reachable: "critical",
+  unreachable: "pass",
+  unknown: "muted",
+};
+
+/** Which evidence fields an `unreachable` rests on, in reading order. */
+const REACH_EVIDENCE: [string, string][] = [
+  ["files_analysed", "files analysed"],
+  ["import_names", "imported as"],
+  ["import_count", "imports found"],
+  ["dynamic_imports", "dynamic imports"],
+  ["lockfiles", "lockfiles"],
+  ["dependents", "required by"],
+];
+
+function evidenceValue(value: unknown): string {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
+  if (value == null) return "—";
+  return String(value);
+}
+
+/**
+ * Is the vulnerable code reachable, and on what evidence (TheHub #60891).
+ * A reachable verdict shows the path CodeQL traced from an entry point; an
+ * unreachable one shows the evidence that it is never imported, because
+ * that is what the auto-triage lane acted on, if it did.
+ */
+export function ReachabilityPanel({ data }: { data: Reachability }) {
+  const path = data.path ?? [];
+  const evidence = (data.evidence ?? {}) as Record<string, unknown>;
+  return (
+    <section className="border border-rule bg-paper-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-1.5">
+        <Label as="h2">Reachability</Label>
+        <span className="font-mono text-[11px] text-ink-3">
+          {data.analyser} {data.analyser_version} · {data.language}
+          {data.commit_sha ? ` · ${data.commit_sha.slice(0, 12)}` : ""}
+          {data.analysed_at ? (
+            <>
+              {" · "}
+              <RelativeTime value={data.analysed_at} />
+            </>
+          ) : null}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1.5 px-3 py-2.5">
+        <span>
+          <Pill tone={REACH_TONE[data.verdict]}>{REACH_LABEL[data.verdict]}</Pill>
+        </span>
+        <p className="text-[13px] leading-relaxed text-ink-2">{data.reason}</p>
+        {path.length > 0 ? (
+          <ol className="flex flex-col gap-0.5" aria-label="Path from the entry point">
+            {path.map((step, index) => (
+              <li
+                key={`${index}:${step.file_path}:${step.line}`}
+                className="font-mono text-[12px]"
+              >
+                <span className="text-ink-3">{index + 1}.</span>{" "}
+                {step.file_path}
+                {step.line != null ? `:${step.line}` : ""}
+                {step.label ? <span className="text-ink-2"> — {step.label}</span> : null}
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {data.verdict === "unreachable" ? (
+          <ul className="flex flex-col gap-0.5 border-t border-rule-soft pt-1.5">
+            {REACH_EVIDENCE.filter(([key]) => key in evidence).map(([key, label]) => (
+              <li key={key} className="text-[12px]">
+                <span className="font-semibold">{label}</span>{" "}
+                <span className="font-mono text-ink-2">{evidenceValue(evidence[key])}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </section>
   );

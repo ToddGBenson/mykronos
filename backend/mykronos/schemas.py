@@ -542,6 +542,75 @@ class ReachabilitySubmission(BaseModel):
     )
 
 
+class DataflowPathStep(BaseModel):
+    """One step of a recorded path: an entry point, a call, the sink."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str = Field(default="", max_length=1024)
+    line: int | None = Field(default=None, ge=0)
+    label: str = Field(default="", max_length=200)
+
+
+class DataflowVerdict(BaseModel):
+    """One package's or one result's reachability (TheHub #60891)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: Literal["package", "location"]
+    package_name: str | None = Field(default=None, max_length=214)
+    ecosystem: Literal["pypi", "npm"] | None = None
+    rule_id: str | None = Field(default=None, max_length=512)
+    file_path: str | None = Field(default=None, max_length=1024)
+    line: int | None = Field(default=None, ge=0)
+    verdict: Literal["reachable", "unreachable", "unknown"]
+    reason: str = Field(default="", max_length=1000)
+    path: list[DataflowPathStep] = Field(
+        default_factory=list,
+        max_length=65,
+        description="From the entry point to the call or sink. Required for `reachable`.",
+    )
+    evidence: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "What an `unreachable` rests on. Ingest checks it, and stores any "
+            "`unreachable` it does not prove as `unknown`."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _shape(self) -> DataflowVerdict:
+        if self.target == "package" and not (self.package_name and self.ecosystem):
+            raise ValueError("a package verdict names its package and ecosystem")
+        if self.target == "location" and not (self.rule_id and self.file_path):
+            raise ValueError("a location verdict names its rule and file")
+        if self.verdict == "reachable" and not self.path:
+            raise ValueError("a reachable verdict carries the path that reaches it")
+        if self.target == "location" and self.verdict == "unreachable":
+            raise ValueError("a location is never called unreachable from a missing flow")
+        return self
+
+
+class DataflowReachabilitySubmission(BaseModel):
+    """What `python -m mykronos.reachability_dataflow report` posts.
+
+    Conclusions and their paths, not the database: a path is a handful of
+    file names and line numbers, which is what a triager needs to check the
+    claim, and nothing more of the repository's structure travels.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    language: Literal["python", "javascript"]
+    analyser: Literal["codeql"] = "codeql"
+    analyser_version: str = Field(default="", max_length=64)
+    commit_sha: str = Field(default="", max_length=64)
+    files_analysed: int = Field(default=0, ge=0)
+    dynamic_imports: int = Field(default=0, ge=0)
+    lockfiles: list[str] = Field(default_factory=list, max_length=200)
+    verdicts: list[DataflowVerdict] = Field(default_factory=list, max_length=5000)
+
+
 class ProvenanceSignals(BaseModel):
     """How this repository builds, as the runner observed it (spec 29 §3).
 
@@ -680,6 +749,21 @@ class ReachabilityAccepted(BaseModel):
         "this file' — not whether a function is called (spec 19 §2.1). A file "
         "not listed here is not proven reachable; it is simply not proven "
         "orphaned."
+    )
+
+
+class DataflowReachabilityAccepted(BaseModel):
+    accepted: int
+    reachable: int
+    unreachable: int
+    unknown: int
+    #: `unreachable` verdicts whose evidence fell short, stored as `unknown`.
+    downgraded: int
+    note: str = (
+        "Reachable means CodeQL traced a call path from an entry point, and the "
+        "path is stored. Unreachable means never imported, with the evidence "
+        "that proves it; no call path found is not proof and is stored as "
+        "unknown."
     )
 
 

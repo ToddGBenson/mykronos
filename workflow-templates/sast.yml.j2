@@ -32,6 +32,7 @@
 
 {% block scan_steps %}
       - name: Initialize CodeQL
+        id: init
         uses: github/codeql-action/init@ce5e7eeac396d720fe2d802714996c8ce561e311  # v3.39.0
         with:
           languages: ${{ matrix.language }}
@@ -99,5 +100,60 @@
             -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
             -H "Content-Type: application/json" \
             -d @reachability.json > /dev/null
+{%- endif %}
+{%- if config.dataflow_reachability | default(true) %}
+
+      - name: Dataflow reachability
+        # Is the vulnerable package called from an entry point, and is it used
+        # at all (TheHub #60891). Runs Mykronos's own CodeQL queries over the
+        # database the Analyze step just built, with the CLI the init step
+        # downloaded: no second analyser, nothing else fetched.
+        #
+        # A reachable verdict carries the call path CodeQL traced. Unreachable
+        # means never imported, with the evidence; "no path found" is never
+        # unreachable, because CodeQL's call graph is incomplete. The platform
+        # re-checks that evidence before anything acts on it.
+        #
+        # Never fails the scan: reachability is an input to triage, and losing
+        # it must not lose the findings the scan already uploaded.
+        if: matrix.language == 'python' || matrix.language == 'javascript-typescript'
+        continue-on-error: true
+        env:
+          CODEQL: ${{ steps.init.outputs.codeql-path }}
+          MATRIX_LANGUAGE: ${{ matrix.language }}
+        run: |
+          set -uo pipefail
+          lang="python"
+          [ "$MATRIX_LANGUAGE" = "python" ] || lang="javascript"
+          db="$RUNNER_TEMP/codeql_databases/$lang"
+          [ -d "$db" ] || db="$RUNNER_TEMP/codeql_databases/$MATRIX_LANGUAGE"
+          if [ ! -d "$db" ]; then
+            echo "::warning::No CodeQL database at $db; dataflow reachability skipped."
+            exit 0
+          fi
+          python -m pip install --quiet '<< mykronos_package_spec >>' || exit 0
+          queries="$RUNNER_TEMP/mykronos-reachability-queries"
+          python -m mykronos.reachability_dataflow --language "$lang" \
+            --write-queries "$queries" > /dev/null || exit 0
+
+          "$CODEQL" database analyze "$db" "$queries" \
+            --format=sarif-latest --output="$RUNNER_TEMP/mykronos-reachability.sarif" \
+            --threads=0 || exit 0
+
+          python -m mykronos.reachability_dataflow --language "$lang" \
+            --sarif "$RUNNER_TEMP/mykronos-reachability.sarif" \
+            --analysis-sarif-dir "${{ runner.temp }}/mykronos-results" \
+            --root . --commit-sha "${{ github.sha }}" > dataflow-reachability.json || exit 0
+
+          for verdict in reachable unreachable unknown; do
+            echo "Dataflow reachability ($lang): $(jq --arg v "$verdict" \
+              '[.verdicts[] | select(.verdict == $v)] | length' dataflow-reachability.json) $verdict"
+          done
+
+          curl --fail --silent --show-error --max-time 60 \
+            -X POST "<< ingestion_api_url >>/api/ingest/reachability/dataflow" \
+            -H "Authorization: Bearer ${{ secrets.<< token_secret_name >> }}" \
+            -H "Content-Type: application/json" \
+            -d @dataflow-reachability.json > /dev/null
 {%- endif %}
 {% endblock %}
