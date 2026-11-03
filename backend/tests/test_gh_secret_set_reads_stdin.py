@@ -22,6 +22,8 @@ to it.
 from __future__ import annotations
 
 import re
+import shutil
+import uuid
 from pathlib import Path
 
 import pytest
@@ -77,6 +79,36 @@ def test_the_scan_sees_the_repair_scripts() -> None:
     scanned = {path for path, _, _ in _secret_set_lines()}
     for script in REPAIR_SCRIPTS:
         assert script in scanned, f"{script.name} has no `gh secret set` the scan can see"
+
+
+def test_an_untracked_stale_copy_does_not_fail_the_scan() -> None:
+    """TheHub #61211. The scan judges what is tracked, not whatever sits
+    under the checkout. A stale Claude worktree under .claude/worktrees/
+    holding the pre-fix script made the test above fail locally while CI,
+    on a clean checkout, passed. Plant such a copy and check the scan
+    does not see it."""
+    planted_dir = ROOT / ".claude" / "worktrees" / f"stale-{uuid.uuid4().hex}"
+    planted = planted_dir / "deploy" / "concourse" / "repair-ingestion-token.ps1"
+    created_parents = [
+        parent for parent in (ROOT / ".claude", ROOT / ".claude" / "worktrees")
+        if not parent.exists()
+    ]
+    planted.parent.mkdir(parents=True)
+    try:
+        planted.write_text(
+            "$token | gh secret set MYKRONOS_INGESTION_TOKEN --body -
+",
+            encoding="utf-8",
+        )
+        scanned = {path for path, _, _ in _secret_set_lines()}
+        assert planted not in scanned, "an untracked file was scanned"
+    finally:
+        shutil.rmtree(planted_dir)
+        for parent in reversed(created_parents):
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
 
 
 @pytest.mark.parametrize("script", REPAIR_SCRIPTS, ids=lambda p: p.name)
