@@ -1,0 +1,397 @@
+{
+ "$comment": "Trimmed from `codeql database analyze` (CodeQL 2.27.2) over the fixture in test_reachability_dataflow.py; only the fields the reader uses are kept.",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "CodeQL",
+     "semanticVersion": "2.27.2"
+    }
+   },
+   "results": [
+    {
+     "ruleId": "mykronos/reachability/python/package-api-reachable",
+     "message": {
+      "text": "Call into package yaml reachable from [function load](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/helpers.py"
+        },
+        "region": {
+         "startLine": 6
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 9
+             }
+            },
+            "message": {
+             "text": "function load"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/helpers.py"
+             },
+             "region": {
+              "startLine": 5
+             }
+            },
+            "message": {
+             "text": "function parse"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/helpers.py"
+             },
+             "region": {
+              "startLine": 6
+             }
+            },
+            "message": {
+             "text": "call into yaml"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-api-reachable",
+     "message": {
+      "text": "Call into package app reachable from [function load](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/web.py"
+        },
+        "region": {
+         "startLine": 10
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 9
+             }
+            },
+            "message": {
+             "text": "function load"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 10
+             }
+            },
+            "message": {
+             "text": "call into app"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-api-reachable",
+     "message": {
+      "text": "Call into package flask reachable from [module app.web](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/web.py"
+        },
+        "region": {
+         "startLine": 5
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             }
+            },
+            "message": {
+             "text": "module app.web"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 5
+             }
+            },
+            "message": {
+             "text": "call into flask"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-api-reachable",
+     "message": {
+      "text": "Call into package flask reachable from [module app.web](1).\nCall into package flask reachable from [module app.web](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/web.py"
+        },
+        "region": {
+         "startLine": 8
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             }
+            },
+            "message": {
+             "text": "module app.web"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 8
+             }
+            },
+            "message": {
+             "text": "call into flask"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             }
+            },
+            "message": {
+             "text": "module app.web"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 8
+             }
+            },
+            "message": {
+             "text": "call into flask"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-import",
+     "message": {
+      "text": "Imports module yaml."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/helpers.py"
+        },
+        "region": {
+         "startLine": 1
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-import",
+     "message": {
+      "text": "Imports module requests."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/helpers.py"
+        },
+        "region": {
+         "startLine": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-import",
+     "message": {
+      "text": "Imports module flask."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/web.py"
+        },
+        "region": {
+         "startLine": 1
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-import",
+     "message": {
+      "text": "Imports module yaml."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/web.py"
+        },
+        "region": {
+         "startLine": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/package-import",
+     "message": {
+      "text": "Imports module app."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/web.py"
+        },
+        "region": {
+         "startLine": 3
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/python/source-files",
+     "message": {
+      "text": "Analysed 3 source files."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/__init__.py"
+        }
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

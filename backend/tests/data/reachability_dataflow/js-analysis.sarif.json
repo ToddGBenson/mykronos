@@ -1,0 +1,74 @@
+{
+ "$comment": "Trimmed from `codeql database analyze` (CodeQL 2.27.2) over the fixture in test_reachability_dataflow.py; only the fields the reader uses are kept.",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "CodeQL",
+     "semanticVersion": "2.27.2"
+    }
+   },
+   "results": [
+    {
+     "ruleId": "js/reflected-xss",
+     "message": {
+      "text": "Cross-site scripting vulnerability due to a [user-provided value](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 5
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 5
+             }
+            },
+            "message": {
+             "text": "req.query.name"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 5
+             }
+            },
+            "message": {
+             "text": "'<p>' + ...  '</p>'"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
