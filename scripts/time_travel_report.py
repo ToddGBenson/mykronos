@@ -12,7 +12,13 @@ sure exactly one open Hub story says so:
 
 - no open story carries `SOURCE_REF`: one is filed, to the backlog;
 - one does, and its list of failing tests is the same: nothing is written;
-- one does, and the list changed: that story's detail is rewritten in place.
+- one does, and the list changed: that story's title and detail are rewritten
+  in place, and whatever anyone wrote below `NOTES_MARKER` is kept.
+
+The story is found with TheHub's `source_ref` filter (TheHub #61128), so the
+lookup does not depend on how long the board is. The match is checked again
+here, so a TheHub that predates the filter (and returns a page of other
+stories) is never mistaken for one that found it.
 
 So a test that stays broken for a week is one story, not seven. A story that
 was closed is not reopened: the next red night files a new one, because a
@@ -39,6 +45,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -59,6 +66,14 @@ OPEN_BUCKETS = ("icebox", "backlog", "sprint")
 #: The marker the failing tests are listed under in a story's detail, so the
 #: next run can compare without parsing prose.
 LIST_MARKER = "Failing tests:"
+
+#: The last line the job writes. Everything below it is somebody's note and
+#: is carried over verbatim when the job rewrites the story (TheHub #61128).
+NOTES_MARKER = "Notes (kept when the job rewrites this story; write below this line):"
+
+#: Page size for the `source_ref` lookup. One open story is expected; the
+#: page only has to be big enough to see a duplicate somebody filed by hand.
+LOOKUP_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -93,9 +108,27 @@ def read_report(path: Path) -> Run:
     return Run(tests=len(cases), failing=tuple(sorted(failing)))
 
 
+def _split_notes(detail: str) -> tuple[str, str]:
+    """(the job's part, the notes below `NOTES_MARKER`); notes are "" if none."""
+    lines = detail.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.rstrip("\r\n") == NOTES_MARKER:
+            return "".join(lines[:i]), "".join(lines[i + 1 :])
+    return detail, ""
+
+
+def operator_notes(detail: str) -> str:
+    """What somebody wrote below `NOTES_MARKER`, verbatim."""
+    return _split_notes(detail)[1]
+
+
 def listed_tests(detail: str) -> tuple[str, ...]:
-    """The failing tests a story already lists, from its `LIST_MARKER` block."""
-    lines = detail.splitlines()
+    """The failing tests a story already lists, from its `LIST_MARKER` block.
+
+    Only the job's own part is read: a note that quotes the list's format is
+    not part of the list.
+    """
+    lines = _split_notes(detail)[0].splitlines()
     try:
         start = lines.index(LIST_MARKER) + 1
     except ValueError:
@@ -108,9 +141,10 @@ def listed_tests(detail: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def story_detail(run: Run, *, offset: str, commit: str) -> str:
+def story_detail(run: Run, *, offset: str, commit: str, notes: str = "") -> str:
+    """The job's part of the detail, `NOTES_MARKER`, then `notes` verbatim."""
     listing = "\n".join(f"- `{name}`" for name in run.failing)
-    return "\n".join(
+    written = "\n".join(
         [
             f"The nightly `time-travel` job ran the mykronos backend unit suite with the "
             f"clock moved to now{offset} (libfaketime) at commit `{commit}`, and "
@@ -125,19 +159,27 @@ def story_detail(run: Run, *, offset: str, commit: str) -> str:
             listing,
             "",
             f"Filed and kept current by `scripts/time_travel_report.py` (TheHub #61109). "
-            f"This list is rewritten in place while the story is open; `{SOURCE_REF}` "
-            "is how the job finds it.",
+            f"The title and everything above the notes line are rewritten in place while "
+            f"the story is open; `{SOURCE_REF}` is how the job finds it. Text below the "
+            "notes line is kept.",
+            "",
+            NOTES_MARKER,
         ]
+    )
+    return f"{written}\n{notes}" if notes else written
+
+
+def story_title(run: Run, *, offset: str) -> str:
+    count = len(run.failing)
+    return (
+        f"Time-travel unit run: {count} test{'s' if count != 1 else ''} fail at "
+        f"now{offset}, so they will fail on main"
     )
 
 
 def story_payload(run: Run, *, offset: str, commit: str) -> dict[str, Any]:
-    count = len(run.failing)
     return {
-        "title": (
-            f"Time-travel unit run: {count} test{'s' if count != 1 else ''} fail at "
-            f"now{offset}, so they will fail on main"
-        ),
+        "title": story_title(run, offset=offset),
         "detail": story_detail(run, offset=offset, commit=commit),
         "bucket": "backlog",
         "tags": [TAG, REPO_TAG],
@@ -183,10 +225,17 @@ def http_sender(base_url: str, token: str, *, timeout: float = 20.0) -> Send:
 
 
 def open_story(send: Send) -> dict[str, Any] | None:
-    """The open story this job filed earlier, if there is one."""
+    """The open story this job filed earlier, if there is one.
+
+    TheHub filters on `source_ref` (TheHub #61128), so the answer does not
+    depend on how many other stories the bucket holds. The match is checked
+    again below: a TheHub without the filter returns a page of other stories.
+    """
     for bucket in OPEN_BUCKETS:
-        path = f"/api/dev/stories?bucket={bucket}&repo=mykronos&limit=1000"
-        status, body = send("GET", path, None)
+        query = urllib.parse.urlencode(
+            {"bucket": bucket, "repo": "mykronos", "source_ref": SOURCE_REF, "limit": LOOKUP_LIMIT}
+        )
+        status, body = send("GET", f"/api/dev/stories?{query}", None)
         if status != 200 or not isinstance(body, list):
             raise HubError(f"TheHub did not list the {bucket} (HTTP {status})")
         for story in body:
@@ -210,12 +259,18 @@ def report(run: Run, send: Send, *, offset: str, commit: str) -> str:
         story_id = body.get("id") if isinstance(body, dict) else None
         return f"time-travel: filed TheHub #{story_id} for {len(run.failing)} failing test(s)."
     story_id = existing.get("id")
-    if listed_tests(str(existing.get("detail") or "")) == run.failing:
+    detail = str(existing.get("detail") or "")
+    if listed_tests(detail) == run.failing:
         return f"time-travel: TheHub #{story_id} already lists these {len(run.failing)} test(s)."
     status, _ = send(
         "PATCH",
         f"/api/dev/stories/{story_id}",
-        {"detail": story_detail(run, offset=offset, commit=commit)},
+        {
+            "title": story_title(run, offset=offset),
+            "detail": story_detail(
+                run, offset=offset, commit=commit, notes=operator_notes(detail)
+            ),
+        },
     )
     if not 200 <= status < 300:
         raise HubError(f"TheHub refused the update to #{story_id} (HTTP {status})")
