@@ -21,6 +21,12 @@ So:
 
 The classifier is executed against JUnit reports shaped like #485's and #486's,
 and the end of each task's script is executed as it stands in the pipeline.
+
+TheHub #61210: coverage #8 ran 8,583 tests green and went red on one "worker
+'gw5' crashed" at -n 6, because `coverage` had the serial group but not the
+rest. It now runs the same bounded worker count, classifier and ERRORED step
+as `unit`, and both suites declare `container_limits` (CPU shares only: a
+memory limit makes runc refuse the task on these workers, D-174).
 """
 
 from __future__ import annotations
@@ -47,6 +53,10 @@ MEMORY_JOBS = {"unit", "coverage", "time-travel", "lint-and-types"}
 ERRORED_STEP = "killed-for-memory-not-a-test-failure-re-run"
 MAX_UNIT_WORKERS = 4
 LINT = ("lint-and-types", "ruff-and-mypy")
+# The full-suite tasks that classify a memory kill (TheHub #61210 added coverage).
+SUITES = [("unit", "pytest"), ("coverage", "pytest-cov")]
+# Docker's default weight, production's (test_thehub_task_limits.py).
+PRODUCTION_CPU_SHARES = 1024
 
 CRASH = "worker 'gw{n}' crashed while running 'tests/test_x.py::test_{n}'"
 
@@ -128,13 +138,33 @@ class TestTheyNeverShareAWorker:
         text = PIPELINE.read_text(encoding="utf-8")
         assert "#61117" in text and MEMORY_GROUP in text
 
-    def test_unit_runs_few_enough_workers_to_fit(self) -> None:
-        script = _script(_task("unit", "pytest"))
+    @pytest.mark.parametrize(("job", "task"), SUITES)
+    def test_the_suite_runs_few_enough_workers_to_fit(self, job: str, task: str) -> None:
+        script = _script(_task(job, task))
         line = next(x for x in script.splitlines() if "python -m pytest" in x)
         n = int(line.split(" -n ", 1)[1].split()[0])
         assert n <= MAX_UNIT_WORKERS, (
-            f"unit runs pytest -n {n}; #485 and #486 lost xdist workers to memory with "
-            "lint not running, so the group alone does not fit it in 3 GiB"
+            f"{job} runs pytest -n {n}; #485 and #486 lost xdist workers to memory with "
+            "lint not running, and coverage #8 lost gw5 at -n 6 (TheHub #61210), so the "
+            "group alone does not fit it in 3 GiB"
+        )
+
+    @pytest.mark.parametrize(("job", "task"), SUITES)
+    def test_the_suite_declares_cpu_limits_below_production(self, job: str, task: str) -> None:
+        step = _task(job, task)
+        limits = step.get("container_limits") or (step.get("config") or {}).get(
+            "container_limits"
+        )
+        assert limits, f"{job}/{task} declares no container_limits (TheHub #61210)"
+        cpu = limits.get("cpu")
+        assert isinstance(cpu, int) and 0 < cpu < PRODUCTION_CPU_SHARES, (
+            f"{job}/{task} container_limits.cpu must be CPU shares between 1 and "
+            f"{PRODUCTION_CPU_SHARES - 1}: {limits}"
+        )
+        assert "memory" not in limits, (
+            "container_limits.memory makes runc refuse the task container on these "
+            "guardian workers (D-174, test_thehub_task_limits.py): the task would fail "
+            "every run"
         )
 
 
@@ -269,9 +299,7 @@ def _run_tail(
 
 
 class TestTheJobErrorsInsteadOfFailing:
-    @pytest.mark.parametrize(
-        ("job", "task"), [("unit", "pytest"), ("lint-and-types", "ruff-and-mypy")]
-    )
+    @pytest.mark.parametrize(("job", "task"), [*SUITES, LINT])
     def test_the_task_records_a_verdict_and_the_next_step_reads_it(
         self, job: str, task: str
     ) -> None:
@@ -285,25 +313,38 @@ class TestTheJobErrorsInsteadOfFailing:
             "judged/verdict, so a run with no verdict ERRORS instead of failing"
         )
 
-    def test_unit_killed_for_memory_records_no_verdict_and_skips_the_upload(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(("job", "task"), SUITES)
+    def test_the_suite_killed_for_memory_records_no_verdict_and_skips_the_upload(
+        self, tmp_path: Path, job: str, task: str
     ) -> None:
         if not SCRIPT.exists():
             pytest.fail("scripts/memory_kill.py does not exist")
         junit = _junit(tmp_path / "pre.xml", crashes=3)
         prelude = f"rc=1\nmkdir -p ../../results && cp '{junit.as_posix()}' ../../results/unit.xml"
-        rc, out, judged = _run_tail(tmp_path / "t", "unit", "pytest", prelude)
+        rc, out, judged = _run_tail(tmp_path / "t", job, task, prelude)
         assert rc == 0, out
         assert not judged, "killed for memory, yet a verdict was recorded: no error"
         assert "REACHED-THE-UPLOAD" not in out, "a run that measured nothing was uploaded"
         assert "not a test failure" in out
 
-    def test_unit_with_a_real_failure_records_it(self, tmp_path: Path) -> None:
+    def test_coverage_8_one_crashed_worker_is_not_a_verdict(self, tmp_path: Path) -> None:
+        # TheHub #61210, coverage #8: 8,583 passed and one "worker 'gw5'
+        # crashed", nothing failing on its own.
+        junit = _junit(tmp_path / "pre.xml", crashes=1, passed=50)
+        prelude = f"rc=1\nmkdir -p ../../results && cp '{junit.as_posix()}' ../../results/unit.xml"
+        rc, out, judged = _run_tail(tmp_path / "t", "coverage", "pytest-cov", prelude)
+        assert rc == 0 and not judged and "REACHED-THE-UPLOAD" not in out, out
+        assert "INFRASTRUCTURE, NOT A VERDICT" in out, out
+
+    @pytest.mark.parametrize(("job", "task"), SUITES)
+    def test_the_suite_with_a_real_failure_records_it(
+        self, tmp_path: Path, job: str, task: str
+    ) -> None:
         if not SCRIPT.exists():
             pytest.fail("scripts/memory_kill.py does not exist")
         junit = _junit(tmp_path / "pre.xml", crashes=2, real=1)
         prelude = f"rc=1\nmkdir -p ../../results && cp '{junit.as_posix()}' ../../results/unit.xml"
-        rc, out, judged = _run_tail(tmp_path / "t", "unit", "pytest", prelude)
+        rc, out, judged = _run_tail(tmp_path / "t", job, task, prelude)
         assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
 
     def test_lint_with_mypy_killed_records_no_verdict(self, tmp_path: Path) -> None:
@@ -324,9 +365,12 @@ class TestTheJobErrorsInsteadOfFailing:
     # warning, rather than turning a green suite red under `bash -e`.
     BROKEN = "raise RuntimeError('classifier broke')\n"
 
-    def test_unit_goes_on_when_the_classifier_breaks(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(("job", "task"), SUITES)
+    def test_the_suite_goes_on_when_the_classifier_breaks(
+        self, tmp_path: Path, job: str, task: str
+    ) -> None:
         prelude = "rc=0\nmkdir -p ../../results"
-        rc, out, judged = _run_tail(tmp_path, "unit", "pytest", prelude, self.BROKEN)
+        rc, out, judged = _run_tail(tmp_path, job, task, prelude, self.BROKEN)
         assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
         assert "::warning::" in out, out
 
