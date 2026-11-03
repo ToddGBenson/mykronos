@@ -210,6 +210,45 @@ def with_dynamic_import(document: dict[str, Any], language: str) -> dict[str, An
     return changed
 
 
+def py_tree_with(
+    direct: tuple[str, ...] = (), locked: tuple[tuple[str, str], ...] = ()
+) -> dict[str, str]:
+    """PY_TREE plus direct runtime dependencies `direct`, and extra locked
+    `[[package]]` entries `locked` as (name, body) pairs."""
+    tree = dict(PY_TREE)
+    names = "".join(f', "{name}"' for name in direct)
+    tree["pyproject.toml"] = tree["pyproject.toml"].replace(
+        '"acme-widgets"]', f'"acme-widgets"{names}]'
+    )
+    roots = "".join(f'    {{ name = "{name}" }},\n' for name in direct)
+    tree["uv.lock"] = tree["uv.lock"].replace(
+        '    { name = "requests" },\n]\n', f'    {{ name = "requests" }},\n{roots}]\n', 1
+    )
+    for name in direct:
+        if all(name != other for other, _ in locked):
+            locked = (*locked, (name, ""))
+    tree["uv.lock"] += "".join(
+        f'[[package]]\nname = "{name}"\nversion = "1.0.0"\n'
+        f'source = {{ registry = "https://pypi.org/simple" }}\n{body}\n'
+        for name, body in locked
+    )
+    return tree
+
+
+def js_tree_with(direct: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """JS_TREE plus direct dependencies, each with its lockfile entry."""
+    tree = dict(JS_TREE)
+    manifest = json.loads(tree["package.json"])
+    lock = json.loads(tree["package-lock.json"])
+    for name, entry in direct.items():
+        manifest["dependencies"][name] = "1.0.0"
+        lock["packages"][""]["dependencies"][name] = "1.0.0"
+        lock["packages"][f"node_modules/{name}"] = {"version": "1.0.0", **entry}
+    tree["package.json"] = json.dumps(manifest)
+    tree["package-lock.json"] = json.dumps(lock)
+    return tree
+
+
 # --------------------------------------------------------------------------
 # The runner
 # --------------------------------------------------------------------------
@@ -318,6 +357,132 @@ class TestPython:
         assert body["analyser_version"] == "2.27.2"
         assert body["files_analysed"] == 3
 
+    @pytest.mark.parametrize("server", ["gunicorn", "uvicorn", "celery", "alembic"])
+    def test_a_package_run_by_name_is_never_unreachable(
+        self, tmp_path: Path, server: str
+    ) -> None:
+        """`gunicorn app:app` runs gunicorn, and nothing in the code imports
+        it. Never imported is not never executed (review of #1102)."""
+        tree = write_tree(tmp_path, py_tree_with(direct=(server,)))
+
+        verdict = by_package(submission("python", tree))[server]
+
+        assert verdict["verdict"] == "unknown"
+        assert verdict["evidence"]["loaded_without_import"] is True
+        assert "without being imported" in verdict["reason"]
+
+    def test_a_database_driver_loaded_by_url_is_never_unreachable(
+        self, tmp_path: Path
+    ) -> None:
+        """SQLAlchemy loads psycopg2 from a `postgresql://` URL; the code
+        never imports it."""
+        tree = write_tree(tmp_path, py_tree_with(direct=("psycopg2-binary",)))
+
+        verdict = by_package(submission("python", tree))["psycopg2-binary"]
+
+        assert verdict["verdict"] == "unknown"
+
+    def test_an_ordinary_unimported_package_still_says_so(self, tmp_path: Path) -> None:
+        verdict = by_package(submission("python", write_tree(tmp_path, PY_TREE)))["certifi"]
+
+        assert verdict["evidence"]["loaded_without_import"] is False
+        assert verdict["evidence"]["scoped"] is False
+
+    def test_a_package_another_requires_through_an_extra_is_not_unreachable(
+        self, tmp_path: Path
+    ) -> None:
+        """`celery[redis]` plus a direct `redis`: uv.lock records the edge
+        under the package's `[package.optional-dependencies]`, and that
+        package loads redis at run time."""
+        tree = py_tree_with(
+            direct=("redis",),
+            locked=(
+                (
+                    "kombu",
+                    '[package.optional-dependencies]\nredis = [{ name = "redis" }]\n',
+                ),
+            ),
+        )
+
+        verdict = by_package(submission("python", write_tree(tmp_path, tree)))["redis"]
+
+        assert verdict["verdict"] == "unknown"
+        assert verdict["evidence"]["dependents"] == ["kombu"]
+
+    def test_a_poetry_extra_is_a_dependency_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.poetry]\nname = "app"\n\n[tool.poetry.dependencies]\n'
+            'python = "^3.11"\nredis = "*"\nkombu = "*"\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "poetry.lock").write_text(
+            '[[package]]\nname = "kombu"\nversion = "5.0.0"\n\n'
+            '[package.extras]\nredis = ["redis (>=4.5.2)"]\n\n'
+            '[[package]]\nname = "redis"\nversion = "5.0.0"\n',
+            encoding="utf-8",
+        )
+
+        graph = dataflow.pypi_graph(tmp_path)
+
+        assert graph.dependents.get("redis") == {"kombu"}
+
+    def test_a_scoped_analysis_proves_no_absence(self, tmp_path: Path) -> None:
+        """paths_include limits what CodeQL extracts, so an import outside
+        those paths is invisible (review of #1102)."""
+        body = dataflow.build_submission(
+            "python",
+            sarif("py-reach"),
+            write_tree(tmp_path, PY_TREE),
+            commit_sha="abc123def456",
+            scoped=True,
+        )
+
+        certifi = by_package(body)["certifi"]
+        assert certifi["verdict"] == "unknown"
+        assert certifi["evidence"]["scoped"] is True
+        assert body["scoped"] is True
+
+    def test_the_cli_takes_scoped(self, tmp_path: Path, capsys) -> None:
+        reach = tmp_path / "reach.sarif"
+        reach.write_text(json.dumps(sarif("py-reach")), encoding="utf-8")
+        root = write_tree(tmp_path / "tree", PY_TREE)
+
+        dataflow.main(
+            ["--language", "python", "--sarif", str(reach), "--root", str(root), "--scoped"]
+        )
+
+        body = json.loads(capsys.readouterr().out)
+        assert by_package(body)["certifi"]["verdict"] == "unknown"
+
+    def test_a_reachable_path_says_what_kind_of_entry_it_starts_at(
+        self, tmp_path: Path
+    ) -> None:
+        verdict = by_package(submission("python", write_tree(tmp_path, PY_TREE)))["pyyaml"]
+
+        assert verdict["evidence"]["entry_kind"] == "function"
+
+    @pytest.mark.parametrize(
+        ("label", "kind"),
+        [
+            ("function load", "function"),
+            ("module app.cli", "module_top_level"),
+            ("top level of cli.js", "module_top_level"),
+            ("", "unknown"),
+        ],
+    )
+    def test_entry_kind_is_read_off_the_first_step(self, label: str, kind: str) -> None:
+        assert dataflow.entry_kind([{"file_path": "a.py", "line": 1, "label": label}]) == kind
+
+    def test_a_flow_result_does_not_claim_its_source_is_remote(self, tmp_path: Path) -> None:
+        """Some stock path-problem queries start from a local source, so a
+        code flow is a traced flow, not proof of remote reach."""
+        body = submission("python", write_tree(tmp_path, PY_TREE))
+
+        [location] = [v for v in body["verdicts"] if v["target"] == "location"]
+        assert location["evidence"]["basis"] == "codeql_code_flow"
+        assert location["evidence"]["source_label"] == location["path"][0]["label"]
+        assert "may be local" in location["reason"]
+
 
 class TestJavaScript:
     def test_a_called_package_is_reachable_across_modules(self, tmp_path: Path) -> None:
@@ -372,6 +537,27 @@ class TestJavaScript:
         assert location["rule_id"] == "js/reflected-xss"
         assert (location["file_path"], location["line"]) == ("src/server.js", 5)
 
+    @pytest.mark.parametrize("cli", ["pm2", "serve"])
+    def test_a_cli_run_from_a_script_is_never_unreachable(
+        self, tmp_path: Path, cli: str
+    ) -> None:
+        tree = write_tree(tmp_path, js_tree_with({cli: {}}))
+
+        verdict = by_package(submission("javascript", tree))[cli]
+
+        assert verdict["verdict"] == "unknown"
+        assert verdict["evidence"]["loaded_without_import"] is True
+
+    def test_a_package_with_an_executable_is_never_unreachable(self, tmp_path: Path) -> None:
+        """Any locked package with a `bin` can be run from package.json's
+        scripts without being imported."""
+        tree = write_tree(tmp_path, js_tree_with({"acme-cli": {"bin": {"acme": "cli.js"}}}))
+
+        verdict = by_package(submission("javascript", tree))["acme-cli"]
+
+        assert verdict["verdict"] == "unknown"
+        assert verdict["evidence"]["loaded_without_import"] is True
+
 
 class TestTheQueries:
     @pytest.mark.parametrize("language", ["python", "javascript"])
@@ -405,6 +591,8 @@ class TestUnreachableNeedsEvidence:
         "direct_runtime_dependency": True,
         "lockfiles": ["uv.lock"],
         "dependents": [],
+        "loaded_without_import": False,
+        "scoped": False,
     }
 
     def test_complete_evidence_has_no_gaps(self) -> None:
@@ -421,6 +609,8 @@ class TestUnreachableNeedsEvidence:
             ("direct_runtime_dependency", False),
             ("lockfiles", []),
             ("dependents", ["requests"]),
+            ("loaded_without_import", True),
+            ("scoped", True),
         ],
     )
     def test_each_missing_piece_is_a_gap(self, field: str, value: Any) -> None:
@@ -690,3 +880,35 @@ class TestTheWorkflow:
 
     def test_it_can_be_turned_off(self) -> None:
         assert "Dataflow reachability" not in render_sast({"dataflow_reachability": False})
+
+    def test_it_reports_only_from_the_default_branch(self) -> None:
+        """The report is one row per (repo, language) with no ref, so a pull
+        request's tree would overwrite the default branch's verdicts and T8
+        would act on a branch (review of #1102)."""
+        step = self._step(render_sast())
+
+        condition = next(line for line in step.splitlines() if line.strip().startswith("if:"))
+        assert "github.event_name != 'pull_request'" in condition
+        assert "github.ref == 'refs/heads/main'" in condition
+
+    @pytest.mark.parametrize(
+        "config",
+        [{"paths_include": ["src"]}, {"paths_exclude": ["legacy"]}],
+    )
+    def test_a_path_scoped_analysis_is_submitted_as_scoped(
+        self, config: dict[str, Any]
+    ) -> None:
+        step = self._step(render_sast(config))
+
+        assert "--scoped" in step
+
+    def test_an_unscoped_analysis_is_not(self) -> None:
+        assert "--scoped" not in self._step(render_sast())
+
+    def test_the_step_has_its_own_time_limit(self) -> None:
+        """A dataflow pass over a large database must not run the job into its
+        own limit after the findings were uploaded."""
+        step = self._step(render_sast())
+
+        match = re.search(r"\n        timeout-minutes: (\d+)\r?\n", step)
+        assert match and 0 < int(match.group(1)) < 30

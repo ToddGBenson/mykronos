@@ -69,6 +69,33 @@ describe("ReachabilityPanel", () => {
     expect(html).toContain("required by");
   });
 
+  it("says what kind of entry point the path starts at", () => {
+    const fn = render({ ...base, evidence: { basis: "codeql_call_path", entry_kind: "function" } });
+    expect(fn).toContain("entry: a function");
+
+    const top = render({
+      ...base,
+      path: [{ file_path: "scripts/seed.py", line: 1, label: "module scripts.seed" }],
+      evidence: { basis: "codeql_call_path", entry_kind: "module_top_level" },
+    });
+    expect(top).toContain("entry: module top level");
+    expect(top).toContain("tests and scripts");
+  });
+
+  it("calls a security result's code flow a traced flow, not reachable", () => {
+    // Some stock path-problem queries start from a local source, so the red
+    // `reachable` pill would overstate it (review of #1102).
+    const html = render({
+      ...base,
+      reason: "CodeQL traced a flow of 3 step(s) to this result.",
+      evidence: { basis: "codeql_code_flow", source_label: "request.args" },
+    });
+
+    expect(html).toContain("flow traced");
+    expect(html).not.toContain(">reachable<");
+    expect(html).toContain("app/web.py:9");
+  });
+
   it("says when it is not proven either way", () => {
     const html = render({ ...base, verdict: "unknown", path: [], reason: "Imported, no path." });
 

@@ -446,6 +446,8 @@ COMPLETE_EVIDENCE: dict[str, Any] = {
     "direct_runtime_dependency": True,
     "lockfiles": ["uv.lock"],
     "dependents": [],
+    "loaded_without_import": False,
+    "scoped": False,
 }
 
 
@@ -546,6 +548,10 @@ class TestUnreachableFromDataflow:
             {"dynamic_imports": 1},
             {"import_count": 2},
             {"direct_runtime_dependency": False},
+            # A server or worker run by name, never imported (review of #1102).
+            {"loaded_without_import": True},
+            # CodeQL extracted only part of the tree (paths_include).
+            {"scoped": True},
         ],
     )
     def test_a_stored_unreachable_without_full_evidence_closes_nothing(
