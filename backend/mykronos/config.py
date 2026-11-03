@@ -526,6 +526,29 @@ class Settings(BaseSettings):
             "a tunnel or a gate, not by the minute."
         ),
     )
+    validation_demo_origin: str = Field(
+        default="",
+        description=(
+            "The one origin a triage validation may send a request to (TheHub "
+            "#60892, mykronos.validation): the demo environment, as "
+            "scheme://host[:port]. Empty (the default) refuses every "
+            "validation: nothing is sent until an operator names the demo."
+        ),
+    )
+    validation_production_origins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Origins that are production and must never be validated against "
+            "(TheHub #60892). A demo origin that matches one of these is "
+            "refused, as is a reported nuclei result whose target is one."
+        ),
+    )
+    validation_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=60,
+        description="How long one validation request waits for the demo to answer.",
+    )
     reviewer_mode: str = Field(
         default="shadow",
         pattern="^(off|shadow|live)$",

@@ -3869,6 +3869,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/findings/{finding_id}/validations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Validations
+         * @description Every validation of one finding against the demo, newest first.
+         */
+        get: operations["list_validations_api_dashboard_findings__finding_id__validations_get"];
+        put?: never;
+        /**
+         * Replay On Demo
+         * @description Replay a DAST finding's recorded GET or HEAD at the demo origin.
+         *
+         *     Only the recorded path and query are sent, re-based onto the demo, with
+         *     no credentials and no redirect followed. RefusedError (422, nothing sent) when
+         *     no demo is configured, the demo is a production origin, or the recorded
+         *     request is not a GET or HEAD. The finding is not changed.
+         */
+        post: operations["replay_on_demo_api_dashboard_findings__finding_id__validations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/findings/{finding_id}/validations/nuclei": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Nuclei Run
+         * @description Record a nuclei template run against the demo, with its request and response.
+         *
+         *     RefusedError (422, nothing recorded) when the target is a production origin or
+         *     not the demo, or the template is tagged as destructive (intrusive, dos,
+         *     fuzz, bruteforce). The finding is not changed.
+         */
+        post: operations["record_nuclei_run_api_dashboard_findings__finding_id__validations_nuclei_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/auto-triage/digest": {
         parameters: {
             query?: never;
@@ -9113,6 +9166,35 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** NucleiIn */
+        NucleiIn: {
+            /** Template Id */
+            template_id: string;
+            /** Template Tags */
+            template_tags?: string[];
+            /**
+             * Target Url
+             * @description The URL the template ran against. It must be on the demo origin.
+             */
+            target_url: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "matched" | "not_matched" | "error";
+            /**
+             * Request
+             * @description The raw request sent.
+             * @default
+             */
+            request: string;
+            /**
+             * Response
+             * @description The raw response received.
+             * @default
+             */
+            response: string;
+        };
         /**
          * ObservationOut
          * @description One declaration beside its observation (spec 35 §7.1). The two are
@@ -11187,6 +11269,11 @@ export interface components {
             /** Dry Run */
             dry_run: boolean;
         };
+        /**
+         * ReplayIn
+         * @description Nothing to choose: the request replayed is the one the scanner recorded.
+         */
+        ReplayIn: Record<string, never>;
         /**
          * RepoCoverageOut
          * @description What the scanners cannot read in one repository (TheHub #60795).
@@ -13446,6 +13533,75 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** ValidationListOut */
+        ValidationListOut: {
+            /** Finding Id */
+            finding_id: string;
+            /** Validations */
+            validations: components["schemas"]["ValidationOut"][];
+        };
+        /**
+         * ValidationOut
+         * @description One validation: the verdict, and the request and response it rests on.
+         */
+        ValidationOut: {
+            /** Id */
+            id: string;
+            /** Finding Id */
+            finding_id: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "zap_replay" | "nuclei";
+            /**
+             * Template Id
+             * @default
+             */
+            template_id: string;
+            /**
+             * Environment
+             * @default demo
+             * @constant
+             */
+            environment: "demo";
+            /** Target Origin */
+            target_origin: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "validated" | "not_validated" | "inconclusive";
+            /** Reason */
+            reason: string;
+            /**
+             * Request
+             * @default {}
+             */
+            request: {
+                [key: string]: unknown;
+            };
+            /**
+             * Response
+             * @default {}
+             */
+            response: {
+                [key: string]: unknown;
+            };
+            /** Requested By */
+            requested_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Applied
+             * @default false
+             * @constant
+             */
+            applied: false;
         };
         /** VexStatementIn */
         VexStatementIn: {
@@ -18672,6 +18828,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GradeReportOut"];
+                };
+            };
+        };
+    };
+    list_validations_api_dashboard_findings__finding_id__validations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_on_demo_api_dashboard_findings__finding_id__validations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_nuclei_run_api_dashboard_findings__finding_id__validations_nuclei_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NucleiIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

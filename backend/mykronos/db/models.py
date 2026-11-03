@@ -982,6 +982,38 @@ class ModelTriageProposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+class FindingValidation(Base):
+    """One safe test of whether a finding reproduces, run against the demo
+    environment only (TheHub #60892, Triage T5; mykronos.validation).
+
+    Evidence, not a decision: nothing reads this table to change a finding.
+    It keeps the request that was sent and the response that came back, so a
+    person deciding the finding reads what was observed rather than a label.
+    Append-only like the audit log: a second validation is a second row.
+    """
+
+    __tablename__ = "finding_validations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    repo_full_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    #: zap_replay (sent here) | nuclei (run elsewhere, reported here)
+    source: Mapped[str] = mapped_column(String(32), default="")
+    #: The nuclei template id, or the ZAP alert reference replayed.
+    template_id: Mapped[str] = mapped_column(String(255), default="")
+    #: Always the demo; kept so the record says so rather than implying it.
+    environment: Mapped[str] = mapped_column(String(32), default="demo")
+    target_origin: Mapped[str] = mapped_column(String(512), default="")
+    #: validated | not_validated | inconclusive
+    verdict: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    request: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    response: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(255), default="")
+    actor_kind: Mapped[str] = mapped_column(String(16), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class PublicEndpoint(Base):
     """A URL the operator says is reachable from the internet (mykronos.exposure).
 

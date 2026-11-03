@@ -70,7 +70,9 @@ def _policy(demo: str = DEMO, production: tuple[str, ...] = (PROD,)) -> validati
     return validation.TargetPolicy(demo_origin=demo, production_origins=production)
 
 
-def _run(finding: dict[str, Any], recorder: Recorder, policy: validation.TargetPolicy | None = None):
+def _run(
+    finding: dict[str, Any], recorder: Recorder, policy: validation.TargetPolicy | None = None
+):
     plan = validation.replay_plan(finding, policy or _policy())
     return asyncio.run(validation.replay(plan, policy or _policy(), transport=recorder.transport))
 
@@ -91,12 +93,12 @@ class TestNeverProduction:
         assert result.request["url"] == f"{DEMO}/api/orders?id=7"
 
     def test_nothing_is_sent_when_no_demo_is_configured(self) -> None:
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(_dast(f"{DEMO}/a"), _policy(demo=""))
         assert refused.value.code == "not_configured"
 
     def test_a_demo_origin_that_is_a_production_origin_is_refused(self) -> None:
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(_dast(f"{PROD}/a"), _policy(demo=PROD))
         assert refused.value.code == "demo_is_production"
 
@@ -104,20 +106,20 @@ class TestNeverProduction:
         """Case, a trailing slash and the scheme's default port do not make a
         production origin into a different one."""
         policy = _policy(demo="HTTPS://Prod.Example.Test:443/", production=(PROD,))
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(_dast(f"{PROD}/a"), policy)
         assert refused.value.code == "demo_is_production"
 
     def test_a_demo_origin_seen_serving_production_is_refused(self) -> None:
         """A prod-lane finding recorded at the configured demo origin means
         the 'demo' is production, whatever the configuration says."""
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(_dast(f"{DEMO}/a", env="prod"), _policy(production=()))
         assert refused.value.code == "demo_is_production"
 
     @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
     def test_only_safe_methods_are_replayed(self, method: str) -> None:
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(_dast(f"{DEMO}/a", method=method), _policy())
         assert refused.value.code == "unsafe_method"
 
@@ -140,10 +142,10 @@ class TestNeverProduction:
             method="GET", url=f"{PROD}/a", evidence=EVIDENCE, recorded_uri=f"{PROD}/a"
         )
 
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             asyncio.run(validation.replay(plan, _policy(), transport=recorder.transport))
 
-        assert refused.value.code == "not_demo"
+        assert refused.value.code == "production"
         assert recorder.sent == []
 
     def test_a_path_cannot_smuggle_another_host(self) -> None:
@@ -156,14 +158,14 @@ class TestNeverProduction:
     def test_a_finding_with_no_recorded_request_is_not_replayed(self) -> None:
         finding = _dast(f"{DEMO}/a")
         finding["raw_finding_json"] = {"alertRef": "10037"}
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(finding, _policy())
         assert refused.value.code == "no_replay"
 
     def test_a_non_dast_finding_is_not_replayed(self) -> None:
         finding = _dast(f"{DEMO}/a")
         finding["capability"] = "sast"
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.replay_plan(finding, _policy())
         assert refused.value.code == "no_replay"
 
@@ -179,14 +181,14 @@ class TestNeverProduction:
 
 class TestNucleiResults:
     def test_a_result_against_production_is_refused(self) -> None:
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.check_nuclei(
                 _policy(), target_url=f"{PROD}/a", template_tags=["exposure"]
             )
         assert refused.value.code == "production"
 
     def test_a_result_off_the_demo_is_refused(self) -> None:
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.check_nuclei(
                 _policy(), target_url="https://other.example.test/a", template_tags=[]
             )
@@ -194,7 +196,7 @@ class TestNucleiResults:
 
     @pytest.mark.parametrize("tag", ["intrusive", "dos", "fuzz", "bruteforce", "Intrusive"])
     def test_a_destructive_template_is_refused(self, tag: str) -> None:
-        with pytest.raises(validation.Refused) as refused:
+        with pytest.raises(validation.RefusedError) as refused:
             validation.check_nuclei(_policy(), target_url=f"{DEMO}/a", template_tags=[tag])
         assert refused.value.code == "unsafe_template"
 
