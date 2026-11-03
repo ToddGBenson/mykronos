@@ -26,8 +26,8 @@ deliberately attacked.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import random
 import subprocess
 import sys
 import urllib.error
@@ -35,8 +35,16 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
-#: Fixed. Every random choice below derives from this, so the estate is
-#: identical on every run without any of it being hand-written.
+#: Fixed. Every varying value below (line numbers, commit shas) is a digest
+#: salted with this, so the estate is identical on every run - and in every
+#: process - without any of it being hand-written.
+#:
+#: A digest, never the RNG and never `hash()`. The RNG drew a fresh line for
+#: every submission, and a code finding with no snippet is keyed on its line
+#: (`v1-line`), so no finding was ever the same finding twice: every closure
+#: the demo showed was churn. `hash()` is salted per process by
+#: `PYTHONHASHSEED`, so the commit shas changed on every rebuild (TheHub
+#: #61207).
 SEED = 20260813
 
 REPOS = [
@@ -80,6 +88,51 @@ FINDINGS = {
 }
 
 
+def _stable(*parts: object) -> str:
+    """A hex digest of `parts`, the same in every process and on every run."""
+    joined = "|".join(str(part) for part in (SEED, *parts))
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+
+
+def commit_sha(repo_full_name: str, capability: str, age_days: int) -> str:
+    """The synthetic commit each run reports: a stable 40-hex sha."""
+    return _stable("commit", repo_full_name, capability, age_days)
+
+
+def line_of(repo_full_name: str, rule_id: str, path: str) -> int:
+    """Where a finding sits, fixed per repository and rule.
+
+    The same rule in the same repository is on the same line in all three
+    runs, so it keeps one `finding_id` and a finding dropped from a later run
+    closes as the finding it was. Different repositories get different lines,
+    because the same weakness in two codebases is not on the same line.
+    """
+    return 10 + int(_stable("line", repo_full_name, rule_id, path), 16) % 391
+
+
+def cli(*arguments: str) -> str:
+    """Run the platform CLI in this container and return its stdout."""
+    completed = subprocess.run(
+        ["python", "-m", "mykronos.cli", *arguments],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout
+
+
+def settle() -> list[str]:
+    """Leave the estate in its steady state, not waiting on a schedule.
+
+    Without this the rebuild returned with every page empty for up to five
+    minutes (the findings sit in the write-ahead buffer until the scheduled
+    compaction) and the findings the later runs dropped still open, waiting
+    on the hourly absence sweep. Compaction first: absence reconciliation
+    reads the lake, so before it there are no scan runs to reconcile against.
+    """
+    return [cli("compact").strip(), cli("reconcile-absences").strip()]
+
+
 def mint_token(repo_full_name: str, capabilities: list[str]) -> str:
     """Issue an ingestion token through the CLI and read it back.
 
@@ -92,13 +145,7 @@ def mint_token(repo_full_name: str, capabilities: list[str]) -> str:
     for capability in capabilities:
         grants += ["--grant", capability]
 
-    completed = subprocess.run(
-        ["python", "-m", "mykronos.cli", "mint-token", repo_full_name, *grants],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    for line in completed.stdout.splitlines():
+    for line in cli("mint-token", repo_full_name, *grants).splitlines():
         if line.startswith("Token"):
             return line.split(":", 1)[1].strip()
     raise RuntimeError(f"No token in CLI output for {repo_full_name}")
@@ -137,7 +184,6 @@ class Client:
 
 
 def seed(client: Client) -> dict[str, int]:
-    rng = random.Random(SEED)
     counts = {"repos": 0, "scan_runs": 0, "findings": 0}
     now = datetime.now(UTC).replace(microsecond=0)
 
@@ -181,7 +227,7 @@ def seed(client: Client) -> dict[str, int]:
             for age_days in (21, 7, 0):
                 scan_run_id = f"{repo_full_name}:{capability}:{age_days}".replace("/", "-")
                 started = now - timedelta(days=age_days)
-                commit = f"{abs(hash((repo_full_name, capability, age_days))):040x}"[:40]
+                commit = commit_sha(repo_full_name, capability, age_days)
 
                 # One payload, posted twice: the second call finalises the
                 # run. Building it once means the finalise cannot omit a
@@ -216,7 +262,7 @@ def seed(client: Client) -> dict[str, int]:
                         ),
                         "severity": severity,
                         "file_path": path,
-                        "line_start": rng.randint(10, 400),
+                        "line_start": line_of(repo_full_name, rule_id, path),
                     }
                     for rule_id, title, severity, path in keep
                 ]
@@ -255,6 +301,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--url", default="http://backend:8100")
     parser.add_argument("--admin-token", default="demo-admin-token-not-a-secret")
     parser.add_argument("--gate-token", default="demo-gate-token-not-a-secret")
+    parser.add_argument(
+        "--no-settle",
+        action="store_true",
+        help="Skip the compaction and absence reconciliation after seeding.",
+    )
     args = parser.parse_args(argv)
 
     client = Client(args.url, args.admin_token, args.gate_token)
@@ -266,8 +317,15 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"Seeded {counts['repos']} repositories, {counts['scan_runs']} scan runs, "
-        f"{counts['findings']} findings (seed={SEED})."
+        f"{counts['findings']} finding submissions (seed={SEED})."
     )
+    if not args.no_settle:
+        try:
+            for line in settle():
+                print(line)
+        except subprocess.CalledProcessError as exc:
+            print(f"Settling failed: {exc.stderr[-400:]!r}", file=sys.stderr)
+            return 1
     return 0
 
 
