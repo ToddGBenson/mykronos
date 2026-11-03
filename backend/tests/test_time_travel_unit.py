@@ -25,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -339,14 +340,31 @@ def _junit(tmp_path: Path, *, passed: int, failed: list[str], errored: list[str]
 
 
 class FakeHub:
-    def __init__(self, stories: list[dict[str, Any]] | None = None) -> None:
+    """TheHub's `/api/dev/stories`, as far as the reporter uses it.
+
+    A GET honours `bucket`, `source_ref` (TheHub #61128) and `limit` the way
+    the server does: filters first, then the page. `filters_source_ref=False`
+    is a TheHub that predates #61128 and ignores the parameter.
+    """
+
+    def __init__(
+        self, stories: list[dict[str, Any]] | None = None, *, filters_source_ref: bool = True
+    ) -> None:
         self.stories = stories or []
+        self.filters_source_ref = filters_source_ref
+        self.reads: list[str] = []
         self.writes: list[tuple[str, str, dict[str, Any] | None]] = []
 
     def __call__(self, method: str, path: str, body: dict[str, Any] | None):
         if method == "GET":
-            bucket = re.search(r"bucket=(\w+)", path).group(1)
-            return 200, [s for s in self.stories if s.get("bucket") == bucket]
+            self.reads.append(path)
+            query = parse_qs(urlsplit(path).query)
+            rows = list(self.stories)
+            if "bucket" in query:
+                rows = [s for s in rows if s.get("bucket") == query["bucket"][0]]
+            if self.filters_source_ref and query.get("source_ref", [""])[0]:
+                rows = [s for s in rows if s.get("source_ref") == query["source_ref"][0]]
+            return 200, rows[: int(query.get("limit", ["500"])[0])]
         self.writes.append((method, path, body))
         if method == "POST":
             story = {**body, "id": 900 + len(self.stories), "closed_at": None}
@@ -455,3 +473,108 @@ class TestTheReport:
         out = capsys.readouterr()
         assert BOMB in out.out
         assert "not filed" in out.err
+
+
+# ---------------------------------------------------------------------------
+# Finding the story again, and keeping it current (TheHub #61128)
+# ---------------------------------------------------------------------------
+
+
+def _unrelated(n: int, bucket: str = "backlog") -> list[dict[str, Any]]:
+    """A long board: n other open stories, each newer than the job's own."""
+    return [
+        {"id": 10_000 + i, "bucket": bucket, "closed_at": None, "source_ref": None,
+         "title": f"other {i}", "detail": ""}
+        for i in range(n)
+    ]
+
+
+class TestTheLookup:
+    def test_it_asks_thehub_for_the_source_ref_not_a_page_of_the_board(
+        self, tt, tmp_path
+    ) -> None:
+        hub = FakeHub()
+        tt.report(tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB])), hub,
+                  offset="+45d", commit="a")
+        assert hub.reads, "the reporter never looked for its open story"
+        for path in hub.reads:
+            query = parse_qs(urlsplit(path).query)
+            assert query.get("source_ref") == [tt.SOURCE_REF], path
+            assert int(query["limit"][0]) <= 50, f"{path} still pages the board"
+
+    def test_a_backlog_longer_than_a_page_does_not_hide_the_story(self, tt, tmp_path) -> None:
+        run = tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB]))
+        mine = {"id": 7, "bucket": "backlog", "closed_at": None, "source_ref": tt.SOURCE_REF,
+                "title": "t", "detail": tt.story_detail(run, offset="+45d", commit="x")}
+        hub = FakeHub([*_unrelated(1500), mine])
+        tt.report(run, hub, offset="+45d", commit="y")
+        assert hub.writes == [], "a duplicate was filed for a story the board already has"
+        assert len(hub.stories) == 1501
+
+    def test_an_older_thehub_that_ignores_the_filter_never_adopts_another_story(
+        self, tt, tmp_path
+    ) -> None:
+        """Guard: the client still checks source_ref, so the mykronos half can
+        merge before TheHub's filter is deployed."""
+        hub = FakeHub(_unrelated(3), filters_source_ref=False)
+        tt.report(tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB])), hub,
+                  offset="+45d", commit="a")
+        assert [m for m, _, _ in hub.writes] == ["POST"]
+        assert all(s.get("detail") == "" for s in hub.stories[:3])
+
+
+class TestKeepingItCurrent:
+    def test_a_rewrite_updates_the_title_with_the_detail(self, tt, tmp_path) -> None:
+        hub = FakeHub()
+        tt.report(tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB])), hub,
+                  offset="+45d", commit="a")
+        assert "1 test fail" in hub.stories[0]["title"]
+        tt.report(tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB, OTHER])), hub,
+                  offset="+45d", commit="b")
+        method, _, body = hub.writes[-1]
+        assert method == "PATCH"
+        assert "2 tests fail" in body["title"]
+        assert "2 tests fail" in hub.stories[0]["title"]
+
+    def test_a_filed_story_carries_the_notes_marker(self, tt, tmp_path) -> None:
+        hub = FakeHub()
+        tt.report(tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB])), hub,
+                  offset="+45d", commit="a")
+        assert tt.NOTES_MARKER in hub.stories[0]["detail"].splitlines()
+
+    def test_operator_text_below_the_marker_survives_a_rewrite(self, tt, tmp_path) -> None:
+        hub = FakeHub()
+        tt.report(tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB])), hub,
+                  offset="+45d", commit="a")
+        note = "Triage 2026-11-03: BOMB is #1034's window; OTHER is new.\n\n- owner: lane a"
+        hub.stories[0]["detail"] += "\n" + note
+        tt.report(tt.read_report(_junit(tmp_path, passed=2, failed=[BOMB, OTHER])), hub,
+                  offset="+45d", commit="b")
+        detail = hub.stories[0]["detail"]
+        assert detail.endswith(note)
+        assert detail.count(tt.NOTES_MARKER) == 1
+        assert tt.listed_tests(detail) == tuple(sorted([BOMB, OTHER]))
+
+    def test_notes_survive_two_rewrites_without_growing(self, tt, tmp_path) -> None:
+        hub = FakeHub()
+        runs = ([BOMB], [BOMB, OTHER], [OTHER])
+        tt.report(tt.read_report(_junit(tmp_path, passed=1, failed=runs[0])), hub,
+                  offset="+45d", commit="a")
+        hub.stories[0]["detail"] += "\nkeep me"
+        for failed in runs[1:]:
+            tt.report(tt.read_report(_junit(tmp_path, passed=1, failed=failed)), hub,
+                      offset="+45d", commit="b")
+        detail = hub.stories[0]["detail"]
+        assert detail.count("keep me") == 1
+        assert detail.count(tt.NOTES_MARKER) == 1
+        assert tt.listed_tests(detail) == (OTHER,)
+
+    def test_operator_notes_never_count_as_failing_tests(self, tt, tmp_path) -> None:
+        """A note that quotes a test name in the list's own format must not be
+        read back as part of the job's list."""
+        hub = FakeHub()
+        run = tt.read_report(_junit(tmp_path, passed=1, failed=[BOMB]))
+        tt.report(run, hub, offset="+45d", commit="a")
+        hub.stories[0]["detail"] += f"\n{tt.LIST_MARKER}\n- `{OTHER}`"
+        tt.report(run, hub, offset="+45d", commit="b")
+        assert hub.writes[1:] == [], "the same failures rewrote the story"
