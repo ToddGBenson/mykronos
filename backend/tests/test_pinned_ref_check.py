@@ -608,8 +608,7 @@ class TestTheActionsPinsCarryTheBehaviourFixes:
         def fake_run(args, **kwargs):
             calls.append(list(args))
             if "--is-shallow-repository" in args:
-                return Done(0, "true
-")
+                return Done(0, "true\n")
             return Done(1)
 
         monkeypatch.setattr(checker.subprocess, "run", fake_run)
