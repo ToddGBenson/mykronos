@@ -139,6 +139,48 @@ async def test_the_tool_set_is_exactly_this() -> None:
     assert set(tools.TOOL_NAMES) == EXPECTED_TOOLS
 
 
+#: A row of the tools table in docs/agent-mcp.md: "| `name(args)` | `METHOD /path` ...".
+_DOC_ROW = re.compile(
+    r"^\| `(?P<name>[a-z_]+)\(.*?\)` \| `(?P<method>[A-Z]+) (?P<path>[^`]+)`", re.M
+)
+
+
+def _documented_tools() -> dict[str, tuple[str, str]]:
+    doc = (REPO_ROOT / "docs" / "agent-mcp.md").read_text(encoding="utf-8")
+    section = doc.split("## The tools", 1)[1].split("\n## ", 1)[0]
+    rows = [m.groupdict() for m in _DOC_ROW.finditer(section)]
+    names = [r["name"] for r in rows]
+    assert len(names) == len(set(names)), f"a tool is documented twice: {names}"
+    return {r["name"]: (r["method"], r["path"]) for r in rows}
+
+
+def test_the_docs_list_exactly_the_tool_set() -> None:
+    """TheHub #60799: docs/agent-mcp.md is the agent's reference, so a tool the
+    server has and the table does not (or the reverse) is a defect."""
+    documented = set(_documented_tools())
+    undocumented = sorted(EXPECTED_TOOLS - documented)
+    not_built = sorted(documented - EXPECTED_TOOLS)
+    assert not undocumented, f"undocumented: {undocumented}"
+    assert not not_built, f"documented, not built: {not_built}"
+
+
+async def test_each_documented_route_is_one_the_tool_calls() -> None:
+    """The route a row gives first is a route that tool really calls. Severity
+    high and info both run, because `disposition` picks its route by severity."""
+    called: dict[str, set[tuple[str, str]]] = {}
+    for severity in ("high", "info"):
+        for name, args in EVERY_TOOL_CALL:
+            fake = FakeMykronos({("GET", "/api/dashboard/findings/f1"): _finding(severity)})
+            await _call(fake, name, args)
+            called.setdefault(name, set()).update(fake.calls)
+    wrong = []
+    for name, (method, path) in sorted(_documented_tools().items()):
+        pattern = re.compile("^" + re.sub(r"\{[^}]+\}", "[^/]+", path) + "$")
+        if not any(m == method and pattern.match(p) for m, p in called.get(name, set())):
+            wrong.append(f"{name}: {method} {path}, calls {sorted(called.get(name, set()))}")
+    assert not wrong
+
+
 async def test_no_tool_names_or_describes_a_forbidden_verb() -> None:
     async with Client(_server(FakeMykronos())) as client:
         listed = (await client.list_tools()).tools
