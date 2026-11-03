@@ -229,6 +229,22 @@ REQUIRED_BEHAVIOURS: tuple[tuple[str, Callable[[], str | None]], ...] = (
 )
 
 
+#: The commit that fixed each REQUIRED_BEHAVIOURS probe, by probe name. The
+#: probes run the *installed* package, which is the Concourse pin; the GitHub
+#: Actions pins in `config.py` name another commit that cannot be imported
+#: here, so for them the check is that the pin contains the fix's commit
+#: (TheHub #61212). Both Actions pins sat on v14 -- every template adapter,
+#: so the registry check passed them -- after #1079 moved Concourse to v17,
+#: and keel's and binnacle's atlas findings went on arriving with no fixed
+#: version. `test_pinned_ref_check` fails if a probe is added without its
+#: commit here.
+BEHAVIOUR_FIX_COMMITS: dict[str, str] = {
+    "atlas osv-scanner fixed versions under aliases (#1036)": (
+        "13f5ab19ce9141b13832412e7d95a7402e9944b0"
+    ),
+}
+
+
 def _behaviour_problems() -> list[str]:
     """Which REQUIRED_BEHAVIOURS the installed runner fails.
 
@@ -378,6 +394,91 @@ def _actions_pin_problems() -> list[str]:
     return problems
 
 
+def _is_shallow() -> bool | None:
+    """Whether this checkout's history is cut, or None if git cannot say."""
+    try:
+        shown = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--is-shallow-repository"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if shown.returncode != 0:
+        return None
+    return shown.stdout.strip() == "true"
+
+
+def _github_contains(pin: str, fix: str) -> bool | None:
+    """GitHub's answer to "is `fix` in `pin`'s history", or None."""
+    try:
+        import httpx2
+
+        url = f"https://api.github.com/repos/ToddGBenson/mykronos/compare/{fix}...{pin}"
+        with httpx2.Client(timeout=15.0, follow_redirects=True) as client:
+            response = client.get(url, headers={"Accept": "application/vnd.github+json"})
+        if response.status_code != 200:
+            return None
+        status = response.json().get("status")
+    except Exception:  # noqa: BLE001 - any transport failure means "cannot determine"
+        return None
+    if status in ("ahead", "identical"):
+        return True
+    if status in ("behind", "diverged"):
+        return False
+    return None
+
+
+def commit_contains(pin: str, fix: str) -> bool | None:
+    """Whether commit `pin` has commit `fix` in its history, or None.
+
+    The local object store first, but only from a full history: in a shallow
+    clone `merge-base --is-ancestor` says "no" for any fix below the cut,
+    which would turn a good pin red. Then GitHub's compare API. Fails open,
+    for `_missing_scripts`'s reason.
+    """
+    if _is_shallow() is False:
+        try:
+            asked = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), "merge-base", "--is-ancestor", fix, pin],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                check=False,
+            )
+            if asked.returncode == 0:
+                return True
+            if asked.returncode == 1:
+                return False
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _github_contains(pin, fix)
+
+
+def _actions_behaviour_problems() -> list[str]:
+    """Which behaviour fixes each Actions pin's commit does not contain."""
+    problems: list[str] = []
+    for setting, commit in sorted(actions_pins().items()):
+        for name, fix in BEHAVIOUR_FIX_COMMITS.items():
+            contains = commit_contains(commit, fix)
+            if contains is None:
+                print(
+                    f"Cannot tell whether {setting}'s pin ({commit[:12]}) contains "
+                    f"{fix[:12]}; skipping it."
+                )
+            elif not contains:
+                problems.append(
+                    f"config.py `{setting}` pins {commit[:12]}, which does not contain "
+                    f"{fix[:12]}: {name} - every GitHub Actions workflow rendered from "
+                    f"it uploads without that fix (TheHub #61212)"
+                )
+    return problems
+
+
 def _installed_commit() -> str:
     """The commit the installed package was built from, if pip recorded one."""
     try:
@@ -488,6 +589,7 @@ def check(commit: str = "") -> list[str]:
     problems.extend(_missing_adapters())
     problems.extend(_behaviour_problems())
     problems.extend(_actions_pin_problems())
+    problems.extend(_actions_behaviour_problems())
 
     return problems
 

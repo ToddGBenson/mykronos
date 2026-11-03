@@ -526,6 +526,105 @@ class TestBehaviourIsCheckedToo:
         assert "behaviour probe" in capsys.readouterr().out
 
 
+#: v14, the commit both Actions pins named after #337 and before TheHub
+#: #61212. It has every template adapter, so the registry check passes it, and
+#: it predates #1036, so every keel and binnacle atlas finding it normalised
+#: arrived with no fixed version.
+V14 = "8e2e41261b9f3695a1ab3616be2db7d8095cd486"
+
+#: #1036's merge commit: the atlas fixed-version-under-aliases fix.
+FIX_1036 = "13f5ab19ce9141b13832412e7d95a7402e9944b0"
+
+
+class TestTheActionsPinsCarryTheBehaviourFixes:
+    """TheHub #61212. The behaviour probes run the *installed* package, which
+    is the Concourse pin. The GitHub Actions workflows install the commit
+    `config.py` names instead, and that one cannot be imported here. So for
+    the Actions pins each probe is backed by the commit that fixed it, and the
+    pin must contain that commit. v14 passed the registry check (every
+    adapter was there) while lacking #1036, which is how keel's and
+    binnacle's atlas findings kept reading as unfixable after #1079 moved
+    Concourse to v17."""
+
+    def test_every_probe_names_its_fix_commit(self, checker) -> None:
+        """A probe added without its commit is a fix nothing checks the
+        Actions pins for."""
+        names = {name for name, _ in checker.REQUIRED_BEHAVIOURS}
+
+        assert set(checker.BEHAVIOUR_FIX_COMMITS) == names
+        assert checker.BEHAVIOUR_FIX_COMMITS[
+            "atlas osv-scanner fixed versions under aliases (#1036)"
+        ] == FIX_1036
+        for commit in checker.BEHAVIOUR_FIX_COMMITS.values():
+            assert len(commit) == 40, commit
+
+    def test_the_pins_contain_every_fix(self, checker) -> None:
+        """The assertion #61212 asks for, on the pins this checkout ships."""
+        for setting, commit in checker.actions_pins().items():
+            for name, fix in checker.BEHAVIOUR_FIX_COMMITS.items():
+                contains = checker.commit_contains(commit, fix)
+                if contains is None:
+                    pytest.skip(f"cannot compare {commit[:12]} with {fix[:12]} here")
+                assert contains, f"{setting} pins {commit[:12]}, which lacks {name}"
+
+    def test_v14_would_have_been_caught(self, checker, monkeypatch) -> None:
+        """The control: the commit the pins named before this fix fails."""
+        if checker.commit_contains(V14, FIX_1036) is None:
+            pytest.skip("cannot compare v14 with #1036 here")
+        monkeypatch.setattr(
+            checker, "actions_pins", lambda: dict.fromkeys(checker.ACTIONS_PIN_SETTINGS, V14)
+        )
+
+        problems = checker._actions_behaviour_problems()
+
+        assert len(problems) == 2
+        assert any("upload_action_ref" in p and "#1036" in p for p in problems)
+        assert any("mykronos_package_spec" in p and "8e2e41261b9f" in p for p in problems)
+
+    def test_a_fix_is_contained_in_itself(self, checker) -> None:
+        assert checker.commit_contains(FIX_1036, FIX_1036) in (True, None)
+
+    def test_an_uncomparable_pin_is_skipped_not_failed(
+        self, checker, monkeypatch, capsys
+    ) -> None:
+        """Fails open, as the registry check does: an unreachable GitHub is
+        not a stale pin."""
+        monkeypatch.setattr(checker, "commit_contains", lambda pin, fix: None)
+
+        assert checker._actions_behaviour_problems() == []
+        assert "skipping" in capsys.readouterr().out
+
+    def test_a_shallow_clone_is_not_asked(self, checker, monkeypatch) -> None:
+        """In a shallow clone `merge-base --is-ancestor` answers "no" for any
+        fix below the cut, which would turn a fine pin red. The local answer
+        is only trusted from a full history."""
+        calls: list[list[str]] = []
+
+        class Done:
+            def __init__(self, returncode: int, stdout: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            if "--is-shallow-repository" in args:
+                return Done(0, "true\n")
+            return Done(1)
+
+        monkeypatch.setattr(checker.subprocess, "run", fake_run)
+        monkeypatch.setattr(checker, "_github_contains", lambda pin, fix: None)
+
+        assert checker.commit_contains(V14, FIX_1036) is None
+        assert not any("merge-base" in c for c in calls)
+
+    def test_check_reports_a_pin_without_the_fix(self, checker, monkeypatch) -> None:
+        monkeypatch.setattr(checker, "_missing_scripts", lambda commit: [])
+        monkeypatch.setattr(checker, "_actions_pin_problems", lambda: [])
+        monkeypatch.setattr(checker, "commit_contains", lambda pin, fix: False)
+
+        assert any("#1036" in p and "config.py" in p for p in checker.check("unknown"))
+
+
 class TestEveryPinNamesOneRef:
     """`mykronos-ref` is written in six places: three set-pipeline scripts and
     the three vars files the in-pipeline `set-pipeline` jobs apply. The
