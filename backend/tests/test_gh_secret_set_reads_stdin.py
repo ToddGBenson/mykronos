@@ -96,8 +96,7 @@ def test_an_untracked_stale_copy_does_not_fail_the_scan() -> None:
     planted.parent.mkdir(parents=True)
     try:
         planted.write_text(
-            "$token | gh secret set MYKRONOS_INGESTION_TOKEN --body -
-",
+            "$token | gh secret set MYKRONOS_INGESTION_TOKEN --body -\n",
             encoding="utf-8",
         )
         scanned = {path for path, _, _ in _secret_set_lines()}
