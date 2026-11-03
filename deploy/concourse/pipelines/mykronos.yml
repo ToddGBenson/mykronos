@@ -2926,6 +2926,9 @@ jobs:
               repository: gcr.io/kaniko-project/executor
               tag: v1.23.2-debug
           inputs: [{ name: source }, { name: meta }]
+          # [TheHub #61246] Holds `verdict` only when kaniko built the image;
+          # the load_var step after this task reads it.
+          outputs: [{ name: built }]
           params:
             REGISTRY: ((registry))
           run:
@@ -2938,7 +2941,35 @@ jobs:
                 # (#361), so the frontend image can name its own commit too
                 # (#382). frontend/Dockerfile declares the ARG in its runtime
                 # stage.
-                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --build-arg "MYKRONOS_BUILD_SHA=${SHA}"                   --destination "${REGISTRY}/mykronos-frontend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot
+                # [TheHub #61246] --compressed-caching=false: kaniko otherwise holds
+                # each layer compressed in memory, and the `deps` stage's node_modules is
+                # the big one. #270 and #276 were SIGKILLed taking that snapshot, on a
+                # worker D-174 caps at 3 GiB that TheHub's post-merge pytest (#1711) and
+                # `sast` were also using. kaniko's own documentation gives this flag
+                # for a build that fails out of memory; it costs build time, not
+                # correctness. Serial groups cannot help here: they are per pipeline,
+                # and the other jobs on that worker were thehub.yml's.
+                rc=0
+                /kaniko/executor                   --context source/frontend                   --dockerfile source/frontend/Dockerfile                   --build-arg "MYKRONOS_BUILD_SHA=${SHA}"                   --destination "${REGISTRY}/mykronos-frontend:${SHA}"                   --insecure --skip-tls-verify                   --single-snapshot                   --compressed-caching=false || rc=$?
+                # [TheHub #61246] Killed for memory is not a build failure. kaniko
+                # SIGKILLed (137) built and pushed nothing about this commit: say so
+                # and leave built/verdict unwritten, so the load_var step after this
+                # task ERRORS the build. Start-Here and the overnight loop re-trigger an
+                # errored build once and stop on a failed one. Any other non-zero exit
+                # is a real failure and fails the build as before.
+                if [ "$rc" -eq 137 ]; then
+                  echo "::error::INFRASTRUCTURE, NOT A BUILD FAILURE: kaniko was SIGKILLed (exit 137), out of memory on a shared worker; no image was pushed. This is not a build failure: re-run the job."
+                  exit 0
+                fi
+                [ "$rc" -eq 0 ] || exit "$rc"
+                echo 0 > built/verdict
+      # [TheHub #61246] ERRORED, not FAILED, when kaniko above was killed for
+      # memory and built nothing: the task then writes no built/verdict, so
+      # this step cannot read it and Concourse errors the build here. The
+      # step's name is what the build page shows. `containers` gates on
+      # `passed: [publish-frontend]`, so an errored build still blocks it.
+      - load_var: killed-for-memory-not-a-build-failure-re-run
+        file: built/verdict
 
   # -- Stage 5: the images this pipeline just published --------------------
   #
