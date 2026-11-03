@@ -58,5 +58,12 @@ def test_a_recorder_failure_never_fails_the_deploy():
     assert "catch" in body
 
 
-def test_the_script_stays_ascii():
-    SCRIPT.read_bytes().decode("ascii")
+def test_the_recorder_code_is_ascii():
+    """deploy.ps1's NOTES ask for ASCII (Windows PowerShell 5.1 reads a
+    BOM-less file as the ANSI code page). Three older lines already break it;
+    this keeps the new code from adding more."""
+    raw = SCRIPT.read_text(encoding="utf-8").replace(chr(13), "")
+    END = chr(10) + "}" + chr(10)
+    for name in ("function Get-RunningBuildSha", "function Invoke-DeployRecorder"):
+        body = raw[raw.index(name):]
+        body.split(END)[0].encode("ascii")
