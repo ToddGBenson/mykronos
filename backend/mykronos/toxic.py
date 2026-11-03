@@ -38,10 +38,22 @@ unauthenticated database are "medium", which is the opposite of the point.
 **Coverage is part of the answer.** A rule whose inputs never reach the lake
 (network, cloud) cannot fire, and "no combinations" from it is not evidence
 of safety. `coverage()` names those rules so every surface can say so.
+
+**A chain is scoped by the threat model** (TheHub #60894, Triage T7). The
+entry-point rules (`correlate.ENTRY_POINT_CHAIN_RULES`) group findings by the
+declared internet-facing entry point `surface_match` places them in, rather
+than by file or repository, and are checked first. A combination they form
+carries `chain`: the entry point as declared (name, exposure, where it was
+declared and its evidence reference), then each link - the finding, the
+selector that placed it behind that entry point, and why it qualifies. The
+entry point is declared, never observed, and the chain says so. With no
+session there is no threat model to read, so only the built-in rules run;
+`coverage()` then names the chain rules as unable to fire.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,8 +61,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mykronos import risk_evidence
-from mykronos.db.models import ApprovalRequest, RiskAcceptance
+from mykronos import risk_evidence, surface_match
+from mykronos.db.models import ApprovalRequest, RepoSurface, RiskAcceptance
 from mykronos.lake import Catalog
 from mykronos.patchwork import correlate
 from mykronos.patchwork.pipeline import DEFAULT_CORRELATION_CAPABILITIES
@@ -76,7 +88,23 @@ _COLUMNS = (
     "severity",
     "file_path",
     "status",
+    "cwe_ids_json",
+    "image",
+    "uri",
 )
+
+#: Every rule detection runs, in the order it runs them: a chain claims its
+#: members before a file- or repository-scoped pair can.
+RULES: tuple[correlate.CombinationRule, ...] = (
+    correlate.ENTRY_POINT_CHAIN_RULES + correlate.BUILT_IN_RULES
+)
+
+#: What a chain rule needs beyond findings, as `coverage()` names it.
+NEEDS_ENTRY_POINT = "internet-facing entry point"
+
+#: Set on a pool row by `_locate`: entry point id -> the selector that placed
+#: the finding there. Private to this module; never leaves it.
+_LOCATED_BY = "_entry_point_selectors"
 
 
 @dataclass(frozen=True)
@@ -95,6 +123,9 @@ class ToxicCombination:
     #: not name this combination: it formed after they were approved, which
     #: fails their premise (TheHub #61013, `premise_monitor`).
     unanticipated_acceptances: tuple[str, ...] = ()
+    #: For an entry-point chain (TheHub #60894): the declared entry point and
+    #: each link in order. None for every other combination.
+    chain: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +140,7 @@ class ToxicCombination:
             "rationale": self.rationale,
             "members": [dict(m) for m in self.members],
             "unanticipated_acceptances": list(self.unanticipated_acceptances),
+            "chain": self.chain,
         }
 
 
@@ -143,15 +175,129 @@ def _pool(catalog: Catalog, repo: str | None) -> list[dict[str, Any]]:
         params.append(repo)
     rows = catalog.query(
         "SELECT finding_id, repo_full_name, capability, rule_id, coalesce(title, ''), "
-        "lower(severity), file_path, status "
+        "lower(severity), file_path, status, cwe_ids_json, "
+        # What `surface_match` locates a container and a DAST finding by
+        # (TheHub #60894). Two strings, never the raw record.
+        "json_extract_string(raw_finding_json, '$.image'), "
+        "json_extract_string(raw_finding_json, '$.instance.uri') "
         f"FROM findings WHERE {where}",
         params,
     )
     pool = [dict(zip(_COLUMNS, row, strict=True)) for row in rows]
+    for finding in pool:
+        finding["cwe_ids"] = _cwe_ids(finding.pop("cwe_ids_json", None))
     # A 90022 counts only on its evidence, which this pool does not select
     # (TheHub #61014).
     correlate.attach_disclosure_evidence(pool, catalog.query)
     return pool
+
+
+def _cwe_ids(raw: Any) -> list[str]:
+    """The CWE ids ingest stored as JSON text; [] for anything unreadable."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    return [str(c) for c in value] if isinstance(value, list) else []
+
+
+def internet_entry_points(
+    session: Session | None, repo: str | None = None
+) -> dict[str, list[RepoSurface]]:
+    """Declared internet-facing entry points with at least one selector, by
+    repository. Only `internet`: `unknown` is an open question, and a chain
+    that says "from the internet" must rest on somebody having said so. An
+    entry point with no selectors locates nothing, so it is left out."""
+    if session is None:
+        return {}
+    query = select(RepoSurface).where(
+        RepoSurface.kind == "entry_point", RepoSurface.exposure == "internet"
+    )
+    if repo is not None:
+        query = query.where(RepoSurface.repo_full_name == repo)
+    out: dict[str, list[RepoSurface]] = {}
+    for row in session.scalars(query.order_by(RepoSurface.name, RepoSurface.id)).all():
+        selectors = row.selectors if isinstance(row.selectors, dict) else {}
+        if any(selectors.get(key) for key in surface_match.SELECTOR_KEYS):
+            out.setdefault(row.repo_full_name, []).append(row)
+    return out
+
+
+def _locate(pool: list[dict[str, Any]], entry_points: list[RepoSurface]) -> None:
+    """Annotate each pool row with the entry points it is inside
+    (`correlate.ENTRY_POINTS_KEY`) and the selector that placed it there."""
+    if not entry_points:
+        return
+    for finding in pool:
+        located = {
+            "capability": finding.get("capability"),
+            "file_path": finding.get("file_path"),
+            "raw_finding_json": {
+                k: v
+                for k, v in (
+                    ("image", finding.get("image")),
+                    ("instance", {"uri": finding["uri"]} if finding.get("uri") else None),
+                )
+                if v
+            },
+        }
+        hits = surface_match.matches(located, entry_points)
+        if hits:
+            finding[correlate.ENTRY_POINTS_KEY] = tuple(m.surface.id for m in hits)
+            finding[_LOCATED_BY] = {
+                m.surface.id: f"{m.selector_type} `{m.selector}`" for m in hits
+            }
+
+
+def _chain(
+    combo: correlate.Combination,
+    rule: correlate.CombinationRule | None,
+    by_id: dict[str, dict[str, Any]],
+    entry_points: dict[str, RepoSurface],
+) -> dict[str, Any] | None:
+    """The chain an entry-point combination is: the way in, then each link."""
+    if combo.entry_point is None or rule is None:
+        return None
+    surface = entry_points.get(combo.entry_point)
+    if surface is None:
+        return None
+    from mykronos.surfaces import declared_via
+
+    door = {
+        "id": surface.id,
+        "name": surface.name,
+        "exposure": surface.exposure,
+        "declared_via": declared_via(surface),
+        "evidence_ref": surface.evidence_ref or "",
+    }
+    links: list[dict[str, Any]] = [{"step": "entry_point", **door}]
+    for requirement, (fid, why) in zip(rule.requires, combo.qualifications, strict=False):
+        member = by_id.get(fid, {})
+        links.append(
+            {
+                "step": requirement.step or requirement.describes,
+                "finding_id": fid,
+                "capability": str(member.get("capability") or ""),
+                "rule_id": str(member.get("rule_id") or ""),
+                "title": str(member.get("title") or ""),
+                "severity": str(member.get("severity") or ""),
+                "status": str(member.get("status") or ""),
+                "file_path": member.get("file_path"),
+                "located_by": (member.get(_LOCATED_BY) or {}).get(combo.entry_point, ""),
+                "qualifies": why,
+            }
+        )
+    return {
+        "entry_point": door,
+        "links": links,
+        "note": (
+            "The entry point and its internet exposure are declared in the "
+            "threat model, not observed; each finding is placed behind it by "
+            "the selector shown."
+        ),
+    }
 
 
 def _kev_ids(session: Session | None, findings: list[dict[str, Any]]) -> set[str]:
@@ -255,11 +401,17 @@ def _judge(
 
 
 def _combinations(
-    pool: list[dict[str, Any]], session: Session | None, *, suppress: bool
+    pool: list[dict[str, Any]],
+    session: Session | None,
+    *,
+    suppress: bool,
+    labels: dict[str, str] | None = None,
 ) -> list[tuple[correlate.Combination, tuple[str, ...]]]:
     """One repository's combinations, each with its unanticipated acceptances."""
     by_id = {str(f["finding_id"]): f for f in pool}
-    found = correlate.detect(pool, discounted=correlate.FALSE_POSITIVE_ONLY)
+    found = correlate.detect(
+        pool, RULES, discounted=correlate.FALSE_POSITIVE_ONLY, entry_point_labels=labels
+    )
     if not suppress:
         return [(c, ()) for c in found]
     accepted = {fid for fid, f in by_id.items() if f.get("status") == "accepted_risk"}
@@ -283,7 +435,9 @@ def _combinations(
             for fid, f in by_id.items()
             if f.get("status") == "open" and fid not in claimed
         ]
-        kept.extend((c, ()) for c in correlate.detect(rest))
+        kept.extend(
+            (c, ()) for c in correlate.detect(rest, RULES, entry_point_labels=labels)
+        )
     return kept
 
 
@@ -308,11 +462,18 @@ def detect(
     for finding in _pool(catalog, repo):
         by_repo.setdefault(str(finding["repo_full_name"]), []).append(finding)
 
-    rules = {r.rule_id: r for r in correlate.BUILT_IN_RULES}
+    rules = {r.rule_id: r for r in RULES}
+    doors = internet_entry_points(session, repo) if by_repo else {}
     out: list[ToxicCombination] = []
     for repo_name, pool in sorted(by_repo.items()):
+        here = doors.get(repo_name, [])
+        _locate(pool, here)
+        by_door = {s.id: s for s in here}
+        labels = {s.id: s.name for s in here}
         by_id = {str(f["finding_id"]): f for f in pool}
-        for combo, unanticipated in _combinations(pool, session, suppress=suppress):
+        for combo, unanticipated in _combinations(
+            pool, session, suppress=suppress, labels=labels
+        ):
             members = [by_id[fid] for fid in sorted(combo.finding_ids) if fid in by_id]
             why = dict(combo.qualifications)
             kev = _kev_ids(session, members)
@@ -352,24 +513,30 @@ def detect(
                         for m in members
                     ),
                     unanticipated_acceptances=unanticipated,
+                    chain=_chain(combo, rule, by_id, by_door),
                 )
             )
     return out
 
 
-def coverage(catalog: Catalog) -> dict[str, Any]:
+def coverage(catalog: Catalog, session: Session | None = None) -> dict[str, Any]:
     """Which rules can fire on the data the lake actually holds.
 
     A rule needs, for each requirement, at least one finding of an allowed
     capability somewhere in the lake. One that cannot be met reports nothing,
     whatever is true of the estate - and must not be read as a clean result.
+
+    An entry-point chain also needs a declared internet-facing entry point
+    with a selector, somewhere in the estate. Without a session the threat
+    model is not read, so the chain rules are named as unable to fire.
     """
     present: set[str] = set()
     if catalog.all_files("findings"):
         present = {str(r[0]) for r in catalog.query("SELECT DISTINCT capability FROM findings")}
+    has_door = bool(internet_entry_points(session))
     live: list[dict[str, Any]] = []
     dark: list[dict[str, Any]] = []
-    for rule in correlate.BUILT_IN_RULES:
+    for rule in RULES:
         missing = sorted(
             {
                 cap
@@ -378,6 +545,8 @@ def coverage(catalog: Catalog) -> dict[str, Any]:
                 for cap in req.capabilities
             }
         )
+        if rule.scope == "entry_point" and not has_door:
+            missing.append(NEEDS_ENTRY_POINT)
         entry = {"rule_id": rule.rule_id, "name": rule.name, "missing": missing}
         (dark if missing else live).append(entry)
-    return {"rules": len(correlate.BUILT_IN_RULES), "can_fire": live, "cannot_fire": dark}
+    return {"rules": len(RULES), "can_fire": live, "cannot_fire": dark}

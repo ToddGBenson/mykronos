@@ -566,6 +566,13 @@ class RiskEvidence:
                         "qualifies": {
                             m["finding_id"]: m.get("qualifies", "") for m in c.members
                         },
+                        # The declared way in, for an entry-point chain
+                        # (TheHub #60894), so an approver sees the path.
+                        "entry_point": (
+                            c.chain["entry_point"]["name"]
+                            if getattr(c, "chain", None)
+                            else None
+                        ),
                     }
                     for c in self.toxic[:LISTED]
                 ],

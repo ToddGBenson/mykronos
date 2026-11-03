@@ -2022,6 +2022,10 @@ class OracleEngine:
                     # Why each member counts (TheHub #60965), so a reader of
                     # the decision can judge the combination, not trust it.
                     "qualifies": {m["finding_id"]: m.get("qualifies", "") for m in c.members},
+                    # For an entry-point chain (TheHub #60894): the declared
+                    # way in and each link, so the decision shows the path.
+                    "entry_point": c.chain["entry_point"]["name"] if c.chain else None,
+                    "chain": c.chain,
                 }
                 for c in combos
             ],

@@ -317,6 +317,7 @@ RANK_INPUTS: dict[str, str] = {
     "fixable": "whether a fix already exists",
     "environmental": "environmental severity (exposure, data and criticality, from stored scores)",
     "public_exploit": "public exploits (Metasploit, Exploit-DB, GitHub PoC via NVD)",
+    "toxic_chain": "toxic chains on a declared internet-facing entry point (threat model)",
 }
 """Every term `rank_terms` can produce, and the input each one discloses.
 
@@ -400,6 +401,17 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             "public_exploit",
             rank.public_exploit_poc,
             "public exploit code is published - not yet KEV-listed",
+        )
+    # A link in a toxic chain on a declared internet-facing entry point
+    # (TheHub #60894). Each member is one link of a path, and the path is
+    # closed by working its links, so each carries the term on its own row.
+    chain = item.get("entry_point_chain")
+    if chain:
+        add(
+            "toxic_chain",
+            rank.entry_point_chain,
+            f"a link in a {chain.get('severity')} toxic chain on the internet-facing "
+            f"entry point `{chain.get('entry_point')}`: {chain.get('name')}",
         )
     due = item.get("due_state")
     if due == "overdue":
@@ -2330,6 +2342,7 @@ class DashboardQueries:
 
         if order == "rank" and policy is not None:
             self._attach_rank_inputs(queue)
+            self._attach_entry_point_chains(session, queue, policy)
             # Every row is looked up, so every row carries the environmental
             # term - at zero, with its reason, when there is nothing in force.
             readings = environment_view.rank_readings(
@@ -2377,6 +2390,43 @@ class DashboardQueries:
         queue = queue[:limit]
 
         return queue, counts
+
+    def _attach_entry_point_chains(
+        self, session: Session, queue: list[dict[str, Any]], policy: Any
+    ) -> None:
+        """Stamp `entry_point_chain` on each row that is a link in a toxic
+        chain (TheHub #60894), from the same detection the risk decision uses.
+
+        Detection runs only for the repositories on the page that declare an
+        internet-facing entry point, so an estate without a threat model pays
+        one query. A weight of zero in policy skips it entirely.
+        """
+        if not queue or not float(getattr(policy.triage_rank, "entry_point_chain", 0.0)):
+            return
+        repos = {str(item["repo_full_name"]) for item in queue}
+        doors = toxic.internet_entry_points(session)
+        link_of: dict[str, dict[str, Any]] = {}
+        for repo in sorted(repos & set(doors)):
+            for combo in toxic.detect(
+                self.catalog,
+                repo=repo,
+                session=session,
+                escalate_steps=policy.toxic_combinations.escalate_steps,
+            ):
+                if combo.chain is None:
+                    continue
+                summary = {
+                    "combination_id": combo.combination_id,
+                    "name": combo.name,
+                    "severity": combo.severity,
+                    "entry_point": combo.chain["entry_point"]["name"],
+                }
+                for member in combo.members:
+                    link_of[str(member["finding_id"])] = summary
+        for item in queue:
+            found = link_of.get(str(item["finding_id"]))
+            if found is not None:
+                item["entry_point_chain"] = found
 
     def _attach_rank_inputs(self, queue: list[dict[str, Any]]) -> None:
         """Stamp the signals ranking needs but the queue did not carry.
@@ -2787,7 +2837,9 @@ class DashboardQueries:
             for row in introduced[:limit]
         ]
 
-    def vulnerability_management(self, repo_full_name: str | None = None) -> dict[str, Any]:
+    def vulnerability_management(
+        self, repo_full_name: str | None = None, *, session: Session | None = None
+    ) -> dict[str, Any]:
         """What is outstanding, how old, and what was accepted (PIP-9).
 
         The platform could always answer "what is open" and never "how long
@@ -2801,6 +2853,11 @@ class DashboardQueries:
         finding identity is anchored to content rather than line numbers
         (D-001). Without that, every refactor would reset the clock and
         nothing would ever look old.
+
+        With a `session` the toxic combinations are the risk decision's own:
+        acceptances are read, and the entry-point chains the threat model
+        makes possible are found (TheHub #60894). Without one, only the
+        built-in rules run.
         """
         scope = "AND asset_id = ?" if repo_full_name else ""
         params: list[Any] = [repo_full_name] if repo_full_name else []
@@ -2885,7 +2942,7 @@ class DashboardQueries:
             params,
         )
 
-        current_toxic = toxic.detect(self.catalog, repo=repo_full_name)
+        current_toxic = toxic.detect(self.catalog, repo=repo_full_name, session=session)
 
         # What auto-remediation has *recorded* over time: every combination it
         # declined to fix half of. History, not current risk - these ids

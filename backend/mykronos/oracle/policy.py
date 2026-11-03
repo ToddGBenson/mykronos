@@ -331,6 +331,9 @@ class TriageRankPolicy:
     #: proof-of-concept code. KEV already carries the larger `in_kev` term.
     public_exploit_weaponized: float = 0.0
     public_exploit_poc: float = 0.0
+    #: Points for a link in a toxic chain on a declared internet-facing entry
+    #: point (TheHub #60894, policy 1.18).
+    entry_point_chain: float = 0.0
 
     @property
     def configured(self) -> bool:
@@ -810,6 +813,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             public_exploit_poc=_number(
                 rank_raw.get("public_exploit_poc", 0),
                 "triage_rank.public_exploit_poc",
+            ),
+            entry_point_chain=_number(
+                rank_raw.get("entry_point_chain", 0),
+                "triage_rank.entry_point_chain",
             ),
         ),
         overdue=OverduePolicy(

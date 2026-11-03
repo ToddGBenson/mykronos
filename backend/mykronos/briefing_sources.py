@@ -340,10 +340,11 @@ def gather(
 
         with db.session() as session:
             toxic_found = toxic.detect(catalog, session=session)
+            # The chain rules need the threat model (TheHub #60894).
+            found.toxic_coverage = toxic.coverage(catalog, session=session)
         order = {s: i for i, s in enumerate(reversed(toxic.SEVERITIES))}
         toxic_found.sort(key=lambda c: (order.get(c.severity, 9), c.repo_full_name))
         found.toxic_combinations = [c.to_dict() for c in toxic_found]
-        found.toxic_coverage = toxic.coverage(catalog)
     except Exception:  # noqa: BLE001 - a briefing must not die on this
         logger.debug("Could not compute toxic combinations")
 

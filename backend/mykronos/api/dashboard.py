@@ -1830,6 +1830,8 @@ async def toxic_combinations(
         steps = 1
     with request.app.state.db.session() as session:
         combos = toxic.detect(catalog, repo=repo, session=session, escalate_steps=steps)
+        # The chain rules need the threat model, which only a session reads.
+        coverage = toxic.coverage(catalog, session=session)
     order = {s: i for i, s in enumerate(reversed(toxic.SEVERITIES))}
     combos.sort(key=lambda c: (order.get(c.severity, 9), c.repo_full_name, c.name))
     by_severity: dict[str, int] = {}
@@ -1839,7 +1841,7 @@ async def toxic_combinations(
         count=len(combos),
         by_severity=by_severity,
         combinations=[c.to_dict() for c in combos],
-        coverage=toxic.coverage(catalog),
+        coverage=coverage,
     )
 
 
@@ -2584,7 +2586,8 @@ async def vulnerability_management(
     said exactly that.
     """
     repo_full_name = _resolve_repo(request, repo_id) if repo_id else None
-    return _queries(request).vulnerability_management(repo_full_name)
+    with request.app.state.db.session() as session:
+        return _queries(request).vulnerability_management(repo_full_name, session=session)
 
 
 async def _ci_status(
