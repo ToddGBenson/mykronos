@@ -158,6 +158,10 @@ ROUTES: dict[str, str] = {
     # Libraries (TheHub #60880): writes check `may_write` in the handler;
     # switching a repository to blocking is a person's decision.
     "POST /api/libraries/requests": PRINCIPAL,
+    # Dashboard feedback files a TheHub story (TheHub #61132): the status is a
+    # read; filing is the operator's, never a viewer's or an agent's.
+    "GET /api/feedback": PRINCIPAL,
+    "POST /api/feedback": HUMAN,
     "GET /api/libraries/requests": PRINCIPAL,
     "GET /api/libraries/requests/{request_id}": PRINCIPAL,
     "GET /api/libraries/managed": PRINCIPAL,
