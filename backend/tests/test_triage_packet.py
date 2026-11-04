@@ -91,6 +91,13 @@ def _container(cve: str, *, fixed: str | None = "2.0.1", **overrides: Any) -> di
     return payload
 
 
+def _set_due(catalog: Any, when: datetime) -> None:
+    """Pin every finding's deadline against NOW: ingest sets it from the real
+    clock, which is years before the pinned one."""
+    ids = [str(r[0]) for r in catalog.query("SELECT finding_id FROM findings")]
+    update_findings(catalog, locate_findings(catalog, ids), "due_at = ?", [when])
+
+
 def _build(client: Any, catalog: Any, **kwargs: Any) -> triage_packet.Packet:
     kwargs.setdefault("report", _report())
     return triage_packet.build(catalog, client.app.state.db, now=NOW, **kwargs)
@@ -118,7 +125,7 @@ class TestEveryField:
 
         assert packet["candidates"], "the open findings produce candidates"
         for candidate in packet["candidates"]:
-            assert CANDIDATE_FIELDS <= set(candidate), CANDIDATE_FIELDS - set(candidate)
+            assert set(candidate) >= CANDIDATE_FIELDS, CANDIDATE_FIELDS - set(candidate)
             assert candidate["id"].startswith("C-")
             assert candidate["acceptance_criteria"]
             assert any("Production check" in c for c in candidate["acceptance_criteria"])
@@ -191,6 +198,7 @@ class TestValidationSpike:
         onboard(client, admin_auth)
         _post(client, "sast", [finding_payload(severity="high")], "run-v1")
         run_compaction()
+        _set_due(catalog, NOW + timedelta(days=30))
 
         candidate = _build(client, catalog).to_dict()["candidates"][0]
 
@@ -211,15 +219,26 @@ class TestMandatory:
         onboard(client, admin_auth)
         _post(client, "containers", [_container("CVE-2031-2005")], "run-m1")
         run_compaction()
-        ids = [str(r[0]) for r in catalog.query("SELECT finding_id FROM findings")]
-        update_findings(
-            catalog, locate_findings(catalog, ids), "due_at = ?", [NOW - timedelta(days=3)]
-        )
+        _set_due(catalog, NOW - timedelta(days=3))
 
         candidate = _build(client, catalog).to_dict()["candidates"][0]
 
         assert candidate["classification"] == "mandatory"
         assert any("overdue" in r for r in candidate["mandatory_reasons"])
+
+    def test_the_same_high_due_later_is_not_mandatory(
+        self, client: Any, admin_auth: dict[str, str], run_compaction: Any, catalog: Any
+    ) -> None:
+        """Guard for the test above: the deadline is what made it mandatory."""
+        onboard(client, admin_auth)
+        _post(client, "containers", [_container("CVE-2031-2009")], "run-m3")
+        run_compaction()
+        _set_due(catalog, NOW + timedelta(days=3))
+
+        candidate = _build(client, catalog).to_dict()["candidates"][0]
+
+        assert candidate["classification"] != "mandatory"
+        assert _factor(candidate, "deadline")["evidence"].startswith("Due in")
 
     def test_a_secret_exposure_is_mandatory(
         self, client: Any, admin_auth: dict[str, str], run_compaction: Any, catalog: Any
@@ -408,7 +427,8 @@ class TestTheCommand:
         onboard(client, admin_auth)
         _post(client, "sast", [finding_payload(severity="medium")], "run-c1")
         run_compaction()
-        monkeypatch.setattr(briefing_sources, "gather", lambda *_a: briefing_sources.OperationalInputs())
+        nothing = briefing_sources.OperationalInputs()
+        monkeypatch.setattr(briefing_sources, "gather", lambda *_a: nothing)
         monkeypatch.setattr(cli, "get_settings", lambda: settings)
         capsys.readouterr()
 
