@@ -25,6 +25,7 @@ export type PoInboxItem = PoInbox["pending"][number];
 export type PoRoles = Json<"/api/dashboard/repos/{repo_id}/product-owner/roles">;
 export type PoRetro = Json<"/api/dashboard/repos/{repo_id}/product-owner/retro">;
 export type PoGateFailure = PoRetro["failures"][number];
+export type PoDora = Json<"/api/dashboard/repos/{repo_id}/product-owner/dora">;
 
 function failure(error: unknown, fallback: string): { ok: false; error: string } {
   if (error instanceof BackendUnavailable) return { ok: false, error: error.detail };
@@ -63,6 +64,20 @@ export async function getPoDelivery(repoId: string, days: number): Promise<Resul
       : { ok: false, error: refused(response, "Could not load Delivery") };
   } catch (error) {
     return failure(error, "Could not load Delivery");
+  }
+}
+
+export async function getPoDora(repoId: string): Promise<Result<PoDora>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/product-owner/dora",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    return data
+      ? { ok: true, data }
+      : { ok: false, error: refused(response, "Could not load the DORA metrics") };
+  } catch (error) {
+    return failure(error, "Could not load the DORA metrics");
   }
 }
 

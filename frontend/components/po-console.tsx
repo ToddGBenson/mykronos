@@ -6,6 +6,7 @@ import { ProdLag } from "@/components/prod-lag";
 import type {
   PoDelivery,
   PoDeliveryRow,
+  PoDora,
   PoGateFailure,
   PoInbox,
   PoRetro,
@@ -179,6 +180,74 @@ export function DeliveryView({
         </Section>
       ) : null}
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+// DORA metrics (TheHub #60912)
+// --------------------------------------------------------------------------
+
+type DoraMetric = PoDora["windows"][number]["deploy_frequency"];
+
+const DORA_METRICS = [
+  ["deploy_frequency", "Deploy frequency"],
+  ["lead_time", "Lead time"],
+  ["change_failure_rate", "Change failure rate"],
+  ["recovery_time", "Recovery time"],
+] as const;
+
+function doraValue(metric: DoraMetric): string {
+  const value = metric.value as number;
+  if (metric.unit === "percent") return `${Number(value.toFixed(1))}%`;
+  if (metric.unit === "hours") return value >= 48 ? `${(value / 24).toFixed(1)} d` : `${value.toFixed(1)} h`;
+  return `${Number(value.toFixed(1))} ${metric.unit}`;
+}
+
+/**
+ * The four DORA metrics over 30 and 90 days. A metric that could not be
+ * computed says "not enough data" and names the input it lacks: never a 0
+ * that means "not measured", which would read as perfect or as dead.
+ */
+export function DoraView({ data }: { data: PoDora }) {
+  return (
+    <Section
+      title="DORA metrics"
+      detail={data.deploy_source || "no deploy record for this repository"}
+    >
+      <div className="grid gap-px sm:grid-cols-2">
+        {data.windows.map((window) => (
+          <div key={window.days} className="flex flex-col gap-1 px-3 py-2">
+            <p className="font-mono text-[11px] text-ink-3">{window.days} days</p>
+            {DORA_METRICS.map(([key, name]) => {
+              const metric = window[key];
+              const definition = data.definitions[key];
+              return (
+                <div key={key} className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+                  <span className="min-w-36 text-ink-2" title={definition}>
+                    {name}
+                  </span>
+                  {metric.value === null ? (
+                    <span className="text-ink-3">
+                      not enough data
+                      {metric.lacks ? (
+                        <span className="font-mono text-[11px]"> · {metric.lacks}</span>
+                      ) : null}
+                    </span>
+                  ) : (
+                    <span
+                      className="font-mono font-semibold text-ink"
+                      title={`from ${metric.sample}${metric.detail ? `; ${metric.detail}` : ""}`}
+                    >
+                      {doraValue(metric)}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }
 

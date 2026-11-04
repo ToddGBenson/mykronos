@@ -1,12 +1,19 @@
 import type { ReactNode } from "react";
 
-import { ApprovalsView, DeliveryView, RetroView, RolesView } from "@/components/po-console";
+import {
+  ApprovalsView,
+  DeliveryView,
+  DoraView,
+  RetroView,
+  RolesView,
+} from "@/components/po-console";
 import { FleetView } from "@/components/po-fleet";
 import { TraceView } from "@/components/po-trace";
 import { ErrorPanel } from "@/components/primitives";
 import {
   getPoApprovals,
   getPoDelivery,
+  getPoDora,
   getPoFleet,
   getPoRetro,
   getPoRoles,
@@ -28,11 +35,23 @@ export async function poConsoleView(
   query: PoConsoleQuery,
 ): Promise<ReactNode | undefined> {
   if (view === "delivery") {
-    const result = await getPoDelivery(repoId, windowDays(query.days, 30, 180));
-    return result.ok ? (
-      <DeliveryView repoId={repoId} data={result.data} />
-    ) : (
-      <ErrorPanel title="Delivery unavailable" detail={result.error} />
+    const [result, dora] = await Promise.all([
+      getPoDelivery(repoId, windowDays(query.days, 30, 180)),
+      getPoDora(repoId),
+    ]);
+    return (
+      <>
+        {dora.ok ? (
+          <DoraView data={dora.data} />
+        ) : (
+          <ErrorPanel title="DORA metrics unavailable" detail={dora.error} />
+        )}
+        {result.ok ? (
+          <DeliveryView repoId={repoId} data={result.data} />
+        ) : (
+          <ErrorPanel title="Delivery unavailable" detail={result.error} />
+        )}
+      </>
     );
   }
   if (view === "approvals") {
