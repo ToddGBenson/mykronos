@@ -83,6 +83,9 @@ METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     # The closing comment goes through the issues API, which accepts
     # `pull_requests: write` for a pull request.
     "close_pull_request": (("pull_requests", "write"),),
+    # The issues labels endpoint, which accepts `pull_requests: write` for a
+    # pull request (TheHub #60746).
+    "add_pull_request_labels": (("pull_requests", "write"),),
     "get_actions_public_key": (("secrets", "read"),),
     "put_actions_secret": (("secrets", "write"),),
     "create_check_run": (("checks", "write"),),

@@ -159,6 +159,7 @@ class TestTheFakeEnforcesTheDeclaredWrites:
             REPO, head="b", base="main", title="t", body="b"
         ),
         "close_pull_request": lambda c: c.close_pull_request(REPO, 1),
+        "add_pull_request_labels": lambda c: c.add_pull_request_labels(REPO, 1, ["l"]),
         "put_actions_secret": lambda c: c.put_actions_secret(REPO, "S", "v", "k"),
         "create_check_run": lambda c: c.create_check_run(
             REPO, name="n", head_sha="s", conclusion=None, title="t", summary="s"
