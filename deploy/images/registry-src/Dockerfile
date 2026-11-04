@@ -10,6 +10,9 @@
 # operator decision of 2026-10-18 (registry and silo rebuilt; Concourse and
 # Vault wait for their vendors).
 #
+# Go 1.27.3 (2026-11-04): the standard library fix for CVE-2026-111943 (HIGH),
+# which the 1.27.2 build linked.
+#
 # Everything is pinned: the toolchain and runtime by digest, the source by
 # commit (the build fails if the tag no longer names it), the module bumps by
 # exact version. The flags are upstream's (its Dockerfile and Makefile at
@@ -20,7 +23,7 @@
 # checkov:skip=CKV_DOCKER_7: The runtime base is the recipe's, passed as BASE_IMAGE; image_refresh.plan_mykronos refuses a base not pinned by sha256 digest, and the default here is one.
 ARG BASE_IMAGE=registry:3@sha256:852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb9926671ec3d3ea17a196696
 
-FROM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
+FROM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
 ARG DISTRIBUTION_TAG=v3.1.2
 ARG DISTRIBUTION_COMMIT=3220848f15d9279c66a41aa0a257469e6aede1e9
 ARG X_NET=v0.60.0

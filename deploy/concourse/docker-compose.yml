@@ -47,16 +47,20 @@ name: mykronos-concourse
 # carried 11 Go-module findings with fixes (x/crypto, x/net, grpc) that the
 # operator declined to accept (2a95c972). A digest, so the version on disk is
 # the version running and a new patch release arrives by review.
+#
+# 8.3.3, pinned by digest (2026-11-04): built on Go 1.27.3, which fixes
+# CVE-2026-111943 (HIGH, standard library) in every bin/ binary. Trivy
+# 0.73.0 on one database: 8.3.1 at 5 critical / 117 high, 8.3.3 at 0 / 7.
 x-worker: &worker
-  image: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
+  image: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
   # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
   # the distribution's fixes, published as <registry>/<publish>-p<date> only
   # when strictly better. Declared, not adopted: `image:` stays the vendor's
   # until a reviewed change pins a published date.
   x-mykronos-build:
     context: ../images/apk-upgrade
-    base: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
-    publish: concourse/concourse:8.3.1
+    base: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
+    publish: concourse/concourse:8.3.3
     refresh_arg: APK_REFRESH
   restart: unless-stopped
   command: worker
@@ -202,8 +206,12 @@ services:
   # Trivy 0.73.0: 2026-09-16 at 5 high / 12 medium, 19 with a published fix;
   # 2026-10-15 at 1 high, 1 fixable. Started on a copy of this volume and
   # answered `silo healthcheck ready` in ~3s with no errors.
+  #
+  # RELEASE.2026-10-26, pinned by digest (2026-11-04): built on Go 1.27.3,
+  # which fixes CVE-2026-111943 (HIGH, standard library). Trivy 0.73.0 on
+  # one database: 2026-10-15 at 3 high, 2026-10-26 at 1 high.
   minio:
-    image: pgsty/silo:RELEASE.2026-10-15T00-00-00Z-distroless@sha256:70cac541c5a928be5cd16d6b8732d85ac06e891a0e3d9956a745381330692fc6
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z-distroless@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885
     # No x-mykronos-build: distroless, so there is no package manager to
     # upgrade with. SILO moves only by a new upstream release.
     container_name: mykronos-minio
@@ -286,7 +294,8 @@ services:
     # in /bin/registry, a static Go binary with x/net v0.59.0 (4 HIGH HTTP/2
     # DoS) and Go 1.26.8's standard library, which no package upgrade reaches.
     # The recipe rebuilds the same v3.1.2 commit with x/net 0.60.0, the OTLP
-    # exporters 1.45.0 and Go 1.27.2 on this base + `apk upgrade`: Trivy
+    # exporters 1.45.0 and Go 1.27.3 (CVE-2026-111943, 2026-11-04; was 1.27.2)
+    # on this base + `apk upgrade`: Trivy
     # 23 (4 HIGH, 14 MEDIUM) -> 1 (an unmaintained-package notice, no fix).
     x-mykronos-build:
       context: ../images/registry-src
@@ -343,16 +352,21 @@ services:
   # stdlib, zlib), and 2.2.0 at 1 medium, none fixable. Started on a copy of
   # this volume: initialized, sealed, file storage, no errors. Unseal was not
   # exercised on the copy; vault-unseal.ps1 after the recreate is that check.
+  #
+  # 2.2.1, pinned by digest (2026-11-04): bin/vault on Go 1.27.3, which fixes
+  # CVE-2026-111943 (HIGH, standard library). Trivy 0.73.0 on one database:
+  # 2.2.0 at 3 high, 2.2.1 at 2. A patch release on the same 2.2 line;
+  # vault-unseal.ps1 after the recreate is again the check.
   vault:
-    image: hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919
+    image: hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better. Declared, not adopted: `image:` stays the vendor's
     # until a reviewed change pins a published date.
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: hashicorp/vault:2.2.0@sha256:e0acd3c681bdf57f002d7214e5d050b876e1704678005c6b0406dd96a65be919
-      publish: hashicorp/vault:2.2.0
+      base: hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2
+      publish: hashicorp/vault:2.2.1
       refresh_arg: APK_REFRESH
       args: { RUN_AS: vault }
     container_name: mykronos-vault
@@ -426,15 +440,15 @@ services:
   # cannot start. Keeping the name means compose recreates this one in place.
   # `command: web` says what it is.
   concourse:
-    image: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
+    image: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better. Declared, not adopted: `image:` stays the vendor's
     # until a reviewed change pins a published date.
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: concourse/concourse:8.3.1@sha256:c9d48dfbf4f9ab1972f923a17040626f3e8589c79d918bb96343ec95142a4e48
-      publish: concourse/concourse:8.3.1
+      base: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
+      publish: concourse/concourse:8.3.3
       refresh_arg: APK_REFRESH
     container_name: mykronos-concourse
     restart: unless-stopped
