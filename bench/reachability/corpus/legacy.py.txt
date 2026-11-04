@@ -1,0 +1,18 @@
+"""A blueprint nothing imports or registers: dead code with live-looking sinks."""
+
+import os
+
+from flask import Blueprint, request
+
+bp = Blueprint("legacy", __name__)
+
+
+@bp.route("/legacy/exec")
+def legacy_exec():
+    os.system(request.args["cmd"])
+    return "ok"
+
+
+@bp.route("/legacy/eval")
+def legacy_eval():
+    return str(eval(request.args["expr"]))

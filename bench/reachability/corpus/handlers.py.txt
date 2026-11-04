@@ -1,0 +1,92 @@
+"""Request handlers. Every sink here is seeded; the manifest says which are reachable."""
+
+import os
+import shlex
+import sqlite3
+import subprocess
+
+from flask import Blueprint, request
+
+import helpers
+
+DEFAULT_EXPRESSION = os.environ.get("DEFAULT_EXPRESSION", "1 + 1")
+
+bp = Blueprint("handlers", __name__)
+
+
+@bp.route("/run")
+def run_command():
+    command = request.args["cmd"]
+    return subprocess.run(command, shell=True, capture_output=True).stdout
+
+
+@bp.route("/ping")
+def ping():
+    return subprocess.run("ping -c 1 127.0.0.1", shell=True, capture_output=True).stdout
+
+
+@bp.route("/quoted")
+def quoted():
+    target = shlex.quote(request.args["host"])
+    return subprocess.run(f"ping -c 1 {target}", shell=True, capture_output=True).stdout
+
+
+@bp.route("/user")
+def lookup_user():
+    user_id = request.args.get("id")
+    cursor = sqlite3.connect("app.db").cursor()
+    cursor.execute(f"SELECT name FROM users WHERE id = {user_id}")
+    return str(cursor.fetchall())
+
+
+@bp.route("/report")
+def report():
+    cursor = sqlite3.connect("app.db").cursor()
+    table = "reports"
+    cursor.execute(f"SELECT * FROM {table}")
+    return str(cursor.fetchall())
+
+
+@bp.route("/calc")
+def calc():
+    expression = request.form["expr"]
+    return str(eval(expression))
+
+
+@bp.route("/archive")
+def archive():
+    return helpers.archive(request.args["name"])
+
+
+@bp.route("/clean")
+def clean():
+    os.system("rm -rf /tmp/cache")
+    return "ok"
+
+
+@bp.route("/deploy")
+def deploy():
+    return subprocess.run(os.environ["DEPLOY_COMMAND"], shell=True, capture_output=True).stdout
+
+
+@bp.route("/default")
+def default_expression():
+    return str(eval(DEFAULT_EXPRESSION))
+
+
+@bp.route("/search")
+def search():
+    cursor = sqlite3.connect("app.db").cursor()
+    cursor.execute("SELECT name FROM users WHERE name = '%s'" % request.args["q"])
+    return str(cursor.fetchall())
+
+
+@bp.route("/script", methods=["POST"])
+def script():
+    exec(request.get_data(as_text=True))
+    return "ok"
+
+
+@bp.route("/compress")
+def compress():
+    return helpers.compress(request.args["name"])

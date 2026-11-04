@@ -1,0 +1,13 @@
+"""A helper the handlers call with request data: a flow across a function boundary."""
+
+import os
+import subprocess
+
+
+def archive(name):
+    os.system("tar czf /tmp/archive.tgz " + name)
+    return "archived"
+
+
+def compress(name):
+    return subprocess.run("gzip -k " + name, shell=True, capture_output=True).stdout
