@@ -8103,6 +8103,7 @@ export interface components {
             /** Missing Context */
             missing_context: components["schemas"]["RecordGap"][];
             exploitability?: components["schemas"]["ExploitabilityOut"] | null;
+            reachability?: components["schemas"]["ReachabilityVerdictOut"] | null;
         };
         /**
          * FindingStatus
@@ -10867,6 +10868,25 @@ export interface components {
             files_unparseable: number;
             /** Orphaned Paths */
             orphaned_paths?: string[];
+            /**
+             * Taint Status
+             * @description The Semgrep taint run beside the import graph (TheHub #60745). Anything but ok leaves every taint-covered finding unknown.
+             * @default not_run
+             * @enum {string}
+             */
+            taint_status: "ok" | "failed" | "not_run";
+            /**
+             * Taint Reason
+             * @default
+             */
+            taint_reason: string;
+            /** Taint Rules */
+            taint_rules?: string[];
+            /**
+             * Taint Matches
+             * @default 0
+             */
+            taint_matches: number;
             /** Updated At */
             updated_at?: string | null;
             /**
@@ -10913,6 +10933,36 @@ export interface components {
              * @default 0
              */
             files_unparseable: number;
+            /** @description The Semgrep taint run for the rules in taint_reachability.TAINT_SPECS. Absent means it was not run, which leaves those rules' findings unknown (TheHub #60745). */
+            taint?: components["schemas"]["TaintSubmission"] | null;
+        };
+        /**
+         * ReachabilityVerdictOut
+         * @description Can request input reach this finding? (TheHub #60745)
+         *
+         *     `basis` says which analysis answered. `taint` is a Semgrep taint run, for
+         *     the rules named in `taint_reachability.TAINT_SPECS`; `import_floor` is the
+         *     import graph (spec 19 §2.1), for every other rule and for an orphaned
+         *     file. `unreachable` is only ever the floor's answer, and a failed or
+         *     missing taint run is `unknown`. `trace` is cited when `reachable`.
+         */
+        ReachabilityVerdictOut: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "reachable" | "unreachable" | "unknown";
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "taint" | "import_floor";
+            /** Reason */
+            reason: string;
+            /** Trace */
+            trace?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ReadTokenOut */
         ReadTokenOut: {
@@ -12814,6 +12864,57 @@ export interface components {
             removed: number;
             /** Unchanged */
             unchanged: number;
+        };
+        /**
+         * TaintMatchSubmission
+         * @description One source-to-sink flow a Semgrep taint rule found (TheHub #60745).
+         */
+        TaintMatchSubmission: {
+            /** Taint Rule */
+            taint_rule: string;
+            /** Path */
+            path: string;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /**
+             * Trace
+             * @description Source, intermediate variables and sink, each as a path, a line and the expression Semgrep matched (at most 200 characters) - the trace a reachable verdict cites. Never a file's contents.
+             */
+            trace?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * TaintSubmission
+         * @description The taint run beside the import graph (TheHub #60745).
+         *
+         *     `status` carries the weight: anything but `ok` makes every finding of a
+         *     taint-covered rule `unknown`, never `unreachable`.
+         */
+        TaintSubmission: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "failed" | "not_run";
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Semgrep Version
+             * @default
+             */
+            semgrep_version: string;
+            /** Rules */
+            rules?: string[];
+            /** Matches */
+            matches?: components["schemas"]["TaintMatchSubmission"][];
+            /** Failed Paths */
+            failed_paths?: string[];
         };
         /** TemplatePrOut */
         TemplatePrOut: {
