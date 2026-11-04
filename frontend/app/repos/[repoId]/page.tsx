@@ -8,7 +8,9 @@ import { InsiderRiskTab } from "@/components/insider-risk";
 import { Report } from "@/components/report";
 import { PassRateSparkline } from "@/components/pass-rate-sparkline";
 import { TestCoverage } from "@/components/test-coverage";
-import { JobLights, PipelineLinks, ReportingGaps } from "@/components/pipelines";
+import { JobLights, PipelineLinks, ReportingGaps, laneSubject } from "@/components/pipelines";
+import { raisedLookup } from "@/lib/raise-to-hub";
+import { getRaised } from "@/lib/raise-to-hub-server";
 import { WorkflowSwitches } from "@/components/workflow-switches";
 import { ScanNowButton } from "@/components/scan-now";
 import {
@@ -126,6 +128,15 @@ export default async function RepoPage({
     getCi(repoId),
     getWorkflows(repoId),
   ]);
+  // TheHub #60911: what has been raised from each failing lane.
+  const raised = raisedLookup(
+    ci.ok
+      ? await getRaised(
+          "lane",
+          (ci.data.failing ?? []).map((lane) => laneSubject(ci.data.repo_full_name, lane)),
+        )
+      : { ok: true, data: { links: [] } },
+  );
   // What "enabled" means depends on who scans this repo: the installer's
   // ledger for Actions, the grants for everything else — same union the
   // portfolio and stages views apply. `live` is which of those have actually
@@ -158,7 +169,7 @@ export default async function RepoPage({
 
       <div className="print:hidden">
         {ci.ok ? (
-          <PipelineLinks ci={ci.data} />
+          <PipelineLinks ci={ci.data} raised={raised} />
         ) : (
           <p className="border border-rule bg-paper-2 px-3 py-2 text-[13px] text-critical">
             {ci.error}

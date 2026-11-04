@@ -61,6 +61,7 @@ from mykronos.api.po_console import router as po_console_router
 from mykronos.api.po_estate import router as po_estate_router
 from mykronos.api.po_review_queue import router as po_review_queue_router
 from mykronos.api.product_owner import router as product_owner_router
+from mykronos.api.raise_hub import router as raise_hub_router
 from mykronos.api.repo_read import router as repo_read_router
 from mykronos.api.repo_risk_acceptances import router as repo_risk_acceptances_router
 from mykronos.api.repos import router as repos_router
@@ -1185,6 +1186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(patchwork_router)
     app.include_router(product_owner_router)
     app.include_router(po_console_router)
+    app.include_router(raise_hub_router)
     app.include_router(po_estate_router)
     app.include_router(po_review_queue_router)
     app.include_router(repos_router)

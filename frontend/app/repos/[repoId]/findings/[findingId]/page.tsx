@@ -31,9 +31,12 @@ import {
 import { FindingDecision } from "@/components/finding-decision";
 import { FixPullRequests } from "@/components/fix-pull-requests";
 import { PinRegressionTest } from "@/components/pin-regression-test";
+import { RaiseToHub } from "@/components/raise-to-hub";
 import { RemediationAction } from "@/components/remediation-action";
 import { defaultScope, recommendAction } from "@/lib/finding-decision";
 import { getDeclaredControls } from "@/lib/server-finding-decision";
+import { raisedLookup } from "@/lib/raise-to-hub";
+import { getRaised } from "@/lib/raise-to-hub-server";
 
 export const dynamic = "force-dynamic";
 
@@ -63,11 +66,14 @@ export default async function FindingRecordPage({
   params: Promise<{ repoId: string; findingId: string }>;
 }) {
   const { repoId, findingId } = await params;
-  const [result, dossierResult, controls] = await Promise.all([
+  const [result, dossierResult, controls, raisedRead] = await Promise.all([
     getFindingRecord(findingId),
     getFindingDossier(findingId),
     getDeclaredControls(repoId),
+    getRaised("finding", [findingId]),
   ]);
+  // TheHub #60911: what has been raised in TheHub from this finding.
+  const raisedLink = raisedLookup(raisedRead).get(findingId);
 
   if (!result.ok) {
     return <ErrorPanel title="Finding unavailable" detail={result.error} />;
@@ -174,6 +180,9 @@ export default async function FindingRecordPage({
             ) : null}
           </div>
           <h1 className="max-w-4xl text-xl font-semibold leading-snug">{finding.title}</h1>
+          <div className="print:hidden">
+            <RaiseToHub kind="finding" subject={findingId} link={raisedLink} />
+          </div>
           <div className="font-mono text-[12px] text-ink-3">
             {finding.rule_id}
             {pkg ? ` · ${pkg.package_name} ${pkg.installed_version ?? ""}` : ""}
