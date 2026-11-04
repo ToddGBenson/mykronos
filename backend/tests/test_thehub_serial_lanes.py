@@ -45,6 +45,11 @@ P50 = {
     "api-inventory": 1.5,
     "functional-demo": 3.45,
     "dast-demo": 2.1,
+    # TheHub #61321. Not yet measured: the job is new. An estimate from its
+    # parts -- the service install and bootstrap (~5m), the integration tier
+    # and `unit`'s 19m run of tests/unit plus tests/security -- rounded up.
+    # Replace it with the measured median once the job has 50 green builds.
+    "container-tiers": 45.0,
 }
 
 # post-merge is on the half-hourly clock and grades develop's tip, so it runs
@@ -70,7 +75,10 @@ MAX_LANES = 3
 # the two suites sat in different lanes. Every job in it stays in exactly one
 # lane, so the group can only make jobs wait and never adds concurrency.
 MEMORY_GROUP = "pytest-memory"
-FULL_SUITES = {"unit", "post-merge"}
+# container-tiers since TheHub #61321: it runs the deploy's unit and
+# integration tiers. post-merge stays: it now only COLLECTS tests/unit, but
+# collecting imports every test module, which is most of a suite's memory.
+FULL_SUITES = {"unit", "post-merge", "container-tiers"}
 
 
 def _doc() -> dict[str, Any]:
@@ -195,11 +203,13 @@ def test_a_post_merge_grading_the_same_commit_delays_it_by_at_most_its_own_run()
 def test_the_full_pytest_suites_never_run_at_once() -> None:
     """#61106 AC1, replayed: post-merge arriving with the commit, where it overlapped."""
     start, end = _replay(with_post_merge=True)
-    (a, b) = sorted(FULL_SUITES)
-    assert end[a] <= start[b] or end[b] <= start[a], (
-        f"{a} {start[a]:.1f}->{end[a]:.1f} overlaps {b} {start[b]:.1f}->{end[b]:.1f}\n"
-        + _timeline(with_post_merge=True)
-    )
+    suites = sorted(FULL_SUITES)
+    for i, a in enumerate(suites):
+        for b in suites[i + 1:]:
+            assert end[a] <= start[b] or end[b] <= start[a], (
+                f"{a} {start[a]:.1f}->{end[a]:.1f} overlaps {b} {start[b]:.1f}->{end[b]:.1f}\n"
+                + _timeline(with_post_merge=True)
+            )
 
 
 def test_only_the_full_suites_share_the_memory_group() -> None:
