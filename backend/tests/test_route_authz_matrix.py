@@ -148,6 +148,8 @@ ROUTES: dict[str, str] = {
     # Rule vectors (TheHub #60832): a proposal is any writer's and scores
     # nothing; confirming is a person's (HumanDep). Retire checks in the module.
     "GET /api/dashboard/repos/{repo_id}/risk-acceptances": PRINCIPAL,
+    # In-repo scanner suppressions with their expiry (TheHub #60963): a read.
+    "GET /api/dashboard/repos/{repo_id}/suppressions": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/risk-acceptances/{acceptance_id}": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/rule-vectors": PRINCIPAL,
     "GET /api/dashboard/rule-vectors": PRINCIPAL,
