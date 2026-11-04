@@ -1,0 +1,264 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": []
+        }
+      ],
+      "results": [
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "3f45dbba5c90e39fab53e3c9e2005d9925766fcb7fc2546b664cc5ab89b44e96db268d27f7ae564ef423cde9408c2bf678a2ca3118c61711c64d30593f53ac7e_0"
+          },
+          "fixes": [
+            {
+              "artifactChanges": [
+                {
+                  "artifactLocation": {
+                    "uri": "src/flask_debug.py"
+                  },
+                  "replacements": [
+                    {
+                      "deletedRegion": {
+                        "endColumn": 53,
+                        "endLine": 7,
+                        "startColumn": 5,
+                        "startLine": 7
+                      },
+                      "insertedContent": {
+                        "text": "    app.run(host=\"127.0.0.1\", port=5000, debug=False)"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "description": {
+                "text": "Flask's debug mode serves an interactive debugger that runs code sent to it. debug=False turns it off.\n Autofix: Semgrep rule suggested fix"
+              }
+            }
+          ],
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/flask_debug.py",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 53,
+                  "endLine": 7,
+                  "snippet": {
+                    "text": "    app.run(host=\"127.0.0.1\", port=5000, debug=True)"
+                  },
+                  "startColumn": 5,
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Flask's debug mode serves an interactive debugger that runs code sent to it. debug=False turns it off."
+          },
+          "properties": {},
+          "ruleId": "sg.mykronos-flask-debug-enabled"
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "2c1fd94f63cb4ec52b96724d3ee92c7a917223f77231faedf6e35059fa265300d43c1c218c5bc0a7f98caa05e98db210fd08fda752bc04d0b6053bb64d1e3f55_0"
+          },
+          "fixes": [
+            {
+              "artifactChanges": [
+                {
+                  "artifactLocation": {
+                    "uri": "src/jinja2_autoescape.py"
+                  },
+                  "replacements": [
+                    {
+                      "deletedRegion": {
+                        "endColumn": 2,
+                        "endLine": 7,
+                        "startColumn": 7,
+                        "startLine": 3
+                      },
+                      "insertedContent": {
+                        "text": "ENV = jinja2.Environment(\n    loader=jinja2.FileSystemLoader(\"templates\"),\n    autoescape=True,\n    trim_blocks=True,\n)"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "description": {
+                "text": "A Jinja2 Environment with autoescape=False renders every variable as raw HTML. autoescape=True escapes it.\n Autofix: Semgrep rule suggested fix"
+              }
+            }
+          ],
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/jinja2_autoescape.py",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 2,
+                  "endLine": 7,
+                  "snippet": {
+                    "text": "ENV = jinja2.Environment(\n    loader=jinja2.FileSystemLoader(\"templates\"),\n    autoescape=False,\n    trim_blocks=True,\n)"
+                  },
+                  "startColumn": 7,
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "A Jinja2 Environment with autoescape=False renders every variable as raw HTML. autoescape=True escapes it."
+          },
+          "properties": {},
+          "ruleId": "sg.mykronos-jinja2-autoescape-disabled"
+        },
+        {
+          "fingerprints": {
+            "matchBasedId/v1": "638075be3817834ead5ec6a51bac082bb5cec94d7cd7fcf26e94ca2ad6b62cbce661ea47b4405d031f6a6315fb572bef1f15b1f5d78584f2edd54caba2c325af_0"
+          },
+          "fixes": [
+            {
+              "artifactChanges": [
+                {
+                  "artifactLocation": {
+                    "uri": "src/pyyaml_load.py"
+                  },
+                  "replacements": [
+                    {
+                      "deletedRegion": {
+                        "endColumn": 40,
+                        "endLine": 6,
+                        "startColumn": 16,
+                        "startLine": 6
+                      },
+                      "insertedContent": {
+                        "text": "        return yaml.safe_load(handle.read())"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "description": {
+                "text": "yaml.load with no Loader can construct arbitrary Python objects from the document. yaml.safe_load builds only plain data.\n Autofix: Semgrep rule suggested fix"
+              }
+            }
+          ],
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/pyyaml_load.py",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "endColumn": 40,
+                  "endLine": 6,
+                  "snippet": {
+                    "text": "        return yaml.load(handle.read())"
+                  },
+                  "startColumn": 16,
+                  "startLine": 6
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "yaml.load with no Loader can construct arbitrary Python objects from the document. yaml.safe_load builds only plain data."
+          },
+          "properties": {},
+          "ruleId": "sg.mykronos-pyyaml-load-to-safe-load"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A Jinja2 Environment with autoescape=False renders every variable as raw HTML. autoescape=True escapes it."
+              },
+              "help": {
+                "markdown": "A Jinja2 Environment with autoescape=False renders every variable as raw HTML. autoescape=True escapes it.",
+                "text": "A Jinja2 Environment with autoescape=False renders every variable as raw HTML. autoescape=True escapes it."
+              },
+              "id": "sg.mykronos-jinja2-autoescape-disabled",
+              "name": "sg.mykronos-jinja2-autoescape-disabled",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: sg.mykronos-jinja2-autoescape-disabled"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Flask's debug mode serves an interactive debugger that runs code sent to it. debug=False turns it off."
+              },
+              "help": {
+                "markdown": "Flask's debug mode serves an interactive debugger that runs code sent to it. debug=False turns it off.",
+                "text": "Flask's debug mode serves an interactive debugger that runs code sent to it. debug=False turns it off."
+              },
+              "id": "sg.mykronos-flask-debug-enabled",
+              "name": "sg.mykronos-flask-debug-enabled",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-489: Active Debug Code",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: sg.mykronos-flask-debug-enabled"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "yaml.load with no Loader can construct arbitrary Python objects from the document. yaml.safe_load builds only plain data."
+              },
+              "help": {
+                "markdown": "yaml.load with no Loader can construct arbitrary Python objects from the document. yaml.safe_load builds only plain data.",
+                "text": "yaml.load with no Loader can construct arbitrary Python objects from the document. yaml.safe_load builds only plain data."
+              },
+              "id": "sg.mykronos-pyyaml-load-to-safe-load",
+              "name": "sg.mykronos-pyyaml-load-to-safe-load",
+              "properties": {
+                "precision": "very-high",
+                "tags": [
+                  "CWE-502: Deserialization of Untrusted Data",
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "Semgrep Finding: sg.mykronos-pyyaml-load-to-safe-load"
+              }
+            }
+          ],
+          "semanticVersion": "1.97.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

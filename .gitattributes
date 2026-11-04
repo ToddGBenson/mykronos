@@ -10,3 +10,6 @@ docs/DECISIONS.md merge=union
 
 # The harness hooks run under bash, which fails on a CRLF line ending (TheHub #61099).
 .claude/hooks/*.sh text eol=lf
+
+# Semgrep fixture output: byte offsets and columns assume LF (TheHub #60746).
+backend/tests/fixtures/semgrep_fix/** -text
