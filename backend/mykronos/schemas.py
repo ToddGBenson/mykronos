@@ -457,6 +457,42 @@ class EcosystemEvidence(BaseModel):
     )
 
 
+class TaintMatchSubmission(BaseModel):
+    """One source-to-sink flow a Semgrep taint rule found (TheHub #60745)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    taint_rule: str = Field(max_length=128)
+    path: str = Field(max_length=1024)
+    start_line: int = Field(ge=0)
+    end_line: int = Field(ge=0)
+    trace: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Source, intermediate variables and sink, each as a path, a line "
+            "and the expression Semgrep matched (at most 200 characters) - "
+            "the trace a reachable verdict cites. Never a file's contents."
+        ),
+    )
+
+
+class TaintSubmission(BaseModel):
+    """The taint run beside the import graph (TheHub #60745).
+
+    `status` carries the weight: anything but `ok` makes every finding of a
+    taint-covered rule `unknown`, never `unreachable`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok", "failed", "not_run"]
+    reason: str = Field(default="", max_length=1000)
+    semgrep_version: str = Field(default="", max_length=64)
+    rules: list[str] = Field(default_factory=list, max_length=200)
+    matches: list[TaintMatchSubmission] = Field(default_factory=list, max_length=5000)
+    failed_paths: list[str] = Field(default_factory=list, max_length=5000)
+
+
 class ReachabilitySubmission(BaseModel):
     """What the reachability analysis posts (spec 19 §2.1).
 
@@ -494,6 +530,14 @@ class ReachabilitySubmission(BaseModel):
         description=(
             "Never counted as orphaned: a file whose imports could not be "
             "read leaves everything it might import unproven too."
+        ),
+    )
+    taint: TaintSubmission | None = Field(
+        default=None,
+        description=(
+            "The Semgrep taint run for the rules in "
+            "taint_reachability.TAINT_SPECS. Absent means it was not run, "
+            "which leaves those rules' findings unknown (TheHub #60745)."
         ),
     )
 

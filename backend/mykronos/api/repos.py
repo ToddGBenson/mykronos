@@ -282,6 +282,16 @@ class ReachabilityOut(BaseModel):
     files_analysed: int = 0
     files_unparseable: int = 0
     orphaned_paths: list[str] = Field(default_factory=list)
+    taint_status: Literal["ok", "failed", "not_run"] = Field(
+        default="not_run",
+        description=(
+            "The Semgrep taint run beside the import graph (TheHub #60745). "
+            "Anything but ok leaves every taint-covered finding unknown."
+        ),
+    )
+    taint_reason: str = ""
+    taint_rules: list[str] = Field(default_factory=list)
+    taint_matches: int = 0
     updated_at: datetime | None = None
     note: str = Field(
         default=(
@@ -1408,6 +1418,10 @@ async def get_reachability(
             files_analysed=report.files_analysed,
             files_unparseable=report.files_unparseable,
             orphaned_paths=list(report.orphaned_paths or []),
+            taint_status=(report.taint or {}).get("status") or "not_run",
+            taint_reason=str((report.taint or {}).get("reason") or ""),
+            taint_rules=list((report.taint or {}).get("rules") or []),
+            taint_matches=len((report.taint or {}).get("matches") or []),
             updated_at=report.updated_at,
         )
 

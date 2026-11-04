@@ -269,6 +269,13 @@ class ReachabilityReport(Base):
     #: Files that would not parse. Never reported orphaned — their own
     #: imports are unknown, so anything they might import is unproven too.
     files_unparseable: Mapped[int] = mapped_column(Integer, default=0)
+    #: The Semgrep taint run beside the graph (TheHub #60745), as the runner
+    #: reported it: status, the rules it covered, and its matches with their
+    #: traces. Null means no taint run was reported, which leaves the covered
+    #: rules' findings `unknown`. Decided per finding when read
+    #: (`taint_reachability.verdict_for`) rather than stored as verdicts, so
+    #: the import floor and the matches are always read from the same row.
+    taint: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 

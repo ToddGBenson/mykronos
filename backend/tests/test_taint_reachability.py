@@ -199,11 +199,14 @@ class TestAFailureIsUnknown:
         run = parse_semgrep_output(json.dumps(body))
 
         assert run.status == "ok"
-        assert verdict_for(EVAL, "legacy.py", 18, orphaned={"legacy.py"}, taint=run).verdict == "unknown"
-        assert verdict_for(SHELL, "handlers.py", 20, orphaned=set(), taint=run).verdict == "reachable"
+        dead = verdict_for(EVAL, "legacy.py", 18, orphaned={"legacy.py"}, taint=run)
+        live = verdict_for(SHELL, "handlers.py", 20, orphaned=set(), taint=run)
+        assert dead.verdict == "unknown"
+        assert live.verdict == "reachable"
 
     def test_not_run_is_unknown(self) -> None:
-        assert verdict_for(SHELL, "legacy.py", 20, orphaned={"legacy.py"}, taint=None).verdict == "unknown"
+        verdict = verdict_for(SHELL, "legacy.py", 20, orphaned={"legacy.py"}, taint=None)
+        assert verdict.verdict == "unknown"
 
     def test_the_semgrep_command_uses_taint_rules_only(self, tmp_path: Path) -> None:
         """No registry pack, no metrics: the source and the rules stay here."""
@@ -214,7 +217,8 @@ class TestAFailureIsUnknown:
             seen["kwargs"] = kwargs
             config = Path(cmd[cmd.index("--config") + 1])
             seen["config"] = json.loads(config.read_text(encoding="utf-8"))
-            return subprocess.CompletedProcess(cmd, 0, stdout=RECORDED.read_text(encoding="utf-8"), stderr="")
+            recorded = RECORDED.read_text(encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout=recorded, stderr="")
 
         result = run_semgrep(tmp_path, timeout=30, runner=run)
 

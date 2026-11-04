@@ -1293,6 +1293,10 @@ async def ingest_reachability(
         report.orphaned_paths = list(body.orphaned_paths)
         report.files_analysed = body.files_analysed
         report.files_unparseable = body.files_unparseable
+        # Replaced with the rest of the row: a run without a taint block
+        # leaves none, rather than keeping an older run's matches beside a
+        # newer graph (TheHub #60745).
+        report.taint = body.taint.model_dump() if body.taint is not None else None
 
     return ReachabilityAccepted(
         accepted=1,
