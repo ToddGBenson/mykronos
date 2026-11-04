@@ -223,6 +223,11 @@ class TriageStory:
                 f"- **Exploitability:** {self.cve_id} is listed in CISA's Known "
                 "Exploited Vulnerabilities catalog"
             )
+        elif self.in_kev is None:
+            lines.append(
+                f"- **Exploitability:** {self.cve_id}: KEV status not checked and EPSS "
+                "not scored yet — exploitability unknown, not low"
+            )
         else:
             epss = f", EPSS {self.epss_score:.0%}" if self.epss_score is not None else ""
             lines.append(f"- **Exploitability:** {self.cve_id} is not KEV-listed{epss}")
@@ -388,7 +393,8 @@ def _threat_intel_for(session: Session, cve_id: str | None) -> tuple[bool | None
         return None, None
     match = session.get(ThreatIntelMatch, cve_id)
     if match is None:
-        return False, None  # checked, not (yet) matched — see TriageStory.cve_id's docstring
+        # No row: nobody fetched this CVE, which is not "not in KEV" (D-176).
+        return None, None
     return bool(match.in_kev), match.epss_score
 
 
