@@ -38,6 +38,11 @@ time-travel-offset: +45d
 # gateway as everything else here (vars/thehub.yml carries the same value).
 thehub-url: http://192.168.65.254:8000
 
+# The detector benchmark corpus the `bench` job grades (spec 23 §1.6, TheHub
+# #60742). Onboarded with `synthetic: true`; until it is, every `bench` build
+# is red with "not onboarded", by design.
+bench-repo: ToddGBenson/mykronos-bench
+
 minio-endpoint: http://192.168.65.254:9000
 registry: 192.168.65.254:5000
 demo-host: 192.168.65.254

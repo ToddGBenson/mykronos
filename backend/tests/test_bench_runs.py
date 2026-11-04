@@ -98,14 +98,27 @@ def _scan_bench(
             triggered_by="push",
             finding_count=len(findings),
         ).status_code
-        == 202
+        == 200
     )
     if findings:
         response = post_findings(
             client, auth, findings, scan_run_id=scan_run_id, capability=capability
         )
-        assert response.status_code == 202, response.text
+        assert response.status_code == 200, response.text
     run_compaction()
+
+
+def _seeded_sqli() -> dict[str, Any]:
+    return finding_payload(file_path="src/orders/lookup.py", line_start=42)
+
+
+def _f(capability: str, rule_id: str, file_path: str, line: int | None) -> dict[str, Any]:
+    return {
+        "capability": capability,
+        "rule_id": rule_id,
+        "file_path": file_path,
+        "line_start": line,
+    }
 
 
 def _grade(client: TestClient, **body: Any) -> Any:
@@ -161,9 +174,11 @@ class TestAGradedRun:
         assert caps["sast"]["seeded_total"] == 2
         assert caps["sast"]["seeded_detected"] == 1
         assert caps["sast"]["recall"] == 0.5
-        # Nothing scanned for secrets reported anything: a real 0, not "not seeded".
+        assert caps["sast"]["scanned"] is True
+        # No secrets scan ran at this commit: not measured, which is not 0%.
+        assert caps["secrets"]["scanned"] is False
         assert caps["secrets"]["seeded_detected"] == 0
-        assert caps["secrets"]["recall"] == 0.0
+        assert caps["secrets"]["recall"] is None
 
         rules = {(r["capability"], r["rule_id"]): r for r in run["rules"]}
         rule = rules[("sast", "py/sql-injection")]
@@ -192,11 +207,29 @@ class TestAGradedRun:
         """The fixtures and the manifest move together; grading one commit's
         findings against another commit's manifest is a grade of neither."""
         _onboard(client, BENCH, synthetic=True)
-        _scan_bench(client, run_compaction, [finding_payload(file_path="src/orders/lookup.py", line_start=42)])
+        _scan_bench(client, run_compaction, [_seeded_sqli()])
 
         _grade(client)
 
         assert ("get_file", f"{BENCH}:bench/manifest.yaml@{BENCH_COMMIT}") in corpus.calls
+
+    def test_a_capability_that_scanned_and_missed_is_a_real_zero(
+        self, client: TestClient, corpus: FakeGitHubClient, run_compaction: Any
+    ) -> None:
+        _onboard(client, BENCH, synthetic=True)
+        _scan_bench(client, run_compaction, [_seeded_sqli()])
+        _scan_bench(
+            client,
+            run_compaction,
+            [],
+            capability="secrets",
+            scan_run_id="33333333-3333-3333-3333-333333333333",
+        )
+
+        caps = {c["capability"]: c for c in _grade(client).json()["capabilities"]}
+
+        assert caps["secrets"]["scanned"] is True
+        assert caps["secrets"]["recall"] == 0.0
 
     def test_a_precision_figure_is_a_floor_and_says_so(self) -> None:
         """Spec 23 §1.3: the corpus is seeded, not clean. An unmatched finding
@@ -206,9 +239,9 @@ class TestAGradedRun:
         result = bench.grade(
             seeds,
             [
-                {"capability": "sast", "rule_id": "r1", "file_path": "src/orders/lookup.py", "line_start": 42},
-                {"capability": "sast", "rule_id": "r1", "file_path": "src/elsewhere.py", "line_start": 1},
-                {"capability": "sast", "rule_id": "r1", "file_path": "src/elsewhere.py", "line_start": 90},
+                _f("sast", "r1", "src/orders/lookup.py", 42),
+                _f("sast", "r1", "src/elsewhere.py", 1),
+                _f("sast", "r1", "src/elsewhere.py", 90),
             ],
         )
 
@@ -392,3 +425,29 @@ class TestTheJob:
 
     def test_it_is_in_a_group(self, pipeline: dict[str, Any]) -> None:
         assert any(JOB in g["jobs"] for g in pipeline["groups"])
+
+
+class TestOneMatchingRule:
+    def test_the_platform_and_the_script_detect_the_same_seeds(self, tmp_path: Path) -> None:
+        """`mykronos.bench` and `scripts/bench_grade.py` must give one answer;
+        two graders that disagree would make the stored figures unreproducible
+        from the command line."""
+        import bench_grade
+
+        findings = [
+            _f("sast", "a", "src/orders/lookup.py", 48),
+            _f("sast", "b", "./src/profile/view.py", None),
+            _f("secrets", "c", "config/settings.py", 9),
+            _f("sast", "a", "config/settings.py", 3),
+        ]
+        manifest = tmp_path / "manifest.yaml"
+        manifest.write_text(MANIFEST, encoding="utf-8")
+        ours = bench.grade(bench.parse_manifest(MANIFEST), findings)
+        theirs, unmatched = bench_grade.grade(bench_grade.load_manifest(manifest), findings)
+
+        assert {c.capability: c.seeded_detected for c in ours.capabilities} == {
+            k: g.seeded_detected for k, g in theirs.items()
+        }
+        assert ours.unmatched_findings == len(unmatched)
+        assert bench.LINE_TOLERANCE == bench_grade.LINE_TOLERANCE
+

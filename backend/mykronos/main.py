@@ -42,6 +42,7 @@ from mykronos.api.agent import router as agent_router
 from mykronos.api.agents import router as agents_router
 from mykronos.api.approvals import router as approvals_router
 from mykronos.api.auto_triage import router as auto_triage_router
+from mykronos.api.bench import router as bench_router
 from mykronos.api.briefing_daily import router as briefing_daily_router
 from mykronos.api.briefing_weekly import router as briefing_weekly_router
 from mykronos.api.control_observations import router as control_observations_router
@@ -1151,6 +1152,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # TheHub, for the Product Owner tab (spec 35 §4.1). None when either the
     # URL or the token is empty, and the tab then says it is not connected.
     app.state.hub = HubClient.from_settings(resolved)
+    # Before `ingest_router`: its `POST /api/ingest/{capability}` would
+    # otherwise take `/api/ingest/bench-run` and refuse it as an unknown
+    # capability (TheHub #60742).
+    app.include_router(bench_router)
     app.include_router(ingest_router)
     # Before the dashboard router: a literal path is never read as a parameter.
     app.include_router(today_router)

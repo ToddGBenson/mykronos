@@ -585,6 +585,39 @@ class RetiredLane(Base):
     restored_by: Mapped[str | None] = mapped_column(String(255), default=None)
 
 
+class BenchRun(Base):
+    """One run of the detector benchmark lane (spec 23 §1.6, TheHub #60742).
+
+    Written by `POST /api/ingest/bench-run` for every run, graded or not: a run
+    that could not be graded is stored with its `status` and `reason`, so the
+    history says when the lane had nothing to measure rather than skipping it.
+    `platform_commit` is the mykronos commit the `bench` job ran for, and
+    `bench_commit` the corpus commit whose scans were graded.
+
+    `capabilities` and `rules` are the per-capability and per-rule figures from
+    `mykronos.bench.grade`, as lists of dicts; per-rule precision is stored as
+    `precision_floor` only (spec 23 §1.3).
+    """
+
+    __tablename__ = "bench_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    graded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    platform_repo: Mapped[str] = mapped_column(String(255), default="")
+    platform_commit: Mapped[str] = mapped_column(String(64), default="", index=True)
+    bench_repo: Mapped[str] = mapped_column(String(255), default="")
+    bench_commit: Mapped[str | None] = mapped_column(String(64), default=None)
+    #: `graded`, `not_measured` or `manifest_invalid` (`mykronos.bench.STATUSES`).
+    status: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    scan_runs: Mapped[int] = mapped_column(Integer, default=0)
+    seeded_total: Mapped[int] = mapped_column(Integer, default=0)
+    unmatched_findings: Mapped[int] = mapped_column(Integer, default=0)
+    capabilities: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    rules: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    run_url: Mapped[str | None] = mapped_column(String(1000), default=None)
+
+
 class ApprovalStamp(Base):
     """One thing the platform posted outside itself about a request (spec 34 §1.2).
 

@@ -252,6 +252,9 @@ try {
         # Where `time-travel` files its story; the same value
         # set-thehub-pipeline.ps1 gives thehub's `thehub-url`.
         "thehub-url: http://192.168.65.254:8000",
+        # The detector benchmark corpus the `bench` job grades (spec 23 §1.6,
+        # TheHub #60742). It must be onboarded with synthetic: true.
+        "bench-repo: ToddGBenson/mykronos-bench",
         # MinIO is on the compose network, so the task container reaches it by
         # service name rather than through the host.
         "minio-endpoint: http://192.168.65.254:9000",

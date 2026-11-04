@@ -43,7 +43,7 @@ The order is the point, and each row is gated on the one above it.
 
 | # | Workstream | Status | Gate to start |
 |---|---|---|---|
-| 1 | Detector benchmark corpus and grading lane (§1) — no LLM anywhere in it | **Built, platform side** — one operator step remains; see §1.5 | — |
+| 1 | Detector benchmark corpus and grading lane (§1) — no LLM anywhere in it | **Built, platform side, lane included (§1.6)** — one operator step remains; see §1.5 | — |
 | 2 | `review` capability: attack-surface inventory, discovery only (§2) | Not started | §1 lane green |
 | 3 | Threat model at entry-point resolution (§3) | Not started | §2 surface approved for one repo |
 | 4 | Rule pack and Knowledge Store at prompt time (§4) | Not started | §2 shipped |
@@ -132,6 +132,37 @@ Grading raw tool output would measure the tools and quietly exempt the platform.
 **`--fail-under` is off by default.** The first runs of a new corpus establish a baseline, and a
 threshold picked before there is one is a number somebody invented. It is a flag an operator sets once
 the recall figures have stopped moving.
+
+### 1.6 The lane, and where the grade is taken (TheHub #60742)
+
+**The `bench` Concourse job** runs on every mykronos main commit that passes `unit`. A task has no
+lake, so it does not run `bench_grade.py`; it calls `POST /api/ingest/bench-run` with the platform
+commit, and the platform grades inside itself (`backend/mykronos/bench.py`). It reads the corpus's
+newest scanned commit on its default branch from the lake, reads `bench/manifest.yaml` **at that
+commit** through the GitHub App (fixtures and manifest move together), grades, and stores a
+`BenchRun` holding both commits. `GET /api/bench/runs` reads the runs back, newest first.
+`scripts/bench_run.py` prints the figures and exits with the verdict.
+
+**Never an empty success.** Every run is stored, graded or not. A corpus that is not onboarded, is
+onboarded but not `synthetic`, has never been scanned, or has no readable manifest is stored as
+`not_measured` or `manifest_invalid` with the reason, and the job goes red on it. So `bench` is red
+from the day it lands until the corpus exists, and **nothing waits on it**: no job has
+`passed: [bench]`, so a missing corpus never holds the Oracle gate or a deploy. A seeded capability
+that ran no scan at the graded commit reports `scanned: false` and no recall, not 0%.
+
+**What it stores, per capability:** `seeded_total`, `seeded_detected`, `recall`, the missed seed ids.
+**Per rule** (`capability`, `rule_id`): `findings`, `matched`, `unmatched`, `seeds_detected`,
+`recall` over its capability's seeds, and `precision_floor` = matched / findings.
+
+**`precision_floor`, and why that is the only precision figure.** §1.3 refuses a precision number
+because the corpus is seeded, not clean. The triage work (#60736) needs a per-rule figure anyway, so
+it gets the one the corpus can support: matched over reported is the *least* the precision can be,
+since every unmatched finding is either a false positive or a real flaw a fixture carries by
+accident. It is named a floor everywhere it appears and is never relabelled precision.
+
+**What a run measures.** The grade is of the corpus's newest *scan*, not of the platform commit the
+job ran for: a detector or adapter change in mykronos is reflected once the corpus is next scanned.
+The record carries both commits so a reader can tell which scan a figure came from.
 
 ## 2. The `review` capability — an attack-surface inventory, and nothing else
 

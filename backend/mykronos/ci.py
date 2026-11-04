@@ -2327,6 +2327,15 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "time-travel",
         "runs unit under libfaketime and files a Hub story; uploads no findings by design",
     ),
+    # [TheHub #60742] Asks the platform to grade the seeded benchmark corpus
+    # and store the run (spec 23 §1.6). A detector missing a seed is not a
+    # finding in this repository (D-046), so it uploads nothing; its verdict is
+    # the stored BenchRun and its own exit code.
+    (
+        (MYKRONOS,),
+        "bench",
+        "grades the benchmark corpus into a BenchRun record; uploads no findings by design",
+    ),
     # [#60073] Compares deploy.sh's stages against the GHA workflows' jobs and
     # publishes a memo. It uploads nothing to the lake, so there is no scan
     # record for the cross-check to find absent -- but it CAN go red, and its
