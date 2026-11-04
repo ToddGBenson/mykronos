@@ -42,7 +42,7 @@ REGISTRY_SRC = REPO_ROOT / "deploy" / "images" / "registry-src" / "Dockerfile"
 SETUP = REPO_ROOT / "deploy" / "concourse" / "setup.ps1"
 
 #: The first Go release on each line that carries the fix.
-GO_FIXED = {(1, 26): (1, 26, 10), (1, 27): (1, 27, 3)}
+GO_FIXED: dict[tuple[int, ...], tuple[int, ...]] = {(1, 26): (1, 26, 10), (1, 27): (1, 27, 3)}
 
 #: The oldest vendor release measured to be built on a fixed Go.
 VERSION_FLOORS: dict[str, tuple[int, ...]] = {
@@ -143,17 +143,23 @@ class TestVendorPins:
         declared = {_split(ref)[1] for _, ref in _pins("concourse/concourse")}
         used = set(re.findall(r"concourse/concourse:([\w.-]+)", SETUP.read_text(encoding="utf-8")))
         assert used, "setup.ps1 no longer names a Concourse image"
-        assert used <= declared, f"setup.ps1 uses {sorted(used)}, compose declares {sorted(declared)}"
+        assert used <= declared, (
+            f"setup.ps1 uses {sorted(used)}, compose declares {sorted(declared)}"
+        )
 
 
 class TestRegistryRebuild:
     def test_the_builder_toolchain_carries_the_fix(self) -> None:
         text = REGISTRY_SRC.read_text(encoding="utf-8")
-        match = re.search(r"^FROM golang:(\d+)\.(\d+)\.(\d+)[\w.-]*@sha256:[0-9a-f]{64} AS build$", text, re.M)
+        match = re.search(
+            r"^FROM golang:(\d+)\.(\d+)\.(\d+)[\w.-]*@sha256:[0-9a-f]{64} AS build$", text, re.M
+        )
         assert match, "registry-src no longer builds on one digest-pinned golang toolchain"
         version = tuple(int(part) for part in match.groups())
         fixed = GO_FIXED.get(version[:2])
-        assert fixed is not None, f"go{'.'.join(map(str, version))} is on a line this floor does not know"
+        assert fixed is not None, (
+            f"go{'.'.join(map(str, version))} is on a line this floor does not know"
+        )
         assert version >= fixed, (
             f"registry-src builds on go{'.'.join(map(str, version))}, which links a standard "
             f"library with CVE-2026-111943 (fixed in go{'.'.join(map(str, fixed))})"
