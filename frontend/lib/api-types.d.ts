@@ -960,6 +960,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Jump Search Route
+         * @description The Ctrl+K jump box: a repo, finding, CVE or page by typing (TheHub #60976).
+         *
+         *     Repositories by name, findings by id prefix, an exact CVE id as one result
+         *     per affected repository, and the dashboard's own pages. Fewer than two
+         *     characters is a 400; `limit` is capped at 50. The text reaches the lake
+         *     only as a bound parameter.
+         */
+        get: operations["jump_search_route_api_dashboard_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/briefing": {
         parameters: {
             query?: never;
@@ -8548,6 +8573,32 @@ export interface components {
             consecutive_failures: number;
         };
         /**
+         * JumpResultOut
+         * @description One place the jump box can go (TheHub #60976).
+         */
+        JumpResultOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "repo" | "finding" | "cve" | "page";
+            /** Title */
+            title: string;
+            /** Subtitle */
+            subtitle: string;
+            /** Href */
+            href: string;
+        };
+        /** JumpSearchOut */
+        JumpSearchOut: {
+            /** Query */
+            query: string;
+            /** Limit */
+            limit: number;
+            /** Results */
+            results: components["schemas"]["JumpResultOut"][];
+        };
+        /**
          * LaneFailure
          * @description A CI lane that failed without producing a ScanRun (spec 32 §11 q6).
          *
@@ -15042,6 +15093,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IncidentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    jump_search_route_api_dashboard_search_get: {
+        parameters: {
+            query: {
+                q: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JumpSearchOut"];
                 };
             };
             /** @description Validation Error */
