@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1157,6 +1158,7 @@ def _guard_module() -> Any:
     spec = importlib.util.spec_from_file_location("estate_guard", HOOKS / "estate_guard.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("estate_guard", module)  # its dataclasses look themselves up there
     spec.loader.exec_module(module)
     return module
 
