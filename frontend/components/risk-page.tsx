@@ -101,6 +101,9 @@ function StateLink({ cell, who, what }: { cell: StateCell; who: string; what: st
   return (
     <Link href={cell.href} aria-label={`${who} ${what}: ${cell.label}`} title={cell.label} className={LINK}>
       <StatePill tone={cell.tone}>{cell.text}</StatePill>
+      {cell.detail ? (
+        <span className="ml-1.5 font-mono text-[10px] text-ink-3">{cell.detail}</span>
+      ) : null}
     </Link>
   );
 }

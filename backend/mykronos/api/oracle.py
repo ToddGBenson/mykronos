@@ -29,6 +29,7 @@ from mykronos import read_coverage, risk_gate_notice
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.api.ingest import TokenDep
 from mykronos.api.refusals import CapabilityRefusedError
+from mykronos.change_verdict import ChangeVerdict, Posture, change_of, posture_of
 from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
@@ -556,6 +557,22 @@ class CommitDecisionOut(BaseModel):
             "counts."
         ),
     )
+    change: ChangeVerdict | None = Field(
+        default=None,
+        description=(
+            "What THIS commit did, the headline a developer acts on (TheHub "
+            "#60914): `change: clean` or `change: introduces N blocking`, by "
+            "the same rule as `introduced_blocking`. Null when `found` is false."
+        ),
+    )
+    posture: Posture | None = Field(
+        default=None,
+        description=(
+            "The standing posture: `recommendation` and `overall_risk_score` "
+            "as recorded, labelled as posture (D-048). It describes the whole "
+            "backlog, not this commit. Null when `found` is false."
+        ),
+    )
 
 
 @router.get("/decisions/by-commit/{commit_sha}", response_model=CommitDecisionOut)
@@ -618,6 +635,7 @@ def commit_decision(service: OracleService, catalog: Any, commit_sha: str) -> Co
     repo = str(record["repo_full_name"])
     filed_sha = str(record.get("commit_sha") or commit_sha)
     introduced = queries.introduced_by(repo, filed_sha)
+    change = change_of(introduced, overridden=override is not None)
     return CommitDecisionOut(
         commit_sha=commit_sha,
         found=True,
@@ -637,6 +655,8 @@ def commit_decision(service: OracleService, catalog: Any, commit_sha: str) -> Co
         remediates=queries.remediated_by(repo, filed_sha),
         # The same floor as `/evaluate`, from the same constant rule.
         introduced_blocking=bool(introduced.get("critical") or introduced.get("high")),
+        change=change,
+        posture=posture_of(recommendation, int(record["overall_risk_score"])),
     )
 
 

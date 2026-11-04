@@ -5821,6 +5821,39 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /**
+         * ChangeVerdict
+         * @description What this commit introduced, as the verdict a developer acts on.
+         */
+        ChangeVerdict: {
+            /**
+             * Verdict
+             * @description `introduces_blocking` when the commit introduced an open critical or high finding (the same rule as `introduced_blocking`), `clean` when it did not, and `unknown` when the count could not be read. Unknown is never clean.
+             * @enum {string}
+             */
+            verdict: "clean" | "introduces_blocking" | "unknown";
+            /**
+             * Blocking
+             * @description Open critical and high findings this commit introduced. Null when unread.
+             */
+            blocking: number | null;
+            /**
+             * Non Blocking
+             * @description Other open findings it introduced (medium, low, info). Null when unread.
+             */
+            non_blocking: number | null;
+            /**
+             * Overridden
+             * @description A person recorded an override on this decision.
+             * @default false
+             */
+            overridden: boolean;
+            /**
+             * Text
+             * @description The headline: "change: clean" or "change: introduces N blocking".
+             */
+            text: string;
+        };
         /** CheckItemOut */
         CheckItemOut: {
             /** Id */
@@ -6344,6 +6377,10 @@ export interface components {
              * @default false
              */
             introduced_blocking: boolean;
+            /** @description What THIS commit did, the headline a developer acts on (TheHub #60914): `change: clean` or `change: introduces N blocking`, by the same rule as `introduced_blocking`. Null when `found` is false. */
+            change?: components["schemas"]["ChangeVerdict"] | null;
+            /** @description The standing posture: `recommendation` and `overall_risk_score` as recorded, labelled as posture (D-048). It describes the whole backlog, not this commit. Null when `found` is false. */
+            posture?: components["schemas"]["Posture"] | null;
         };
         /**
          * ComponentCountOut
@@ -9781,6 +9818,8 @@ export interface components {
             gate_outcome: string | null;
             /** Human Override */
             human_override: string | null;
+            change: components["schemas"]["ChangeVerdict"];
+            posture: components["schemas"]["Posture"];
         };
         /** PoDeliveryOut */
         PoDeliveryOut: {
@@ -10645,6 +10684,21 @@ export interface components {
              * @default 0
              */
             overdue_findings: number;
+        };
+        /**
+         * Posture
+         * @description The standing posture: the Oracle recommendation and score, as recorded.
+         */
+        Posture: {
+            /** Recommendation */
+            recommendation: string | null;
+            /** Score */
+            score: number | null;
+            /**
+             * Text
+             * @description "posture: <recommendation> <score>/100", labelled as posture.
+             */
+            text: string;
         };
         /** PostureSummaryOut */
         PostureSummaryOut: {
