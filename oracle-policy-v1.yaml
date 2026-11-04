@@ -123,7 +123,19 @@
 # proof-of-concept code (Exploit-DB, a GitHub PoC NVD tagged as an exploit),
 # and is not KEV-listed now ranks by these points; every other row ranks
 # exactly as it did under 1.16.
-version: "1.17"
+#
+# 1.18 - toxic combinations on the same entry point (TheHub #60894, Triage T7).
+# Two chain rules join the toxic-combination detection: a declared
+# internet-facing entry point (.sdlc/threat-model.yaml or the register) with an
+# authentication weakness located behind it, plus a high-or-worse
+# known-vulnerable component or an injectable sink behind the same entry
+# point. A chain is a toxic combination like any other - the same severity
+# rule, points, cap and critical no_go below - so a repository with a chain
+# scores higher, and one with a critical chain is no_go. Only repositories
+# that declare an internet-facing entry point with selectors can form one; on
+# every other repository no score moves. Adds triage_rank.entry_point_chain:
+# each link of a chain ranks higher in the work queue by that many points.
+version: "1.18"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -514,6 +526,13 @@ triage_rank:
   # medium with only proof-of-concept code (12 + 8) does not.
   public_exploit_weaponized: 15
   public_exploit_poc: 8
+  # A link in a toxic chain on a declared internet-facing entry point (TheHub
+  # #60894): the way in, an authentication weakness, and a known-vulnerable
+  # component or injectable sink behind the same door. Each link is a place
+  # the path is cut, so each row carries the term. 20 puts a medium link
+  # (12 + 20) above a quiet high (25), and below in_kev (25) on its own -
+  # an exploited finding still outranks one that is merely on a path.
+  entry_point_chain: 20
 
 thresholds:
   no_go: 70                  # >= 70

@@ -77,6 +77,20 @@ class Requirement:
     #: What this half stands for, in the words a reader of the combination
     #: needs - used when the evidence says why a member qualifies.
     describes: str = ""
+    #: CWE ids that satisfy this half on their own, read from the finding's
+    #: `cwe_ids` (spec 28 extracts them from SARIF). A semgrep rule named
+    #: `python.flask.security.missing-authorization` says CWE-862 there and
+    #: nowhere in its rule id. Only the entry-point chains set this, so the
+    #: built-in rules match exactly what they matched before (TheHub #60894).
+    cwes: tuple[str, ...] = ()
+    #: Capabilities whose `title` is not searched, only the rule id. A ZAP
+    #: title ends with the route the alert was seen on, so `/auth/login` in a
+    #: missing-header alert must not read as an authentication weakness - the
+    #: TheHub #60965 lesson, applied before the rule ships rather than after.
+    rule_id_only: tuple[str, ...] = ()
+    #: The link this half is in an entry-point chain (`auth_weakness`,
+    #: `vulnerable_component`, `injectable_sink`). Empty for the built-in rules.
+    step: str = ""
 
     @property
     def capabilities(self) -> tuple[str, ...]:
@@ -297,6 +311,127 @@ class Combination:
     #: the evidence a reader needs to judge the combination rather than
     #: trust it (TheHub #60965).
     qualifications: tuple[tuple[str, str], ...] = ()
+    #: The declared entry point every member is inside, for a rule scoped
+    #: `entry_point` (TheHub #60894): the surface id the pool was annotated
+    #: with. None for every other scope.
+    entry_point: str | None = None
+
+
+#: The pool key holding the ids of the declared internet-facing entry points a
+#: finding is located in (`mykronos.toxic` sets it from the threat model). A
+#: rule scoped `entry_point` groups by it; a finding without it is in none, so
+#: Patchwork's pool, which never carries it, forms no chain.
+ENTRY_POINTS_KEY = "entry_points"
+
+#: An authentication or authorization weakness: the door is not locked.
+_AUTH_WEAKNESS_CWES: tuple[str, ...] = (
+    "CWE-284",  # Improper Access Control
+    "CWE-285",  # Improper Authorization
+    "CWE-287",  # Improper Authentication
+    "CWE-288",  # Authentication Bypass Using an Alternate Path or Channel
+    "CWE-290",  # Authentication Bypass by Spoofing
+    "CWE-306",  # Missing Authentication for Critical Function
+    "CWE-639",  # Authorization Bypass Through User-Controlled Key (IDOR)
+    "CWE-862",  # Missing Authorization
+    "CWE-863",  # Incorrect Authorization
+    "CWE-1390",  # Weak Authentication
+)
+
+#: A sink an attacker's input reaches with effect: the thing behind the door.
+_INJECTION_CWES: tuple[str, ...] = (
+    "CWE-77",  # Command Injection
+    "CWE-78",  # OS Command Injection
+    "CWE-89",  # SQL Injection
+    "CWE-94",  # Code Injection
+    "CWE-502",  # Deserialization of Untrusted Data
+    "CWE-611",  # XML External Entity
+    "CWE-918",  # Server-Side Request Forgery
+)
+
+
+def _cwe_pattern(cwes: tuple[str, ...]) -> str:
+    numbers = "|".join(c.split("-", 1)[1] for c in cwes)
+    return rf"\bCWE-(?:{numbers})\b"
+
+
+_AUTH_WEAKNESS = Requirement(
+    _cwe_pattern(_AUTH_WEAKNESS_CWES)
+    + r"|missing.?authenticat|missing.?authori[sz]|authentication.?bypass"
+    + r"|broken.?access.?control|improper.?authori[sz]|unauthenticated",
+    capability=("sast", "dast"),
+    cwes=_AUTH_WEAKNESS_CWES,
+    rule_id_only=("dast",),
+    describes="an authentication or authorization weakness",
+    step="auth_weakness",
+)
+
+
+#: Toxic combinations scoped by the threat model (TheHub #60894, Triage T7;
+#: absorbs #60749). The built-in rules group by file or by repository, and
+#: neither is an attacker's path: two findings in one repository may sit
+#: behind different doors, and the file a CVE is reported in is a lockfile,
+#: never the handler. A declared entry point says where a door is, and
+#: `surface_match` places a finding inside one - by path, image, address or
+#: hostname - so these rules group by it.
+#:
+#: Each is a chain: the internet-facing entry point (the way in, which is not
+#: a finding: `mykronos.toxic` supplies it), an authentication weakness on it,
+#: and something worth reaching behind it. Checked before the built-in rules,
+#: so a pair the chain contains is reported once, as the chain that explains
+#: it. Not in `BUILT_IN_RULES`: Patchwork's pool has no entry points, and its
+#: rule set is unchanged.
+ENTRY_POINT_CHAIN_RULES: tuple[CombinationRule, ...] = (
+    CombinationRule(
+        rule_id="entry-point-unauth-vulnerable-component",
+        name="Unauthenticated way in to a known-vulnerable component",
+        requires=(
+            _AUTH_WEAKNESS,
+            # High and above, as `vulnerable-image-and-live-service` has it:
+            # every image carries low CVEs, and a chain that fires on all of
+            # them is a chain nobody reads.
+            Requirement(
+                r"CVE-|GHSA-",
+                capability=("containers", "atlas"),
+                min_severity="high",
+                describes="a known-vulnerable component",
+                step="vulnerable_component",
+            ),
+        ),
+        scope="entry_point",
+        explanation=(
+            "A declared internet-facing entry point, a weakness in how it "
+            "authenticates or authorizes, and a known-vulnerable component "
+            "located behind the same entry point. The internet reaches the "
+            "door, the door does not check who is knocking, and what is "
+            "behind it has a published vulnerability: each is a finding on "
+            "its own, and together they are a path."
+        ),
+    ),
+    CombinationRule(
+        rule_id="entry-point-unauth-injection",
+        name="Unauthenticated way in to an injectable sink",
+        requires=(
+            _AUTH_WEAKNESS,
+            Requirement(
+                _cwe_pattern(_INJECTION_CWES) + r"|sql.?inj|command.?inj|code.?inj",
+                capability=("sast", "dast"),
+                cwes=_INJECTION_CWES,
+                rule_id_only=("dast",),
+                describes="an injectable sink",
+                step="injectable_sink",
+            ),
+        ),
+        scope="entry_point",
+        explanation=(
+            "A declared internet-facing entry point, a weakness in how it "
+            "authenticates or authorizes, and an injectable sink - a query, a "
+            "command, a deserializer, an outbound request - located behind "
+            "the same entry point. That is an unauthenticated path from the "
+            "internet to the sink, and fixing one link alone closes a finding "
+            "without closing the path."
+        ),
+    ),
+)
 
 
 #: Small on purpose. Every rule here is one where the composite risk is
@@ -583,7 +718,11 @@ def _qualifies(requirement: Requirement, finding: dict[str, Any]) -> str | None:
     ):
         return None
     rule_id = str(finding.get("rule_id", ""))
-    if requirement.rule_ids:
+    declared = {str(c).upper() for c in (finding.get("cwe_ids") or ())}
+    cwe_hit = next((c for c in requirement.cwes if c in declared), None)
+    if cwe_hit is not None:
+        how = f"declares {cwe_hit}"
+    elif requirement.rule_ids:
         ref = _alert_ref(rule_id)
         if ref is None or ref not in requirement.rule_ids:
             return None
@@ -598,7 +737,10 @@ def _qualifies(requirement: Requirement, finding: dict[str, Any]) -> str | None:
                 else f"; its evidence shows {shown}"
             )
     else:
-        haystack = f"{rule_id} {finding.get('title', '')}"
+        if capability in requirement.rule_id_only:
+            haystack = rule_id
+        else:
+            haystack = f"{rule_id} {finding.get('title', '')}"
         hit = re.search(requirement.pattern, haystack, re.IGNORECASE)
         if hit is None:
             return None
@@ -636,11 +778,16 @@ def detect(
     rules: tuple[CombinationRule, ...] = BUILT_IN_RULES,
     *,
     discounted: tuple[str, ...] = DISCOUNTED_STATUSES,
+    entry_point_labels: dict[str, str] | None = None,
 ) -> list[Combination]:
     """Every toxic combination present in this set of findings.
 
     `discounted` names the statuses that do not count. `mykronos.toxic`
     passes `FALSE_POSITIVE_ONLY` and decides about accepted members itself.
+
+    A rule scoped `entry_point` groups by `ENTRY_POINTS_KEY`, and a finding
+    located in two entry points is a candidate in both; `entry_point_labels`
+    names them in the rationale.
 
     A finding may appear in at most one combination — the first rule that
     claims it wins, in rule order. Allowing overlap would mean one finding
@@ -655,11 +802,15 @@ def detect(
         for finding in findings:
             if str(finding["finding_id"]) in claimed or not _counts(finding, discounted):
                 continue
+            if rule.scope == "entry_point":
+                for entry_point in finding.get(ENTRY_POINTS_KEY) or ():
+                    groups.setdefault(str(entry_point), []).append(finding)
+                continue
             key = str(finding.get("file_path") or "") if rule.scope == "file" else "*"
             groups.setdefault(key, []).append(finding)
 
         for key, group in sorted(groups.items()):
-            if rule.scope == "file" and not key:
+            if rule.scope in ("file", "entry_point") and not key:
                 continue
             members: set[str] = set()
             reasons: list[tuple[str, str]] = []
@@ -668,6 +819,10 @@ def detect(
                 hit: dict[str, Any] | None = None
                 why = ""
                 for candidate in group:
+                    # Only an entry-point rule puts one finding in two groups,
+                    # and an earlier group may have claimed it.
+                    if str(candidate["finding_id"]) in claimed:
+                        continue
                     reason = _qualifies(requirement, candidate)
                     if reason is not None:
                         hit, why = candidate, reason
@@ -688,7 +843,13 @@ def detect(
 
             frozen = frozenset(members)
             claimed |= members
-            where = f"in `{key}`" if rule.scope == "file" else "in this repository"
+            if rule.scope == "file":
+                where = f"in `{key}`"
+            elif rule.scope == "entry_point":
+                label = (entry_point_labels or {}).get(key, key)
+                where = f"on the internet-facing entry point `{label}`"
+            else:
+                where = "in this repository"
             combinations.append(
                 Combination(
                     combination_id=combination_id(rule.rule_id, frozen),
@@ -714,6 +875,7 @@ def detect(
                     ),
                     partial_fix_finding_id=partial,
                     qualifications=tuple(reasons),
+                    entry_point=key if rule.scope == "entry_point" else None,
                 )
             )
 

@@ -341,10 +341,38 @@ export type VulnerabilityManagement = {
       /** Which half of the rule this member satisfies, and why (TheHub #60965). */
       qualifies?: string;
     }[];
+    /**
+     * For a chain on a declared internet-facing entry point (TheHub #60894):
+     * the entry point, then each link in order. Null for other combinations.
+     */
+    chain?: ToxicChain | null;
   }[];
   /** Auto-remediation's lifetime log of combinations: history, not current. */
   toxic_combinations_recorded?: number;
   toxic_combinations_recorded_since?: string | null;
+};
+
+/** A toxic chain: the declared way in, then each finding behind it (TheHub #60894). */
+export type ToxicChain = {
+  entry_point: {
+    id: string;
+    name: string;
+    exposure: string;
+    declared_via: string;
+    evidence_ref: string;
+  };
+  links: {
+    step: string;
+    name?: string;
+    finding_id?: string;
+    capability?: string;
+    rule_id?: string;
+    title?: string;
+    severity?: string;
+    located_by?: string;
+    qualifies?: string;
+  }[];
+  note: string;
 };
 
 export type TriageQueue =
