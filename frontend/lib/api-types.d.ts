@@ -3240,6 +3240,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/product-owner/dora": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dora Metrics
+         * @description DORA metrics over 30 and 90 days (TheHub #60912): deploy frequency, lead
+         *     time, change failure rate and failed-deployment recovery time. Each one is
+         *     computed from TheHub's deploy record and the lake's first-seen times. A
+         *     metric that cannot be computed is null and names the input it lacks.
+         */
+        get: operations["dora_metrics_api_dashboard_repos__repo_id__product_owner_dora_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/repos/{repo_id}/product-owner/approvals": {
         parameters: {
             query?: never;
@@ -9202,6 +9225,28 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** Metric */
+        Metric: {
+            /**
+             * Value
+             * @description Null when it cannot be computed. Never 0 for that.
+             */
+            value: number | null;
+            /** Unit */
+            unit: string;
+            /**
+             * Sample
+             * @description How many deploys, commits or failures it is computed from.
+             */
+            sample: number;
+            /**
+             * Lacks
+             * @description The input it lacks, when `value` is null.
+             */
+            lacks?: string | null;
+            /** Detail */
+            detail?: string | null;
+        };
         /** MigrateIn */
         MigrateIn: {
             /** Risk Owner */
@@ -9881,6 +9926,19 @@ export interface components {
             probe_source: string;
             /** Missing */
             missing?: string[];
+        };
+        /** PoDoraOut */
+        PoDoraOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Deploy Source */
+            deploy_source: string;
+            /** Windows */
+            windows: components["schemas"]["Window"][];
+            /** Definitions */
+            definitions: {
+                [key: string]: string;
+            };
         };
         /** PoEnforcedTierOut */
         PoEnforcedTierOut: {
@@ -14184,6 +14242,15 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** Window */
+        Window: {
+            /** Days */
+            days: number;
+            deploy_frequency: components["schemas"]["Metric"];
+            lead_time: components["schemas"]["Metric"];
+            change_failure_rate: components["schemas"]["Metric"];
+            recovery_time: components["schemas"]["Metric"];
+        };
         /** WorkActionOut */
         WorkActionOut: {
             /** Label */
@@ -18260,6 +18327,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoDeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dora_metrics_api_dashboard_repos__repo_id__product_owner_dora_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PoDoraOut"];
                 };
             };
             /** @description Validation Error */

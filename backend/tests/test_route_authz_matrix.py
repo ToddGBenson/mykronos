@@ -214,6 +214,7 @@ ROUTES: dict[str, str] = {
     "POST /api/dashboard/repos/{repo_id}/product-owner/rank": PRINCIPAL,
     "POST /api/dashboard/repos/{repo_id}/product-owner/template": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/product-owner/delivery": PRINCIPAL,
+    "GET /api/dashboard/repos/{repo_id}/product-owner/dora": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/product-owner/approvals": PRINCIPAL,
     "POST /api/dashboard/repos/{repo_id}/product-owner/approvals/{request_id}/decision": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/product-owner/roles": PRINCIPAL,

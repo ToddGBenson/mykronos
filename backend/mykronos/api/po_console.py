@@ -20,8 +20,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import dora, po_fleet, po_trace
 from mykronos import po_console as pc
-from mykronos import po_fleet, po_trace
 from mykronos import product_owner as po
 from mykronos.adminauth import PrincipalDep, Role
 from mykronos.api import po_review_queue as review_queue
@@ -33,7 +33,7 @@ from mykronos.approvals.policy import PolicyError, cached_policy
 from mykronos.change_verdict import ChangeVerdict, Posture, change_of, posture_of
 from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import ApprovalDecision, ApprovalRequest, Delegation, RepoOnboarding
-from mykronos.deployments import NOT_CONFIGURED, probe_setup_for
+from mykronos.deployments import HUB_REPO_NAME, NOT_CONFIGURED, probe_setup_for
 from mykronos.schemas import utcnow
 
 logger = logging.getLogger(__name__)
@@ -333,6 +333,50 @@ async def delivery(
         not_shipped=[_row_out(repo_full_name, r, introduced) for r in rows if not r.shipped][:50],
         error=error,
         commits_error=commits_error,
+    )
+
+
+class PoDoraOut(BaseModel):
+    repo_full_name: str
+    #: Where the deploys came from, or "" when this repository has no record.
+    deploy_source: str
+    windows: list[dora.Window]
+    #: What each metric measures, in a sentence.
+    definitions: dict[str, str]
+
+
+@router.get("/repos/{repo_id}/product-owner/dora", response_model=PoDoraOut)
+async def dora_metrics(request: Request, repo_id: str, principal: PrincipalDep) -> PoDoraOut:
+    """DORA metrics over 30 and 90 days (TheHub #60912): deploy frequency, lead
+    time, change failure rate and failed-deployment recovery time. Each one is
+    computed from TheHub's deploy record and the lake's first-seen times. A
+    metric that cannot be computed is null and names the input it lacks."""
+    repo_full_name, _branch, _installation = phase1._onboarding(request, repo_id)
+    is_hub = repo_full_name.rsplit("/", 1)[-1].lower() == HUB_REPO_NAME
+    now = dora.utcnow()
+    if is_hub:
+        source = await dora.hub_deploy_source(
+            phase1._hub(request), now - timedelta(days=max(dora.WINDOWS))
+        )
+    else:
+        source = dora.DeploySource(runs=None, lacks=dora.NO_DEPLOY_RECORD)
+    first_seen: dict[str, datetime] | None = {}
+    if source.runs:
+        try:
+            first_seen = await asyncio.to_thread(
+                dora.first_seen_of,
+                request.app.state.catalog,
+                repo_full_name,
+                [r.sha for r in source.runs if r.reached_production],
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("DORA: first-seen times could not be read for %s", repo_full_name)
+            first_seen = None
+    return PoDoraOut(
+        repo_full_name=repo_full_name,
+        deploy_source="TheHub deploy record" if is_hub else "",
+        windows=dora.compute(now=now, deploys=source, first_seen=first_seen),
+        definitions=dora.DEFINITIONS,
     )
 
 
