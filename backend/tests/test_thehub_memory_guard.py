@@ -268,3 +268,31 @@ def test_the_check_is_cancelled_not_failed(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stdout + r.stderr
     assert [b["conclusion"] for b in bodies] == ["cancelled"]
     assert OOM in r.stdout
+
+
+# -- TheHub #61321 -------------------------------------------------------------
+
+
+def test_post_merge_collects_all_three_trees_the_deploy_runs() -> None:
+    """Since #61321 post-merge collects rather than re-runs; what it still
+    uniquely catches is a landed tip that no longer imports, in ANY of the
+    trees deploy.sh runs (TheHub's ADR 0095 amendment says all three)."""
+    runs = [
+        line
+        for line in _script(_task("post-merge", "grade")).splitlines()
+        if "python -m pytest tests/" in line
+    ]
+    assert runs
+    for line in runs:
+        assert "--collect-only" in line, line
+        for tree in ("tests/unit", "tests/integration", "tests/security"):
+            assert tree in line, f"post-merge does not collect {tree}: {line.strip()}"
+
+
+def test_container_tiers_refuses_a_commit_without_its_script() -> None:
+    """The pipeline change merges before TheHub's half, so develop's tip has no
+    scripts/ci/container-tiers.sh for a while; that must say so, not crash."""
+    script = _script(_task("container-tiers", "tiers"))
+    guard = script.index("[ ! -f source/scripts/ci/container-tiers.sh ]")
+    assert guard < script.index("bash source/scripts/ci/container-tiers.sh")
+    assert "predates scripts/ci/container-tiers.sh" in script
