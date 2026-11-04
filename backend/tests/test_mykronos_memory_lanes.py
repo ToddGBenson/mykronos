@@ -27,6 +27,11 @@ TheHub #61210: coverage #8 ran 8,583 tests green and went red on one "worker
 rest. It now runs the same bounded worker count, classifier and ERRORED step
 as `unit`, and both suites declare `container_limits` (CPU shares only: a
 memory limit makes runc refuse the task on these workers, D-174).
+
+TheHub #61288: `time-travel` runs the same suite nightly, in the same group,
+and still ran it at -n 6 with no classifier. One worker lost to memory went
+red as FAILED and filed a time-bomb story naming a test that never failed. It
+now has `unit`'s treatment too, and the Hub filing runs only after a verdict.
 """
 
 from __future__ import annotations
@@ -53,8 +58,13 @@ MEMORY_JOBS = {"unit", "coverage", "time-travel", "lint-and-types"}
 ERRORED_STEP = "killed-for-memory-not-a-test-failure-re-run"
 MAX_UNIT_WORKERS = 4
 LINT = ("lint-and-types", "ruff-and-mypy")
-# The full-suite tasks that classify a memory kill (TheHub #61210 added coverage).
-SUITES = [("unit", "pytest"), ("coverage", "pytest-cov")]
+# The full-suite tasks that classify a memory kill (TheHub #61210 added coverage,
+# #61288 time-travel).
+SUITES = [
+    ("unit", "pytest"),
+    ("coverage", "pytest-cov"),
+    ("time-travel", "pytest-time-travel"),
+]
 # Docker's default weight, production's (test_thehub_task_limits.py).
 PRODUCTION_CPU_SHARES = 1024
 
@@ -140,14 +150,18 @@ class TestTheyNeverShareAWorker:
 
     @pytest.mark.parametrize(("job", "task"), SUITES)
     def test_the_suite_runs_few_enough_workers_to_fit(self, job: str, task: str) -> None:
+        # Every pytest line, not the first: time-travel's first is its -n 0
+        # canary, and the suite it guards comes after (TheHub #61288).
         script = _script(_task(job, task))
-        line = next(x for x in script.splitlines() if "python -m pytest" in x)
-        n = int(line.split(" -n ", 1)[1].split()[0])
-        assert n <= MAX_UNIT_WORKERS, (
-            f"{job} runs pytest -n {n}; #485 and #486 lost xdist workers to memory with "
-            "lint not running, and coverage #8 lost gw5 at -n 6 (TheHub #61210), so the "
-            "group alone does not fit it in 3 GiB"
-        )
+        lines = [x for x in script.splitlines() if "python -m pytest" in x]
+        assert lines, f"{job}/{task} runs no pytest"
+        for line in lines:
+            n = int(line.split(" -n ", 1)[1].split()[0])
+            assert n <= MAX_UNIT_WORKERS, (
+                f"{job} runs pytest -n {n}; #485 and #486 lost xdist workers to memory "
+                "with lint not running, and coverage #8 lost gw5 at -n 6 (TheHub #61210), "
+                "so the group alone does not fit it in 3 GiB"
+            )
 
     @pytest.mark.parametrize(("job", "task"), SUITES)
     def test_the_suite_declares_cpu_limits_below_production(self, job: str, task: str) -> None:
@@ -346,6 +360,35 @@ class TestTheJobErrorsInsteadOfFailing:
         prelude = f"rc=1\nmkdir -p ../../results && cp '{junit.as_posix()}' ../../results/unit.xml"
         rc, out, judged = _run_tail(tmp_path / "t", job, task, prelude)
         assert rc == 0 and judged and "REACHED-THE-UPLOAD" in out, out
+
+    def test_time_travel_files_no_story_without_a_verdict(self) -> None:
+        # TheHub #61288: the filing reads the suite's report and files a
+        # time-bomb story naming each failing test. A crashed worker is not a
+        # time bomb, so the filing must come after the step that errors a
+        # run with no verdict.
+        plan = _job("time-travel")["plan"]
+        names = [s.get("task") or s.get("load_var") for s in plan]
+        assert ERRORED_STEP in names and "file-hub-story" in names, names
+        assert names.index(ERRORED_STEP) < names.index("file-hub-story"), (
+            "file-hub-story runs before a memory kill errors the build, so a crashed "
+            f"worker would be filed as a time bomb ({names})"
+        )
+
+    def test_time_travel_killed_for_memory_leaves_no_exit_code_to_file(
+        self, tmp_path: Path
+    ) -> None:
+        # The filing exits with results/rc. A memory kill must not leave one
+        # behind, so even a re-ordered plan has nothing to file.
+        if not SCRIPT.exists():
+            pytest.fail("scripts/memory_kill.py does not exist")
+        junit = _junit(tmp_path / "pre.xml", crashes=1, passed=50)
+        prelude = f"rc=1\nmkdir -p ../../results && cp '{junit.as_posix()}' ../../results/unit.xml"
+        rc, out, judged = _run_tail(tmp_path / "t", "time-travel", "pytest-time-travel", prelude)
+        assert rc == 0 and not judged and "REACHED-THE-UPLOAD" not in out, out
+        lines = _script(_task("time-travel", "pytest-time-travel")).splitlines()
+        verdict = next(i for i, x in enumerate(lines) if "judged/verdict" in x)
+        code = next(i for i, x in enumerate(lines) if "> ../../results/rc" in x)
+        assert verdict < code, "results/rc is written before a memory kill is ruled out"
 
     def test_lint_with_mypy_killed_records_no_verdict(self, tmp_path: Path) -> None:
         if not SCRIPT.exists():

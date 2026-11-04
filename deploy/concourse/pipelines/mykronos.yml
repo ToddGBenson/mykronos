@@ -952,6 +952,8 @@ jobs:
       - get: python
         attempts: *retry_fetch
       - task: pytest-time-travel
+        # [TheHub #61288] The same CPU shares as `unit`'s task; see there.
+        container_limits: {cpu: 512}
         # `unit`'s ceiling: the same suite, on the same worker.
         timeout: 120m
         image: python
@@ -963,7 +965,9 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: results }]
+          # [TheHub #61288] `judged` holds `verdict` only when the run reached
+          # one, as on `unit`; the load_var step after this task reads it.
+          outputs: [{ name: results }, { name: judged }]
           caches: [{ path: /pipcache }]
           run:
             path: bash
@@ -1003,9 +1007,29 @@ jobs:
                 fi
 
                 rc=0
-                under_faketime python -m pytest -q -n 6 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+                # [TheHub #61288] -n 4, not 6, for `unit`'s reason (#61117).
+                under_faketime python -m pytest -q -n 4 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+
+                # [TheHub #61288] Killed for memory is not a time bomb. The
+                # classifier runs on the real clock, outside faketime. On a
+                # memory kill: no verdict and no results/rc, so the load_var
+                # step below errors the build and file-hub-story never runs.
+                # A real failure is still a verdict, and is filed as before.
+                OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
+                  || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
+                if [ -n "$OOM" ]; then
+                  echo "::error::${OOM}"
+                  echo "No Hub story filed: a run killed for memory judged nothing on this commit."
+                  exit 0
+                fi
+                printf '%s\n' "$rc" > ../../judged/verdict
                 echo "$rc" > ../../results/rc
                 git -C .. rev-parse --short=12 HEAD > ../../results/commit
+
+      # [TheHub #61288] ERRORED, not FAILED, and no story, when the suite was
+      # killed for memory. See the same step on `unit`.
+      - load_var: killed-for-memory-not-a-test-failure-re-run
+        file: judged/verdict
 
       - task: file-hub-story
         # The only task given TheHub's token. It runs the reporter and
