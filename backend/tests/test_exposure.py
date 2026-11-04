@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from mykronos import __version__
 from mykronos import briefing as briefing_report
 from mykronos import exposure
 from mykronos.db.models import AuditLogEntry, PublicEndpoint
@@ -135,7 +136,12 @@ def fake_http(monkeypatch):
     def install(routes=None, error=None) -> FakeClient:
         client = FakeClient(routes, error)
         holder["c"] = client
-        monkeypatch.setattr("mykronos.exposure.httpx2.AsyncClient", lambda **kw: client)
+
+        def make(**kw):
+            client.kwargs = kw
+            return client
+
+        monkeypatch.setattr("mykronos.exposure.httpx2.AsyncClient", make)
         return client
 
     return install
@@ -150,6 +156,20 @@ class TestProbe:
         assert status == exposure.PROBED
         assert client.asked == [f"https://demo.example.com{p}" for p in exposure.PATHS]
         assert classify(answers)[0].kind == "api_schema_public"
+
+    def test_it_names_itself_in_the_user_agent(self, fake_http) -> None:
+        """Every 6 hours the probe's 401s from an own address opened an
+        'endpoint discovery' SOC incident in TheHub, because the request carried
+        the HTTP library's default User-Agent and could not be told from a real
+        scan (TheHub #61057). The probe says what it is, and which version."""
+        client = fake_http({"/openapi.json": FakeResponse(200, SCHEMA)})
+
+        asyncio.run(exposure.probe_endpoint("https://demo.example.com/"))
+
+        user_agent = client.kwargs.get("headers", {}).get("User-Agent", "")
+        assert user_agent == f"mykronos-exposure-probe/{__version__}"
+        assert user_agent == exposure.USER_AGENT
+        assert "httpx" not in user_agent.lower()
 
     def test_nothing_answering_is_unreachable_not_clean(self, fake_http) -> None:
         fake_http(error=OSError("connection refused"))
