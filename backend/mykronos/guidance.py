@@ -526,27 +526,6 @@ _STEPS: dict[str, list[str]] = {
 }
 
 
-def fix_of(
-    capability: str, rule_id: str | None, title: str | None, raw: dict[str, Any]
-) -> tuple[str, str, str, list[str]]:
-    """`(fix_id, action, effort, steps)` for one finding: the same key
-    `fix_groups` groups it under, for a reader that needs it per finding
-    (the triage packet, TheHub #61346)."""
-    clean_title = _clean(_AT_LOCATION.sub("", str(title or "")), 90)
-    fix, source, effort = _for(str(capability), raw, clean_title)
-    rule = RuleGuidance(
-        capability=str(capability),
-        rule_id=str(rule_id or "(unattributed)"),
-        title=clean_title or str(rule_id),
-        count=1,
-        fix=fix,
-        source=source,
-        effort=effort,
-    )
-    fix_id, action = _fix_key(str(capability), rule, raw)
-    return fix_id, action, effort, list(_STEPS.get(fix_id.split(":", 1)[0], []))
-
-
 def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGroup]:
     """Open findings grouped by the change that would close them.
 
@@ -660,3 +639,24 @@ def _highest(versions: set[str]) -> str:
         return max(versions, key=key)
     except (TypeError, ValueError):
         return max(versions)
+
+
+def fix_of(
+    capability: str, rule_id: str | None, title: str | None, raw: dict[str, Any]
+) -> tuple[str, str, str, list[str]]:
+    """`(fix_id, action, effort, steps)` for one finding: the same key
+    `fix_groups` groups it under, for a reader that needs it per finding
+    (the triage packet, TheHub #61346)."""
+    clean_title = _clean(_AT_LOCATION.sub("", str(title or "")), 90)
+    fix, source, effort = _for(str(capability), raw, clean_title)
+    rule = RuleGuidance(
+        capability=str(capability),
+        rule_id=str(rule_id or "(unattributed)"),
+        title=clean_title or str(rule_id),
+        count=1,
+        fix=fix,
+        source=source,
+        effort=effort,
+    )
+    fix_id, action = _fix_key(str(capability), rule, raw)
+    return fix_id, action, effort, list(_STEPS.get(fix_id.split(":", 1)[0], []))
