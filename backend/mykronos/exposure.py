@@ -41,6 +41,7 @@ from urllib.parse import urlsplit
 import httpx2
 from sqlalchemy import select
 
+from mykronos import __version__
 from mykronos.logsafe import scrub
 from mykronos.schemas import utcnow
 
@@ -50,6 +51,14 @@ DEFAULT_TIMEOUT_SECONDS = 15.0
 
 #: The anonymous requests a probe makes, and nothing else.
 PATHS = ("/openapi.json", "/docs", "/api/v1/info", "/api/v1/teams/main/pipelines")
+
+#: What every probe request calls itself. The probe's 401s from an own address
+#: are otherwise indistinguishable from a real scan: with the library default
+#: here, TheHub's SOC correlator opened an "endpoint discovery" incident every
+#: six hours (TheHub #61057). Naming the probe, and its version, lets a
+#: receiving SIEM subtract exactly this traffic - own address, this agent, one
+#: of `PATHS` - and nothing else.
+USER_AGENT = f"mykronos-exposure-probe/{__version__}"
 
 WRITE_METHODS = ("post", "put", "patch", "delete")
 
@@ -216,7 +225,9 @@ async def probe_endpoint(
         )
     answers: dict[str, Answer] = {}
     errors: list[str] = []
-    async with httpx2.AsyncClient(timeout=timeout, follow_redirects=False) as http:
+    async with httpx2.AsyncClient(
+        timeout=timeout, follow_redirects=False, headers={"User-Agent": USER_AGENT}
+    ) as http:
         for path in PATHS:
             try:
                 response = await http.get(base + path)

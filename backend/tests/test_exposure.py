@@ -16,9 +16,8 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from mykronos import __version__
+from mykronos import __version__, exposure
 from mykronos import briefing as briefing_report
-from mykronos import exposure
 from mykronos.db.models import AuditLogEntry, PublicEndpoint
 from mykronos.exposure import Answer, classify
 
