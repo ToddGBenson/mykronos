@@ -183,6 +183,7 @@ structured as its inputs.
 | Task | How |
 |---|---|
 | After every deploy | `mykronos briefing` — it leads with what is broken |
+| Before the next sprint starts | `mykronos triage-packet --for-next-sprint [--budget N]` — the security candidates to select from, each with its scanner and contextual band and every factor marked observed, declared or unknown. Sprints have no fixed length: one starts when the operator starts it and ends when its work ships |
 | A lane went silent | The briefing names it and gives the re-run route |
 | Ownership looks wrong | `POST /api/dashboard/repos/{id}/reown?dry_run=true` re-derives it. Manual assignments are never overwritten |
 | Component inventory looks thin | `POST /api/dashboard/inventory/reindex?dry_run=true` rebuilds from archived SBOMs |
