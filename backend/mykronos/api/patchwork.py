@@ -267,6 +267,7 @@ def _pipeline(request: Request, repo_full_name: str) -> tuple[PatchworkPipeline,
         source_capabilities=tuple(sources),
         auto_fix_min_severity=str(config.get("auto_fix_min_severity", "high")),
         image_registry=getattr(request.app.state, "image_registry", None),
+        image_digests=getattr(request.app.state, "image_digests", None),
     )
     return pipeline, default_branch
 

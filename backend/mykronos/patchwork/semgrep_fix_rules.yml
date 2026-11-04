@@ -1,0 +1,54 @@
+# Semgrep rules whose `fix:` Patchwork applies as written (TheHub #60746).
+#
+# Every rule here is mechanical: the rewrite is the right shape whatever the
+# surrounding code does, so applying Semgrep's own fix output needs no
+# judgement and no model (D-032, D-096). A rule belongs here only if that is
+# true. `mykronos.patchwork.semgrep_fix.SEMGREP_FIX_RULES` names the same ids,
+# and a test fails if the two lists disagree.
+#
+# Run with `semgrep scan --config <this file> --sarif`: Semgrep writes each
+# rule's fix into the SARIF result's `fixes`, and `apply-semgrep-fix` writes
+# exactly that replacement and nothing else.
+rules:
+  - id: mykronos-pyyaml-load-to-safe-load
+    languages: [python]
+    severity: ERROR
+    message: >-
+      yaml.load with no Loader can construct arbitrary Python objects from the
+      document. yaml.safe_load builds only plain data.
+    metadata:
+      category: security
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      mykronos-fix: mechanical
+    pattern: yaml.load($DATA)
+    fix: yaml.safe_load($DATA)
+
+  - id: mykronos-jinja2-autoescape-disabled
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A Jinja2 Environment with autoescape=False renders every variable as raw
+      HTML. autoescape=True escapes it.
+    metadata:
+      category: security
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      mykronos-fix: mechanical
+    pattern: jinja2.Environment(..., autoescape=False, ...)
+    fix-regex:
+      regex: autoescape\s*=\s*False
+      replacement: autoescape=True
+
+  - id: mykronos-flask-debug-enabled
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Flask's debug mode serves an interactive debugger that runs code sent to
+      it. debug=False turns it off.
+    metadata:
+      category: security
+      cwe: ["CWE-489: Active Debug Code"]
+      mykronos-fix: mechanical
+    pattern: $APP.run(..., debug=True, ...)
+    fix-regex:
+      regex: debug\s*=\s*True
+      replacement: debug=False

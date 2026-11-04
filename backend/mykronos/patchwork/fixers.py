@@ -315,6 +315,22 @@ def pin_go_module(finding: dict[str, Any], content: str) -> ProposedFix | None:
 
 
 # --------------------------------------------------------------------------
+# Semgrep's own fix output (TheHub #60746)
+# --------------------------------------------------------------------------
+
+
+def apply_semgrep_fix(finding: dict[str, Any], content: str) -> ProposedFix | None:
+    """Apply the `fix:` Semgrep reported for a rule in the named list.
+
+    The body is in `semgrep_fix`, imported here at call time because that
+    module needs `ProposedFix` from this one.
+    """
+    from mykronos.patchwork.semgrep_fix import apply_semgrep_fix as apply
+
+    return apply(finding, content)
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -339,9 +355,15 @@ FIXERS: list[tuple[str, Fixer | RepositoryFixer]] = [
     ("pin-npm-dependency", pin_npm_dependency),
     ("pin-go-module", pin_go_module),
     ("remove-committed-secret", remove_committed_secret),
+    # A SAST finding from a rule in `semgrep_fix.SEMGREP_FIX_RULES`: the edit
+    # is Semgrep's own `fix:` output, applied as written.
+    ("apply-semgrep-fix", apply_semgrep_fix),
     # A container finding in a patched `-p<YYYYMMDD>` image, when image-refresh
     # has already published a newer snapshot of the same image.
     ("bump-image-date", RepositoryFixer("mykronos.patchwork.image_date")),
+    # A finding on a Dockerfile's FROM line: the newer tag in the same series,
+    # pinned by a digest read from the registry and verified (TheHub #60746).
+    ("bump-base-image", RepositoryFixer("mykronos.patchwork.base_image")),
 ]
 
 
@@ -390,6 +412,21 @@ COVERAGE: tuple[dict[str, str], ...] = (
         "a newer -p<date> of that same image: the compose pins move to the newer "
         "package snapshot, and the demo default with them where it matched.",
     },
+    {
+        "fixer": "apply-semgrep-fix",
+        "capability": "sast",
+        "handles": "A Semgrep finding from a rule in the named fix-rule list "
+        "(patchwork/semgrep_fix_rules.yml): the edit is Semgrep's own fix output "
+        "for that rule, applied as written.",
+    },
+    {
+        "fixer": "bump-base-image",
+        "capability": "iac",
+        "handles": "A finding on a Dockerfile FROM line for an image on the lanes' "
+        "registry: the base moves to the newest tag in the same series (a later "
+        "patch release, or a later -p<date>), pinned by a digest read from the "
+        "registry and verified against the manifest's bytes.",
+    },
 )
 
 #: Capabilities with no deterministic fixer at all, and why not.
@@ -401,7 +438,9 @@ COVERAGE: tuple[dict[str, str], ...] = (
 NOT_COVERED: tuple[dict[str, str], ...] = (
     {
         "capability": "sast",
-        "why": "A code defect's fix depends on what the code is for. A "
+        "why": "Partly covered. apply-semgrep-fix applies Semgrep's own fix for "
+        "the named rules whose rewrite is mechanical, and nothing else. Every "
+        "other code defect's fix depends on what the code is for, and a "
         "deterministic rewrite that compiles is not thereby correct.",
     },
     {
@@ -421,8 +460,10 @@ NOT_COVERED: tuple[dict[str, str], ...] = (
     },
     {
         "capability": "iac",
-        "why": "Infrastructure defaults are frequently deliberate. Changing "
-        "one without knowing why it was set is how a fix causes an outage.",
+        "why": "Partly covered. bump-base-image moves a Dockerfile's base image "
+        "within its own series, pinned by a verified digest. Other "
+        "infrastructure defaults are frequently deliberate, and changing one "
+        "without knowing why it was set is how a fix causes an outage.",
     },
     {
         "capability": "cloud",

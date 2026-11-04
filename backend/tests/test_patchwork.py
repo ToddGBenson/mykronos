@@ -1181,7 +1181,7 @@ class TestRemediationCoverageIsStated:
         assert body["measured"] is False
         assert "nothing to measure" in body["note"]
         assert "not the same as fixes that did not work" in body["note"]
-        assert body["coverage"]["fixer_count"] == 5
+        assert body["coverage"]["fixer_count"] == 7
         assert body["coverage"]["covered"]
         assert body["coverage"]["not_covered"]
 
