@@ -36,14 +36,21 @@ requests for a human to review. **Patchwork never merges anything itself.**
    and verifiable — pinning a vulnerable dependency to a known-good version,
    removing a committed credential and replacing the reference. These need no
    model, they are reviewable line by line, and their output is identical
-   every run. The four that exist (`patchwork/fixers.py`) are
+   every run. The seven that exist (`patchwork/fixers.py`) are
    `pin-python-requirement`, `pin-npm-dependency` and `pin-go-module` for
-   `atlas`, and `remove-committed-secret` for `secrets`. **There is no IaC
-   fixer.** It was proposed here (adding a missing property with a documented
-   default) and deliberately not built: infrastructure defaults are often set
-   on purpose, and changing one without knowing why is how a fix causes an
-   outage. `NOT_COVERED` in the same module states that for `iac`, `sast`,
-   `containers`, `dast` and `cloud`.
+   `atlas`, `remove-committed-secret` for `secrets`, `bump-image-date` for
+   `containers`, and, since TheHub #60746, `apply-semgrep-fix` for `sast` and
+   `bump-base-image` for `iac`. `apply-semgrep-fix` applies Semgrep's own fix
+   output for a named list of mechanical rules
+   (`patchwork/semgrep_fix_rules.yml`) and writes no code of its own.
+   `bump-base-image` moves a Dockerfile `FROM` within its series and pins it
+   by a digest read from the registry and verified against the manifest's
+   bytes; a registry lookup that fails opens nothing. **There is still no
+   general IaC fixer.** Adding a missing property with a documented default
+   was proposed here and deliberately not built: infrastructure defaults are
+   often set on purpose, and changing one without knowing why is how a fix
+   causes an outage. `NOT_COVERED` in the same module states what each
+   capability's fixers leave out.
 
    **Deterministic fixers are the only generator (D-096).** This section
    previously specified a second, LLM-backed one behind a `fix_generator_url`
@@ -63,6 +70,18 @@ requests for a human to review. **Patchwork never merges anything itself.**
 5. **Open draft PR** — commit the fix to a new branch, open a **draft** PR
    referencing the original finding(s), with a description explaining the
    fix and linking back to the finding in the dashboard.
+
+   **Then the branch is rescanned, before anyone is asked to merge it**
+   (TheHub #60746, `patchwork/branch_rescan.py`). The draft's own
+   `pull_request` scan of its head commit is the rescan, and the verdict is
+   recorded on the pull request as a body section and a label. A fix whose
+   branch still reports the finding is labelled
+   `mykronos: fix did not remove the finding` and its body says not to merge
+   it; a scan that did not complete, or none within 36 hours, is labelled
+   `mykronos: rescan inconclusive`. Matching is on rule and file rather than
+   finding id, because a fix can move lines, and a later default-branch scan
+   that re-reports the finding makes the branch's absence unreadable, which is
+   reported as inconclusive, never as fixed.
 6. **Record outcome** — write a `RemediationEvent` row (§4) regardless of
    whether a fix was generated, so the data lake always shows what
    Patchwork did or didn't do and why.
