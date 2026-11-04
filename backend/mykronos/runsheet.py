@@ -125,6 +125,9 @@ class Item:
     #: A request id, `repo#number` or a story `#id`: what to open.
     ref: str = ""
     url: str = ""
+    #: For a pull request: the head this line was judged at. Merge in order
+    #: sends it back, and the merge is refused if the head has moved (#61142).
+    sha: str = ""
 
 
 @dataclass
@@ -296,6 +299,7 @@ def _pr_item(
             owner=owner,
             ref=f"{p.repo}#{p.number}",
             url=p.url,
+            sha=p.head_sha,
         )
 
     stacked = bool(p.base_branch) and bool(p.default_branch) and p.base_branch != p.default_branch
@@ -522,6 +526,8 @@ def deploy_step(f: DeployFacts) -> Step:
             else WAITING,
             delivery_word,
             OWNER_DELIVERY,
+            # The sha Deploy would ship, which the Deploy action sends back (#61142).
+            sha=f.main_sha,
         ),
         Item(
             " and ".join(DEPLOY_LANES) + " lanes",

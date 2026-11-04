@@ -1,6 +1,11 @@
 import Link from "next/link";
 
+import { DecideDrawerView } from "@/components/decide-drawer";
 import { ErrorPanel, RelativeTime } from "@/components/primitives";
+import { DeployAction, MergeInOrder } from "@/components/runsheet-actions";
+import { pendingRequestIds } from "@/lib/approval-queue";
+import { getReviewPacket } from "@/lib/po-console";
+import { decideHref, drawerNext, mergeBatch, showActions } from "@/lib/runsheet-actions";
 import { getBriefing } from "@/lib/server";
 import { getRunSheet } from "@/lib/server-today";
 import {
@@ -17,18 +22,32 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Today — Mykronos" };
 
 /**
- * Today: the run sheet (TheHub #61141, P1 and P6). Read-only.
+ * Today: the run sheet (TheHub #61141, P1 and P6).
  *
  * The operator's day in the order it happens: decide, merge, deploy, tasks,
  * watch. It is Start-Here's sections, computed by the server, with a state, a
  * reason and an owner on every line, so "not yet" always says why and whose
- * move it is. There are no buttons on purpose: the actions (#61142) are
- * turned on only after this page has agreed with `Start-Here -Check` for a
- * week.
+ * move it is.
+ *
+ * Its actions (#61142: Merge in order, Deploy and the Decide drawer) render
+ * only when this server's `MYKRONOS_RUNSHEET_ACTIONS=on` and the backend's
+ * `runsheet_actions_enabled` are both on. Both default off (operator decision
+ * 2026-11-04), and with either off the page is read-only, exactly as before.
  */
-export default async function TodayPage() {
-  const [sheet, briefing] = await Promise.all([getRunSheet(), getBriefing()]);
+export default async function TodayPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const [sheet, briefing, params] = await Promise.all([
+    getRunSheet(),
+    getBriefing(),
+    searchParams,
+  ]);
   if (!sheet.ok) return <ErrorPanel title="Run sheet unavailable" detail={sheet.error} />;
+  const actions = showActions(process.env, sheet.data.actions_enabled);
+  const decide = actions && typeof params.decide === "string" ? params.decide : "";
+  const drawer = decide ? await decideDrawer(decide) : null;
 
   const watch = briefing.ok
     ? watchStep(briefing.data.stalled ?? [], briefing.data.stale ?? null)
@@ -41,16 +60,40 @@ export default async function TodayPage() {
         <h1 className="text-xl font-bold tracking-tight">Today</h1>
         <span className="font-mono text-[13px] text-ink-2">{headline(steps)}</span>
         <span className="font-mono text-[12px] text-ink-3">
-          computed <RelativeTime value={sheet.data.generated_at} /> · read-only
+          computed <RelativeTime value={sheet.data.generated_at} />
+          {actions ? "" : " · read-only"}
         </span>
       </div>
+      {drawer}
       <ol className="flex flex-col gap-3">
         {steps.map((s, index) => (
-          <StepCard key={s.key} step={s} n={index + 1} />
+          <StepCard key={s.key} step={s} n={index + 1} actions={actions} />
         ))}
       </ol>
     </div>
   );
+}
+
+async function decideDrawer(requestId: string) {
+  const [packet, pendingIds] = await Promise.all([
+    getReviewPacket(requestId),
+    pendingRequestIds(),
+  ]);
+  if (!packet.ok) return <ErrorPanel title="Review packet unavailable" detail={packet.error} />;
+  const next = drawerNext(pendingIds, requestId);
+  return <DecideDrawerView packet={packet.data} nextHref={next.href} nextLabel={next.label} />;
+}
+
+function StepActions({ step }: { step: StepLike }) {
+  if (step.key === "merge") {
+    const { batch, left } = mergeBatch(step.items);
+    return <MergeInOrder batch={batch} left={left} notes={step.notes} />;
+  }
+  if (step.key === "deploy" && step.state === "ready") {
+    const sha = step.items.find((item) => item.sha)?.sha ?? "";
+    return <DeployAction sha={sha} notes={step.notes} />;
+  }
+  return null;
 }
 
 const TONE_TEXT: Record<string, string> = {
@@ -73,10 +116,12 @@ function StateMark({ state }: { state: RunState }) {
   );
 }
 
-function ItemRow({ item, step }: { item: ItemLike; step: string }) {
+function ItemRow({ item, step, actions }: { item: ItemLike; step: string; actions: boolean }) {
   const href =
     step === "decide" && item.ref
-      ? `/product-owner/review-queue/${encodeURIComponent(item.ref)}`
+      ? actions
+        ? decideHref(item.ref)
+        : `/product-owner/review-queue/${encodeURIComponent(item.ref)}`
       : item.url || "";
   return (
     <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-t border-rule-soft px-3 py-2">
@@ -100,7 +145,7 @@ function ItemRow({ item, step }: { item: ItemLike; step: string }) {
   );
 }
 
-function StepCard({ step, n }: { step: StepLike; n: number }) {
+function StepCard({ step, n, actions }: { step: StepLike; n: number; actions: boolean }) {
   return (
     <li
       aria-labelledby={`step-${step.key}`}
@@ -128,7 +173,12 @@ function StepCard({ step, n }: { step: StepLike; n: number }) {
       {step.items.length ? (
         <ul>
           {step.items.map((item) => (
-            <ItemRow key={`${item.ref}:${item.text}`} item={item} step={step.key} />
+            <ItemRow
+              key={`${item.ref}:${item.text}`}
+              item={item}
+              step={step.key}
+              actions={actions}
+            />
           ))}
         </ul>
       ) : null}
@@ -142,6 +192,7 @@ function StepCard({ step, n }: { step: StepLike; n: number }) {
           ))}
         </ul>
       ) : null}
+      {actions ? <StepActions step={step} /> : null}
     </li>
   );
 }

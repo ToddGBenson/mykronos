@@ -30,6 +30,7 @@ import { DeployAction, MergeInOrder } from "@/components/runsheet-actions";
 import {
   ACTIONS_ENV,
   actionsOn,
+  crossOriginRefusal,
   decideHref,
   mergeBatch,
   showActions,
@@ -40,8 +41,10 @@ const MK = "ToddGBenson/mykronos";
 const A = "a".repeat(40);
 const B = "b".repeat(40);
 
-function item(ref: string, sha: string, state = "ready") {
-  return { text: `${ref}: a change`, state, reason: "approved", owner: "you", ref, url: "", sha } as const;
+import type { ItemLike } from "@/lib/today";
+
+function item(ref: string, sha: string, state: ItemLike["state"] = "ready"): ItemLike {
+  return { text: `${ref}: a change`, state, reason: "approved", owner: "you", ref, url: "", sha };
 }
 
 describe("the switch", () => {
@@ -149,7 +152,7 @@ describe("the decide drawer", () => {
     const html = renderToStaticMarkup(
       createElement(DecideDrawerView, {
         packet: packet as never,
-        nextHref: null,
+        nextHref: "/today",
         nextLabel: "",
       }),
     );
@@ -223,5 +226,38 @@ describe("the proxy routes", () => {
     const response = await deployPOST(request({ sha: A, acknowledged_host_guards: true }));
 
     expect(response.status).toBe(409);
+  });
+});
+
+describe("the cross-origin guard", () => {
+  function headers(extra: Record<string, string>): Headers {
+    return new Headers({ "content-type": "application/json", host: "dash.test", ...extra });
+  }
+
+  it("lets a same-origin JSON request through", () => {
+    expect(crossOriginRefusal(headers({ "sec-fetch-site": "same-origin" }))).toBeNull();
+    expect(crossOriginRefusal(headers({ origin: "https://dash.test" }))).toBeNull();
+  });
+
+  it("refuses a form post, a same-site sibling and a foreign origin", () => {
+    expect(crossOriginRefusal(new Headers({ "content-type": "text/plain" }))).toMatch(/JSON/);
+    expect(crossOriginRefusal(headers({ "sec-fetch-site": "same-site" }))).toMatch(/refused/);
+    expect(crossOriginRefusal(headers({ origin: "https://demo.dash.test" }))).toMatch(/refused/);
+  });
+
+  it("refuses at the route before the backend is called", async () => {
+    process.env[ACTIONS_ENV] = "on";
+    POST.mockReset();
+    const response = await mergePOST(
+      new Request("http://dash.test/api/today/merge", {
+        method: "POST",
+        body: "{}",
+        headers: headers({ "sec-fetch-site": "cross-site" }),
+      }),
+    );
+    delete process.env[ACTIONS_ENV];
+
+    expect(response.status).toBe(403);
+    expect(POST).not.toHaveBeenCalled();
   });
 });

@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from mykronos import runsheet as rs
 from mykronos import runsheet_actions as ra
-from mykronos.github.client import ChecksSummary, GitHubError, PullRequest
+from mykronos.github.client import GitHubError, PullRequest
 from tests.po_support import audit_entries
 
 THEHUB = "ToddGBenson/TheHub"
