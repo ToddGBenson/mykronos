@@ -781,6 +781,17 @@ SHELL_WRITE_BYPASSES = [
     ("dotdot-out-of-worktrees", "sed -i s/a/b/ <WT>/../../../deploy.sh", "<MYK>"),
     ("cmd-copy", 'cmd /c "copy x <PW>\\deploy.sh"', "<MYK>"),
     ("cmd-redirect", 'cmd /c "echo x > <PW>\\deploy.sh"', "<MYK>"),
+    # Review of #1130: a target only partly resolvable was judged by the cwd alone,
+    # so the resolvable prefix pointing into the live checkout was never looked at.
+    ("unresolved-loop-var", 'HUB=<PF>; for f in a b; do cp /tmp/x "$HUB/$f"; done', "<MYK>"),
+    ("unresolved-redirect-under-root", 'echo x > "<PF>/$UNSET/x"', "<MYK>"),
+    ("unresolved-redirect-var-prefix", 'HUB=<PF>; echo x > "$HUB/$UNSET/x"', "<MYK>"),
+    ("unresolved-brace", "cp /tmp/x <PF>/{a,b}", "<MYK>"),
+    ("unresolved-partial-component", 'echo x > "<PROJ>/TheHub-ma$UNSET/x"', "<MYK>"),
+    ("unresolved-subst-target", "echo x > $(echo <PF>/x)", "<MYK>"),
+    ("unresolved-subst-target-quoted", 'echo x > "$(echo <PF>/x)"', "<MYK>"),
+    ("unresolved-backtick-target", "echo x > `echo <PF>/x`", "<MYK>"),
+    ("unresolved-sed-i", 'sed -i s/a/b/ "<PF>/$UNSET"', "<MYK>"),
 ]
 
 SHELL_WRITE_ALLOWED = [
@@ -796,6 +807,15 @@ SHELL_WRITE_ALLOWED = [
     ("fd-dup-in-hub", "git log 2>&1 | head", "<PF>"),
     ("quoted-arrow-in-message", 'git commit -m "x > <PF>/y"', "<MYK>"),
     ("process-substitution", "diff <(git -C <PF> show HEAD:a) <MYK>/a", "<MYK>"),
+    ("unresolved-loop-elsewhere", 'for f in a b; do cp /tmp/x "<MYK>/$f"; done', "<MYK>"),
+    ("unresolved-variable-target", 'f=$(mktemp); echo x > "$f"', "<MYK>"),
+    ("unresolved-under-sibling", 'echo x > "<SIB>/$UNSET"', "<MYK>"),
+    ("unresolved-under-worktree", 'echo x > "<WT>/$UNSET"', "<MYK>"),
+    ("unresolved-under-projects", 'echo x > "<PROJ>/$UNSET"', "<MYK>"),
+    ("unresolved-sed-i-elsewhere", 'sed -i s/a/b/ "/tmp/$UNSET"', "<MYK>"),
+    # Inside [[ ]] the > compares two strings; it is not a redirection.
+    ("test-string-compare-in-hub", '[[ "$a" > "$b" ]] && echo later', "<PF>"),
+    ("test-string-compare-literal", '[[ x > <PF>/y ]] && echo later', "<MYK>"),
 ]
 
 
@@ -841,6 +861,9 @@ POWERSHELL_WRITE_BYPASSES = [
     ("alias-ac", "ac <PW>\\deploy.sh x", "<MYK>"),
     ("alias-copy", "copy x <PW>\\deploy.sh", "<MYK>"),
     ("alias-ri", "ri <PW>\\deploy.sh", "<MYK>"),
+    ("unresolved-var", 'Set-Content "<PW>\\$f" x', "<MYK>"),
+    ("unresolved-foreach", 'foreach ($f in 1,2) { Set-Content "<PW>\\$f" x }', "<MYK>"),
+    ("unresolved-subexpression-redirect", "'x' > $(Join-Path <PW> x)", "<MYK>"),
 ]
 
 POWERSHELL_WRITE_ALLOWED = [
@@ -852,6 +875,7 @@ POWERSHELL_WRITE_ALLOWED = [
     ("out-null", "git status | Out-Null", "<PF>"),
     ("redirect-null", "git status > $null", "<PF>"),
     ("cmd-nul", 'cmd /c "git status > NUL"', "<PF>"),
+    ("unresolved-var-elsewhere", 'Set-Content "<MYK>\\$f" x', "<MYK>"),
 ]
 
 
