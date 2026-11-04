@@ -110,7 +110,7 @@ class TestTheRecipe:
         """The binary does not move in this change: only the CA files do."""
         (_, _), (runtime, _) = _stages()
         assert runtime.endswith(
-            "@sha256:70cac541c5a928be5cd16d6b8732d85ac06e891a0e3d9956a745381330692fc6"
+            "@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885"
         )
 
     def test_the_build_refuses_a_package_older_than_the_fix(self) -> None:
