@@ -4719,6 +4719,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/repos/{repo_id}/suppressions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Repo Suppressions
+         * @description In-repo scanner suppressions for one repository, with their expiry.
+         *
+         *     Each row is a result the repository's own source or config silenced
+         *     (`# nosemgrep`, `# checkov:skip=`, a SARIF suppression), as its newest
+         *     scan reported it. Not findings: these never enter the findings table.
+         */
+        get: operations["repo_suppressions_api_dashboard_repos__repo_id__suppressions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/repo-read/posture-summary": {
         parameters: {
             query?: never;
@@ -13117,6 +13141,52 @@ export interface components {
             /** Packages */
             packages: components["schemas"]["VulnerablePackageOut"][];
         };
+        /** SuppressionCountsOut */
+        SuppressionCountsOut: {
+            /** Expired */
+            expired: number;
+            /** No Expiry */
+            no_expiry: number;
+            /** Active */
+            active: number;
+        };
+        /** SuppressionOut */
+        SuppressionOut: {
+            /** Tool */
+            tool: string;
+            /** Capability */
+            capability: string;
+            /** Rule Id */
+            rule_id: string;
+            /** File Path */
+            file_path: string;
+            /** Line */
+            line: number | null;
+            /** Kind */
+            kind: string;
+            /** Justification */
+            justification: string;
+            /** Expires At */
+            expires_at: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "expired" | "no_expiry" | "active";
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+        };
+        /** SuppressionsOut */
+        SuppressionsOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Suppressions */
+            suppressions: components["schemas"]["SuppressionOut"][];
+            counts: components["schemas"]["SuppressionCountsOut"];
+        };
         /**
          * SurfaceContradictionOut
          * @description A fresh observation saying this surface's exposure claim is wrong
@@ -20753,6 +20823,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RiskAcceptanceDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repo_suppressions_api_dashboard_repos__repo_id__suppressions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuppressionsOut"];
                 };
             };
             /** @description Validation Error */

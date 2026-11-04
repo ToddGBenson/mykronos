@@ -1444,6 +1444,47 @@ class IngestRefusal(Base):
         return f"<IngestRefusal {self.repo_full_name} {self.capability} x{self.refusals}>"
 
 
+class ScannerSuppression(Base):
+    """A result the scanned repository silenced itself (TheHub #60963, decision #60815 B).
+
+    A `# nosemgrep`, a `# checkov:skip=`, any SARIF result its tool reports as
+    suppressed. **Not a finding** and not a platform disposition: spec 05 s7
+    keeps it out of the findings table, because `suppressed` there is a human
+    decision a rescan must not overwrite. Kept here so the repository page can
+    list what was silenced, with the justification and the expiry the author
+    gave, and so an expired one can be named.
+
+    Recorded from the raw SARIF a lane archives (`POST /api/ingest/raw`). A
+    newer scan run of the same (repository, tool) replaces that tool's rows,
+    so a pragma that was removed stops being listed. Nothing here reaches a
+    risk score.
+    """
+
+    __tablename__ = "scanner_suppressions"
+    __table_args__ = (Index("ix_scanner_suppressions_repo_tool", "repo_full_name", "tool"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    repo_full_name: Mapped[str] = mapped_column(String(255), default="")
+    capability: Mapped[str] = mapped_column(String(64), default="")
+    tool: Mapped[str] = mapped_column(String(255), default="")
+    rule_id: Mapped[str] = mapped_column(String(512), default="")
+    file_path: Mapped[str] = mapped_column(Text, default="")
+    line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: SARIF's `kind`: `inSource` (a pragma) or `external` (a config file).
+    kind: Mapped[str] = mapped_column(String(32), default="")
+    justification: Mapped[str] = mapped_column(Text, default="")
+    #: From the suppression's property bag; SARIF has no standard field. Null: none given.
+    expires_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: The scan run whose archive last reported it.
+    scan_run_id: Mapped[str] = mapped_column(String(64), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        where = f"{self.file_path}:{self.line}"
+        return f"<ScannerSuppression {self.repo_full_name} {self.rule_id} {where}>"
+
+
 class ControlObservation(Base):
     """One machine-collected fact about whether a control holds (TheHub #60826).
 

@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -396,6 +398,11 @@ def sarif_to_findings(
             f"{len(suppressed_rules)} result(s) suppressed in the scanned "
             f"repository and not ingested: {counted}"
         )
+        # Lane-health facts about those silences (TheHub #60963): an expired
+        # one by name, and how many carry no end date at all. At the front,
+        # like the atlas constraint facts (#322), because only the first
+        # warning reaches the ScanRun's `detail`.
+        outcome.warnings[0:0] = suppression_facts(suppressions_in(document))
 
     if warn_degraded:
         warn_if_identity_degrades(outcome, produced, context)
@@ -404,6 +411,145 @@ def sarif_to_findings(
         outcome.scan_status = ScanStatus.PARTIAL_FAILURE
 
     return outcome
+
+
+#: Property-bag keys a tool or a wrapper may use for a suppression's end
+#: date. SARIF 2.1.0 has no standard field for it (s3.35), so the bag is the
+#: only place one can travel.
+_EXPIRY_KEYS = ("expiry", "expires", "expiresAt", "expires_at", "expiration", "expirationDate")
+#: Expired suppressions named one by one in the lane-health fact; the rest are counted.
+_EXPIRED_NAMED = 5
+
+
+@dataclass(frozen=True)
+class SuppressionRecord:
+    """One result the scanned repository silenced itself (TheHub #60963).
+
+    Not a finding and not a platform disposition (spec 05 s7): the author's
+    own "I have answered this", kept so it can be listed with its expiry.
+    """
+
+    tool: str
+    rule_id: str
+    file_path: str
+    line: int | None
+    kind: str
+    justification: str
+    expires_at: date | None
+
+    @property
+    def identity(self) -> tuple[str, str, str, int | None]:
+        return (self.tool, self.rule_id, self.file_path, self.line)
+
+    def where(self) -> str:
+        return f"{self.file_path}:{self.line}" if self.line is not None else self.file_path
+
+
+def sarif_document(raw: bytes | str) -> dict[str, Any] | None:
+    """The parsed SARIF, or None for anything that is not one (no `runs` list)."""
+    try:
+        text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        document = json.loads(text)
+    except (json.JSONDecodeError, UnicodeError, ValueError):
+        return None
+    if not isinstance(document, dict) or not isinstance(document.get("runs"), list):
+        return None
+    return document
+
+
+def sarif_tools(document: dict[str, Any]) -> list[str]:
+    """The tool name of every run, as `suppressions_in` attributes them."""
+    return sorted({_tool_name(run) for run in document.get("runs") or [] if isinstance(run, dict)})
+
+
+def suppressions_from_sarif(raw: bytes | str) -> list[SuppressionRecord]:
+    """Every accepted suppression in a SARIF document; [] for anything else."""
+    document = sarif_document(raw)
+    return suppressions_in(document) if document is not None else []
+
+
+def suppressions_in(document: dict[str, Any]) -> list[SuppressionRecord]:
+    records: dict[tuple[str, str, str, int | None], SuppressionRecord] = {}
+    for run in document.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        tool = _tool_name(run)
+        for raw_result in run.get("results") or []:
+            if not isinstance(raw_result, dict) or not _is_suppressed(raw_result):
+                continue
+            record = _suppression_record(raw_result, tool)
+            records.setdefault(record.identity, record)
+    return list(records.values())
+
+
+def suppression_facts(
+    records: list[SuppressionRecord], today: date | None = None
+) -> list[str]:
+    """Lane-health facts: each expired suppression by name, then a count of
+    those with no expiry. A live, dated suppression says nothing."""
+    today = today or datetime.now(UTC).date()
+    expired = sorted(
+        (r for r in records if r.expires_at is not None and r.expires_at < today),
+        key=lambda r: (r.expires_at or today, r.rule_id, r.where()),
+    )
+    facts = [
+        f"Suppression expired {r.expires_at}: {r.rule_id} at {r.where()} ({r.tool}) is "
+        "still silenced in the repository. Renew it with a new date or remove it."
+        for r in expired[:_EXPIRED_NAMED]
+    ]
+    if len(expired) > _EXPIRED_NAMED:
+        facts.append(f"{len(expired) - _EXPIRED_NAMED} more suppression(s) have expired.")
+    undated = [r for r in records if r.expires_at is None]
+    if undated:
+        rules = ", ".join(sorted({r.rule_id for r in undated}))
+        facts.append(
+            f"{len(undated)} suppression(s) in the repository have no expiry: {rules}. "
+            "A silence with no end date is never revisited."
+        )
+    return facts
+
+
+def _tool_name(run: dict[str, Any]) -> str:
+    driver = (run.get("tool") or {}).get("driver") or {}
+    return str(driver.get("name") or "").strip() or "unknown"
+
+
+def _suppression_record(raw: dict[str, Any], tool: str) -> SuppressionRecord:
+    locations = raw.get("locations") or []
+    physical: dict[str, Any] = {}
+    if locations and isinstance(locations[0], dict):
+        physical = locations[0].get("physicalLocation") or {}
+    uri = str((physical.get("artifactLocation") or {}).get("uri") or "")
+    start = (physical.get("region") or {}).get("startLine")
+    accepted = [
+        s
+        for s in raw.get("suppressions") or []
+        if isinstance(s, dict) and str(s.get("status") or "accepted").strip() != "rejected"
+    ]
+    first = accepted[0] if accepted else {}
+    return SuppressionRecord(
+        tool=tool[:255],
+        rule_id=(str(raw.get("ruleId") or "").strip() or "?")[:512],
+        file_path=_clean_uri(uri) or uri,
+        line=start if isinstance(start, int) else None,
+        kind=str(first.get("kind") or "").strip()[:32],
+        justification=str(first.get("justification") or "").strip()[:2000],
+        expires_at=_expiry(first),
+    )
+
+
+def _expiry(suppression: dict[str, Any]) -> date | None:
+    bag = suppression.get("properties")
+    if not isinstance(bag, dict):
+        return None
+    for key in _EXPIRY_KEYS:
+        value = bag.get(key)
+        if isinstance(value, str) and value.strip():
+            try:
+                return date.fromisoformat(value.strip()[:10])
+            except ValueError:
+                return None
+    return None
 
 
 def _is_suppressed(raw: dict[str, Any]) -> bool:

@@ -24,6 +24,7 @@ import { PO_VIEWS, ProductOwnerTab, type PoViewId } from "@/components/product-o
 import { poConsoleView, type PoConsoleQuery } from "@/components/po-console-panel";
 import { ReachabilityCard } from "@/components/reachability";
 import { RiskManagementTab } from "@/components/risk-management";
+import { SuppressionsPanel } from "@/components/suppressions-panel";
 import { RiskProfileCard } from "@/components/risk-profile";
 import { ScanHealthBoxes } from "@/components/scan-health";
 import { ReleaseEvidence, SscsTab } from "@/components/sscs";
@@ -204,7 +205,12 @@ export default async function RepoPage({
       ) : tab === "decisions" ? (
         <RiskDecisionsTab repoId={repoId} />
       ) : tab === "risk" ? (
-        <RiskManagementTab repoId={repoId} query={query} />
+        // The register of what is not being fixed: the platform's acceptances,
+        // then what the repository silenced itself (TheHub #60963).
+        <div className="flex flex-col gap-8">
+          <RiskManagementTab repoId={repoId} query={query} />
+          <SuppressionsPanel repoId={repoId} />
+        </div>
       ) : tab === "sscs" ? (
         <SupplyChainTab repoId={repoId} />
       ) : tab === "insider" ? (
