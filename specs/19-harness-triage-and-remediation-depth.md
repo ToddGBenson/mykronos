@@ -103,6 +103,31 @@ nothing import it."
   language. This is the floor that makes the category honestly non-empty for some real findings, not
   the ceiling spec 17 declined to build.
 
+#### 2.1.1 Taint verdicts for a named list of rules (TheHub #60745)
+
+For a short, named list of Semgrep audit rules (`taint_reachability.TAINT_SPECS`: subprocess
+`shell=True`, `eval`, `exec`), the `sast` lane also runs Semgrep in taint mode with request sources
+(the Flask request object, and any parameter of a function registered as a route) and those rules'
+sinks. The runner posts the matches with their traces beside the import graph; the platform decides
+each finding's verdict when its record is read, never by a model.
+
+- `reachable` — a taint flow reaches the finding's lines, in a file something imports. The trace
+  (source, intermediate variables, sink) is cited.
+- `unreachable` — only ever the import floor's answer: the file is orphaned. Semgrep OSS taint is
+  intraprocedural, so "no trace" covers every flow through a function in another file, and it is
+  `unknown`, not `unreachable`.
+- `unknown` — everything else, and every finding of a covered rule when Semgrep failed, timed out,
+  was not run, or reported an error for the file.
+- A rule outside the list gets exactly the import floor's verdict (orphaned → `unreachable`, anything
+  else → `unknown`). Nothing here closes or suppresses a finding; `auto_triage` still reads only the
+  import graph.
+
+Graded by `scripts/bench_reachability.py` on the seeded corpus in `bench/reachability/` (stored as
+`.py.txt` so nothing in this repository scans it). On 2026-11-04, with Semgrep 1.97.0, on the eight
+taint-covered findings: the import floor gave 1 decisive verdict, 1 correct (precision 1.00); the
+taint verdict gave 4 decisive verdicts, 4 correct (precision 1.00). The cases are meant to move into
+the spec 23 corpus (`mykronos-bench`) once it is onboarded (TheHub #60742), and be re-graded there.
+
 ### 2.2 Combination-rule discovery
 
 The 9 rules in `patchwork/correlate.py` are hand-written and will always need to be — `BUILT_IN_RULES`
