@@ -267,7 +267,12 @@ def main(argv: list[str] | None = None) -> int:
     the checked-out tree, which the platform does not have and should not
     fetch a repository to get.
 
-        python -m mykronos.reachability . --commit-sha "$SHA"
+        python -m mykronos.reachability . --commit-sha "$SHA" [--taint]
+
+    `--taint` adds a Semgrep taint run for the rules named in
+    `taint_reachability.TAINT_SPECS` (TheHub #60745). It needs `semgrep` on
+    the path, and its failure is recorded as a failed run rather than raised:
+    the import analysis above it must still be reported.
     """
     import argparse
     import json
@@ -276,20 +281,34 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mykronos-reachability", description=__doc__)
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--commit-sha", default="")
+    parser.add_argument(
+        "--taint",
+        action="store_true",
+        help="Also run the Semgrep taint rules and report their matches.",
+    )
+    parser.add_argument("--semgrep-timeout", type=int, default=600)
     args = parser.parse_args(argv)
 
     sources = read_repository(args.root)
     graph = build_graph(sources)
     dead = _orphaned(sources, graph, ENTRY_POINT_GLOBS)
 
+    body: dict[str, object] = {
+        "language": "python",
+        "commit_sha": args.commit_sha,
+        "orphaned_paths": dead,
+        "files_analysed": len(sources),
+        "files_unparseable": len(graph.unparseable),
+    }
+    if args.taint:
+        from mykronos import taint_reachability
+
+        body["taint"] = taint_reachability.run_semgrep(
+            args.root, timeout=args.semgrep_timeout
+        ).as_submission()
+
     json.dump(
-        {
-            "language": "python",
-            "commit_sha": args.commit_sha,
-            "orphaned_paths": dead,
-            "files_analysed": len(sources),
-            "files_unparseable": len(graph.unparseable),
-        },
+        body,
         sys.stdout,
         ensure_ascii=False,
     )

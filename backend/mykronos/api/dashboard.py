@@ -51,6 +51,7 @@ from mykronos import (
     ssdf,
     supply_chain,
     surfaces,
+    taint_reachability,
     test_estate,
     worklist,
 )
@@ -97,6 +98,7 @@ from mykronos.db.models import (
     EnvironmentalScore,
     GatingLaneState,
     JobRun,
+    ReachabilityReport,
     RepoControl,
     RepoOnboarding,
     RepoSurface,
@@ -6587,6 +6589,22 @@ class ExploitabilityOut(BaseModel):
     fix: ExploitFixOut
 
 
+class ReachabilityVerdictOut(BaseModel):
+    """Can request input reach this finding? (TheHub #60745)
+
+    `basis` says which analysis answered. `taint` is a Semgrep taint run, for
+    the rules named in `taint_reachability.TAINT_SPECS`; `import_floor` is the
+    import graph (spec 19 §2.1), for every other rule and for an orphaned
+    file. `unreachable` is only ever the floor's answer, and a failed or
+    missing taint run is `unknown`. `trace` is cited when `reachable`.
+    """
+
+    verdict: Literal["reachable", "unreachable", "unknown"]
+    basis: Literal["taint", "import_floor"]
+    reason: str
+    trace: dict[str, Any] | None = None
+
+
 class FindingRecordOut(BaseModel):
     """One finding, with everything the platform knows about it (B-032).
 
@@ -6614,6 +6632,8 @@ class FindingRecordOut(BaseModel):
     #: its sources (TheHub #60890). Present on every finding: one with no CVE
     #: says so rather than leaving the block out.
     exploitability: ExploitabilityOut | None = None
+    #: Present on every finding; `unknown` where nothing could answer.
+    reachability: ReachabilityVerdictOut | None = None
 
 
 def _severity_here(
@@ -6844,6 +6864,35 @@ async def whole_finding_record(
             fixed_version=(pkg_found or {}).get("fixed_version"),
         )
 
+    # Decided here from the stored report rather than stored per finding, so
+    # the import floor and the taint matches always come from the same run.
+    with request.app.state.db.session() as session:
+        reach_report = (
+            session.execute(
+                select(ReachabilityReport).where(
+                    ReachabilityReport.repo_onboarding_id == onboarding.id
+                )
+            )
+            .scalars()
+            .first()
+            if onboarding is not None
+            else None
+        )
+        reach_verdict = taint_reachability.verdict_for(
+            str(row.get("rule_id") or ""),
+            row.get("file_path"),
+            row.get("line_start"),
+            row.get("line_end"),
+            orphaned=(
+                set(reach_report.orphaned_paths or [])
+                if reach_report is not None and not reach_report.files_unparseable
+                else set()
+            ),
+            taint=taint_reachability.TaintRun.from_submission(
+                reach_report.taint if reach_report is not None else None
+            ),
+        )
+
     finding_out = FindingOut.model_validate(row)
     with request.app.state.db.session() as session:
         finding_out.source_observations = _source_observations(request, session, row)
@@ -6878,6 +6927,7 @@ async def whole_finding_record(
         ),
         package=PackageOut(**pkg_found) if pkg_found else None,
         exploitability=ExploitabilityOut.model_validate(exploit),
+        reachability=ReachabilityVerdictOut(**reach_verdict.as_dict()),
         missing_context=[
             RecordGap(**gap)
             for gap in finding_record.missing_context(

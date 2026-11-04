@@ -1,0 +1,80 @@
+# Seeded reachability corpus (TheHub #60745, spec 19 §2.1).
+#
+# What this grades: given a finding a Semgrep rule pack already reported, does
+# the reachability verdict say whether attacker input can reach it? `truth` is
+# the answer a person reading the corpus gives: `reachable` means request input
+# reaches the sink unsanitised, `unreachable` means it cannot (dead code, a
+# constant or operator configuration, a sanitised value).
+#
+# Why the corpus is `.py.txt` and lives here rather than in mykronos-bench:
+# bench-manifest.example.yaml explains that seeded vulnerabilities inside the
+# platform repository would be ingested as this repository's own findings. A
+# `.txt` file is read by no scanner and by no import graph, so these files are
+# inert until `scripts/bench_reachability.py` copies them out as `.py` into a
+# temporary directory. When mykronos-bench is onboarded (TheHub #60742), these
+# cases are meant to move there and be graded on the real pipeline's output.
+#
+# Each finding below is one the real packs (`p/security-audit` and
+# `p/owasp-top-ten`, semgrep 1.97.0) reported on this corpus, by rule id, path
+# and line. Precision is graded on the taint-covered rules only; the rest are
+# here to show they keep the import floor's verdict.
+
+findings:
+  # --- taint-covered: subprocess-shell-true --------------------------------
+  - rule_id: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
+    path: handlers.py
+    line: 20
+    truth: reachable
+    note: request.args straight into a shell
+  - rule_id: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
+    path: handlers.py
+    line: 31
+    truth: unreachable
+    note: request input, but through shlex.quote
+  - rule_id: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
+    path: handlers.py
+    line: 69
+    truth: unreachable
+    note: the command comes from operator configuration, not the request
+  - rule_id: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
+    path: helpers.py
+    line: 13
+    truth: reachable
+    note: >-
+      a handler passes request input to this helper. Semgrep OSS taint is
+      intraprocedural, so it cannot see this flow; the verdict should be
+      unknown, never unreachable
+  # --- taint-covered: eval-detected / exec-detected ------------------------
+  - rule_id: python.lang.security.audit.eval-detected.eval-detected
+    path: handlers.py
+    line: 53
+    truth: reachable
+    note: request.form into eval
+  - rule_id: python.lang.security.audit.eval-detected.eval-detected
+    path: handlers.py
+    line: 74
+    truth: unreachable
+    note: eval of a value read from the environment at import time
+  - rule_id: python.lang.security.audit.exec-detected.exec-detected
+    path: handlers.py
+    line: 86
+    truth: reachable
+    note: the request body into exec
+  - rule_id: python.lang.security.audit.eval-detected.eval-detected
+    path: legacy.py
+    line: 18
+    truth: unreachable
+    note: a blueprint nothing imports or registers
+  # --- not taint-covered: the import floor's verdict, unchanged ------------
+  - rule_id: python.flask.security.injection.subprocess-injection.subprocess-injection
+    path: handlers.py
+    line: 20
+    truth: reachable
+  - rule_id: python.flask.security.injection.tainted-sql-string.tainted-sql-string
+    path: handlers.py
+    line: 38
+    truth: reachable
+  - rule_id: python.flask.security.injection.os-system-injection.os-system-injection
+    path: legacy.py
+    line: 12
+    truth: unreachable

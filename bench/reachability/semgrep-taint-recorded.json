@@ -1,0 +1,260 @@
+{
+ "version": "1.97.0",
+ "results": [
+  {
+   "check_id": "w.mykronos-taint-shell-command",
+   "path": "handlers.py",
+   "start": {
+    "line": 20
+   },
+   "end": {
+    "line": 20
+   },
+   "extra": {
+    "dataflow_trace": {
+     "taint_source": [
+      "CliLoc",
+      [
+       {
+        "path": "handlers.py",
+        "start": {
+         "line": 19,
+         "col": 15,
+         "offset": 378
+        },
+        "end": {
+         "line": 19,
+         "col": 27,
+         "offset": 390
+        }
+       },
+       "request.args"
+      ]
+     ],
+     "intermediate_vars": [
+      {
+       "location": {
+        "path": "handlers.py",
+        "start": {
+         "line": 19,
+         "col": 5,
+         "offset": 368
+        },
+        "end": {
+         "line": 19,
+         "col": 12,
+         "offset": 375
+        }
+       },
+       "content": "command"
+      }
+     ],
+     "taint_sink": [
+      "CliLoc",
+      [
+       {
+        "path": "handlers.py",
+        "start": {
+         "line": 20,
+         "col": 27,
+         "offset": 425
+        },
+        "end": {
+         "line": 20,
+         "col": 34,
+         "offset": 432
+        }
+       },
+       "command"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "check_id": "w.mykronos-taint-code-eval",
+   "path": "handlers.py",
+   "start": {
+    "line": 53
+   },
+   "end": {
+    "line": 53
+   },
+   "extra": {
+    "dataflow_trace": {
+     "taint_source": [
+      "CliLoc",
+      [
+       {
+        "path": "handlers.py",
+        "start": {
+         "line": 52,
+         "col": 18,
+         "offset": 1263
+        },
+        "end": {
+         "line": 52,
+         "col": 30,
+         "offset": 1275
+        }
+       },
+       "request.form"
+      ]
+     ],
+     "intermediate_vars": [
+      {
+       "location": {
+        "path": "handlers.py",
+        "start": {
+         "line": 52,
+         "col": 5,
+         "offset": 1250
+        },
+        "end": {
+         "line": 52,
+         "col": 15,
+         "offset": 1260
+        }
+       },
+       "content": "expression"
+      }
+     ],
+     "taint_sink": [
+      "CliLoc",
+      [
+       {
+        "path": "handlers.py",
+        "start": {
+         "line": 53,
+         "col": 21,
+         "offset": 1305
+        },
+        "end": {
+         "line": 53,
+         "col": 31,
+         "offset": 1315
+        }
+       },
+       "expression"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "check_id": "w.mykronos-taint-code-eval",
+   "path": "handlers.py",
+   "start": {
+    "line": 86
+   },
+   "end": {
+    "line": 86
+   },
+   "extra": {
+    "dataflow_trace": {
+     "taint_source": [
+      "CliLoc",
+      [
+       {
+        "path": "handlers.py",
+        "start": {
+         "line": 86,
+         "col": 10,
+         "offset": 2015
+        },
+        "end": {
+         "line": 86,
+         "col": 26,
+         "offset": 2031
+        }
+       },
+       "request.get_data"
+      ]
+     ],
+     "intermediate_vars": [],
+     "taint_sink": [
+      "CliLoc",
+      [
+       {
+        "path": "handlers.py",
+        "start": {
+         "line": 86,
+         "col": 10,
+         "offset": 2015
+        },
+        "end": {
+         "line": 86,
+         "col": 40,
+         "offset": 2045
+        }
+       },
+       "request.get_data(as_text=True)"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "check_id": "w.mykronos-taint-code-eval",
+   "path": "legacy.py",
+   "start": {
+    "line": 18
+   },
+   "end": {
+    "line": 18
+   },
+   "extra": {
+    "dataflow_trace": {
+     "taint_source": [
+      "CliLoc",
+      [
+       {
+        "path": "legacy.py",
+        "start": {
+         "line": 18,
+         "col": 21,
+         "offset": 333
+        },
+        "end": {
+         "line": 18,
+         "col": 33,
+         "offset": 345
+        }
+       },
+       "request.args"
+      ]
+     ],
+     "intermediate_vars": [],
+     "taint_sink": [
+      "CliLoc",
+      [
+       {
+        "path": "legacy.py",
+        "start": {
+         "line": 18,
+         "col": 21,
+         "offset": 333
+        },
+        "end": {
+         "line": 18,
+         "col": 41,
+         "offset": 353
+        }
+       },
+       "request.args[\"expr\"]"
+      ]
+     ]
+    }
+   }
+  }
+ ],
+ "errors": [],
+ "paths": {
+  "scanned": [
+   "app.py",
+   "handlers.py",
+   "helpers.py",
+   "legacy.py"
+  ]
+ }
+}

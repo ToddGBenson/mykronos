@@ -1,0 +1,12 @@
+"""Entry point of the seeded reachability corpus (TheHub #60745)."""
+
+from flask import Flask
+
+import handlers
+
+app = Flask(__name__)
+app.register_blueprint(handlers.bp)
+
+
+if __name__ == "__main__":
+    app.run()
