@@ -1930,9 +1930,9 @@ jobs:
                     # summary and reads green on exit 0. ADR 0095 amendment.
                     if command -v timeout >/dev/null 2>&1; then
                       python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
-                        python -m pytest --collect-only tests/unit -q -p no:cacheprovider
+                        python -m pytest tests/unit --collect-only -q -p no:cacheprovider
                     else
-                      python -c "$MEMORY_GUARD" python -m pytest --collect-only tests/unit -q -p no:cacheprovider
+                      python -c "$MEMORY_GUARD" python -m pytest tests/unit --collect-only -q -p no:cacheprovider
                     fi
                   ) > "$1" 2>&1
                   rc=$?
