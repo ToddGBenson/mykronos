@@ -13,6 +13,7 @@
     mykronos self-check
     mykronos host-controls <evidence.json> [--ports-baseline FILE] [--record-ports]
     mykronos briefing [--json]
+    mykronos triage-packet --for-next-sprint [--budget N] [--json]
     mykronos parity <owner/repo>
     mykronos workflows <owner/repo>
     mykronos enable-workflow <owner/repo> <capability>
@@ -254,6 +255,27 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit the briefing as JSON, for a pipeline step rather than a person.",
     )
+
+    triage = sub.add_parser(
+        "triage-packet",
+        help="The pre-sprint security triage packet the operator selects from.",
+    )
+    # Sprints are not measured in days (TheHub #61357): one starts when the
+    # operator starts it and finishes when its work ships. So the packet is
+    # for the next sprint, and there is no --sprint <date>.
+    triage.add_argument(
+        "--for-next-sprint",
+        action="store_true",
+        required=True,
+        help="Build the packet for the next sprint (the only kind there is).",
+    )
+    triage.add_argument(
+        "--budget",
+        type=int,
+        default=None,
+        help="Security stories the next sprint can take; mandatory overflow is stated.",
+    )
+    triage.add_argument("--json", action="store_true", help="Machine-readable output.")
 
     parity = sub.add_parser(
         "parity",
@@ -1678,6 +1700,60 @@ def main(argv: list[str] | None = None) -> int:
             if repeat_sweep is None or repeat_sweep.lanes_inspected == 0:
                 return 1
             return 1 if repeat_sweep.incidents else 0
+
+        if args.command == "triage-packet":
+            # Runs like the briefing: the same operational inputs, so a lane
+            # the briefing calls stalled is an operator item here too.
+            from mykronos import delivery_sources, triage_packet
+            from mykronos.product_owner import HubClient
+            from mykronos.schemas import utcnow as triage_clock
+
+            try:
+                triage_github = _github_factory(settings)
+            except Exception:  # noqa: BLE001 - the packet still prints
+                triage_github = None
+            triage_inputs = briefing_sources.gather(
+                settings,
+                db,
+                catalog,
+                triage_github,
+                TemplateLibrary(settings.workflow_templates_dir),
+            )
+            triage_branches, triage_scanned_by = briefing_sources.onboarding_maps(db)
+            triage_report = briefing_report.build(
+                catalog,
+                default_branches=triage_branches,
+                scanned_by=triage_scanned_by,
+                concourse_token=bool(settings.concourse_api_token),
+                repo_ids=briefing_sources.repo_ids(db),
+                paused_jobs=triage_inputs.paused_jobs,
+                failing_jobs=triage_inputs.failing_jobs,
+                blocked_jobs=triage_inputs.blocked_jobs,
+                workflow_blocked_jobs=triage_inputs.workflow_blocked_jobs,
+                unhealthy_jobs=triage_inputs.unhealthy_jobs,
+                tokens=triage_inputs.tokens,
+                toxic_combinations=triage_inputs.toxic_combinations,
+                toxic_coverage=triage_inputs.toxic_coverage,
+                exposure=triage_inputs.exposure,
+                production_lag=triage_inputs.production_lag,
+            )
+            triage_board = None
+            hub = HubClient.from_settings(settings)
+            if hub is not None:
+                triage_board, _why = asyncio.run(delivery_sources.board(hub))
+            packet = triage_packet.build(
+                catalog,
+                db,
+                now=triage_clock(),
+                report=triage_report,
+                board=triage_board,
+                budget=args.budget,
+            )
+            if args.json:
+                print(json.dumps(packet.to_dict(), indent=2))
+            else:
+                print(triage_packet.render(packet))
+            return 0
 
         if args.command == "briefing":
             # Run after every deploy. The first section is the point of it:
