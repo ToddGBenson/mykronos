@@ -455,22 +455,18 @@ class TestSonnet46IsAnExactId:
         assert not check_ai.is_pinned("claude-sonnet-4-5")
 
     def test_thehubs_shapes_are_not_flagged(self, tmp_path: Path) -> None:
-        write(tmp_path, "config.py", '    claude_model: str = "claude-sonnet-4-6"
-')
+        write(tmp_path, "config.py", '    claude_model: str = "claude-sonnet-4-6"\n')
         write(
             tmp_path,
             "importer.py",
-            'CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-',
+            'CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")\n',
         )
         write(
             tmp_path,
             "docker-compose.yml",
-            "      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
-",
+            "      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}\n",
         )
-        write(tmp_path, "evals/case.py", "x = 1
-")
+        write(tmp_path, "evals/case.py", "x = 1\n")
 
         findings, uses = check_ai.check(tmp_path)
 
