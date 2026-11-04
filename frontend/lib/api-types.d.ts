@@ -4982,6 +4982,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Feedback Status
+         * @description Whether the dashboard can file feedback, so the dialog can say so before
+         *     anything is typed.
+         */
+        get: operations["feedback_status_api_feedback_get"];
+        put?: never;
+        /**
+         * File Feedback
+         * @description File one TheHub backlog story from the dashboard's Feedback dialog.
+         *
+         *     503 when no Hub is configured, and 502 when TheHub refused or could not be
+         *     reached. Every attempt is audit-logged.
+         */
+        post: operations["file_feedback_api_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -7985,6 +8013,43 @@ export interface components {
             /** Checked At */
             checked_at?: string | null;
             fix: components["schemas"]["ExploitFixOut"];
+        };
+        /** FeedbackIn */
+        FeedbackIn: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "bug" | "feature";
+            /** Summary */
+            summary: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Page
+             * @default /
+             */
+            page: string;
+            /**
+             * Release
+             * @default
+             */
+            release: string;
+        };
+        /** FeedbackOut */
+        FeedbackOut: {
+            /** Story Id */
+            story_id: number | null;
+        };
+        /** FeedbackStatusOut */
+        FeedbackStatusOut: {
+            /** Available */
+            available: boolean;
+            /** Reason */
+            reason: string | null;
         };
         /**
          * FindingBatch
@@ -21021,6 +21086,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LibraryPrCheckOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_status_api_feedback_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackStatusOut"];
+                };
+            };
+        };
+    };
+    file_feedback_api_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackOut"];
                 };
             };
             /** @description Validation Error */
