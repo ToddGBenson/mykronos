@@ -679,6 +679,36 @@ class SourceObservationOut(BaseModel):
     status: str | None = None
 
 
+class FixPullRequestOut(BaseModel):
+    """An open dependency-bot pull request that would close a finding (TheHub #60915)."""
+
+    repo_full_name: str
+    number: int
+    url: str
+    title: str
+    package: str
+    to_version: str
+
+
+async def _fix_pull_requests(
+    request: Request, finding_id: str, repo_full_name: str
+) -> tuple[list[FixPullRequestOut], bool]:
+    """(the pull requests, whether GitHub could not be asked) for one finding."""
+    from mykronos import dependency_prs as dep
+
+    findings = dep.package_findings(request.app.state.catalog, finding_id=finding_id)
+    if not findings or not repo_full_name:
+        return [], False
+    installs = dep.installs_of(request.app.state.db, [repo_full_name])
+    if not installs:
+        return [], False
+    prs = await dep.open_bot_prs(request.app.state.github_factory, installs)
+    if prs is None:
+        return [], True
+    linked = dep.fixes_for(findings[0], prs)
+    return [FixPullRequestOut(**dataclasses.asdict(p)) for p in linked], False
+
+
 class FindingOut(BaseModel):
     """One finding as the dashboard serves it.
 
@@ -803,6 +833,17 @@ class FindingOut(BaseModel):
             "Every auto-triage action on this finding, newest first, undone ones "
             "included (TheHub #60888). Filled on the detail route only."
         ),
+    )
+    fix_pull_requests: list[FixPullRequestOut] = Field(
+        default_factory=list,
+        description=(
+            "Open dependency-bot pull requests that bump this finding's package to "
+            "its fixed version or above (TheHub #60915). Filled on the detail route only."
+        ),
+    )
+    fix_pull_requests_unread: bool = Field(
+        default=False,
+        description="True when GitHub could not be asked, so an empty list means nothing.",
     )
 
 
@@ -3618,6 +3659,11 @@ class BriefingClassOut(BaseModel):
     #: Null where no single request acts on the group. Render the absence
     #: rather than a disabled button (D-098).
     action: BriefingActionOut | None
+    #: Open findings an open dependency-bot pull request would close (TheHub
+    #: #60915): the fix is waiting for review.
+    fix_waiting_for_review: int = 0
+    #: Those pull requests, as `owner/repo#number`.
+    waiting_pull_requests: list[str] = Field(default_factory=list)
 
 
 class CiLaneOut(BaseModel):
@@ -3825,6 +3871,7 @@ async def post_deployment_briefing(
         toxic_coverage=operational.toxic_coverage,
         exposure=operational.exposure,
         production_lag=operational.production_lag,
+        dependency_prs=operational.dependency_prs,
         languages=languages,
         sast_tools=sast_tools,
         scanned_by=_scanned_by(request),
@@ -5551,6 +5598,10 @@ async def finding_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No finding {finding_id}."
         )
     out = FindingOut.model_validate(record)
+    # An open bot PR that would close it (TheHub #60915).
+    out.fix_pull_requests, out.fix_pull_requests_unread = await _fix_pull_requests(
+        request, finding_id, str(record.get("repo_full_name") or "")
+    )
     # What the platform did to it by itself, so the undo sits beside the
     # status it explains (TheHub #60888).
     with request.app.state.db.session() as session:
@@ -6634,6 +6685,10 @@ class FindingRecordOut(BaseModel):
     exploitability: ExploitabilityOut | None = None
     #: Present on every finding; `unknown` where nothing could answer.
     reachability: ReachabilityVerdictOut | None = None
+    #: Open dependency-bot pull requests that would close it (TheHub #60915).
+    fix_pull_requests: list[FixPullRequestOut] = Field(default_factory=list)
+    #: True when GitHub could not be asked, so an empty list means nothing.
+    fix_pull_requests_unread: bool = False
 
 
 def _severity_here(
@@ -6896,7 +6951,10 @@ async def whole_finding_record(
     finding_out = FindingOut.model_validate(row)
     with request.app.state.db.session() as session:
         finding_out.source_observations = _source_observations(request, session, row)
+    fix_prs, fix_prs_unread = await _fix_pull_requests(request, finding_id, repo_full_name)
     return FindingRecordOut(
+        fix_pull_requests=fix_prs,
+        fix_pull_requests_unread=fix_prs_unread,
         finding=finding_out,
         repo_full_name=repo_full_name,
         severity_here=_severity_here(request, row, profile),

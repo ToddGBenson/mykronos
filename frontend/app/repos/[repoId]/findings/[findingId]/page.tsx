@@ -29,6 +29,7 @@ import {
   RescoreSteps,
 } from "@/components/finding-workbench";
 import { FindingDecision } from "@/components/finding-decision";
+import { FixPullRequests } from "@/components/fix-pull-requests";
 import { PinRegressionTest } from "@/components/pin-regression-test";
 import { RemediationAction } from "@/components/remediation-action";
 import { defaultScope, recommendAction } from "@/lib/finding-decision";
@@ -252,6 +253,11 @@ export default async function FindingRecordPage({
                 <Label as="h2">What to do about it</Label>
               </div>
               <div className="px-3 py-2.5">
+                {/* A fix waiting for review comes first (TheHub #60915). */}
+                <FixPullRequests
+                  prs={result.data.fix_pull_requests ?? []}
+                  unread={result.data.fix_pull_requests_unread ?? false}
+                />
                 {fix ? (
                   <>
                     <p className="mb-2 flex flex-wrap items-baseline gap-2 text-[14px]">

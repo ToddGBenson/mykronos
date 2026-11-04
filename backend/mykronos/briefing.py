@@ -688,6 +688,12 @@ class ClassSummary:
     #: OS (#712). Those findings will never get a package fix, which is a
     #: different instruction from "no fix yet": the image needs a newer base.
     eol_images: list[tuple[str, str, int]] = field(default_factory=list)
+    #: Open findings an open dependency-bot pull request would close (TheHub
+    #: #60915): the fix exists and is waiting for review, which is neither
+    #: "no published fix" nor work nobody has started.
+    fix_waiting_for_review: int = 0
+    #: Those pull requests, as `owner/repo#number`.
+    waiting_pull_requests: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1784,6 +1790,9 @@ def build(
     exposure: list[dict[str, Any]] | None = None,
     production_lag: list[ProductionLag] | None = None,
     probe_setup: list[dict[str, Any]] | None = None,
+    # Open dependency-bot pull requests (TheHub #60915). None: not read, and
+    # then nothing is counted as waiting for review.
+    dependency_prs: list[Any] | None = None,
 ) -> Briefing:
     """The whole briefing, from the lake.
 
@@ -1817,6 +1826,17 @@ def build(
         if summary.unactionable
     }
 
+    waiting: dict[str, int] = {}
+    waiting_refs: dict[str, set[str]] = {}
+    if dependency_prs:
+        from mykronos import dependency_prs as dep
+
+        for finding in dep.package_findings(catalog, asset_id=asset_id):
+            linked = dep.fixes_for(finding, dependency_prs)
+            if linked:
+                waiting[finding.capability] = waiting.get(finding.capability, 0) + 1
+                waiting_refs.setdefault(finding.capability, set()).update(p.ref for p in linked)
+
     totals: dict[str, int] = {}
     for (_, capability), count in open_counts.items():
         totals[capability] = totals.get(capability, 0) + count
@@ -1829,6 +1849,8 @@ def build(
             concentrated_in=_concentration(catalog, capability, asset_id=asset_id),
             action=CLASS_ACTIONS.get(capability),
             no_fix_available=no_fix.get(capability, 0),
+            fix_waiting_for_review=waiting.get(capability, 0),
+            waiting_pull_requests=sorted(waiting_refs.get(capability, set())),
             eol_images=(
                 _eol_images(catalog, asset_id=asset_id) if capability == "containers" else []
             ),
@@ -2650,6 +2672,17 @@ def render(briefing: Briefing) -> str:
             lines.append(
                 f"        {entry.no_fix_available} of these have no published fix — "
                 "nothing to upgrade to."
+            )
+        if entry.fix_waiting_for_review:
+            lines += textwrap.wrap(
+                f"{entry.fix_waiting_for_review} of these have a fix waiting for review: "
+                + ", ".join(entry.waiting_pull_requests)
+                + ". Review and merge it rather than accepting the risk.",
+                72,
+                initial_indent="        ",
+                subsequent_indent="          ",
+                break_long_words=False,
+                break_on_hyphens=False,
             )
         for image, base, count in entry.eol_images:
             lines += textwrap.wrap(

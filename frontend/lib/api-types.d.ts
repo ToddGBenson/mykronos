@@ -5517,6 +5517,13 @@ export interface components {
                 number
             ][];
             action: components["schemas"]["BriefingActionOut"] | null;
+            /**
+             * Fix Waiting For Review
+             * @default 0
+             */
+            fix_waiting_for_review: number;
+            /** Waiting Pull Requests */
+            waiting_pull_requests?: string[];
         };
         /** BriefingLineOut */
         BriefingLineOut: {
@@ -8256,6 +8263,17 @@ export interface components {
              * @description Every auto-triage action on this finding, newest first, undone ones included (TheHub #60888). Filled on the detail route only.
              */
             auto_triage?: components["schemas"]["AutoTriageActionOut"][];
+            /**
+             * Fix Pull Requests
+             * @description Open dependency-bot pull requests that bump this finding's package to its fixed version or above (TheHub #60915). Filled on the detail route only.
+             */
+            fix_pull_requests?: components["schemas"]["FixPullRequestOut"][];
+            /**
+             * Fix Pull Requests Unread
+             * @description True when GitHub could not be asked, so an empty list means nothing.
+             * @default false
+             */
+            fix_pull_requests_unread: boolean;
         };
         /**
          * FindingRecordOut
@@ -8278,6 +8296,13 @@ export interface components {
             missing_context: components["schemas"]["RecordGap"][];
             exploitability?: components["schemas"]["ExploitabilityOut"] | null;
             reachability?: components["schemas"]["ReachabilityVerdictOut"] | null;
+            /** Fix Pull Requests */
+            fix_pull_requests?: components["schemas"]["FixPullRequestOut"][];
+            /**
+             * Fix Pull Requests Unread
+             * @default false
+             */
+            fix_pull_requests_unread: boolean;
         };
         /**
          * FindingStatus
@@ -8396,6 +8421,24 @@ export interface components {
             closes: number;
             /** Rules */
             rules: string[];
+        };
+        /**
+         * FixPullRequestOut
+         * @description An open dependency-bot pull request that would close a finding (TheHub #60915).
+         */
+        FixPullRequestOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Number */
+            number: number;
+            /** Url */
+            url: string;
+            /** Title */
+            title: string;
+            /** Package */
+            package: string;
+            /** To Version */
+            to_version: string;
         };
         /** GateCheckOut */
         GateCheckOut: {

@@ -55,6 +55,8 @@ class OperationalInputs:
     production_lag: list[briefing_report.ProductionLag] | None = None
     #: Every active repository's probe setup, tokens left out (TheHub #60918).
     probe_setup: list[dict[str, Any]] | None = None
+    #: Open dependency-bot pull requests (TheHub #60915). None: not read.
+    dependency_prs: list[Any] | None = None
 
 
 def onboarding_maps(db: Any) -> tuple[dict[str, str], dict[str, str]]:
@@ -307,6 +309,15 @@ def gather(
             )
         except Exception:  # noqa: BLE001 - a briefing must not die on GitHub
             logger.debug("Could not read GitHub workflow_run chains")
+        # Dependency-bot pull requests, for "fix waiting for review" (#60915).
+        try:
+            from mykronos import dependency_prs
+
+            found.dependency_prs = asyncio.run(
+                dependency_prs.open_bot_prs(github_factory, dependency_prs.installs_of(db))
+            )
+        except Exception:  # noqa: BLE001 - a briefing must not die on GitHub
+            logger.debug("Could not read dependency-bot pull requests")
 
     # Job health (#409). The assessment belongs to `platform_health`, which
     # the API surface already uses -- a second copy of "is this job late" is a

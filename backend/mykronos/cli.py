@@ -1785,6 +1785,7 @@ def main(argv: list[str] | None = None) -> int:
                 toxic_coverage=operational.toxic_coverage,
                 exposure=operational.exposure,
                 production_lag=operational.production_lag,
+                dependency_prs=operational.dependency_prs,
             )
             if args.json:
                 print(json.dumps(dataclasses.asdict(report), default=str, indent=2))

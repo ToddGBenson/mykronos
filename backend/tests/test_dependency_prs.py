@@ -27,7 +27,7 @@ from mykronos.github.client import GitHubError, PullRequest
 from tests.conftest import REPO, dependency_finding, post_findings, post_scan
 from tests.test_onboarding import onboard
 
-GROUP_BODY = """Bumps the pip-minor-patch group in /backend with 3 updates: [pypdf](https://example.test), [fastapi](https://example.test) and [httpx](https://example.test).
+GROUP_BODY = """Bumps the pip-minor-patch group in /backend with 3 updates: pypdf, fastapi, httpx.
 
 Updates `pypdf` from 6.20.1 to 6.21.1
 - [Release notes](https://example.test)
@@ -131,6 +131,10 @@ class TestWhichFindingsItCloses:
         assert fixes_for(_finding(fixed=fixed), [_dep_pr(Bump("pypdf", None, "6.21.1"))]) == []
 
 
+def _pypdf_finding() -> dict[str, Any]:
+    return dependency_finding(package_name="pypdf", raw_finding_json={"fixed_version": "6.21.0"})
+
+
 class TestTheBriefing:
     def test_a_class_counts_its_fixes_waiting_for_review(
         self, client: TestClient, auth: dict[str, str], catalog: Any, run_compaction: Any
@@ -171,7 +175,7 @@ class TestTheBriefing:
         post_findings(
             client,
             auth,
-            [dependency_finding(package_name="pypdf", raw_finding_json={"fixed_version": "6.21.0"})],
+            [_pypdf_finding()],
         )
         run_compaction()
 
@@ -190,7 +194,7 @@ class TestTheFindingDetail:
         post_findings(
             client,
             auth,
-            [dependency_finding(package_name="pypdf", raw_finding_json={"fixed_version": "6.21.0"})],
+            [_pypdf_finding()],
         )
         run_compaction()
         return str(catalog.query("SELECT finding_id FROM findings")[0][0])
