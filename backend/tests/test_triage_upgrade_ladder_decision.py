@@ -23,13 +23,15 @@ CHILDREN = ["#60742", "#60743", "#60744", "#60745", "#60746", "#60747", "#60748"
 def _decision() -> str:
     matches = sorted(DIRECTORY.glob("D-175-*.md"))
     assert matches, "D-175 (the #60736 deterministic-first ladder) is not recorded"
-    return matches[0].read_text(encoding="utf-8")
+    # Prose wraps and bolds freely; compare words, not layout.
+    text = matches[0].read_text(encoding="utf-8").replace("**", "")
+    return re.sub(r"\s+", " ", text)
 
 
 def test_the_ladder_names_every_child_in_order() -> None:
     text = _decision()
     positions = [text.find(child) for child in CHILDREN]
-    assert all(p >= 0 for p in positions), dict(zip(CHILDREN, positions))
+    assert all(p >= 0 for p in positions), dict(zip(CHILDREN, positions, strict=True))
     assert positions == sorted(positions), "children are not listed in the decided order"
 
 
