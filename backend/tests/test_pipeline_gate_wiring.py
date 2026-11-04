@@ -201,6 +201,12 @@ EXPLAINED_DIVERGENCE = {
         "the running demo, behind `deploy-demo` like `api-inventory`. TheHub's "
         "read-only mirror gains it on the next export after set-pipeline"
     ),
+    "container-tiers": (
+        "ours only, added for TheHub #61321: deploy.sh's integration and unit "
+        "tiers in the commit's own image, gating nothing in this file (TheHub's "
+        "risk gate reads it, config/release-gates.yml). TheHub's read-only "
+        "mirror gains it on the next export after set-pipeline"
+    ),
     "pr-gates": (
         "ours only, added for TheHub #61102: the deploy's pip-audit gate and "
         "pipeline-shape tests on open pull request heads, gating nothing in "

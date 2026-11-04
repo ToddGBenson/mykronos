@@ -64,6 +64,9 @@ INFRA_TASKS = {
 OOM_TASKS = {
     ("thehub.yml", "unit", "pytest"),
     ("thehub.yml", "post-merge", "grade"),
+    # TheHub #61321: the deploy's tiers in the commit's image. It installs no
+    # uploader, and writes memory-infra only when a tier was killed for memory.
+    ("thehub.yml", "container-tiers", "tiers"),
 }
 
 
