@@ -40,7 +40,14 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
-from mykronos import control_observations, environment, inventory, netassess, premise_monitor
+from mykronos import (
+    control_observations,
+    environment,
+    inventory,
+    netassess,
+    premise_monitor,
+    suppressions,
+)
 from mykronos.adminauth import ActorKind, Principal, Role, current_principal
 from mykronos.aegis import AEGIS_CHECK_RUN_NAME, assess, render_check_run_summary
 from mykronos.aegis import to_row as aegis_row
@@ -1020,11 +1027,58 @@ async def ingest_raw_output(
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(body)
+    _record_suppressions(request, token, scan_run_id, capability.value, safe_name, body)
 
     return RawAccepted(
         raw_output_ref=str(destination.relative_to(settings.datalake_dir).as_posix()),
         bytes_written=len(body),
     )
+
+
+#: Archive names read for in-repo suppressions (TheHub #60963). Anything else
+#: is archived and not parsed: a log or an SBOM has none to report.
+_SARIF_SUFFIXES = (".sarif", ".json")
+
+
+def _record_suppressions(
+    request: Request,
+    token: Resolution,
+    scan_run_id: str,
+    capability: str,
+    filename: str,
+    body: bytes,
+) -> None:
+    """Record what an archived SARIF says the repository silenced itself.
+
+    Never fails the upload: the archive is already written, and a record that
+    could not be kept is a gap in a list, not lost evidence.
+    """
+    if not filename.lower().endswith(_SARIF_SUFFIXES):
+        return
+    from mykronos.adapters.sarif import sarif_document, sarif_tools, suppressions_in
+
+    document = sarif_document(body)
+    if document is None:
+        return
+    try:
+        database = request.app.state.db
+        with database.session() as session:
+            suppressions.record(
+                session,
+                repo_full_name=token.repo_full_name,
+                capability=capability,
+                scan_run_id=scan_run_id,
+                tools=sarif_tools(document),
+                records=suppressions_in(document),
+                now=utcnow(),
+            )
+    except Exception as exc:  # noqa: BLE001 - the archive must stand regardless
+        logger.warning(
+            "Could not record suppressions for %s scan %s: %s",
+            token.repo_full_name,
+            scan_run_id,
+            type(exc).__name__,
+        )
 
 
 def _safe_segment(value: str) -> str:

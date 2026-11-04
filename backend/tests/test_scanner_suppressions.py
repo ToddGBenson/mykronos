@@ -277,3 +277,23 @@ class TestTheRoute:
         repo_id = str(onboard(client, admin_auth).json()["id"])
 
         assert _list(client, viewer_auth, repo_id).status_code == 200
+
+
+class TestUntrustedInput:
+    def test_an_oversized_rule_id_is_truncated_not_dropped(self) -> None:
+        """Postgres enforces the column lengths; one long id must not lose the archive."""
+        long_rule = _result(rule="r" * 2000, suppression=_nosemgrep())
+        records = suppressions_from_sarif(_sarif(long_rule))
+
+        assert len(records[0].rule_id) == 512
+
+    def test_one_archive_keeps_at_most_the_cap(
+        self, client: TestClient, admin_auth: dict[str, str], token: str, monkeypatch: Any
+    ) -> None:
+        from mykronos import suppressions
+
+        monkeypatch.setattr(suppressions, "MAX_PER_ARCHIVE", 3)
+        repo_id = str(onboard(client, admin_auth).json()["id"])
+        _raw(client, token, _sarif(*(_result(line=n, suppression=_nosemgrep()) for n in range(10))))
+
+        assert len(_list(client, admin_auth, repo_id).json()["suppressions"]) == 3

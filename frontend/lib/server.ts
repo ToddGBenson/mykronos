@@ -57,6 +57,7 @@ import {
   type WorkflowsPage,
 } from "./api";
 import type { paths } from "./api-types";
+import type { RepoSuppressions } from "./suppressions";
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -651,6 +652,22 @@ export async function getSurfaces(repoId: string): Promise<Result<RepoSurfaces>>
 }
 
 /** Rules with no published CVSS vector, for one repository (TheHub #60832). */
+/** What the repository silenced itself, with each expiry (TheHub #60963). */
+export async function getRepoSuppressions(repoId: string): Promise<Result<RepoSuppressions>> {
+  try {
+    const { data, response } = await backendClient().GET(
+      "/api/dashboard/repos/{repo_id}/suppressions",
+      { params: { path: { repo_id: repoId } }, cache: "no-store" },
+    );
+    if (!data) {
+      return { ok: false, error: describe(response, "Could not load the suppressions") };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function getRepoRiskAcceptances(
   repoId: string,
   filters: { state?: string; severity?: string; effective?: string } = {},
