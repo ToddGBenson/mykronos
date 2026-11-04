@@ -593,25 +593,41 @@ scope:
 # compare the shadow verdicts with the live ones, and with gate_outcome where
 # a pull request's merge was recorded.
 #
-# Going live is a separate pull request, and must not happen until:
-#   1. at least 30 days of shadow decisions exist across every onboarded
-#      repository with environmental scores, and the report has been read;
+# Going live is per repository (TheHub #60904; epic #60882, operator
+# decision 2026-10-22: two weeks of shadow from 2026-10-22, review
+# 2026-11-05). Going live is a separate pull request for each repository,
+# adding its record to `live_repos` below, and must not happen until:
+#   1. at least 14 days of shadow decisions exist for the repository, some
+#      counting a finding by a current environmental score, and the report
+#      (`mykronos oracle shadow-report --days 30`, `by_repo`) has been read;
 #   2. every decision where shadow and live differ has been reviewed, and no
 #      reviewed case lowers a verdict on facts a person would not sign;
 #   3. no shadow `go` sits on a decision whose live verdict was `no_go`
-#      because of a KEV-listed or toxic-combination term (the safety rules
-#      above make this impossible by construction; the report must show it);
+#      (the safety rules above make this impossible for KEV-listed and
+#      toxic-combination terms by construction; the report shows it);
 #   4. the environmental scores are being refreshed daily (`environment` job
 #      green for 14 consecutive days), so lapsed facts revert on time.
-# That PR adds `mode: live`, switching the finding bands to effective_severity,
-# and trims the risk_profile points that would then count the same fact twice:
+# The report's `comparison_holds` checks 1 (days and scores) and 3; 2 and 4
+# are for the person approving the switch.
+#
+# A switched repository's decisions count findings by effective_severity
+# (the shadow's recount, KEV floor and toxic max included) and trim the
+# risk_profile points that would then count the same fact twice:
 # `internet_facing_points` (exposure already moves MAV) and the
-# data_classification_points (classification already sets CR) - reduced or
-# zeroed for repositories whose findings carry environmental scores, kept for
-# those that do not. It bumps `version` and re-baselines the golden values.
-# Not implemented here on purpose.
+# data_classification_points (classification already sets CR) - zeroed
+# where at least one finding carries a current environmental score, kept
+# where none does. Each decision records the switch, the scanner-counted
+# score it replaced and what was trimmed in inputs_snapshot.environmental.
+# live_switch. Every repository not listed scores exactly as in shadow.
+#
+# Each entry is the record of the switch, and every field is required:
+#   - repo: owner/name
+#     switched_on: YYYY-MM-DD   # the day the switch PR is approved
+#     approved_by: <the person who approved it>
+#     comparison: <the report it rests on: window, differences reviewed>
 environmental:
   mode: shadow
+  live_repos: []
 
 # ---------------------------------------------------------------------------
 # Auto-triage (TheHub #60888, D-169; operator decision 2026-10-22)

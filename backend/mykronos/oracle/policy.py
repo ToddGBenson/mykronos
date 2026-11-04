@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -181,11 +181,11 @@ class ToxicCombinationsPolicy:
     critical_forces_no_go: bool
 
 
-#: The modes `environmental.mode` accepts. `live` is deliberately absent: the
-#: switch that lets environmental severity move a verdict is a separate,
-#: reviewed change (TheHub #60830, decision D2), and a policy file that asks
-#: for it before the code exists must fail at load rather than quietly run in
-#: shadow while its author believes it is live.
+#: The modes `environmental.mode` accepts. `live` is deliberately absent: a
+#: verdict moves only for a repository listed in `environmental.live_repos`
+#: with its switch record (TheHub #60904), never for all at once, and a
+#: policy file that asks for a global `live` must fail at load rather than
+#: quietly run in shadow while its author believes it is live.
 ENVIRONMENTAL_MODES = ("off", "shadow")
 
 
@@ -206,9 +206,103 @@ class EnvironmentalPolicy:
 
     mode: str = "off"
 
+    #: TheHub #60904. The repositories whose decisions count findings by
+    #: effective severity, each with the record of who switched it, when, and
+    #: on which comparison. Empty: every repository is shadow only.
+    live_repos: tuple[LiveRepo, ...] = ()
+
     @property
     def shadow(self) -> bool:
         return self.mode == "shadow"
+
+    def live_for(self, repo_full_name: str) -> LiveRepo | None:
+        """The switch record for this repository, or None while it is shadow only."""
+        for record in self.live_repos:
+            if record.repo == repo_full_name:
+                return record
+        return None
+
+
+@dataclass(frozen=True)
+class LiveRepo:
+    """One repository switched to environmental scoring (TheHub #60904).
+
+    Epic #60882, operator decision 2026-10-22: environmental scoring goes live
+    repository by repository, where the two-week shadow comparison held. The
+    entry *is* the record: who approved it, the day it took effect, and the
+    comparison it rests on. Every decision for the repository copies it into
+    `inputs_snapshot.environmental.live_switch`.
+    """
+
+    repo: str
+    switched_on: date
+    approved_by: str
+    comparison: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "repo": self.repo,
+            "switched_on": self.switched_on.isoformat(),
+            "approved_by": self.approved_by,
+            "comparison": self.comparison,
+        }
+
+
+#: The fields a `live_repos` entry must carry; none may be empty.
+LIVE_REPO_FIELDS = ("repo", "switched_on", "approved_by", "comparison")
+
+
+def _live_repos(raw: Any, mode: str) -> tuple[LiveRepo, ...]:
+    """`environmental.live_repos`, validated (TheHub #60904)."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise PolicyError("environmental.live_repos must be a list of switch records.")
+    if raw and mode != "shadow":
+        raise PolicyError(
+            "environmental.live_repos needs environmental.mode: shadow. A switched "
+            "repository is scored by the shadow's count; with the shadow "
+            f"{mode!r} there is nothing to go live on."
+        )
+    records: list[LiveRepo] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(raw):
+        where = f"environmental.live_repos[{index}]"
+        if not isinstance(entry, dict):
+            raise PolicyError(f"{where} must be a mapping with {', '.join(LIVE_REPO_FIELDS)}.")
+        values: dict[str, str] = {}
+        for name in LIVE_REPO_FIELDS:
+            value = entry.get(name)
+            if value is None or not str(value).strip():
+                raise PolicyError(
+                    f"{where}.{name} is required: a repository is switched with a "
+                    "record of who approved it, when, and on which comparison."
+                )
+            values[name] = str(value).strip()
+        if "/" not in values["repo"]:
+            raise PolicyError(f"{where}.repo must be owner/name, got {values['repo']!r}.")
+        try:
+            switched_on = date.fromisoformat(values["switched_on"])
+        except ValueError as exc:
+            raise PolicyError(
+                f"{where}.switched_on must be a date (YYYY-MM-DD), got "
+                f"{values['switched_on']!r}."
+            ) from exc
+        if values["repo"] in seen:
+            raise PolicyError(
+                f"environmental.live_repos lists {values['repo']} more than once; one "
+                "repository has one switch record."
+            )
+        seen.add(values["repo"])
+        records.append(
+            LiveRepo(
+                repo=values["repo"],
+                switched_on=switched_on,
+                approved_by=values["approved_by"],
+                comparison=values["comparison"],
+            )
+        )
+    return tuple(records)
 
 
 @dataclass(frozen=True)
@@ -834,7 +928,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             scope.get("exclude_tool_images", False), "scope.exclude_tool_images"
         ),
         raw=document,
-        environmental=EnvironmentalPolicy(mode=environmental_mode),
+        environmental=EnvironmentalPolicy(
+            mode=environmental_mode,
+            live_repos=_live_repos(environmental_raw.get("live_repos"), environmental_mode),
+        ),
         lanes_required_per_commit=tuple(str(lane) for lane in lanes_raw),
         auto_triage=_auto_triage(document.get("auto_triage")),
     )
