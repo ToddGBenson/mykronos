@@ -6,8 +6,13 @@ nothing about delivery. The four DORA metrics are computed from two inputs:
 
 - **TheHub's deploy record** (`GET /api/devops/deploys`). A production deploy
   is a run TheHub's deploy.sh made (`trigger_source: deploy_sh`) whose
-  `deploy_target` stage succeeded. Concourse test runs and attempts refused
-  before the target are not deploys. Only TheHub records its own deploys.
+  `deploy` stage, the one that ships to production, succeeded. Its
+  `deploy_target` stage is only target selection, before anything is built,
+  so it decides nothing here (review of #1117). Concourse test runs, runs
+  that died before `deploy`, and a skipped `deploy` are not deploys. A
+  successful run with no `deploy` stage at all predates deploy.sh recording
+  it, and cannot be told apart from a deploy: the record is judged only from
+  after the newest such run. Only TheHub records its own deploys.
   MyKronos keeps only the running revision (D-145), so every other repository
   lacks a deploy record. That gap is named, never counted as zero deploys.
 - **The lake's first-seen time of each commit**: the earliest scan of the sha
@@ -19,8 +24,8 @@ The metrics, over 30 and 90 days:
 - *Deploy frequency*: production deploys per week.
 - *Lead time for changes*: median hours from the deployed commit's first-seen
   time to the deploy finishing.
-- *Change failure rate*: % of production deploys that failed after reaching
-  the target, or whose `rollback` stage ran.
+- *Change failure rate*: % of production deploys that reached `deploy` and
+  then failed (or were aborted), or whose `rollback` stage ran.
 - *Time to restore*: DORA's "failed deployment recovery time", the median
   hours from a change failure to the next production deploy that did not
   fail. Hub incidents are not used: they carry no repository, and most are
@@ -78,13 +83,13 @@ class Window(BaseModel):
 
 DEFINITIONS = {
     "deploy_frequency": (
-        "Production deploys per week: TheHub deploy.sh runs that reached deploy_target."
+        "Production deploys per week: TheHub deploy.sh runs whose deploy stage succeeded."
     ),
     "lead_time": (
         "Median hours from the deployed commit's first scan in the lake to the deploy finishing."
     ),
     "change_failure_rate": (
-        "% of production deploys that failed after deploy_target, or rolled back."
+        "% of production deploys that failed after the deploy stage, or rolled back."
     ),
     "recovery_time": (
         "Median hours from a change failure to the next production deploy that did not fail."
@@ -99,6 +104,9 @@ class DeployRun:
     finished_at: datetime | None
     reached_production: bool
     failed: bool
+    #: False for a successful run with no `deploy` stage: it predates the
+    #: stage being recorded, so whether it shipped is not known.
+    judged: bool = True
 
 
 @dataclass
@@ -138,16 +146,19 @@ def parse_runs(items: Iterable[Any]) -> list[DeployRun]:
             continue
         stages = item.get("stage_summary")
         stages = stages if isinstance(stages, dict) else {}
-        reached = str(stages.get("deploy_target") or "") == "success"
+        reached = str(stages.get("deploy") or "") == "success"
         rollback = str(stages.get("rollback") or "").lower()
         status = str(item.get("final_status") or "")
+        judged = not (status == "success" and "deploy" not in stages)
         out.append(
             DeployRun(
                 sha=str(item.get("sha") or item.get("deploy_id") or "").lower(),
                 started_at=started,
                 finished_at=_time(item.get("finished_at")),
                 reached_production=reached,
-                failed=reached and (status == "failed" or rollback not in _NOT_RUN),
+                failed=reached
+                and (status in ("failed", "aborted") or rollback not in _NOT_RUN),
+                judged=judged,
             )
         )
     return out
@@ -162,10 +173,12 @@ def _none(unit: str, lacks: str) -> Metric:
 
 
 def _first_seen(first_seen: Mapping[str, datetime], sha: str) -> datetime | None:
+    if not sha:
+        return None
     if sha in first_seen:
         return first_seen[sha]
     for known, at in first_seen.items():
-        if known and (known.startswith(sha) or sha.startswith(known)):
+        if known and len(known) >= 7 and (known.startswith(sha) or sha.startswith(known)):
             return at
     return None
 
@@ -193,6 +206,14 @@ def window(
             "TheHub's deploy record reaches back only to "
             f"{deploys.covers_from.date().isoformat()}, "
             f"not to the start of this {days}-day window"
+        )
+
+    unjudged = [r.started_at for r in deploys.runs if not r.judged]
+    if unjudged and max(unjudged) >= since:
+        return lacking(
+            "TheHub's deploy record names the deploy stage only after "
+            f"{max(unjudged).date().isoformat()}: an earlier successful run cannot be "
+            "told apart from a production deploy"
         )
 
     every = sorted((r for r in deploys.runs if r.reached_production), key=lambda r: r.started_at)
@@ -313,28 +334,38 @@ async def hub_deploy_source(
             break
         if len(batch) < page:
             break
+    if not items:
+        return DeploySource(runs=None, lacks="no deploys recorded in TheHub's deploy record")
     covers_from = None if reached else (oldest or utcnow())
     return DeploySource(runs=parse_runs(items), covers_from=covers_from)
 
 
 def first_seen_of(catalog: Any, repo_full_name: str, shas: Iterable[str]) -> dict[str, datetime]:
-    """The earliest scan of each sha in the lake: the delivery ledger's first_seen."""
-    wanted = sorted({s.lower() for s in shas if s})
+    """The earliest scan of each sha in the lake: the delivery ledger's first_seen.
+
+    Matched by prefix: deploy.sh records 12 characters and the lake stores
+    40, so an exact match never finds one (review of #1117). Keyed by the
+    sha as asked. A prefix shorter than 7 characters matches nothing.
+    """
+    wanted = sorted({s.lower() for s in shas if s and len(s) >= 7})
     if not wanted:
         return {}
-    marks = ", ".join("?" for _ in wanted)
+    clauses = " OR ".join("starts_with(lower(commit_sha), ?)" for _ in wanted)
     rows = catalog.query(
         f"""
         SELECT lower(commit_sha), MIN(started_at)
         FROM scan_runs
-        WHERE repo_full_name = ? AND lower(commit_sha) IN ({marks})
+        WHERE repo_full_name = ? AND ({clauses})
         GROUP BY lower(commit_sha)
         """,
         [repo_full_name, *wanted],
     )
     out: dict[str, datetime] = {}
-    for sha, at in rows:
+    for full, at in rows:
         moment = _time(at)
-        if moment is not None:
-            out[str(sha)] = moment
+        if moment is None:
+            continue
+        for sha in wanted:
+            if str(full).startswith(sha) and (sha not in out or moment < out[sha]):
+                out[sha] = moment
     return out
