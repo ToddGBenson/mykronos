@@ -41,6 +41,8 @@ WRITER_ROUTES: frozenset[str] = frozenset(
         "PATCH /api/repos/{repo_id}/capabilities",
         "DELETE /api/repos/{repo_id}",
         "POST /api/repos/{repo_id}/scan",
+        # TheHub #60911: an agent raises what it sees, attributed as itself.
+        "POST /api/dashboard/raise",
         "GET /api/repos/{repo_id}/workflows",
         "PUT /api/repos/{repo_id}/workflows/{capability}/enable",
         "PUT /api/repos/{repo_id}/workflows/{capability}/disable",
