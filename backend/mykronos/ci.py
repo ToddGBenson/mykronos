@@ -2357,6 +2357,16 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "post-merge",
         "grades the develop tip as it landed, reports a verdict rather than findings",
     ),
+    # [TheHub #61321] Runs deploy.sh's integration and unit tiers in the
+    # commit's own image, with production's layout and a production-shaped
+    # env, so a commit that would fail the deploy after the swap is refused
+    # before it. Uploads nothing: `unit` already produces the `unit`
+    # capability, and TheHub's risk gate reads this job's verdict directly.
+    (
+        (THEHUB,),
+        "container-tiers",
+        "runs the deploy's test tiers in the commit's image, reports a verdict, not findings",
+    ),
     # [TheHub #61102] Runs the deploy's pip-audit gate and the pipeline-shape
     # tests on open pull request heads, and reports the verdict as the
     # `Concourse / thehub` check on that head. It uploads nothing: a pull
