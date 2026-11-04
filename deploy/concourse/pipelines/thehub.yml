@@ -1615,9 +1615,9 @@ jobs:
   # anywhere.
   - name: post-merge
     public: true
-    # `pytest-memory` as well as its lane: it imports the full unit tier (a
-    # collect-only run since TheHub #61321, which still loads every test
-    # module), and it must never run beside `unit` or `container-tiers`
+    # `pytest-memory` as well as its lane: it imports every test module of
+    # the unit, integration and security tiers (a collect-only run since
+    # TheHub #61321), and it must never run beside `unit` or `container-tiers`
     # (TheHub #61106; see the note above `unit`).
     serial_groups: [dast, pytest-memory]
     # Reports to TheHub on all four terminal states, per
@@ -1918,21 +1918,22 @@ jobs:
                     export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
                     export CONFIG_DIR="$HUB_CONFIG_DIR"
                     export MEMORY_GUARD_DIR="${1%.log}.oom"
-                    export MEMORY_GUARD_LABEL="pytest --collect-only tests/unit"
+                    export MEMORY_GUARD_LABEL="pytest --collect-only tests/unit tests/integration tests/security"
                     # [TheHub #61321] COLLECT, do not re-run. `unit` and
                     # `container-tiers` run the suite on every develop commit,
                     # and develop is linear (squash merges), so the tip is
                     # always a commit both of them grade and the risk gate
                     # needs both green on it. What this lane still uniquely
-                    # sees, cheaply, is a landed tree that no longer imports:
+                    # sees, cheaply, is a landed tree -- any of the three test
+                    # trees the deploy runs -- that no longer imports:
                     # a collection error is a red summary to the classifier
                     # ("1 error in ..."), a clean collection has no pass/fail
                     # summary and reads green on exit 0. ADR 0095 amendment.
                     if command -v timeout >/dev/null 2>&1; then
                       python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
-                        python -m pytest tests/unit --collect-only -q -p no:cacheprovider
+                        python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
                     else
-                      python -c "$MEMORY_GUARD" python -m pytest tests/unit --collect-only -q -p no:cacheprovider
+                      python -c "$MEMORY_GUARD" python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
                     fi
                   ) > "$1" 2>&1
                   rc=$?
@@ -4767,6 +4768,15 @@ jobs:
                 # The image's entrypoint is not run: this is not the server,
                 # and the script bootstraps the database the way it does.
                 export CONTAINER_TIERS_OUT=/tmp/container-tiers
+                # A commit from before TheHub #61321 has no script to run. It
+                # cannot be judged, and says so: this pipeline change merges
+                # before TheHub's half, so develop's tip is that commit for a
+                # while (see ADR 0095's amendment, "Order of merges").
+                if [ ! -f source/scripts/ci/container-tiers.sh ]; then
+                  echo "::error::This commit predates scripts/ci/container-tiers.sh (TheHub #61321),"
+                  echo "::error::so its deploy tiers cannot be run in its image. Judge a newer commit."
+                  exit 2
+                fi
                 bash source/scripts/ci/container-tiers.sh source all
                 RC=$?
                 if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
