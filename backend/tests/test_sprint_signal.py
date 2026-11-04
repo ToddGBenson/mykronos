@@ -133,8 +133,10 @@ class TestRanking:
     @pytest.mark.parametrize(
         ("report", "factor"),
         [
+            # A public endpoint makes the repository deployed, not every finding
+            # in it internet-facing (TheHub #61348; this case pinned INTERNET).
             (_report(exposure=[{"repo_full_name": REPO, "url": "https://x"}]),
-             sprint_signal.INTERNET),
+             sprint_signal.DEPLOYED),
             (_report(production_lag=[ProductionLag(repo_full_name=REPO, status="behind")]),
              sprint_signal.DEPLOYED),
             (_report(), sprint_signal.NOT_DEPLOYED),

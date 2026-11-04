@@ -32,6 +32,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from mykronos.fingerprint import image_repository
@@ -40,6 +41,9 @@ from mykronos.lake.catalog import Catalog
 #: ZAP writes HTML into `solution`; Trivy writes a flat block. Neither is
 #: meant for a table cell.
 _TAGS = re.compile(r"<[^>]+>")
+#: Long enough for any scanner title; a story's own limit is applied, at a
+#: word, by the caller (`sprint_signal.story_title`).
+FULL_TITLE_LIMIT = 1000
 _SPACE = re.compile(r"\s+")
 
 #: A ZAP alert title carries the URL it fired on — "X-Content-Type-Options
@@ -401,6 +405,13 @@ class FixGroup:
     #: scanner said. What the next-sprint ranking weighs as risk removed
     #: (TheHub #60862).
     severities: dict[str, int] = field(default_factory=dict)
+    #: The findings the change closes, so a caller can place each one (its
+    #: surface, its environmental score) rather than reason about the group
+    #: as one repository-wide thing (TheHub #61348).
+    finding_ids: list[str] = field(default_factory=list)
+    #: `action` before the 90-character cut a table cell needs. A story title
+    #: is not a table cell, and the cut lands mid-word (TheHub #61348).
+    full_action: str = ""
 
     @property
     def collapses_rules(self) -> bool:
@@ -526,28 +537,45 @@ _STEPS: dict[str, list[str]] = {
 }
 
 
-def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGroup]:
-    """Open findings grouped by the change that would close them.
+def fix_groups(
+    catalog: Catalog,
+    *,
+    asset_id: str | None = None,
+    status: str = "open",
+    resolved_since: datetime | None = None,
+) -> list[FixGroup]:
+    """Findings grouped by the change that would close them.
 
     One level above `by_rule`. That collapses many URLs into one rule; this
     collapses several rules into one change, where the scanner's own text says
     they share one.
+
+    Open findings by default. `status="fixed"` with `resolved_since` groups
+    what MyKronos has closed since a moment the same way, so a story's fix id
+    can be checked against the findings it actually closed (TheHub #61348).
     """
     if not catalog.all_files("findings"):
         return []
 
-    where = "status = 'open'" + (" AND asset_id = ?" if asset_id else "")
+    clauses = ["status = ?"]
+    params: list[Any] = [status]
+    if asset_id:
+        clauses.append("asset_id = ?")
+        params.append(asset_id)
+    if resolved_since is not None:
+        clauses.append("resolved_at >= ?")
+        params.append(resolved_since)
     rows = catalog.query(
         f"""
         SELECT capability, rule_id, title, raw_finding_json, asset_id,
-               lower(coalesce(severity, ''))
-        FROM findings WHERE {where}
+               lower(coalesce(severity, '')), finding_id
+        FROM findings WHERE {" AND ".join(clauses)}
         """,
-        [asset_id] if asset_id else None,
+        params,
     )
 
     grouped: dict[str, dict[str, Any]] = {}
-    for capability, rule_id, title, raw_json, repo, severity in rows:
+    for capability, rule_id, title, raw_json, repo, severity, finding_id in rows:
         try:
             raw = json.loads(raw_json) if raw_json else {}
         except (ValueError, TypeError):
@@ -578,9 +606,19 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
                 "kind": fix_id.split(":", 1)[0],
                 "versions": set(),
                 "severities": Counter(),
+                "finding_ids": [],
+                # The same text without the table-cell cut, for a `rule:`
+                # group whose action *is* the rule's title.
+                "full_action": (
+                    _clean(_AT_LOCATION.sub("", str(title or "")), FULL_TITLE_LIMIT)
+                    if fix_id.startswith("rule:")
+                    else action
+                )
+                or action,
             },
         )
         entry["findings"] += 1
+        entry["finding_ids"].append(str(finding_id))
         entry["severities"][str(severity or "unknown")] += 1
         if fix_id.startswith("upgrade:"):
             version = _fixed_of(raw)
@@ -609,6 +647,12 @@ def fix_groups(catalog: Catalog, *, asset_id: str | None = None) -> list[FixGrou
             effort=str(entry["effort"]),
             steps=_STEPS.get(str(entry["kind"]), []),
             severities=dict(entry["severities"]),
+            finding_ids=sorted(entry["finding_ids"]),
+            full_action=(
+                f"Upgrade {fix_id.split(':', 1)[1]} to {_highest(entry['versions'])}"
+                if entry["versions"]
+                else str(entry["full_action"])
+            ),
         )
         for fix_id, entry in grouped.items()
     ]
