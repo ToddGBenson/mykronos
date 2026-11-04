@@ -18,6 +18,7 @@ from mykronos.adminauth import require_principal
 from mykronos.lake.catalog import Catalog
 from tests.conftest import REPO, finding_payload, post_findings, post_scan
 from tests.test_onboarding import onboard
+from tests.test_route_authz_matrix import _served_routes
 
 URL = "/api/dashboard/search"
 
@@ -194,14 +195,14 @@ class TestCves:
 
 HOSTILE = [
     "' OR '1'='1",
-    "%",
+    "a%",
     "%%",
     "_%",
     "a'; DROP TABLE findings; --",
     '") UNION SELECT finding_id, 1, 2 FROM findings --',
     "\\%' ESCAPE '",
     "*' OR 1=1 /*",
-    "?",
+    "??",
     "$1",
     "ab\x00cd",
 ]
@@ -262,13 +263,13 @@ class TestAuth:
         """The same check as the incident lookup beside it, not a looser one
         chosen because a search "only reads"."""
 
+        served = _served_routes(client.app)  # type: ignore[arg-type]
+
         def calls(path: str) -> set[Any]:
-            route = next(
-                r
-                for r in client.app.routes  # type: ignore[attr-defined]
-                if isinstance(r, APIRoute) and r.path == path and "GET" in r.methods
-            )
-            return {d.call for d in route.dependant.dependencies}
+            route = served[f"GET {path}"]
+            original = getattr(route, "original_route", route)
+            assert isinstance(original, APIRoute)
+            return {d.call for d in original.dependant.dependencies}
 
         assert require_principal in calls(URL)
         assert calls(URL) == calls("/api/dashboard/incident")

@@ -41,6 +41,7 @@ from mykronos import (
     guidance,
     incident,
     inventory,
+    jump_search,
     platform_health,
     read_coverage,
     regression,
@@ -3426,6 +3427,51 @@ async def incident_lookup(
     with request.app.state.db.session() as session:
         view = incident.look_up(request.app.state.catalog, session, q)
     return IncidentOut.model_validate(incident.as_dict(view))
+
+
+class JumpResultOut(BaseModel):
+    """One place the jump box can go (TheHub #60976)."""
+
+    kind: Literal["repo", "finding", "cve", "page"]
+    title: str
+    subtitle: str
+    #: A dashboard path, never an absolute URL.
+    href: str
+
+
+class JumpSearchOut(BaseModel):
+    query: str
+    #: The limit served, after the cap.
+    limit: int
+    results: list[JumpResultOut]
+
+
+@router.get("/search", response_model=JumpSearchOut)
+async def jump_search_route(
+    request: Request,
+    principal: PrincipalDep,
+    q: Annotated[str, Query(max_length=jump_search.MAX_QUERY)],
+    limit: Annotated[int, Query(ge=1)] = jump_search.DEFAULT_LIMIT,
+) -> JumpSearchOut:
+    """The Ctrl+K jump box: a repo, finding, CVE or page by typing (TheHub #60976).
+
+    Repositories by name, findings by id prefix, an exact CVE id as one result
+    per affected repository, and the dashboard's own pages. Fewer than two
+    characters is a 400; `limit` is capped at 50. The text reaches the lake
+    only as a bound parameter.
+    """
+    try:
+        text = jump_search.clean(q)
+    except jump_search.QueryError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    served = jump_search.clamp(limit)
+    with request.app.state.db.session() as session:
+        results = jump_search.search(request.app.state.catalog, session, text, served)
+    return JumpSearchOut(
+        query=text,
+        limit=served,
+        results=[JumpResultOut(**row) for row in jump_search.as_dicts(results)],
+    )
 
 
 class BriefingActionOut(BaseModel):

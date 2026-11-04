@@ -126,6 +126,8 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/repos/{repo_id}/coverage": PRINCIPAL,
     "GET /api/dashboard/repos/{repo_id}/governance": PRINCIPAL,
     "GET /api/dashboard/incident": PRINCIPAL,
+    # The Ctrl+K jump box (TheHub #60976): a read, the incident lookup's scheme.
+    "GET /api/dashboard/search": PRINCIPAL,
     "GET /api/dashboard/briefing": PRINCIPAL,
     # The Today run sheet (TheHub #61141): read-only, what Start-Here computes.
     "GET /api/dashboard/today": PRINCIPAL,
