@@ -24,7 +24,7 @@ from mykronos.github.client import FileChange, GitHubClient, GitHubError, PullRe
 from mykronos.knowledge.store import KnowledgeStore
 from mykronos.lake.buffer import WriteAheadBuffer
 from mykronos.lake.catalog import Catalog
-from mykronos.patchwork import correlate, fixers, image_date
+from mykronos.patchwork import base_image, correlate, fixers, image_date
 from mykronos.patchwork.regression_prompt import regression_prompt
 from mykronos.patchwork.rejection import is_dampened, rejection_prompt
 from mykronos.patchwork.stewardship import BRANCH_PREFIX, branches_off_limits
@@ -224,6 +224,7 @@ class PatchworkPipeline:
         correlation_capabilities: tuple[str, ...] = DEFAULT_CORRELATION_CAPABILITIES,
         auto_fix_min_severity: str = "high",
         image_registry: image_date.TagSource | None = None,
+        image_digests: base_image.DigestSource | None = None,
     ) -> None:
         self.catalog = catalog
         self.buffer = buffer
@@ -239,6 +240,10 @@ class PatchworkPipeline:
         # bump-image-date's one network read. None leaves every patched-image
         # finding with a stated reason, not a silent skip.
         self.image_registry = image_registry
+        # bump-base-image's second read: the new tag's digest, verified. None
+        # refuses every base-image bump with a stated reason, never a tag-only
+        # pin (TheHub #60746).
+        self.image_digests = image_digests
         #: Per run: one decision per patched image, shared by its findings.
         self._image_groups: dict[image_date.PatchedImage, _ImageGroup] = {}
 
@@ -645,6 +650,22 @@ class PatchworkPipeline:
                 ),
             )
 
+        # A finding on a Dockerfile's FROM line: the base image moves within its
+        # series, pinned by a verified digest, or not at all (TheHub #60746).
+        base = base_image.from_line(finding, content)
+        if base is not None:
+            return await self._attempt_base_image_fix(
+                repo_full_name,
+                finding,
+                base,
+                content,
+                triage_rationale,
+                github=github,
+                default_branch=default_branch,
+                result=result,
+                preview_only=preview_only,
+            )
+
         generated = fixers.generate(finding, content)
         if generated is None:
             # One sentence, because there is one path. This used to choose
@@ -745,6 +766,102 @@ class PatchworkPipeline:
             fix_pr_number=pr.number,
             fix_pr_url=pr.url,
             pr_status="draft_open",
+        )
+
+    # -- bump-base-image ---------------------------------------------------
+
+    async def _attempt_base_image_fix(
+        self,
+        repo_full_name: str,
+        finding: dict[str, Any],
+        base: base_image.BaseImage | str,
+        content: str,
+        triage_rationale: str,
+        *,
+        github: GitHubClient,
+        default_branch: str,
+        result: PipelineResult,
+        preview_only: bool,
+    ) -> StageOutcome:
+        """A FROM-line finding: one verified, digest-pinned bump, or a reason.
+
+        Every refusal is `no_fix_available` with the reason in the rationale,
+        and none of them opens anything: a registry that cannot be read or a
+        digest that does not verify is exactly the case that must produce no
+        pull request.
+        """
+        finding_id = str(finding["finding_id"])
+        name = base_image.FIXER_NAME
+
+        def refused(reason: str, stage: str = "no_fix_available") -> StageOutcome:
+            return StageOutcome(
+                finding_id=finding_id,
+                stage=stage,
+                classification="true_positive",
+                rationale=f"{triage_rationale} {reason}",
+                fixer_name=name,
+            )
+
+        if isinstance(base, str):
+            return refused(base)
+        skip, rejections = is_dampened(
+            self.catalog,
+            repo_full_name=repo_full_name,
+            rule_id=str(finding.get("rule_id") or ""),
+            fixer_name=name,
+        )
+        if skip:
+            return refused(
+                f"{name}'s fixes for this rule have been closed as wrong "
+                f"{rejections} time(s) in this repository. Not offered again here "
+                "until somebody merges one by hand.",
+                "skipped_low_confidence",
+            )
+        if self.image_registry is None or self.image_digests is None:
+            return refused(
+                "No image registry is configured for Patchwork "
+                "(MYKRONOS_PATCHWORK_IMAGE_REGISTRY), so a newer base image's "
+                "digest cannot be resolved; no pull request."
+            )
+        tags = await self.image_registry.tags(base.repository)
+        new_tag = base_image.newer_tag(base.tag, tags) if tags is not None else None
+        digest = (
+            await self.image_digests.digest(base.repository, new_tag) if new_tag else None
+        )
+        fix = base_image.propose(base, content, tags=tags, digest=digest, new_tag=new_tag)
+        if isinstance(fix, str):
+            return refused(fix)
+        if preview_only:
+            return StageOutcome(
+                finding_id=finding_id,
+                stage="would_fix",
+                classification="true_positive",
+                rationale=f"{triage_rationale} {fix.summary} ({name}).",
+                fixer_name=name,
+                fix_confidence=fix.confidence,
+                fix_files=dict(fix.files),
+            )
+        try:
+            pr = await self._open_draft_pr(
+                github, repo_full_name, finding, fix, name, default_branch=default_branch
+            )
+        except GitHubError as exc:
+            result.errors.append(f"{finding_id}: {exc}")
+            return refused(
+                f"{name} produced a fix, but the draft pull request could not be "
+                f"opened: {exc}. The next run regenerates it deterministically.",
+                "fix_generated",
+            )
+        return StageOutcome(
+            finding_id=finding_id,
+            stage="pr_opened",
+            classification="true_positive",
+            rationale=f"{triage_rationale} {fix.summary} ({name}).",
+            fix_pr_number=pr.number,
+            fix_pr_url=pr.url,
+            pr_status="draft_open",
+            fixer_name=name,
+            fix_confidence=fix.confidence,
         )
 
     # -- bump-image-date ---------------------------------------------------

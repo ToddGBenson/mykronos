@@ -112,6 +112,7 @@ from mykronos.jobs import (
     purge_expired_insider_risk,
     purge_orphaned_learnings,
     reconcile_installations,
+    rescan_fix_branches,
     rotate_ingestion_tokens,
     score_portfolio,
     sweep_acceptances,
@@ -136,6 +137,7 @@ from mykronos.notify import SlackNotifier
 from mykronos.oracle import load_policy
 from mykronos.oracle.service import OracleService
 from mykronos.ownership import OwnershipResolver
+from mykronos.patchwork.base_image import RegistryDigests
 from mykronos.patchwork.image_date import RegistryTags
 from mykronos.product_owner import HubClient
 from mykronos.ratelimit import SlidingWindowLimiter
@@ -435,6 +437,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.github_factory = _build_github_factory(settings)
     # Patchwork's bump-image-date reads tags here; None when unconfigured.
     app.state.image_registry = RegistryTags.from_settings(settings)
+    # bump-base-image resolves and verifies a new tag's digest on the same
+    # registry (TheHub #60746); None when unconfigured.
+    app.state.image_digests = RegistryDigests.from_settings(settings)
     # Held on the app rather than built per request, which is the whole point
     # of it (spec 32 §7.1): reading GitHub Actions state spends an
     # installation rate limit shared with token rotation, the installer and
@@ -592,6 +597,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.github_factory,
                 app.state.templates,
                 settings,
+            )
+            # Before a merge, not after it: record on each open fix whether
+            # the scan of its own branch cleared the finding (TheHub #60746).
+            await rescan_fix_branches(
+                app.state.db, app.state.catalog, app.state.github_factory
             )
 
         async def _deployment_probe() -> None:

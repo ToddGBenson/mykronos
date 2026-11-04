@@ -540,6 +540,15 @@ class GitHubClient(Protocol):
     ) -> None:
         """Close without merging, explaining why in a comment."""
 
+    async def add_pull_request_labels(
+        self, repo_full_name: str, number: int, labels: list[str]
+    ) -> None:
+        """Add labels to a pull request, keeping any it already carries.
+
+        Patchwork labels a fix whose branch rescan still reports the finding
+        (TheHub #60746), so a reviewer sees it without opening the body.
+        """
+
     async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey: ...
 
     async def put_actions_secret(
@@ -780,6 +789,8 @@ class FakeRepo:
     pull_requests: list[PullRequest] = field(default_factory=list)
     #: PR number -> the files it changes.
     pull_request_files: dict[int, list[PullRequestFile]] = field(default_factory=dict)
+    #: PR number -> labels added through `add_pull_request_labels`.
+    pull_request_labels: dict[int, list[str]] = field(default_factory=dict)
     #: (base, head) -> what `compare` answers. Unset, `compare` answers with
     #: the listing of the open PR whose head is `head`: the two agree unless a
     #: test says otherwise, and the stale-base test says otherwise.
@@ -1092,6 +1103,17 @@ class FakeGitHubClient:
                 pr.merged = False
                 return
         raise GitHubError(f"Pull request #{number} not found", status=404)
+
+    async def add_pull_request_labels(
+        self, repo_full_name: str, number: int, labels: list[str]
+    ) -> None:
+        self.calls.append(("add_pull_request_labels", f"{repo_full_name}#{number}"))
+        self._require("pull_requests", "write", "Labelling a pull request")
+        repo = self._repo(repo_full_name)
+        if not any(pr.number == number for pr in repo.pull_requests):
+            raise GitHubError(f"Pull request #{number} not found", status=404)
+        held = repo.pull_request_labels.setdefault(number, [])
+        held.extend(label for label in labels if label not in held)
 
     async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey:
         self.calls.append(("get_actions_public_key", repo_full_name))
@@ -1969,6 +1991,17 @@ class RestGitHubClient:
             )
         await self._json(
             "PATCH", f"/repos/{repo_full_name}/pulls/{number}", json={"state": "closed"}
+        )
+
+    async def add_pull_request_labels(
+        self, repo_full_name: str, number: int, labels: list[str]
+    ) -> None:
+        # A pull request's labels live on its issue. POST adds and keeps the
+        # ones already there; GitHub creates a label that does not exist yet.
+        await self._json(
+            "POST",
+            f"/repos/{repo_full_name}/issues/{number}/labels",
+            json={"labels": list(labels)},
         )
 
     async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey:

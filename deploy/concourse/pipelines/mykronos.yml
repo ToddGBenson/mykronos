@@ -1909,10 +1909,20 @@ jobs:
                 # `--config auto` is deliberately not used - it reports the
                 # repository to semgrep.dev, which is the class of thing spec
                 # 12 §5.2 makes opt-in.
+                #
+                # The third config is Patchwork's named fix rules (TheHub
+                # #60746). `--autofix --dryrun` writes nothing to the tree; it
+                # is what makes Semgrep put each rule's fix into the SARIF
+                # `fixes`, which apply-semgrep-fix applies as written. The
+                # excluded directory is that fixer's own test fixtures, which
+                # exist to match those rules.
                 rc=0
                 semgrep scan \
                   --config p/security-audit \
                   --config p/owasp-top-ten \
+                  --config backend/mykronos/patchwork/semgrep_fix_rules.yml \
+                  --exclude backend/tests/fixtures/semgrep_fix \
+                  --autofix --dryrun \
                   --sarif --output /tmp/results/semgrep.sarif \
                   --metrics off --quiet . || rc=$?
 

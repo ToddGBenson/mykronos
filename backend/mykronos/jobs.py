@@ -44,6 +44,7 @@ from mykronos.lake.mutate import locate_findings, purge_rows, update_findings
 from mykronos.logsafe import scrub
 from mykronos.notify import Delivery, Notification, Notifier
 from mykronos.oracle.service import OracleService
+from mykronos.patchwork.branch_rescan import BranchRescanResult, rescan_open_fixes
 from mykronos.patchwork.stewardship import close_superseded_drafts
 from mykronos.patchwork.verification import (
     VerificationResult,
@@ -969,6 +970,33 @@ async def verify_merged_fixes(
 
     result = await dispatch_pending(catalog, buffer, dispatch=dispatch)
     return resolve_pending(catalog, buffer, result=result)
+
+
+async def rescan_fix_branches(
+    db: Database, catalog: Catalog, factory: GitHubClientFactory
+) -> BranchRescanResult:
+    """Record on each open fix pull request whether its branch's scan cleared
+    the finding (TheHub #60746).
+
+    The draft's own `pull_request` scan is the rescan; this reads it and
+    writes the verdict onto the pull request. Nothing here raises: a
+    repository whose installation cannot be built is skipped and retried on
+    the next pass, and a pull request with no scan yet waits.
+    """
+    clients: dict[str, Any] = {}
+    with db.session() as session:
+        for row in session.execute(select(RepoOnboarding)).scalars():
+            try:
+                clients[row.github_repo_full_name] = factory.for_installation(
+                    row.github_installation_id
+                )
+            except Exception:  # noqa: BLE001 - see the docstring
+                logger.warning(
+                    "No installation client for %s; its fix branches wait",
+                    row.github_repo_full_name,
+                    exc_info=True,
+                )
+    return await rescan_open_fixes(catalog, clients)
 
 
 #: How recently a GitHub Actions upload must have landed for it to count as
