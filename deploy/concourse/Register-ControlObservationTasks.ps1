@@ -96,8 +96,10 @@ function Get-TaskName {
     # Task Scheduler refuses '/' in a task name ("The parameter is incorrect";
     # '\' would file it in a folder), so the repository is written owner_repo,
     # as the collector's last-<collector>-<owner_repo>.log already is.
-    param([string] $Collector, [string] $Repo)
-    return "$TaskPrefix ($Collector, $($Repo -replace '[\\/]', '_'))"
+    # The prefix is passed in, not read from script scope, so PSScriptAnalyzer
+    # sees -TaskPrefix used (PSReviewUnusedParameter, TheHub #61024).
+    param([string] $Prefix, [string] $Collector, [string] $Repo)
+    return "$Prefix ($Collector, $($Repo -replace '[\\/]', '_'))"
 }
 
 function Format-Arg {
@@ -111,7 +113,7 @@ $tasks = @()
 foreach ($repo in $HostRepo) {
     $entry = Get-RepoEntry -Repo $repo
     $tasks += [pscustomobject]@{
-        Name   = Get-TaskName -Collector 'host' -Repo $repo
+        Name   = Get-TaskName -Prefix $TaskPrefix -Collector 'host' -Repo $repo
         At     = $HostAt
         Limit  = New-TimeSpan -Minutes 15
         Params = [ordered]@{ Collector = 'host'; Repo = $repo; TokenKey = $entry.TokenKey
@@ -121,7 +123,7 @@ foreach ($repo in $HostRepo) {
 if ($LanCidr.Count -gt 0) {
     $entry = Get-RepoEntry -Repo $LanRepo
     $tasks += [pscustomobject]@{
-        Name   = Get-TaskName -Collector 'LAN' -Repo $LanRepo
+        Name   = Get-TaskName -Prefix $TaskPrefix -Collector 'LAN' -Repo $LanRepo
         At     = $LanAt
         Limit  = New-TimeSpan -Minutes 90
         Params = [ordered]@{ Collector = 'lan'; Repo = $LanRepo; TokenKey = $entry.TokenKey
