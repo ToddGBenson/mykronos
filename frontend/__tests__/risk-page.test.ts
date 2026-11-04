@@ -77,14 +77,37 @@ function reads(overrides: Partial<RiskRepoReads> = {}): RiskRepoReads {
 }
 
 describe("gateCell: the newest commit gate on main", () => {
-  it("reads GO", () => {
+  it("headlines the change, with the posture beside it (TheHub #60914)", () => {
     const cell = gateCell("r1", reads().gate);
-    expect(cell.text).toBe("GO");
+    expect(cell.text).toBe("clean");
     expect(cell.tone).toBe("ok");
+    expect(cell.detail).toBe("posture go");
     expect(cell.href).toBe("/repos/r1?tab=decisions");
   });
 
-  it("reads NO-GO with the blocking count when the commit introduced blocking findings", () => {
+  it("a clean commit on a no_go backlog reads clean, and the posture is labelled apart (TheHub #60914)", () => {
+    // TheHub develop 525152e: nine lanes green, nothing introduced, and the
+    // headline read "no_go 100/100".
+    const cell = gateCell(
+      "r1",
+      ok({
+        found: true,
+        commit_sha: "5".repeat(40),
+        recommendation: "no_go",
+        effective_recommendation: "no_go",
+        overall_risk_score: 100,
+        introduced: {},
+        introduced_blocking: false,
+      }),
+    );
+    expect(cell.text).toBe("clean");
+    expect(cell.tone).toBe("ok");
+    expect(cell.detail).toBe("posture no_go 100/100");
+    expect(cell.label).toContain("change: clean");
+    expect(cell.label).toContain("posture (the standing backlog, not this change): no_go 100/100");
+  });
+
+  it("reads the blocking count when the commit introduced blocking findings", () => {
     const cell = gateCell(
       "r1",
       ok({
@@ -95,8 +118,9 @@ describe("gateCell: the newest commit gate on main", () => {
         introduced_blocking: true,
       }),
     );
-    expect(cell.text).toBe("NO-GO · 3 blocking");
+    expect(cell.text).toBe("introduces 3 blocking");
     expect(cell.tone).toBe("fail");
+    expect(cell.detail).toBe("posture review_recommended");
     expect(cell.label).toContain("bbbbbbb");
   });
 
@@ -112,15 +136,18 @@ describe("gateCell: the newest commit gate on main", () => {
         introduced_blocking: true,
       }),
     );
-    expect(cell.text).toBe("GO");
+    expect(cell.text).toBe("1 blocking · overridden");
+    expect(cell.tone).toBe("warn");
     expect(cell.label).toContain("overridden");
   });
 
-  it("an effective no_go is NO-GO and review is its own word", () => {
-    expect(gateCell("r1", ok({ found: true, commit_sha: "d", effective_recommendation: "no_go" })).tone).toBe("fail");
+  it("a posture of no_go or review is shown as posture, and the change stays clean", () => {
+    // The posture never turns the change red: only what the commit
+    // introduced does, as in deploy.ps1 (D-159).
+    expect(gateCell("r1", ok({ found: true, commit_sha: "d", effective_recommendation: "no_go" })).tone).toBe("ok");
     const review = gateCell("r1", ok({ found: true, commit_sha: "d", effective_recommendation: "review_recommended" }));
-    expect(review.text).toBe("REVIEW");
-    expect(review.tone).toBe("warn");
+    expect(review.text).toBe("clean");
+    expect(review.detail).toBe("posture review_recommended");
   });
 
   it("no decision is 'not assessed', never a pass", () => {
@@ -436,7 +463,7 @@ describe("RiskMatrix and AgeChart render", () => {
     expect(html).not.toContain('href="/product-owner?tab=review"');
     expect(html).not.toContain('href="/decisions"');
     expect(html).toMatch(/aria-label="o\/beacon gate: failing[^"]*"/);
-    expect(html).toContain("NO-GO · 1 blocking");
+    expect(html).toContain("introduces 1 blocking");
   });
 
   it("each state draws an icon as well as a colour", () => {
