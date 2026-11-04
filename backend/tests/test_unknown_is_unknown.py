@@ -238,17 +238,19 @@ class TestEpssNullIsNotZero:
             client,
             run_compaction,
             [
-                finding_payload(rule_id="CVE-2031-0301", severity="high", symbol="a"),
-                finding_payload(rule_id="CVE-2031-0302", severity="high", symbol="b"),
+                finding_payload(rule_id=f"CVE-2031-030{n}", severity="high", symbol=f"s{n}")
+                for n in range(1, 7)
             ],
         )
         with client.app.state.db.session() as session:
-            session.add(ThreatIntelMatch(cve_id="CVE-2031-0302", in_kev=False, epss_score=0.0))
+            session.add(ThreatIntelMatch(cve_id="CVE-2031-0304", in_kev=False, epss_score=0.0))
 
         body = client.get("/api/dashboard/threat-intel", headers=admin_auth).json()
 
         ordered = [e["cve_id"] for e in body if e["cve_id"].startswith("CVE-2031-03")]
-        assert ordered == ["CVE-2031-0302", "CVE-2031-0301"]
+        # Five never fetched, one measured at 0: the measured one leads.
+        assert ordered[0] == "CVE-2031-0304"
+        assert len(ordered) == 6
 
 
 # ---------------------------------------------------------------------------
