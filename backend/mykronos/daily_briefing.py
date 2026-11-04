@@ -1792,6 +1792,7 @@ def next_sprint_candidates(
     as_of: datetime | None,
     board: Any = None,
     board_error: str = "TheHub's board was not read.",
+    db: Any = None,
 ) -> Section:
     """This product's changes worth a sprint, ranked by
     `sprint_signal.FORMULA` with every factor on the line (TheHub #60862).
@@ -1807,11 +1808,12 @@ def next_sprint_candidates(
 
     key, title = "next_sprint_candidates", "Next-sprint candidates"
     try:
-        candidates = sprint_signal.rank(catalog, report, [asset_id])
+        ranked = sprint_signal.rank(catalog, report, [asset_id], db=db)
     except Exception as exc:  # noqa: BLE001 - reported, never shown as none
         logger.debug("Could not rank next-sprint candidates")
         return unavailable(key, title, CANDIDATES_SOURCE, _error(exc))
 
+    candidates, acceptance = _split_acceptance(ranked)
     kept, lines, dropped = _ranked_lines(candidates, board)
     missing = _board_gap(board, board_error)
     return Section(
@@ -1826,8 +1828,18 @@ def next_sprint_candidates(
             "fix_groups": sum(1 for c in candidates if c.kind == "fix"),
             "formula": sprint_signal.FORMULA,
             "candidates": [c.factors() for c in kept[:CANDIDATE_LIMIT]],
+            "acceptance_candidates": [c.factors() for c in acceptance],
             "already_on_board": dropped,
         },
+    )
+
+
+def _split_acceptance(ranked: list[Any]) -> tuple[list[Any], list[Any]]:
+    """(sprint candidates, acceptance candidates). A group with no fix is an
+    operator decision, never a story (TheHub #61348)."""
+    return (
+        [c for c in ranked if c.kind != "acceptance"],
+        [c for c in ranked if c.kind == "acceptance"],
     )
 
 
@@ -1859,11 +1871,12 @@ def next_sprint_section(
     key, title = sprint_signal.NEXT_SPRINT_KEY, "Next-sprint candidates"
     try:
         repos = sprint_signal.repos(db)
-        candidates = sprint_signal.rank(catalog, report, repos)
+        ranked = sprint_signal.rank(catalog, report, repos, db=db, now=now)
     except Exception as exc:  # noqa: BLE001 - reported, never shown as none
         logger.debug("Could not rank next-sprint candidates")
         return unavailable(key, title, NEXT_SPRINT_SOURCE, _error(exc))
 
+    candidates, acceptance = _split_acceptance(ranked)
     kept, lines, dropped = _ranked_lines(candidates, board)
     missing = [gap] if (gap := _board_gap(board, board_error)) else []
     if report is None:
@@ -1872,7 +1885,7 @@ def next_sprint_section(
         )
     metric: dict[str, Any] | None = None
     if board is not None:
-        metric = sprint_signal.weekly_metric(board, now=now)
+        metric = sprint_signal.weekly_metric(board, now=now, catalog=catalog)
     else:
         missing.append("The weekly briefing-signal share needs TheHub's board.")
     return Section(
@@ -1888,6 +1901,7 @@ def next_sprint_section(
             "formula": sprint_signal.FORMULA,
             "weights": sprint_signal.weights(),
             "candidates": [c.factors() for c in kept[:CANDIDATE_POOL]],
+            "acceptance_candidates": [c.factors() for c in acceptance],
             "already_on_board": dropped,
             "success_metric": metric,
         },
@@ -2029,6 +2043,7 @@ def build_product(
                 as_of=as_of,
                 board=delivery.board,
                 board_error=delivery.board_error,
+                db=db,
             ),
             product_signals.section(catalog, db, asset_id, signals, now=now),
         ],

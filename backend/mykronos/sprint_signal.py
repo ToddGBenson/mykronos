@@ -10,13 +10,28 @@ board yet to TheHub's backlog, and measures whether that changed anything.
 
     score = risk removed x exposure / effort
 
-- *risk removed*: the findings the change would close, each weighted by the
-  severity the scanner gave it (`SEVERITY_WEIGHT`). A lane repair removes the
+- *risk removed*: the findings the change would close, each weighted by its
+  *contextual* band (`SEVERITY_WEIGHT`): the effective severity of a stored
+  environmental score in force for it, else the scanner's own band, and the
+  line says which (TheHub #61348). The scanner's bands stay in `risk_basis`
+  beside the contextual ones in `contextual_basis`. A lane repair removes the
   risk of the open findings it holds: they cannot close until it scans.
-- *exposure*: where the code runs (`EXPOSURE`): an endpoint the public probes
-  reach, a deployment the probe sweep knows, or neither.
+- *exposure*: where *these findings* run (`exposure_for`), not where the
+  repository does. Internet only when a finding sits in a surface the internet
+  was observed to reach: a public endpoint the exposure probe reached, or a
+  fresh `port_published` observation from the internet vantage. A surface only
+  *declared* internet-facing is shown as declared and does not raise it. Then
+  deployed (the deployment probe, or a public endpoint elsewhere in the
+  repository), or neither. Until TheHub #61348 one public endpoint gave every
+  finding in its repository the internet factor.
 - *effort*: what kind of change it is (`EFFORT_WEIGHT`, from the scanner's
   own fix text through `guidance`), or a lane repair.
+
+**A group with no fix is not a fix candidate.** When the scanner says no fixed
+version is published (`guidance` effort `no_fix`), nothing can be changed, so
+it is an *acceptance* candidate (`kind="acceptance"`): accept with
+`no_vendor_fix` and a review date, or mitigate. It is listed apart and never
+filed as a story (TheHub #61348; #61335 was one).
 
 Each candidate carries the three numbers and what each was read from, and its
 line says them, so a ranking can be argued with item by item.
@@ -32,24 +47,28 @@ backlog is where Todd decides (three options and a recommendation in each
 story); nothing here moves a story into a sprint (D-170).
 
 **The weekly success metric** is the share of a week's sprint stories that are
-tagged `briefing-signal`, and the risk those stories removed, read from the
-board (`weekly_metric`).
+tagged `briefing-signal`, the risk those stories claimed when they were filed,
+and beside it the risk MyKronos verified removed: the findings of each done
+story's fix that have since closed by absence (`weekly_metric`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 
 from mykronos.jobs import SIGNAL_FILING_JOB, JobNotDue, JobSkipped, _succeeded_today
+from mykronos.schemas import utcnow
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
     from mykronos.api.briefing_daily import DailyBriefingOut
@@ -108,6 +127,18 @@ LANE_REPAIR_EFFORT = 2.0
 
 FORMULA = "score = risk removed x exposure / effort"
 
+#: TheHub's title column. A longer title is cut at a word (`story_title`).
+TITLE_LIMIT = 255
+
+#: Where a candidate's findings run, as `Candidate.exposure_state`.
+EXPOSURE_STATES = (
+    "internet_observed",
+    "declared_internet",
+    "deployed",
+    "not_deployed",
+    "not_measured",
+)
+
 
 @dataclass
 class Candidate:
@@ -134,13 +165,34 @@ class Candidate:
     score: float
     #: Ordered steps from `guidance`, when it has them.
     steps: list[str] = field(default_factory=list)
+    #: One of `EXPOSURE_STATES` (TheHub #61348). Empty on a candidate built
+    #: before it existed.
+    exposure_state: str = ""
+    #: severity -> findings at the *contextual* band, what `risk_removed` is
+    #: weighed from. Equal to `risk_basis` where no environmental score is in
+    #: force.
+    contextual_basis: dict[str, int] = field(default_factory=dict)
+    #: How many of `findings` had an environmental score in force.
+    contextual_scored: int = 0
 
     def explain(self) -> str:
         risk = ", ".join(f"{n} {sev}" for sev, n in self.risk_basis.items()) or "none"
         return (
             f"Score {self.score:g} = risk removed {self.risk_removed:g} x exposure "
             f"{self.exposure:g} / effort {self.effort:g}. Risk: {self.findings} finding(s) "
-            f"({risk}); exposure: {self.exposure_basis}; effort: {self.effort_basis}."
+            f"(scanner: {risk}; {self._contextual()}); exposure: {self.exposure_basis}; "
+            f"effort: {self.effort_basis}."
+        )
+
+    def _contextual(self) -> str:
+        if not self.contextual_basis or self.kind == "lane":
+            return "contextual: not assessed for a lane repair"
+        if not self.contextual_scored:
+            return "contextual: the scanner's bands, no environmental score in force"
+        bands = ", ".join(f"{n} {sev}" for sev, n in self.contextual_basis.items())
+        return (
+            f"contextual: {bands}, from the environmental score in force for "
+            f"{self.contextual_scored} of {self.findings}"
         )
 
     def factors(self) -> dict[str, Any]:
@@ -191,17 +243,190 @@ def _ordered(severities: dict[str, int]) -> dict[str, int]:
     return known
 
 
-def exposure_of(report: Briefing | None, repo: str) -> tuple[float, str]:
-    """(factor, what it was read from) for one repository."""
+def deployment_of(report: Briefing | None, repo: str) -> tuple[float, str, str]:
+    """(factor, what it was read from, state) for one repository as a whole.
+
+    Never `INTERNET`: whether the internet reaches a finding is a fact about the
+    finding (`exposure_for`), and a public endpoint somewhere in the repository
+    says the repository is deployed, not that every finding in it sits behind
+    that endpoint (TheHub #61348).
+    """
+    unread = "not measured: the deployment record could not be read"
     if report is None:
-        return NOT_DEPLOYED, "not measured: the deployment record could not be read"
+        return NOT_DEPLOYED, unread, "not_measured"
     if any(str(e.get("repo_full_name") or "") == repo for e in report.exposure or []):
-        return INTERNET, "a public endpoint the exposure probes reach"
+        return (
+            DEPLOYED,
+            "deployed with a public endpoint, but these findings are not placed behind "
+            "it and no internet observation covers them",
+            "deployed",
+        )
     if any(lag.repo_full_name == repo for lag in report.production_lag or []):
-        return DEPLOYED, "deployed (the deployment probe tracks it), no public endpoint probed"
+        return (
+            DEPLOYED,
+            "deployed (the deployment probe tracks it), no public endpoint probed",
+            "deployed",
+        )
     if report.production_lag_unknown and report.exposure_unknown:
-        return NOT_DEPLOYED, "not measured: the deployment record could not be read"
-    return NOT_DEPLOYED, "no deployment or public endpoint on record"
+        return NOT_DEPLOYED, unread, "not_measured"
+    return NOT_DEPLOYED, "no deployment or public endpoint on record", "not_deployed"
+
+
+def exposure_of(report: Briefing | None, repo: str) -> tuple[float, str]:
+    """(factor, what it was read from) for one repository: `deployment_of`."""
+    factor, basis, _state = deployment_of(report, repo)
+    return factor, basis
+
+
+@dataclass
+class _Placement:
+    """What one repository's surfaces say about where its findings run."""
+
+    surfaces: list[Any] = field(default_factory=list)
+    #: surface id -> how the internet was observed to reach it.
+    internet: dict[str, str] = field(default_factory=dict)
+    #: host -> the public endpoint's label, for DAST findings by target host.
+    probed_hosts: dict[str, str] = field(default_factory=dict)
+    #: False when there is no database to read: nothing is placed.
+    read: bool = True
+
+
+def _placement(db: Any, repo: str, now: datetime) -> _Placement:
+    """Surfaces, and which of them the internet was *observed* to reach.
+
+    Two observations count, both fresh (`control_observations.FRESH_DAYS`): a
+    public endpoint the exposure probe reached (`last_status == probed`) linked
+    to the surface, and a `port_published` observation that passed from the
+    `internet` vantage. A declared exposure is read from the surface itself
+    and never counts here.
+    """
+    from types import SimpleNamespace
+
+    from mykronos import control_observations, exposure
+    from mykronos.db.models import ControlObservation, PublicEndpoint, RepoSurface
+
+    if db is None:
+        return _Placement(read=False)
+    fresh_after = now - timedelta(days=control_observations.FRESH_DAYS)
+    out = _Placement()
+    with db.session() as session:
+        for row in session.scalars(
+            select(RepoSurface).where(RepoSurface.repo_full_name == repo)
+        ):
+            out.surfaces.append(
+                SimpleNamespace(
+                    id=str(row.id),
+                    kind=str(row.kind),
+                    name=str(row.name),
+                    exposure=str(row.exposure or "unknown"),
+                    selectors=dict(row.selectors or {}),
+                )
+            )
+        for endpoint in session.scalars(
+            select(PublicEndpoint).where(PublicEndpoint.repo_full_name == repo)
+        ):
+            probed = endpoint.last_probed_at
+            if endpoint.last_status != exposure.PROBED or probed is None:
+                continue
+            if probed.replace(tzinfo=None) < fresh_after:
+                continue
+            label = str(endpoint.label or "its public endpoint")
+            if endpoint.surface_id:
+                out.internet.setdefault(
+                    str(endpoint.surface_id), f"the exposure probe reached {label}"
+                )
+            host = urlsplit(str(endpoint.url or "")).hostname
+            if host:
+                out.probed_hosts[host.lower()] = label
+        for observed in session.scalars(
+            select(ControlObservation).where(
+                ControlObservation.repo_full_name == repo,
+                ControlObservation.vantage == "internet",
+                ControlObservation.assertion == "port_published",
+                ControlObservation.state == "pass",
+            )
+        ):
+            collected = observed.collected_at
+            if observed.surface_id is None or collected is None:
+                continue
+            if collected.replace(tzinfo=None) < fresh_after:
+                continue
+            out.internet.setdefault(
+                str(observed.surface_id), "a port observed published from the internet"
+            )
+    return out
+
+
+def _dast_host(finding: dict[str, Any]) -> str | None:
+    """The host a DAST finding's request went to, lower-cased."""
+    raw = finding.get("raw_finding_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    instance = raw.get("instance")
+    uri = instance.get("uri") if isinstance(instance, dict) else None
+    host = urlsplit(str(uri or "")).hostname
+    return host.lower() if host else None
+
+
+def exposure_for(
+    findings: list[dict[str, Any]],
+    placement: _Placement,
+    report: Briefing | None,
+    repo: str,
+) -> tuple[float, str, str]:
+    """(factor, what it was read from, state) for the findings one change closes.
+
+    Internet only when at least one of *these* findings sits in a surface the
+    internet was observed to reach, or is a DAST finding against a host the
+    exposure probe reached. Otherwise the repository's deployment, with a
+    surface that is only *declared* internet-facing named as declared.
+    """
+    from mykronos import surface_match
+
+    deployed, deployed_basis, deployed_state = deployment_of(report, repo)
+    if not placement.read:
+        return deployed, f"{deployed_basis} (per-finding exposure not read)", deployed_state
+
+    observed: dict[str, int] = {}
+    declared: dict[str, int] = {}
+    for finding in findings:
+        host = _dast_host(finding) if finding.get("capability") == "dast" else None
+        if host and host in placement.probed_hosts:
+            key = f"{placement.probed_hosts[host]} (the exposure probe reached it)"
+            observed[key] = observed.get(key, 0) + 1
+            continue
+        surface = surface_match.surface_for(finding, placement.surfaces)
+        if surface is None:
+            continue
+        how = placement.internet.get(str(surface.id))
+        if how:
+            key = f"{surface.name} ({how})"
+            observed[key] = observed.get(key, 0) + 1
+        elif getattr(surface, "exposure", "") == "internet":
+            declared[surface.name] = declared.get(surface.name, 0) + 1
+
+    if observed:
+        where = "; ".join(f"{n} in {name}" for name, n in sorted(observed.items()))
+        return (
+            INTERNET,
+            f"observed reachable from the internet: {sum(observed.values())} of "
+            f"{len(findings)} finding(s): {where}",
+            "internet_observed",
+        )
+    if declared:
+        names = ", ".join(sorted(declared))
+        counted = "deployed" if deployed == DEPLOYED else "not deployed"
+        return (
+            deployed,
+            f"declared internet-facing ({names}), not observed: counted as {counted}",
+            "declared_internet",
+        )
+    return deployed, deployed_basis, deployed_state
 
 
 def _score(risk_removed: float, exposure: float, effort: float) -> float:
@@ -228,13 +453,79 @@ def open_severities(catalog: Catalog, repos: list[str]) -> dict[tuple[str, str],
     return out
 
 
-def rank(catalog: Catalog, report: Briefing | None, repos: list[str]) -> list[Candidate]:
+def _open_findings(catalog: Catalog, repo: str) -> dict[str, dict[str, Any]]:
+    """finding id -> the fields placement and the contextual band read."""
+    if not catalog.all_files("findings"):
+        return {}
+    rows = catalog.query(
+        """
+        SELECT finding_id, capability, file_path, raw_finding_json, address, port,
+               lower(coalesce(severity, ''))
+        FROM findings WHERE status = 'open' AND asset_id = ?
+        """,
+        [repo],
+    )
+    return {
+        str(fid): {
+            "finding_id": str(fid),
+            "capability": str(capability or ""),
+            "file_path": file_path,
+            "raw_finding_json": raw,
+            "address": address,
+            "port": port,
+            "severity": str(severity or "unknown"),
+        }
+        for fid, capability, file_path, raw, address, port, severity in rows
+    }
+
+
+def _contextual_bands(db: Any, finding_ids: list[str], now: datetime) -> dict[str, str]:
+    """finding id -> the effective severity of an environmental score in force.
+
+    In force means `environment_view.rank_reading` reads it as `scored`: not
+    lapsed on an expired lowering fact. A finding with no such score is absent,
+    and its contextual band is the scanner's.
+    """
+    if db is None or not finding_ids:
+        return {}
+    from mykronos import environment_view
+    from mykronos.db.models import EnvironmentalScore
+
+    out: dict[str, str] = {}
+    ids = list(dict.fromkeys(finding_ids))
+    with db.session() as session:
+        for start in range(0, len(ids), 500):
+            for row in session.scalars(
+                select(EnvironmentalScore).where(
+                    EnvironmentalScore.finding_id.in_(ids[start : start + 500])
+                )
+            ):
+                reading = environment_view.rank_reading(row, now)
+                if reading is not None and reading.state == "scored":
+                    out[str(row.finding_id)] = str(row.effective_severity).lower()
+    return out
+
+
+def rank(
+    catalog: Catalog,
+    report: Briefing | None,
+    repos: list[str],
+    *,
+    db: Any = None,
+    now: datetime | None = None,
+) -> list[Candidate]:
     """Every candidate on these repositories, highest score first.
+
+    `db` is the operational database. Without it findings cannot be placed in
+    a surface or read for an environmental score, so exposure falls back to
+    the repository's deployment and the contextual band to the scanner's, and
+    each line says so.
 
     Raises when the lake cannot be read; a section built from it says so.
     """
     from mykronos import guidance
 
+    moment = (now or utcnow()).replace(tzinfo=None)
     candidates: list[Candidate] = []
     held = open_severities(catalog, repos)
     for lane in report.stalled if report else []:
@@ -243,7 +534,7 @@ def rank(catalog: Catalog, report: Briefing | None, repos: list[str]) -> list[Ca
         basis = held.get((lane.repo_full_name, lane.capability)) or (
             {"unknown": lane.open_findings} if lane.open_findings else {}
         )
-        exposure, exposure_basis = exposure_of(report, lane.repo_full_name)
+        exposure, exposure_basis, exposure_state = deployment_of(report, lane.repo_full_name)
         removed = risk(basis)
         candidates.append(
             Candidate(
@@ -263,21 +554,46 @@ def rank(catalog: Catalog, report: Briefing | None, repos: list[str]) -> list[Ca
                 effort_basis="a lane repair: its open findings cannot close until it "
                 "scans successfully twice",
                 score=_score(removed, exposure, LANE_REPAIR_EFFORT),
+                exposure_state=exposure_state,
             )
         )
     for repo in repos:
-        exposure, exposure_basis = exposure_of(report, repo)
-        for group in guidance.fix_groups(catalog, asset_id=repo):
+        groups = guidance.fix_groups(catalog, asset_id=repo)
+        if not groups:
+            continue
+        rows = _open_findings(catalog, repo)
+        placement = _placement(db, repo, moment)
+        contextual = _contextual_bands(
+            db, [fid for g in groups for fid in g.finding_ids], moment
+        )
+        for group in groups:
             basis = group.severities or {"unknown": group.findings}
+            members = [rows[fid] for fid in group.finding_ids if fid in rows]
+            context_counts: dict[str, int] = {}
+            for member in members:
+                band = contextual.get(member["finding_id"], member["severity"])
+                context_counts[band] = context_counts.get(band, 0) + 1
+            if not context_counts:
+                context_counts = dict(basis)
+            scored = sum(1 for m in members if m["finding_id"] in contextual)
+            exposure, exposure_basis, exposure_state = exposure_for(
+                members, placement, report, repo
+            )
+            no_fix = group.effort == "no_fix"
             effort = EFFORT_WEIGHT.get(group.effort, EFFORT_WEIGHT["judgement"])
-            removed = risk(basis)
+            removed = risk(context_counts)
+            title = group.full_action or group.action
             candidates.append(
                 Candidate(
                     signal_key=signal_key(repo, "fix", group.fix_id),
-                    kind="fix",
+                    kind="acceptance" if no_fix else "fix",
                     repo_full_name=repo,
                     capability=group.capability,
-                    title=group.action,
+                    title=(
+                        f"Accept with no_vendor_fix and a review date, or mitigate: {title}"
+                        if no_fix
+                        else title
+                    ),
                     ref=group.fix_id,
                     findings=group.findings,
                     risk_removed=removed,
@@ -285,14 +601,35 @@ def rank(catalog: Catalog, report: Briefing | None, repos: list[str]) -> list[Ca
                     exposure=exposure,
                     exposure_basis=exposure_basis,
                     effort=effort,
-                    effort_basis=f"{group.effort} ({len(group.rules)} rule(s), per the "
-                    "scanner's fix text)",
+                    effort_basis=(
+                        "no_fix: the scanner reports no fixed version published, so "
+                        "there is no change to make"
+                        if no_fix
+                        else f"{group.effort} ({len(group.rules)} rule(s), per the "
+                        "scanner's fix text)"
+                    ),
                     score=_score(removed, exposure, effort),
-                    steps=list(group.steps),
+                    steps=[] if no_fix else list(group.steps),
+                    exposure_state=exposure_state,
+                    contextual_basis=_ordered(context_counts),
+                    contextual_scored=scored,
                 )
             )
     candidates.sort(key=lambda c: (-c.score, -c.risk_removed, c.repo_full_name, c.title))
     return candidates
+
+
+def story_title(text: str, limit: int = TITLE_LIMIT) -> str:
+    """`text` as a story title: whole when it fits, else cut at a word with an
+    ellipsis. Never mid-word (TheHub #61348: "gcc: Integer wrap in `std")."""
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= limit:
+        return clean
+    head = clean[: limit - 1]
+    cut = head.rfind(" ")
+    if cut > 0:
+        head = head[:cut]
+    return head.rstrip(" ,;:-") + "…"
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +683,16 @@ def already_filed(
 
 
 def story_payload(candidate: Candidate, *, rank_at: int) -> dict[str, Any]:
-    """A backlog story: what, why it ranks, three options and a recommendation."""
+    """A backlog story: what, why it ranks, three options and a recommendation.
+
+    Refuses an acceptance candidate: a group with no fix has no change to make,
+    and a story recommending one cannot be done (TheHub #61348, #61335).
+    """
+    if candidate.kind == "acceptance":
+        raise ValueError(
+            "an acceptance candidate is not a story: no fix exists, so it is an "
+            "operator decision (accept with no_vendor_fix, or mitigate)"
+        )
     steps = "".join(f"\n   - {step}" for step in candidate.steps)
     accept = (
         "Record a risk acceptance for these findings in MyKronos, with a premise and "
@@ -394,7 +740,7 @@ def story_payload(candidate: Candidate, *, rank_at: int) -> dict[str, Any]:
             "two successful scans in a row.",
         ]
     return {
-        "title": candidate.title[:255],
+        "title": story_title(candidate.title),
         "detail": detail,
         "bucket": "backlog",
         "tags": [SIGNAL_TAG, key_tag(candidate.signal_key), f"repo:{candidate.repo_full_name}"],
@@ -419,16 +765,65 @@ def _risk_of(story: dict[str, Any]) -> float:
     return float(match.group(1)) if match else 0.0
 
 
-def weekly_metric(board: Any, *, now: datetime) -> dict[str, Any]:
+#: The fix id a filed story's acceptance criterion names: "... ({ref})."
+_REF_IN_CRITERION = re.compile(r"\(([a-z_]+:[^()]+)\)\.?\s*$")
+
+
+def _target(story: dict[str, Any]) -> tuple[str, str] | None:
+    """(repository, fix id) a filed fix story is about, or None (a lane)."""
+    repo = next(
+        (
+            tag[len("repo:"):]
+            for tag in story.get("tags") or []
+            if isinstance(tag, str) and tag.startswith("repo:")
+        ),
+        None,
+    )
+    for criterion in story.get("acceptance_criteria") or []:
+        match = _REF_IN_CRITERION.search(str(criterion))
+        if match and repo:
+            return repo, match.group(1)
+    return None
+
+
+def _verified(
+    catalog: Catalog, story: dict[str, Any], since: datetime | None
+) -> tuple[float, int]:
+    """(risk, findings) of the story's fix that MyKronos has closed since it
+    was filed. `fixed` is only ever set by absence or a verification scan;
+    nobody may hand-set it, so it is what "verified removed" means here."""
+    from mykronos import guidance
+
+    target = _target(story)
+    if target is None:
+        return 0.0, 0
+    repo, ref = target
+    for group in guidance.fix_groups(
+        catalog, asset_id=repo, status="fixed", resolved_since=since
+    ):
+        if group.fix_id == ref:
+            return risk(group.severities), group.findings
+    return 0.0, 0
+
+
+def weekly_metric(
+    board: Any, *, now: datetime, catalog: Catalog | None = None
+) -> dict[str, Any]:
     """This week's and last week's share of sprint stories tagged
-    `briefing-signal`, and the risk those stories removed.
+    `briefing-signal`, the risk those stories claimed, and the risk MyKronos
+    verified removed.
 
     A week starts Monday 00:00 UTC. Its sprint stories are those done in it
     (by `closed_at`) and, for the current week, those in the sprint bucket now:
     the board keeps no history of who was in a past sprint, so a past week is
-    measured by what it finished. Risk removed is the `risk removed` each
-    tagged story recorded when it was filed, summed over the ones done in the
-    week.
+    measured by what it finished.
+
+    *Claimed* (`risk_claimed`, and `risk_removed` as it was always called) is
+    the `risk removed` each tagged story recorded when it was filed, summed
+    over the ones done in the week. *Verified* (`risk_verified_removed`,
+    TheHub #61348) is, for the same stories, the scanner-weighted risk of the
+    findings of their fix that MyKronos has closed (`fixed`) since the story
+    was created; null when the lake was not given, which is not zero.
     """
     from mykronos.po_console import parse_time
 
@@ -450,6 +845,17 @@ def weekly_metric(board: Any, *, now: datetime) -> dict[str, Any]:
         ]
         stories = done + (list(board.stories.get("sprint", [])) if current else [])
         tagged = [s for s in stories if is_signal(s)]
+        claimed = round(sum(_risk_of(s) for s in done if is_signal(s)), 2)
+        verified: float | None = None
+        closed_count: int | None = None
+        if catalog is not None:
+            total, count = 0.0, 0
+            for s in done:
+                if is_signal(s):
+                    weight, found = _verified(catalog, s, naive(s.get("created_at")))
+                    total += weight
+                    count += found
+            verified, closed_count = round(total, 2), count
         weeks.append(
             {
                 "week_start": begin.date().isoformat(),
@@ -458,12 +864,17 @@ def weekly_metric(board: Any, *, now: datetime) -> dict[str, Any]:
                 "briefing_signal_stories": len(tagged),
                 "share": round(len(tagged) / len(stories), 3) if stories else None,
                 "done_briefing_signal_stories": sum(1 for s in done if is_signal(s)),
-                "risk_removed": round(sum(_risk_of(s) for s in done if is_signal(s)), 2),
+                "risk_removed": claimed,
+                "risk_claimed": claimed,
+                "risk_verified_removed": verified,
+                "findings_verified_closed": closed_count,
             }
         )
     return {
         "measured_by": "TheHub board: sprint bucket now plus stories closed in the "
-        "week; risk removed as recorded on each tagged story when it was filed",
+        "week; risk claimed as recorded on each tagged story when it was filed; "
+        "risk verified removed from the lake: the findings of each done story's fix "
+        "that MyKronos closed after the story was created, at the scanner's weights",
         "tag": SIGNAL_TAG,
         "weeks": weeks,
     }
@@ -544,7 +955,12 @@ async def file_signals(
 
     stories = await _whole_board(hub)
     result = FilingResult()
-    ranked = [_candidate(row) for row in section.data.get("candidates") or []]
+    # An acceptance candidate is never filed, wherever it came from (#61348).
+    ranked = [
+        c
+        for c in (_candidate(row) for row in section.data.get("candidates") or [])
+        if c.kind != "acceptance"
+    ]
     for position, candidate in enumerate(ranked, start=1):
         if len(result.filed) >= limit:
             break
