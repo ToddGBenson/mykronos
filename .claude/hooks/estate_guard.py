@@ -38,7 +38,12 @@ variable) is refused, since nothing here can say what it will run.
 
 A command word it cannot resolve (`$(...)`, an unset `$X`, `${x/a/b}`, `{a,b}`, a
 PowerShell `& $var`) is refused when the working directory or any argument is inside
-a protected checkout, and passes elsewhere.
+a protected checkout, and passes elsewhere. A write target only partly resolvable
+("$HUB/$f", `$HUB/{a,b}`, `<projects>/TheHub-ma$X`) is judged by the working directory
+and by the directory its resolvable prefix names. A redirection to a command
+substitution (`> $(echo p)`) is judged by what an `echo` or `printf` there prints, and
+refused when that cannot be known. Inside bash's `[[ ... ]]`, `>` and `<` compare
+strings and are not redirections.
 
 Paths are compared after canonicalisation: case, `\` or `/`, `..`, the MSYS
 `/c/...` spelling, `\\?\`, `\\.\` and `\\localhost\c$` (also `127.0.0.1` and this
@@ -283,7 +288,7 @@ def _below(path: str, root: str) -> list[str] | None:
     rd, rp = _split(root)
     if pd != rd or len(pp) < len(rp):
         return None
-    if all(_same_component(c, r) for c, r in zip(pp, rp)):
+    if all(_same_component(c, r) for c, r in zip(pp, rp, strict=False)):
         return pp[len(rp):]
     return None
 
@@ -488,24 +493,33 @@ def _read_heredoc_word(s: str, i: int) -> tuple[str, bool, bool, int]:
     return word, raw != word, dash, k
 
 
-def _read_target(s: str, j: int, mode: str) -> tuple[str, int]:
-    """The raw word at s[j:] that a redirection writes to, and where it ends."""
+def _read_target(s: str, j: int, mode: str) -> tuple[str, int, list[Parsed]]:
+    """The raw word at s[j:] that a redirection writes to, where it ends, and the
+    command substitutions inside it (`> $(echo x)` is one word, not `$` then a
+    subshell)."""
     k, quote = j, None
+    nested: list[Parsed] = []
     while k < len(s):
         c = s[k]
+        if quote != "'" and mode in ("bash", "pwsh") and s.startswith("$(", k):
+            sub, k = parse(s, mode, k + 2, ")")
+            nested.append(sub)
+            continue
+        if quote != "'" and mode == "bash" and c == "`":
+            sub, k = parse(s, mode, k + 1, "`")
+            nested.append(sub)
+            continue
         if quote:
             if c == quote:
                 quote = None
-        elif mode == "bash" and c == "\\" and k + 1 < len(s):
-            k += 1
-        elif mode == "pwsh" and c == "`" and k + 1 < len(s):
+        elif (mode == "bash" and c == "\\" or mode == "pwsh" and c == "`") and k + 1 < len(s):
             k += 1
         elif c in "'\"" and (c == '"' or mode != "cmd"):
             quote = c
         elif c in " \t\n;&|()<>":
             break
         k += 1
-    return s[j:k], k
+    return s[j:k], k, nested
 
 
 def parse(s: str, mode: str, i: int = 0, closer: str | None = None) -> tuple[Parsed, int]:
@@ -520,6 +534,7 @@ def parse(s: str, mode: str, i: int = 0, closer: str | None = None) -> tuple[Par
     depth = 0
     n = len(s)
     at_word_start = True
+    in_test = False  # inside bash's [[ ... ]], where > compares strings
 
     def flush() -> None:
         nonlocal cur, heredocs, redirects, piped_from
@@ -615,6 +630,22 @@ def parse(s: str, mode: str, i: int = 0, closer: str | None = None) -> tuple[Par
             flush()
             at_word_start = True
             continue
+        if mode == "bash" and at_word_start and re.match(r"\[\[(?=[ \t\n])", s[i:]):
+            in_test = True
+            cur.append("[[")
+            i += 2
+            continue
+        if in_test and s.startswith("]]", i):
+            in_test = False
+            cur.append("]]")
+            i += 2
+            at_word_start = False
+            continue
+        if in_test and c in "<>":  # a string comparison, not a redirection
+            cur.append(c)
+            i += 1
+            at_word_start = False
+            continue
         if c == ">" and not (mode == "bash" and s.startswith("(", i + 1)):  # not >(...)
             # An fd or stream written against the operator (2>, &>, *>) is not a word.
             k = len(cur)
@@ -633,7 +664,8 @@ def parse(s: str, mode: str, i: int = 0, closer: str | None = None) -> tuple[Par
                 j += 1
             while j < n and s[j] in " \t":
                 j += 1
-            target, i = _read_target(s, j, mode)
+            target, i, target_subs = _read_target(s, j, mode)
+            out.nested.extend(target_subs)
             if target:
                 redirects.append(target)
             at_word_start = True
@@ -739,17 +771,80 @@ def check_parsed(parsed: Parsed, mode: str, ctx: Context, depth: int) -> None:
         )
 
 
+def _first_unresolved(word: str, mode: str) -> int:
+    """Where the first part of `word` that only the shell can work out begins."""
+    found = [m.start() for m in [re.search(r"__SUBST__|\$(?:[A-Za-z_{(]|env:)", word, re.I)]
+             if m]
+    if mode == "bash":
+        found += [m.start() for m in [re.search(r"`|\{[^{}]*,[^{}]*\}", word)] if m]
+    if mode == "cmd":
+        found += [m.start() for m in [re.search(r"%[A-Za-z_][A-Za-z0-9_]*%", word)] if m]
+    return min(found, default=len(word))
+
+
+def refuse_unresolved_write(path: str, what: str, mode: str, ctx: Context) -> None:
+    """Refuse `what` if a path the shell finishes at run time could land in a protected
+    checkout. It is judged by the working directory (a relative path) and by the
+    directory its resolvable prefix names: "$HUB/$f" and $HUB/{a,b} are inside $HUB.
+    A partial last component counts too: <projects>/TheHub-ma$X could be the checkout."""
+    refuse_write(ctx.cwd, what)
+    prefix = path[: _first_unresolved(path, mode)].replace("\\", "/")
+    if "/" not in prefix:
+        return
+    head, partial = prefix.rsplit("/", 1)
+    directory = norm(head or "/", ctx.cwd)
+    refuse_write(directory, what)
+    partial = _plain(partial) if partial else ""
+    if not partial:
+        return
+    for root in protected_roots():
+        rel = _below(root, directory)
+        if rel and _plain(rel[0]).startswith(partial):
+            raise BlockedError(
+                f"`{what}` writes a path that starts {prefix} and is finished only at run "
+                f"time, so it could land in the live checkout {root}. Write the path out."
+            )
+
+
+def _substituted_target(raw: str, mode: str, ctx: Context) -> str | None:
+    """A redirection target that starts with a command substitution, `> $(echo p)`,
+    with the substitution replaced by what it prints when that can be known."""
+    m = re.match(r'^"?(\$\(|`)', raw)
+    if not m or (m.group(1) == "`" and mode != "bash"):
+        return None
+    inner, end = parse(raw, mode, m.end(), ")" if m.group(1) == "$(" else "`")
+    known = None
+    if len(inner.segments) == 1 and not inner.nested:
+        known = _stdin_text(inner.segments[0].text, mode, ctx)
+    if known is None or not known.strip():
+        raise BlockedError(
+            f"`> {raw}`: a redirection to a path that a command prints at run time, which "
+            "this guard cannot read, so it cannot tell whether it is inside the live "
+            "checkout. Write the path out."
+        )
+    rest = raw[end:]
+    if raw.startswith('"') and rest.startswith('"'):
+        rest = rest[1:]
+    rest_words = split_words(rest, mode) if rest.strip() else []
+    return known.strip() + (rest_words[0] if rest_words else "")
+
+
 def check_redirects(targets: list[str], mode: str, ctx: Context) -> None:
     for raw in targets:
-        words = split_words(raw, mode)
-        if not words:
-            continue
-        target = expand_vars(words[0], ctx.vars)
+        substituted = _substituted_target(raw, mode, ctx)
+        if substituted is not None:
+            target = substituted
+        else:
+            words = split_words(raw, mode)
+            if not words:
+                continue
+            target = words[0]
+        target = expand_vars(target, ctx.vars)
         low = target.lower()
         if low in NOT_FILES or low.startswith("/dev/fd/"):
             continue
-        if unresolved(target, mode):
-            refuse_write(ctx.cwd, f"> {raw}")  # a target only the shell can name
+        if unresolved(target, mode):  # a target only the shell can name
+            refuse_unresolved_write(target, f"> {raw}", mode, ctx)
             continue
         refuse_write(norm(target, ctx.cwd), f"> {raw}")
 
@@ -1200,7 +1295,7 @@ def _ps_bind(args: list[str], positions: tuple[str, ...],
         positional.append(a)
         k += 1
     free = [p for p in positions if p not in bound]
-    for p, v in zip(free, positional):
+    for p, v in zip(free, positional, strict=False):
         bound.setdefault(p, []).append(v)
     return bound
 
@@ -1251,7 +1346,7 @@ def _written_paths(name: str, args: list[str], mode: str) -> list[str]:
         if not in_place:
             return []
         operands, values = _operands(args, flags)
-        has_script = any(f in values for f in ("-e", "--expression", "-f", "--file", "-E"))
+        has_script = any(f in values for f in ("-e", "--expression", "-f", "--file"))
         return operands if has_script else operands[1:]
     if name == "tee":
         return _operands(args, set())[0]
@@ -1278,7 +1373,7 @@ def check_writes(name: str, args: list[str], mode: str, ctx: Context) -> None:
         if not path:
             continue
         if unresolved(path, mode):
-            refuse_write(ctx.cwd, f"{name} {path}")
+            refuse_unresolved_write(path, f"{name} {path}", mode, ctx)
             continue
         refuse_write(norm(path, ctx.cwd), f"{name} {path}")
 
