@@ -4,6 +4,7 @@ import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import Link from "next/link";
 
 import { Feedback } from "@/components/feedback";
+import { JumpBox } from "@/components/jump-box";
 import { NavRail } from "@/components/nav-rail";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -107,6 +108,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               AppSec control plane
             </span>
             <div className="ml-auto flex items-center gap-3">
+              {/* Ctrl+K from any page (TheHub #60976). */}
+              <JumpBox />
               <Feedback />
               <ThemeToggle />
               {/* "Phase 7 · admin" used to sit here — the project's internal
