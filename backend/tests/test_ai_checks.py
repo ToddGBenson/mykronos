@@ -437,6 +437,47 @@ class TestAnExactIdWithoutADate:
         assert findings == []
 
 
+class TestSonnet46IsAnExactId:
+    """TheHub #61124. `claude-sonnet-4-6` is the complete id Anthropic
+    publishes for Claude Sonnet 4.6: there is no dated snapshot behind it to
+    pin to, so the fix the finding asked for did not exist. The rule reported
+    it nine times against TheHub's develop (config defaults, compose
+    fallbacks, an environment default), and every one was false.
+
+    Its 4.5-generation neighbour is different: `claude-sonnet-4-5` is an alias
+    for `claude-sonnet-4-5-20250929`, so it stays a finding.
+    """
+
+    def test_sonnet_4_6_is_pinned(self) -> None:
+        assert check_ai.is_pinned("claude-sonnet-4-6")
+
+    def test_the_4_5_alias_is_still_not(self) -> None:
+        assert not check_ai.is_pinned("claude-sonnet-4-5")
+
+    def test_thehubs_shapes_are_not_flagged(self, tmp_path: Path) -> None:
+        write(tmp_path, "config.py", '    claude_model: str = "claude-sonnet-4-6"
+')
+        write(
+            tmp_path,
+            "importer.py",
+            'CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+',
+        )
+        write(
+            tmp_path,
+            "docker-compose.yml",
+            "      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
+",
+        )
+        write(tmp_path, "evals/case.py", "x = 1
+")
+
+        findings, uses = check_ai.check(tmp_path)
+
+        assert uses is True
+        assert [f for f in findings if f.rule_id == "ai-model-unpinned"] == []
+
+
 class TestThisRepositorysOwnModelIsPinned:
     """Every place this repository configures its own Claude model names an
     exact id, and they all name the same one (D-167).
