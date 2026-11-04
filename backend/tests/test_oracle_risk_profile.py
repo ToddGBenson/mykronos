@@ -154,7 +154,10 @@ class TestTheOracleInput:
         self, catalog, policy, client, admin_auth, run_compaction
     ) -> None:
         """Somebody opened the form and recorded that they do not know yet —
-        an auditable state, and not the same as never having been asked."""
+        an auditable state, and not the same as never having been asked.
+
+        Re-baselined at policy 1.19 (TheHub #61349): an unset internet_facing
+        is unknown, not false, and scores its own term. It was 0.0."""
         repo_id = onboard(client, admin_auth).json()["id"]
         put_profile(client, admin_auth, repo_id)
         seed(client, run_compaction)
@@ -163,7 +166,10 @@ class TestTheOracleInput:
 
         profile = decision.inputs_snapshot["risk_profile"]
         assert profile["available"] is True
-        assert profile["contribution"] == 0.0
+        assert profile["internet_facing_state"] == "unknown"
+        assert profile["contribution"] == pytest.approx(
+            policy.risk_profile.internet_facing_unknown_points
+        )
 
     def test_each_recorded_fact_is_its_own_term(
         self, catalog, policy, client, admin_auth, run_compaction
@@ -195,7 +201,14 @@ class TestTheOracleInput:
         """Unbounded by design — an asset in three regimes carries three
         kinds of exposure, and a cap would hide the third."""
         repo_id = onboard(client, admin_auth).json()["id"]
-        put_profile(client, admin_auth, repo_id, compliance_scope=["pci", "hipaa", "soc2"])
+        # internet_facing recorded, so only the regimes score (policy 1.19).
+        put_profile(
+            client,
+            admin_auth,
+            repo_id,
+            internet_facing=False,
+            compliance_scope=["pci", "hipaa", "soc2"],
+        )
         seed(client, run_compaction)
 
         decision = OracleEngine(catalog, policy, db=client.app.state.db).evaluate(REPO)

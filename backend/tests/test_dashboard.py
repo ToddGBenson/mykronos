@@ -909,7 +909,8 @@ class TestThreatIntel:
     ) -> None:
         """'Not yet fetched' and 'fetched, not exploited' must not look the
         same — a CVE-naming finding is returned even before the refresh job
-        has ever run, with an honest `in_kev: false` rather than omitted."""
+        has ever run, with `in_kev: null` (not checked, TheHub #61349) rather
+        than omitted."""
         token = issue_token(client, REPO, CAPABILITY)
         auth = {"Authorization": f"Bearer {token}"}
         post_scan(client, auth, scan_run_id="run-cve")
@@ -923,7 +924,7 @@ class TestThreatIntel:
 
         body = client.get("/api/dashboard/threat-intel", headers=admin_auth).json()
         entry = next(e for e in body if e["cve_id"] == "CVE-2024-0001")
-        assert entry["in_kev"] is False
+        assert entry["in_kev"] is None
         assert entry["epss_score"] is None
         assert entry["worst_severity"] == "high"
         assert REPO in entry["repo_full_names"]
@@ -1051,18 +1052,30 @@ class TestOpenFindingsThreatIntelBadge:
         assert group["in_kev"] is None
         assert group["epss_score"] is None
 
-    def test_a_cve_with_no_match_row_is_checked_not_null(
+    def test_a_cve_with_no_match_row_is_not_checked(
         self, client: TestClient, admin_auth: dict[str, str], run_compaction
     ) -> None:
-        """Distinct from the no-CVE case above: `in_kev` becomes `False`,
-        not `None` — a CVE was found and looked up, it just isn't KEV-listed
-        (or hasn't been fetched yet)."""
+        """A CVE the feed has never fetched: `in_kev` stays null, because
+        nobody knows whether it is listed (TheHub #61349). This test used to
+        pin `False`, which also meant "checked, not listed"."""
         repo_id = self._seed(client, admin_auth, run_compaction, "CVE-2024-77777")
         group = self._group(client, admin_auth, repo_id)
 
         assert group["cve_id"] == "CVE-2024-77777"
-        assert group["in_kev"] is False
+        assert group["in_kev"] is None
         assert group["epss_score"] is None
+
+    def test_a_cve_checked_and_not_listed_is_false(
+        self, client: TestClient, admin_auth: dict[str, str], run_compaction
+    ) -> None:
+        from mykronos.db.models import ThreatIntelMatch
+
+        repo_id = self._seed(client, admin_auth, run_compaction, "CVE-2024-77778")
+        with client.app.state.db.session() as session:
+            session.add(ThreatIntelMatch(cve_id="CVE-2024-77778", in_kev=False))
+
+        group = self._group(client, admin_auth, repo_id)
+        assert group["in_kev"] is False
 
     def test_a_kev_listed_cve_is_flagged(
         self, client: TestClient, admin_auth: dict[str, str], run_compaction
@@ -1837,7 +1850,7 @@ class TestRiskProfileProposal:
         internet = self._internet_facing(client, admin_auth, repo_id)
 
         assert internet["value"] is False
-        assert internet["confidence"] == "observed"
+        assert internet["confidence"] == "declared"
 
     def test_one_surface_declared_internet_proposes_internet_facing(
         self, client, admin_auth: dict[str, str]
@@ -1849,7 +1862,7 @@ class TestRiskProfileProposal:
         internet = self._internet_facing(client, admin_auth, repo_id)
 
         assert internet["value"] is True
-        assert internet["confidence"] == "observed"
+        assert internet["confidence"] == "declared"
 
     def test_the_evidence_names_the_surface_it_relied_on(
         self, client, admin_auth: dict[str, str]

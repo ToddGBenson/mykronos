@@ -135,7 +135,20 @@
 # that declare an internet-facing entry point with selectors can form one; on
 # every other repository no score moves. Adds triage_rank.entry_point_chain:
 # each link of a chain ranks higher in the work queue by that many points.
-version: "1.18"
+#
+# 1.19 - unknown is unknown (TheHub #61349, D-176). Adds
+# risk_profile.internet_facing_unknown_points. A repository whose risk
+# profile exists but leaves internet_facing unset used to score exactly like
+# one recorded `false`; it now adds these points, as its own term
+# (risk_profile.internet_facing_unknown), until somebody records true or
+# false. Changes existing scores on exactly those repositories and no others:
+# no profile at all stays `available: false` and adds nothing, and a recorded
+# true or false scores as it did under 1.18. Also, with no score change: the
+# exploitability snapshot says "KEV status not checked" for a CVE the feed
+# has never fetched instead of counting it as not listed, and the work queue
+# lists an EPSS nobody scored as unknown (zero points, ordered above an equal
+# rank whose EPSS was measured) rather than as 0.
+version: "1.19"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -280,6 +293,12 @@ modifiers:
   # curved — there is no count here to curve, each fact is true once.
   risk_profile:
     internet_facing_points: 10
+    # A recorded profile with internet_facing unset (1.19, D-176). The same as
+    # internet-facing on purpose: an unanswered exposure question is scored at
+    # the worst answer, which is what CVSS's environmental metrics do with an
+    # undefined modifier and what the profile builder already told people the
+    # score did. The reasoning names it as unknown, never as internet-facing.
+    internet_facing_unknown_points: 10
     data_classification_points:
       public: 0
       internal: 3

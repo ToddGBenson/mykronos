@@ -954,7 +954,18 @@ def _risk_profile_snapshot(
     weights = policy.risk_profile
     terms: list[Term] = []
 
-    if profile.get("internet_facing") and weights.internet_facing_points:
+    # Three answers, not two (TheHub #61349). `None` used to add nothing, the
+    # same as a recorded `false`: a profile nobody had finished scored as if
+    # somebody had said the internet cannot reach it.
+    internet_facing = profile.get("internet_facing")
+    if internet_facing is None:
+        internet_facing_state = "unknown"
+    elif internet_facing:
+        internet_facing_state = "internet_facing"
+    else:
+        internet_facing_state = "not_internet_facing"
+
+    if internet_facing_state == "internet_facing" and weights.internet_facing_points:
         terms.append(
             Term(
                 key="risk_profile.internet_facing",
@@ -963,6 +974,21 @@ def _risk_profile_snapshot(
                 detail=(
                     "Recorded as accepting traffic from the public internet, "
                     f"worth {weights.internet_facing_points:g} points."
+                ),
+            )
+        )
+    elif internet_facing_state == "unknown" and weights.internet_facing_unknown_points:
+        terms.append(
+            Term(
+                key="risk_profile.internet_facing_unknown",
+                label="Internet exposure unknown",
+                contribution=weights.internet_facing_unknown_points,
+                detail=(
+                    "The risk profile exists but internet_facing is not recorded, "
+                    "so whether the internet reaches this application is unknown, "
+                    "which is not the same as no. Scored at "
+                    f"{weights.internet_facing_unknown_points:g} points until "
+                    "somebody records true or false."
                 ),
             )
         )
@@ -1011,7 +1037,8 @@ def _risk_profile_snapshot(
     return (
         {
             "available": True,
-            "internet_facing": profile.get("internet_facing"),
+            "internet_facing": internet_facing,
+            "internet_facing_state": internet_facing_state,
             "data_classification": classification,
             "business_criticality": criticality,
             "compliance_scope": scope,
@@ -1147,9 +1174,17 @@ def _exploitability_snapshot(
             "reason": "No operational database is configured for this evaluation.",
         }
     kev_listed = [m for m in matched if m["in_kev"]]
+    # An entry without the key predates TheHub #61349 and was always fetched
+    # by its own account; only a False is "never looked up".
+    unchecked = [m for m in matched if m.get("kev_checked", True) is False]
+    checked = len(matched) - len(unchecked)
+    unchecked_cves = sorted({str(m["cve_id"]) for m in unchecked})
     return {
         "available": True,
         "cve_matched_findings": len(matched),
+        "kev_checked_findings": checked,
+        "kev_not_checked_findings": len(unchecked),
+        "kev_not_checked_cves": unchecked_cves,
         "kev_listed_findings": [
             {
                 "finding_id": m["finding_id"],
@@ -1161,22 +1196,43 @@ def _exploitability_snapshot(
             for m in kev_listed
         ],
         "contribution": round(sum(m["boost"] for m in kev_listed), 2),
-        "reason": (
-            f"{len(matched)} open finding(s) name a CVE; none is in CISA's "
-            "Known Exploited Vulnerabilities catalog."
-            if matched and not kev_listed
-            else (
-                "No open finding in scope names a CVE — most SAST/IaC "
-                "findings describe a code pattern, not a published "
-                "vulnerability, and have no exploitability data available."
-                if not matched
-                else (
-                    f"{len(kev_listed)} of {len(matched)} CVE-naming open "
-                    "finding(s) are in CISA's KEV catalog."
-                )
-            )
-        ),
+        "reason": _kev_reason(matched, kev_listed, checked, unchecked_cves),
     }
+
+
+def _kev_reason(
+    matched: list[dict[str, Any]],
+    kev_listed: list[dict[str, Any]],
+    checked: int,
+    unchecked_cves: list[str],
+) -> str:
+    """The exploitability sentence, which never says "not listed" about a
+    CVE nobody looked up (TheHub #61349)."""
+    if not matched:
+        return (
+            "No open finding in scope names a CVE — most SAST/IaC "
+            "findings describe a code pattern, not a published "
+            "vulnerability, and have no exploitability data available."
+        )
+    if kev_listed:
+        sentence = (
+            f"{len(kev_listed)} of {len(matched)} CVE-naming open "
+            "finding(s) are in CISA's KEV catalog."
+        )
+    elif checked:
+        sentence = (
+            f"{checked} open finding(s) name a CVE that was checked; none is in "
+            "CISA's Known Exploited Vulnerabilities catalog."
+        )
+    else:
+        sentence = f"{len(matched)} open finding(s) name a CVE."
+    if unchecked_cves:
+        sentence += (
+            f" KEV status not checked for {len(unchecked_cves)} CVE(s): the "
+            "threat-intel refresh has no row for them, so whether they are "
+            "exploited is unknown, not no."
+        )
+    return sentence
 
 
 class OracleEngine:
@@ -2109,6 +2165,12 @@ class OracleEngine:
         matched: list[dict[str, Any]] = []
         for cve_id, findings in sorted(by_cve.items()):
             match = matches.get(cve_id)
+            # Three states (TheHub #61349). No feed row means the KEV refresh
+            # never looked this CVE up: `kev_checked` False, and the snapshot
+            # says "not checked" rather than "not listed". The score is the
+            # same either way - only a listing boosts - but the sentence a
+            # reader acts on is not.
+            kev_checked = match is not None
             in_kev = bool(match and match.in_kev)
             for finding in findings:
                 severity = finding["severity"]
@@ -2121,6 +2183,7 @@ class OracleEngine:
                         "cve_id": cve_id,
                         "severity": severity,
                         "in_kev": in_kev,
+                        "kev_checked": kev_checked,
                         "boosted_to": boosted_to if in_kev else None,
                         "boost": boost,
                         "kev_added_at": (

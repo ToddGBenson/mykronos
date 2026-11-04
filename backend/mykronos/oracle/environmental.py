@@ -401,7 +401,13 @@ def _recounted(key: str) -> bool:
 #: Trimmed for a switched repository only when at least one of its findings
 #: was counted by a current environmental score; kept otherwise, because then
 #: nothing else counts them.
-DOUBLE_COUNTED = ("risk_profile.internet_facing", "risk_profile.data_classification")
+#: An unknown internet exposure is counted there too: an unset profile field
+#: leaves MAV at the base vector's own (network) value (TheHub #61349).
+DOUBLE_COUNTED = (
+    "risk_profile.internet_facing",
+    "risk_profile.internet_facing_unknown",
+    "risk_profile.data_classification",
+)
 
 
 def live_terms(
