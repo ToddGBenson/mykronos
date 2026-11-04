@@ -248,7 +248,7 @@ class TestARootUnderADirectoryNamedLikeAVendorTree:
     ) -> None:
         root = tmp_path / wrapper / "abc123" / "source"
         root.mkdir(parents=True)
-        write(root, "app.py", 'model = "claude-sonnet-4-6"\n')
+        write(root, "app.py", 'model = "claude-sonnet-4-5"\n')
 
         findings, uses = check_ai.check(root.resolve())
 

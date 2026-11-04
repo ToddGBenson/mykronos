@@ -157,6 +157,8 @@ PINNED = re.compile(r"(\d{8}|\d{4}-\d{2}-\d{2}|@\d|:\d)")
 EXACT_IDS = frozenset(
     {
         "claude-opus-5-5",
+        # Claude Sonnet 4.6 has no dated snapshot; this is its id (TheHub #61124).
+        "claude-sonnet-4-6",
     }
 )
 
