@@ -43,6 +43,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-172 — TheHub's Concourse jobs queue in three serial lanes, not one](decisions/D-172-thehubs-concourse-jobs-queue-in-three-serial-lanes.md)
 - [D-173 — Triage evidence is shown with its working, and model verdicts are graded before they act](decisions/D-173-triage-evidence-is-shown-with-its-working-and-model-verdicts-are-graded-before-they-act.md)
 - [D-174 — Concourse workers yield to production; task limits are CPU shares only](decisions/D-174-concourse-workers-yield-to-production-not-their-tasks.md)
+- [D-175 — Triage, correlation and remediation upgrade deterministically first; a model only proposes, in shadow, after the corpus can grade it](decisions/D-175-triage-correlation-and-remediation-upgrade-deterministically-first.md)
 
 <!-- decisions-index:end -->
 
