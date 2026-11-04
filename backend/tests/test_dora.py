@@ -34,20 +34,26 @@ def run(
     minutes: float = 30,
     status: str = "success",
     trigger: str = "deploy_sh",
-    target: str | None = "success",
+    deploy: str | None = "success",
     rollback: str | None = None,
 ) -> dict[str, Any]:
-    """One TheHub deploy run, in `/api/devops/deploys`'s shape."""
+    """One TheHub deploy run, in `/api/devops/deploys`'s shape.
+
+    `deploy` is deploy.sh's production stage. `deploy_target` is only its
+    target selection, which every run passes before it builds anything
+    (review of #1117), so it is set here to show it does not count.
+    """
     started = NOW - timedelta(days=days_ago)
-    stages: dict[str, str] = {"start": "success"}
-    if target is not None:
-        stages["deploy_target"] = target
+    stages: dict[str, str] = {"start": "success", "deploy_target": "success", "build": "success"}
+    if deploy is not None:
+        stages["deploy"] = deploy
     if rollback is not None:
         stages["rollback"] = rollback
     return {
         "id": abs(hash((sha, days_ago))) % 100000,
         "deploy_id": sha,
-        "sha": sha,
+        # deploy.sh records 12 characters; the lake stores 40.
+        "sha": sha[:12],
         "branch": "develop",
         "started_at": started.isoformat() + "+00:00",
         "finished_at": (started + timedelta(minutes=minutes)).isoformat() + "+00:00",
@@ -78,7 +84,11 @@ class TestDeployFrequency:
         # Not production deploys: a CI run, and an attempt that never reached
         # the target.
         items.append(run("e" * 40, days_ago=2, trigger="concourse"))
-        items.append(run("f" * 40, days_ago=3, status="failed", target="failed"))
+        # Died in build: it never reached production, so it is neither a
+        # deploy nor a change failure.
+        items.append(run("f" * 40, days_ago=3, status="failed", deploy=None))
+        # deploy skipped (nothing to ship): not a deploy.
+        items.append(run("9" * 40, days_ago=4, deploy="skipped"))
         out = compute(source(items))
         assert out[30]["deploy_frequency"]["value"] == pytest.approx(6 / (30 / 7), abs=0.01)
         assert out[30]["deploy_frequency"]["sample"] == 6
@@ -91,6 +101,62 @@ class TestDeployFrequency:
         ninety = out[90]["deploy_frequency"]
         assert ninety["value"] is None
         assert "2026-09-22" in ninety["lacks"]
+
+    def test_an_old_success_with_no_deploy_stage_cannot_be_judged(self) -> None:
+        # Before deploy.sh recorded a `deploy` stage, a successful run says
+        # nothing about whether it reached production. The record is judged
+        # only from after the newest such run.
+        items = [run("a" * 40, days_ago=5), run("b" * 40, days_ago=12, deploy=None)]
+        out = compute(source(items))
+        assert out[30]["deploy_frequency"]["value"] is None
+        assert "2026-10-20" in out[30]["deploy_frequency"]["lacks"]
+        assert "deploy stage" in out[30]["deploy_frequency"]["lacks"]
+
+    def test_the_real_stage_shape(self) -> None:
+        # Two runs as TheHub recorded them on 2026-11-03 (stage_summary
+        # trimmed to the stages that decide): one shipped clean, one
+        # shipped, failed integration tests and rolled back.
+        clean = {
+            "sha": "fee0e58e55d0",
+            "trigger_source": "deploy_sh",
+            "final_status": "success",
+            "started_at": "2026-10-30T22:57:59.818863+00:00",
+            "finished_at": "2026-10-30T23:43:04.808272+00:00",
+            "stage_summary": {
+                "start": "success", "build": "success", "risk_gate": "success",
+                "deploy": "success", "smoke": "success", "integration_tests": "success",
+                "finish": "success",
+            },
+        }
+        rolled_back = {
+            "sha": "a173e383ea08",
+            "trigger_source": "deploy_sh",
+            "final_status": "failed",
+            "started_at": "2026-10-30T22:42:55.642372+00:00",
+            "finished_at": "2026-10-30T22:58:00.881349+00:00",
+            "stage_summary": {
+                "start": "success", "build": "success", "deploy": "success",
+                "integration_tests": "failed", "rollback": "success", "finish": "failed",
+            },
+        }
+        refused = {
+            "sha": "eb3dab826a1c",
+            "trigger_source": "deploy_sh",
+            "final_status": "failed",
+            "started_at": "2026-10-31T04:14:16.559354+00:00",
+            "finished_at": "2026-10-31T04:14:54.955742+00:00",
+            "stage_summary": {
+                "ci_pause": "warned", "deploy_target": "failed", "finish": "failed",
+                "start": "success",
+            },
+        }
+        out = compute(source([clean, rolled_back, refused]))[30]
+        assert out["deploy_frequency"]["sample"] == 2
+        assert out["change_failure_rate"]["value"] == pytest.approx(50.0)
+        # The rollback recovered at the clean deploy that followed it.
+        assert out["recovery_time"]["value"] == pytest.approx(
+            (23 + 43 / 60 + 4.8 / 3600) - (22 + 58 / 60 + 0.88 / 3600), abs=0.01
+        )
 
     def test_no_deploy_record_is_not_zero(self) -> None:
         from mykronos import dora
@@ -121,6 +187,17 @@ class TestLeadTime:
         assert lead["unit"] == "hours"
         assert lead["sample"] == 3
 
+    def test_a_short_deployed_sha_matches_its_full_first_seen(self) -> None:
+        items = [run("a" * 40, days_ago=3, minutes=60)]
+        first_seen = {"a" * 40: NOW - timedelta(days=3) - timedelta(hours=2)}
+        assert compute(source(items), first_seen)[30]["lead_time"]["value"] == pytest.approx(3.0)
+
+    def test_an_empty_sha_matches_nothing(self) -> None:
+        from mykronos import dora
+
+        assert dora._first_seen({"a" * 40: NOW}, "") is None
+        assert dora._first_seen({"": NOW}, "abc") is None
+
     def test_a_deployed_commit_never_scanned_says_so(self) -> None:
         lead = compute(source([run("a" * 40, days_ago=3)]), {})[30]["lead_time"]
         assert lead["value"] is None
@@ -136,7 +213,7 @@ class TestChangeFailureAndRecovery:
     def test_a_failure_after_the_target_or_a_rollback_is_a_change_failure(self) -> None:
         items = [
             run("a" * 40, days_ago=10),
-            run("b" * 40, days_ago=8, status="failed"),  # failed after deploy_target
+            run("b" * 40, days_ago=8, status="failed"),  # failed after reaching deploy
             run("c" * 40, days_ago=6, status="success", rollback="success"),
             run("d" * 40, days_ago=4),
         ]
@@ -275,6 +352,17 @@ class TestTheEndpoint:
         frequency = body["windows"][0]["deploy_frequency"]
         assert frequency["value"] is None
         assert "could not be read" in frequency["lacks"]
+
+    def test_an_empty_record_says_no_deploys_recorded(
+        self, client: TestClient, viewer_auth: dict[str, str], pinned: None
+    ) -> None:
+        repo_id = onboard(client, repo="example-org/TheHub")
+        attach_hub(client, DeployHub([]))
+
+        lacks = _dora(client, repo_id, viewer_auth)["windows"][0]["deploy_frequency"]["lacks"]
+
+        assert "no deploys recorded" in lacks
+        assert "reaches back" not in lacks
 
     def test_thehub_not_connected_says_so(
         self, client: TestClient, viewer_auth: dict[str, str], pinned: None
