@@ -4,6 +4,50 @@
  */
 
 export interface paths {
+    "/api/ingest/bench-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Bench Run
+         * @description Grade the detector benchmark corpus and store the run, graded or not.
+         *
+         *     The answer is 200 whatever the status, because the run was recorded; the
+         *     `status` is the verdict, and the `bench` job exits non-zero on anything
+         *     but `graded`. Nothing is written to the lake.
+         */
+        post: operations["ingest_bench_run_api_ingest_bench_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/bench/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Bench Runs
+         * @description The benchmark lane's runs, newest first, with per-rule figures.
+         */
+        get: operations["list_bench_runs_api_bench_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/health": {
         parameters: {
             query?: never;
@@ -5341,6 +5385,58 @@ export interface components {
             refused?: {
                 [key: string]: string;
             };
+        };
+        /** BenchRunList */
+        BenchRunList: {
+            /** Runs */
+            runs: components["schemas"]["BenchRunOut"][];
+        };
+        /** BenchRunOut */
+        BenchRunOut: {
+            /** Id */
+            id: string;
+            /**
+             * Graded At
+             * Format: date-time
+             */
+            graded_at: string;
+            /** Platform Repo */
+            platform_repo: string;
+            /** Platform Commit */
+            platform_commit: string;
+            /** Bench Repo */
+            bench_repo: string;
+            /** Bench Commit */
+            bench_commit: string | null;
+            /** Status */
+            status: string;
+            /** Reason */
+            reason: string;
+            /** Scan Runs */
+            scan_runs: number;
+            /** Seeded Total */
+            seeded_total: number;
+            /** Unmatched Findings */
+            unmatched_findings: number;
+            /** Capabilities */
+            capabilities: {
+                [key: string]: unknown;
+            }[];
+            /** Rules */
+            rules: {
+                [key: string]: unknown;
+            }[];
+            /** Run Url */
+            run_url: string | null;
+        };
+        /** BenchRunRequest */
+        BenchRunRequest: {
+            /** Bench Repo */
+            bench_repo: string;
+            /** Platform Commit */
+            platform_commit: string;
+            /** Run Url */
+            run_url?: string | null;
         };
         /**
          * BlockedLaneOut
@@ -14095,6 +14191,70 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    ingest_bench_run_api_ingest_bench_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BenchRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BenchRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bench_runs_api_bench_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BenchRunList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     health_api_ingest_health_get: {
         parameters: {
             query?: never;

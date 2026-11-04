@@ -33,7 +33,7 @@
 # is in none, and a hidden lane is a lane nobody notices has gone red.
 groups:
   - name: quality
-    jobs: [pin-check, unit, coverage, time-travel, lint-and-types, qa-spec-links, frontend]
+    jobs: [pin-check, unit, coverage, time-travel, bench, lint-and-types, qa-spec-links, frontend]
   - name: security
     jobs: [secrets, dependencies, sast, ai, iac, insider, containers]
   - name: gate
@@ -1029,6 +1029,50 @@ jobs:
                 rc="$(cat results/rc)"
                 python source/scripts/time_travel_report.py --junit results/unit.xml --offset "$TIME_TRAVEL_OFFSET" --commit "$(cat results/commit)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
                 exit "$rc"
+
+  # -- The detector benchmark (spec 23 §1.6, TheHub #60742) --------------
+  #
+  # Every mykronos main commit that passes `unit` asks the platform to grade
+  # the seeded corpus (`bench-repo`) and store the run: per-capability recall,
+  # per-rule recall and precision floor, and both commits. The grade is taken
+  # inside the platform because a task has no lake; scripts/bench_run.py only
+  # asks, prints the figures and exits with the verdict.
+  #
+  # Red on anything but `graded`, and that includes a corpus that is not
+  # onboarded yet: a lane that went green with nothing to measure is the
+  # permanently-green 0% #60015 removed. So NOTHING waits on this job
+  # (test_bench_runs.py holds that), and red_main posts its red once.
+  #
+  # It uploads no findings: a detector missing a seed is not a vulnerability
+  # in this repository (D-046), and the corpus's own scans are the corpus's.
+  - name: bench
+    public: true
+    plan:
+      - get: source
+        attempts: *retry_fetch
+        trigger: true
+        passed: [unit]
+      - get: python
+        attempts: *retry_fetch
+      - *preflight
+      - task: grade-bench
+        timeout: 10m
+        image: python
+        params:
+          <<: *mykronos_env
+          BENCH_REPO: ((bench-repo))
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                # python:3.13-slim has no git; the git resource writes the commit
+                # it fetched to .git/ref.
+                commit="$(cat source/.git/ref)"
+                python source/scripts/bench_run.py --bench-repo "$BENCH_REPO" --platform-commit "$commit"
 
   - name: lint-and-types
     public: true
