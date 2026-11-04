@@ -136,6 +136,10 @@ ROUTES: dict[str, str] = {
     "GET /api/dashboard/briefing": PRINCIPAL,
     # The Today run sheet (TheHub #61141): read-only, what Start-Here computes.
     "GET /api/dashboard/today": PRINCIPAL,
+    # Its actions (TheHub #61142), shipped behind a flag that defaults off:
+    # a person only, never a viewer or an agent.
+    "POST /api/dashboard/today/merge": HUMAN,
+    "POST /api/dashboard/today/deploy": HUMAN,
     "GET /api/briefing/daily": PRINCIPAL,
     "GET /api/briefing/weekly": PRINCIPAL,
     "GET /api/credentials/expiring": PRINCIPAL,
