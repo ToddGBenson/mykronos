@@ -56,6 +56,54 @@ export function Windows({
 // Delivery (§8.1)
 // --------------------------------------------------------------------------
 
+type Decision = NonNullable<PoDeliveryRow["decision"]>;
+
+const CHANGE_TONE = {
+  clean: "pass",
+  introduces_blocking: "critical",
+  unknown: "muted",
+} as const;
+
+/**
+ * What THIS commit did leads the row (TheHub #60914); the Oracle
+ * recommendation and score follow, labelled as posture. On a large accepted
+ * backlog every commit's recommendation is no_go, so as the headline it said
+ * nothing about the commit in front of the reader.
+ */
+function ChangeAndPosture({ decision }: { decision: Decision }) {
+  const change = decision.change;
+  const tone =
+    change.verdict === "introduces_blocking" && change.overridden
+      ? "warn"
+      : CHANGE_TONE[change.verdict];
+  return (
+    <>
+      <span data-change={change.verdict}>
+        <Pill
+          tone={tone}
+          title={
+            change.verdict === "unknown"
+              ? "What this commit introduced could not be read."
+              : `Introduced by this commit: ${change.blocking ?? 0} open critical or high, ${
+                  change.non_blocking ?? 0
+                } other.`
+          }
+        >
+          {change.text}
+        </Pill>
+      </span>
+      <span
+        className="font-mono text-[11px] text-ink-3"
+        title={`The standing posture of the whole backlog, not this change. ${
+          decision.decision_type ?? ""
+        }${decision.human_override ? ` · overridden: ${decision.human_override}` : ""}`}
+      >
+        {decision.posture.text}
+      </span>
+    </>
+  );
+}
+
 function DeliveryRow({ data, row }: { data: PoDelivery; row: PoDeliveryRow }) {
   const decision = row.decision;
   return (
@@ -82,20 +130,7 @@ function DeliveryRow({ data, row }: { data: PoDelivery; row: PoDeliveryRow }) {
         {row.scan_failures ? `, ${row.scan_failures} not successful` : ""}
       </span>
       {decision ? (
-        <Pill
-          tone={
-            decision.recommendation === "no_go"
-              ? "critical"
-              : decision.recommendation === "go"
-                ? "pass"
-                : "warn"
-          }
-          title={`${decision.decision_type ?? ""} · score ${decision.score ?? "—"}${
-            decision.human_override ? ` · overridden: ${decision.human_override}` : ""
-          }`}
-        >
-          {decision.recommendation ?? "no recommendation"}
-        </Pill>
+        <ChangeAndPosture decision={decision} />
       ) : (
         <span className="font-mono text-[11px] text-ink-3">no Oracle decision</span>
       )}

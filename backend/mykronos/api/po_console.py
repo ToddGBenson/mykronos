@@ -30,6 +30,8 @@ from mykronos.api.dashboard import DeployLagOut, deploy_lag_out, unrecorded_lag
 from mykronos.approvals import pull_requests
 from mykronos.approvals.engine import ApprovalError, decide
 from mykronos.approvals.policy import PolicyError, cached_policy
+from mykronos.change_verdict import ChangeVerdict, Posture, change_of, posture_of
+from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import ApprovalDecision, ApprovalRequest, Delegation, RepoOnboarding
 from mykronos.deployments import NOT_CONFIGURED, probe_setup_for
 from mykronos.schemas import utcnow
@@ -105,6 +107,10 @@ class PoDeliveryDecisionOut(BaseModel):
     evaluated_at: str | None
     gate_outcome: str | None
     human_override: str | None
+    #: What THIS commit introduced, the row's headline (TheHub #60914).
+    change: ChangeVerdict
+    #: `recommendation` and `score`, labelled as posture: the backlog, not the change.
+    posture: Posture
 
 
 class PoDeliveryRowOut(BaseModel):
@@ -222,7 +228,45 @@ async def _subject_links(
     return pc.subject_links((c.sha, c.message) for c in commits), None
 
 
-def _row_out(repo_full_name: str, row: pc.DeliveryRow) -> PoDeliveryRowOut:
+def _decision_out(
+    repo_full_name: str,
+    row: pc.DeliveryRow,
+    introduced: dict[tuple[str, str], dict[str, int]] | None,
+) -> PoDeliveryDecisionOut | None:
+    """The row's decision, headlined by what the commit introduced (TheHub
+    #60914). `introduced` is None when it could not be read: unknown, never
+    clean."""
+    if not row.decision:
+        return None
+    counts = None if introduced is None else introduced.get((repo_full_name, row.sha), {})
+    return PoDeliveryDecisionOut(
+        **row.decision,
+        change=change_of(counts, overridden=bool(row.decision.get("human_override"))),
+        posture=posture_of(row.decision.get("recommendation"), row.decision.get("score")),
+    )
+
+
+async def _introduced(
+    catalog: Any, repo_full_name: str, rows: list[pc.DeliveryRow]
+) -> dict[tuple[str, str], dict[str, int]] | None:
+    """What each decided commit introduced, in one read; None if it failed."""
+    pairs = [(repo_full_name, r.sha) for r in rows if r.decision]
+    if not pairs:
+        return {}
+    try:
+        return await asyncio.to_thread(DashboardQueries(catalog).introduced_by_commits, pairs)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Delivery: what each commit introduced could not be read for %s", repo_full_name
+        )
+        return None
+
+
+def _row_out(
+    repo_full_name: str,
+    row: pc.DeliveryRow,
+    introduced: dict[tuple[str, str], dict[str, int]] | None,
+) -> PoDeliveryRowOut:
     return PoDeliveryRowOut(
         sha=row.sha,
         commit_url=f"https://github.com/{repo_full_name}/commit/{row.sha}",
@@ -234,7 +278,7 @@ def _row_out(repo_full_name: str, row: pc.DeliveryRow) -> PoDeliveryRowOut:
         last_seen=pc.iso(row.last_seen),
         scans=[PoScanOut(**scan) for scan in row.scans],
         scan_failures=row.scan_failures,
-        decision=PoDeliveryDecisionOut(**row.decision) if row.decision else None,
+        decision=_decision_out(repo_full_name, row, introduced),
         deployed=row.deployed,
     )
 
@@ -279,13 +323,14 @@ async def delivery(
     )
     links.update(read)
     rows = pc.build_delivery(repo_full_name, branch, scans, decisions, revision, links)
+    introduced = await _introduced(catalog, repo_full_name, rows)
     return PoDeliveryOut(
         repo_full_name=repo_full_name,
         default_branch=branch,
         days=days,
         deployment=deployment,
-        shipped=[_row_out(repo_full_name, r) for r in rows if r.shipped][:100],
-        not_shipped=[_row_out(repo_full_name, r) for r in rows if not r.shipped][:50],
+        shipped=[_row_out(repo_full_name, r, introduced) for r in rows if r.shipped][:100],
+        not_shipped=[_row_out(repo_full_name, r, introduced) for r in rows if not r.shipped][:50],
         error=error,
         commits_error=commits_error,
     )

@@ -37,6 +37,8 @@ export type StateCell = {
   label: string;
   /** True when the read behind it failed: the cell says unknown. */
   unread?: boolean;
+  /** Secondary text drawn beside the pill, e.g. the gate's posture (TheHub #60914). */
+  detail?: string;
 };
 
 export type CountTone = "crit" | "high" | "med" | "warn" | "zero" | "unknown";
@@ -58,6 +60,7 @@ export type CommitGate = {
   recommendation?: string | null;
   effective_recommendation?: string | null;
   overridden?: boolean;
+  overall_risk_score?: number | null;
   introduced?: Record<string, number>;
   introduced_blocking?: boolean;
 };
@@ -203,13 +206,24 @@ function unknown(href: string, what: string, error: string): StateCell {
 
 // -- Gate --------------------------------------------------------------------
 
+/** The recorded recommendation and score, labelled as posture: the backlog, not the change. */
+function postureText(gate: CommitGate): string {
+  const recommendation = gate.effective_recommendation ?? gate.recommendation ?? "not recorded";
+  const score = typeof gate.overall_risk_score === "number" ? ` ${gate.overall_risk_score}/100` : "";
+  return `${recommendation}${score}`;
+}
+
 /**
  * The verdict on the newest commit the gate judged. Decision records carry
  * no branch, so this is the newest `commit_gate`, whichever branch it was on.
  *
- * The gate refuses a commit that introduced an open critical or high
- * (`introduced_blocking`, #735), whatever the backlog-wide recommendation
- * says; a recorded override is the human decision and stands.
+ * The headline is what THIS change did (TheHub #60914): the gate refuses a
+ * commit that introduced an open critical or high (`introduced_blocking`,
+ * #735), and nothing else, as deploy.ps1 does (D-159). The backlog-wide
+ * recommendation and score are the posture, drawn beside it and labelled
+ * as such: on a large accepted backlog every commit reads no_go, so as a
+ * headline it said nothing about the commit. A recorded override is the
+ * human decision and stands.
  */
 export function gateCell(repoId: string, read: Read<CommitGate | null>): StateCell {
   const href = `/repos/${repoId}?tab=decisions`;
@@ -224,28 +238,37 @@ export function gateCell(repoId: string, read: Read<CommitGate | null>): StateCe
     };
   }
   const sha = gate.commit_sha.slice(0, 7);
-  const effective = gate.effective_recommendation ?? gate.recommendation ?? "";
   const intro = gate.introduced ?? {};
   const blocking = (intro.critical ?? 0) + (intro.high ?? 0);
-  const overridden = gate.overridden ? ", overridden by a person" : "";
-  if (effective === "no_go") {
-    return { text: "NO-GO", tone: "fail", href, label: `failing: no-go at ${sha}${overridden}` };
-  }
+  const posture = postureText(gate);
+  const detail = `posture ${posture}`;
+  const postureLabel = `posture (the standing backlog, not this change): ${posture}`;
   if (gate.introduced_blocking && !gate.overridden) {
     return {
-      text: `NO-GO · ${blocking} blocking`,
+      text: `introduces ${blocking} blocking`,
       tone: "fail",
       href,
-      label: `failing: ${sha} introduced ${plural(blocking, "open critical or high finding")}, which the gate refuses`,
+      detail,
+      label: `failing: change: ${sha} introduced ${plural(blocking, "open critical or high finding")}, which the gate refuses; ${postureLabel}`,
     };
   }
-  if (effective === "review_recommended") {
-    return { text: "REVIEW", tone: "warn", href, label: `review recommended at ${sha}${overridden}` };
+  if (gate.introduced_blocking) {
+    return {
+      text: `${blocking} blocking · overridden`,
+      tone: "warn",
+      href,
+      detail,
+      label: `change: ${sha} introduced ${plural(blocking, "open critical or high finding")}, overridden by a person; ${postureLabel}`,
+    };
   }
-  if (effective === "go") {
-    return { text: "GO", tone: "ok", href, label: `healthy: go at ${sha}${overridden}` };
-  }
-  return { text: effective || "unknown", tone: "stale", href, label: `recorded "${effective}" at ${sha}` };
+  const overridden = gate.overridden ? ", overridden by a person" : "";
+  return {
+    text: "clean",
+    tone: "ok",
+    href,
+    detail,
+    label: `healthy: change: clean at ${sha}, nothing blocking introduced${overridden}; ${postureLabel}`,
+  };
 }
 
 // -- Prod lag ----------------------------------------------------------------
