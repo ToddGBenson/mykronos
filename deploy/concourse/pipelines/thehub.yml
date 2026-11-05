@@ -2212,13 +2212,37 @@ jobs:
   # runs no pull-request code. The gates task runs the pull request's code and
   # is given no params but a pip cache path: no key, no token. The reports run
   # as hooks with the anchors every lane uses.
+  #
+  # [TheHub #61110] **The cheap integration tier.** deploy.sh runs its
+  # integration tier inside the production container, after the swap, and
+  # nothing ran it before a merge: it needs Postgres with pgvector, the
+  # entrypoint's schema build and a production-shaped env, and a cold
+  # dependency install alone overran this check's 10 minutes. So the
+  # `integration` task runs TheHub's `scripts/ci/container-tiers.sh <pr>
+  # subset` inside a CACHED image: registry/thehub at the newest develop
+  # commit that passed `build` (`built`, resolved by `pick`), which has every
+  # dependency preinstalled. TheHub's script lays the pull request's backend/
+  # over that image's /app (and installs its requirements.txt only if it
+  # changed), then runs only config/ci/pr-integration-subset.txt: the
+  # integration tests that rolled production back after a green `unit`,
+  # beginning with test_realtime_nudges.py, which failed deploy 7d83e24c on
+  # #518's forwarded FIELDY_HMAC_ENABLED. The list and the policy live in
+  # TheHub, as the gates' do. The task holds no credential: it runs the pull
+  # request's code. It runs after `gates`, so a head the gates refuse is not
+  # also given minutes of Postgres.
   - name: pr-gates
     public: true
     # The lane `post-merge` is in, for the same reason: a clock-driven quality
     # job, kept out of `unit-chain` so a PR verdict does not queue behind a
     # 90-minute unit run on develop. pip-audit's scratch install makes this a
     # heavy job, so it is serialised like every other.
-    serial_groups: [dast]
+    #
+    # [TheHub #61110] And `pytest-memory` (#61106), because the integration
+    # task starts Postgres, Redis and a pytest process: it never runs beside
+    # `unit`, `post-merge` or `container-tiers`. The price is that a tick
+    # arriving while one of those runs waits for it; the 10-minute budget is
+    # the job's own run time, which a build's start_time measures.
+    serial_groups: [dast, pytest-memory]
     on_success:
       do:
         - <<: *hub_report
@@ -2255,6 +2279,13 @@ jobs:
       - get: live-pipeline
         resource: pipelines
         attempts: *retry_fetch
+      # [TheHub #61110] The cached image's commit: the newest develop commit
+      # that passed `build`, which pushed registry/thehub:<sha>. Not a
+      # trigger: a develop commit is not a pull request.
+      - get: built
+        resource: source
+        passed: [build]
+        attempts: *retry_fetch
       - get: python313
         attempts: *retry_fetch
       - *preflight
@@ -2269,7 +2300,8 @@ jobs:
           REPO_URI: git@github.com:ToddGBenson/TheHub.git
         config:
           platform: linux
-          outputs: [{ name: pr }]
+          inputs: [{ name: built }]
+          outputs: [{ name: pr }, { name: image }]
           caches: [{ path: memo }]
           run:
             path: bash
@@ -2292,6 +2324,14 @@ jobs:
                 echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > /tmp/ssh/known_hosts
                 ssh_cmd="ssh -i /tmp/ssh/id -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/tmp/ssh/known_hosts -o StrictHostKeyChecking=yes"
                 trap 'rm -rf /tmp/ssh' EXIT
+
+                # [TheHub #61110] The cached image the integration task runs
+                # in, named on every tick (a tick with no head still resolves
+                # it; the worker keeps the image, so that costs a digest check).
+                git config --global --add safe.directory "$PWD/built"
+                git -C built rev-parse HEAD | tr -d '\n' > image/sha
+                grep -qE '^[0-9a-f]{40}$' image/sha
+                echo "Cached image: the develop commit build last pushed, $(cat image/sha)"
 
                 GIT_SSH_COMMAND="$ssh_cmd" git ls-remote "$REPO_URI" 'refs/heads/*' 'refs/pull/*/head' 'refs/pull/*/merge' > /tmp/refs
 
@@ -2593,6 +2633,75 @@ jobs:
                   exit 1
                 fi
                 exit "$DEPLOY_RC"
+      - load_var: image_sha
+        file: image/sha
+        format: raw
+        reveal: true
+      # [TheHub #61110] The named integration subset, in the cached image. See
+      # the job's header. Measured parts in container-tiers (2026-11-05): the
+      # Postgres/Redis install ~1.5m, the bootstrap ~0.5m, the scratch
+      # database ~0.75m; the subset is four modules.
+      - task: integration
+        container_limits: {cpu: 512}
+        timeout: 9m
+        params:
+          CONTAINER_TIERS_DISPOSABLE: "1"
+          # The subset's soft cap: SIGINT lets pytest write its summary, and
+          # TheHub's script turns a run that hit it into "partial", never green.
+          TIER_SOFT_TIMEOUT_S: "300"
+          # [#61106] container-tiers' budget: this task's Postgres and Redis
+          # live beside pytest in the same worker.
+          MEMORY_GUARD: *memory_guard
+          MEMORY_BUDGET_MB: "2304"
+        config:
+          platform: linux
+          # `insecure`: the registry is plain HTTP on the LAN (spec 15 section
+          # 5), as container-tiers' and kaniko's `--insecure` say.
+          image_resource:
+            type: registry-image
+            source:
+              repository: ((registry))/thehub
+              tag: ((.:image_sha))
+              insecure: true
+          inputs: [{ name: pr }]
+          # [#61106] Written only when the subset was killed for memory; the
+          # failure hooks then report errored / cancelled, not a verdict.
+          outputs: [{ name: infra, path: memory-infra }]
+          run:
+            path: bash
+            args:
+              - -c
+              - |
+                set -uo pipefail
+                if [ ! -f pr/.git/HEAD ]; then
+                  echo "No pull request head needs judging on this run."
+                  exit 0
+                fi
+                echo "Pull request #$(cat pr/.git/pr-number): the integration subset, in the cached develop image"
+                # A branch from before TheHub's half of #61110 has no list and
+                # no subset tier, so it cannot be judged, and says so.
+                if [ ! -f pr/config/ci/pr-integration-subset.txt ]; then
+                  echo "::error::This branch predates config/ci/pr-integration-subset.txt (TheHub #61110),"
+                  echo "::error::so its integration subset cannot be run. Rebase it onto develop."
+                  exit 1
+                fi
+                # The image's entrypoint is not run: this is not the server.
+                export CONTAINER_TIERS_OUT=/tmp/container-tiers
+                bash pr/scripts/ci/container-tiers.sh pr subset
+                RC=$?
+                if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
+                  mkdir -p memory-infra
+                  cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
+                  printf '137\n' > memory-infra/exit_code
+                fi
+                case "$RC" in
+                  0) echo "pr-gates: the integration subset passed on this pull request's code" ;;
+                  1) echo "::error::the integration subset failed: deploy.sh's integration tier would fail this code after the swap" ;;
+                  2) echo "::error::the environment was not built; the integration subset was not judged" ;;
+                  124) echo "::error::the integration subset hit its soft timeout; its results are partial" ;;
+                  137) echo "::error::the integration subset was killed for memory; nothing was judged" ;;
+                esac
+                exit "$RC"
       # Last, so a refused report is a failed job and the hooks above say so
       # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
       # owes no report.

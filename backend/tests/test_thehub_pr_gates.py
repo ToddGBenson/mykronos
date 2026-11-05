@@ -374,7 +374,8 @@ def test_it_runs_in_the_memory_group_under_the_guard() -> None:
     assert set(_job()["serial_groups"]) == {"dast", "pytest-memory"}
     task = _step("integration")
     assert task["params"]["MEMORY_GUARD"] == _memory_guard_anchor()
-    assert int(task["params"]["MEMORY_BUDGET_MB"]) == 2304, "container-tiers' budget: Postgres shares it"
+    budget = int(task["params"]["MEMORY_BUDGET_MB"])
+    assert budget == 2304, "container-tiers' budget: Postgres shares it"
     assert {"name": "infra", "path": "memory-infra"} in task["config"]["outputs"]
 
 
@@ -404,7 +405,8 @@ def _integration(tmp_path: Path, tiers_rc: int | None, *, head: bool = True,
         (pr / "scripts" / "ci").mkdir(parents=True)
         lines = [f'echo "$@" > "{(tmp_path / "args").as_posix()}"']
         if oom:
-            lines.append('mkdir -p "$CONTAINER_TIERS_OUT"; echo oom > "$CONTAINER_TIERS_OUT/oom-reason"')
+            lines.append('mkdir -p "$CONTAINER_TIERS_OUT"')
+            lines.append('echo oom > "$CONTAINER_TIERS_OUT/oom-reason"')
         lines.append(f"exit {tiers_rc}")
         (pr / "scripts" / "ci" / "container-tiers.sh").write_text("\n".join(lines) + "\n")
         if subset:
