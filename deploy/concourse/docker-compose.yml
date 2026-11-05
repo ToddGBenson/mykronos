@@ -297,6 +297,9 @@ services:
     # exporters 1.45.0 and Go 1.27.3 (CVE-2026-111943, 2026-11-04; was 1.27.2)
     # on this base + `apk upgrade`: Trivy
     # 23 (4 HIGH, 14 MEDIUM) -> 1 (an unmaintained-package notice, no fix).
+    # x/net moved to 0.62.0 on 2026-11-05 (TheHub #61076: CVE-2026-78661 and
+    # CVE-2026-97045, both low); the running tag carries 0.60.0 until
+    # image-refresh publishes a newer -p<date> and this `image:` adopts it.
     x-mykronos-build:
       context: ../images/registry-src
       # The digest this host runs (2026-10-15); `image:` itself is unpinned.
