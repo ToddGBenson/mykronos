@@ -79,6 +79,11 @@ MEMORY_GROUP = "pytest-memory"
 # integration tiers. post-merge stays: it now only COLLECTS tests/unit, but
 # collecting imports every test module, which is most of a suite's memory.
 FULL_SUITES = {"unit", "post-merge", "container-tiers"}
+# TheHub #61110: pr-gates runs an integration SUBSET in a cached image, with
+# its own Postgres, on the ten-minute clock. Not a full suite and not per
+# commit, so it is not replayed above; it is in the group so it never shares
+# a worker's memory with one.
+MEMORY_GROUP_MEMBERS = FULL_SUITES | {"pr-gates"}
 
 
 def _doc() -> dict[str, Any]:
@@ -216,7 +221,7 @@ def test_only_the_full_suites_share_the_memory_group() -> None:
     """A light job in it would queue behind a 19-minute suite for no memory saved."""
     jobs = _jobs()
     members = {n for n, j in jobs.items() if MEMORY_GROUP in (j.get("serial_groups") or [])}
-    assert members == FULL_SUITES
+    assert members == MEMORY_GROUP_MEMBERS
 
 
 def test_the_unit_tier_does_not_queue_behind_a_scanner() -> None:

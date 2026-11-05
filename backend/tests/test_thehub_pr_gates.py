@@ -296,3 +296,158 @@ def test_a_tick_that_judged_nothing_files_nothing_in_thehub(tmp_path) -> None:
                           cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert (tmp_path / "c").exists(), "the control: without the flag the anchor posts"
     assert loud.returncode == 0
+
+
+# -- the cheap integration tier (TheHub #61110) ------------------------------
+#
+# #61102 deferred its AC3: the deploy's integration tier needs Postgres with
+# pgvector and the entrypoint's schema build, and a cold install alone overran
+# a pull request check's 10 minutes. So the job runs TheHub's
+# `scripts/ci/container-tiers.sh <pr> subset` inside a CACHED image -- the
+# newest develop commit `build` pushed an image for, dependencies preinstalled
+# -- and TheHub's script lays the pull request's backend/ over it and runs only
+# config/ci/pr-integration-subset.txt.
+
+INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "MEMORY_GUARD",
+                      "MEMORY_BUDGET_MB"}
+
+
+def _memory_guard_anchor() -> str:
+    """The `memory_guard` anchor's text, as `unit` and `container-tiers` are given it."""
+    tiers = next(j for j in _doc()["jobs"] if j["name"] == "container-tiers")
+    task = next(s for s in tiers["plan"] if s.get("task") == "tiers")
+    guard: str = task["params"]["MEMORY_GUARD"]
+    return guard
+
+
+def test_the_cached_image_is_the_newest_develop_commit_build_pushed() -> None:
+    """Not the pull request's image (it has none) and not a moving tag: the
+    develop commit that most recently passed `build`, which pushed
+    registry/thehub:<sha>. Not a trigger: a develop commit is not a pull
+    request, and the clock already decides when this runs."""
+    plan = _job()["plan"]
+    built = next(s for s in plan if s.get("get") == "built")
+    assert built["resource"] == "source"
+    assert built["passed"] == ["build"]
+    assert not built.get("trigger")
+    pick = _step("pick")
+    assert {"name": "built"} in pick["config"]["inputs"]
+    assert {"name": "image"} in pick["config"]["outputs"]
+    assert "git -C built rev-parse HEAD" in pick["config"]["run"]["args"][-1]
+    load = next(s for s in plan if s.get("load_var") == "image_sha")
+    assert load["file"] == "image/sha" and load["format"] == "raw"
+    assert plan.index(load) > plan.index(pick)
+
+
+def test_the_integration_subset_runs_in_that_image() -> None:
+    task = _step("integration")
+    image = task["config"]["image_resource"]
+    assert image["type"] == "registry-image"
+    assert image["source"] == {"repository": "((registry))/thehub", "tag": "((.:image_sha))",
+                               "insecure": True}
+    plan = _job()["plan"]
+    load = next(s for s in plan if s.get("load_var") == "image_sha")
+    assert plan.index(load) < plan.index(task) < len(plan) - 1, (
+        "after the image is resolved, and before the success report"
+    )
+
+
+def test_the_subset_is_thehubs_tier_not_a_list_here() -> None:
+    script = _step("integration")["config"]["run"]["args"][-1]
+    assert "bash pr/scripts/ci/container-tiers.sh pr subset" in script
+    assert "tests/integration/" not in script, "the list lives in TheHub, beside the deploy"
+
+
+def test_the_integration_task_gets_no_credential() -> None:
+    """It runs the pull request's code, as `gates` does."""
+    task = _step("integration")
+    assert set(task["params"]) == INTEGRATION_PARAMS
+    config = {k: v for k, v in task["config"].items() if k != "image_resource"}
+    assert "((" not in json.dumps(config)
+    assert "((" not in json.dumps({k: v for k, v in task["params"].items() if k != "MEMORY_GUARD"})
+    assert [i["name"] for i in task["config"]["inputs"]] == ["pr"]
+
+
+def test_it_runs_in_the_memory_group_under_the_guard() -> None:
+    """#61106: never beside `unit`, `post-merge` or `container-tiers`, and a
+    memory kill says errored rather than failed."""
+    assert set(_job()["serial_groups"]) == {"dast", "pytest-memory"}
+    task = _step("integration")
+    assert task["params"]["MEMORY_GUARD"] == _memory_guard_anchor()
+    assert int(task["params"]["MEMORY_BUDGET_MB"]) == 2304, "container-tiers' budget: Postgres shares it"
+    assert {"name": "infra", "path": "memory-infra"} in task["config"]["outputs"]
+
+
+def test_it_fits_the_ten_minute_budget() -> None:
+    """The tier's soft cap leaves room for the services and the bootstrap
+    (~3m measured in container-tiers) inside 10 minutes, and the task's hard
+    timeout is above the soft one so pytest can still write its summary."""
+    task = _step("integration")
+    soft = int(task["params"]["TIER_SOFT_TIMEOUT_S"])
+    assert soft <= 300
+    hard = task["timeout"]
+    assert re.fullmatch(r"\d+m", hard) and int(hard[:-1]) * 60 > soft + 180
+
+
+def _integration(tmp_path: Path, tiers_rc: int | None, *, head: bool = True,
+                 subset: bool = True, oom: bool = False) -> subprocess.CompletedProcess[str]:
+    """The integration task's script, executed, with TheHub's script stubbed."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required")
+    pr = tmp_path / "pr"
+    pr.mkdir()
+    if head:
+        (pr / ".git").mkdir()
+        (pr / ".git" / "HEAD").write_text(OPEN_HEAD + "\n")
+        (pr / ".git" / "pr-number").write_text("12\n")
+        (pr / "scripts" / "ci").mkdir(parents=True)
+        lines = [f'echo "$@" > "{(tmp_path / "args").as_posix()}"']
+        if oom:
+            lines.append('mkdir -p "$CONTAINER_TIERS_OUT"; echo oom > "$CONTAINER_TIERS_OUT/oom-reason"')
+        lines.append(f"exit {tiers_rc}")
+        (pr / "scripts" / "ci" / "container-tiers.sh").write_text("\n".join(lines) + "\n")
+        if subset:
+            (pr / "config" / "ci").mkdir(parents=True)
+            (pr / "config" / "ci" / "pr-integration-subset.txt").write_text("x  # y\n")
+    script = _step("integration")["config"]["run"]["args"][-1].replace(
+        "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
+    return subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+                          timeout=60)
+
+
+def test_a_tick_with_no_head_runs_nothing(tmp_path) -> None:
+    r = _integration(tmp_path, None, head=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / "args").exists()
+
+
+def test_a_green_subset_passes_and_ran_the_subset_tier(tmp_path) -> None:
+    r = _integration(tmp_path, 0)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (tmp_path / "args").read_text().split() == ["pr", "subset"]
+
+
+def test_a_red_subset_fails_the_job(tmp_path) -> None:
+    """Red reaches `Concourse / thehub` through the job's on_failure hooks."""
+    r = _integration(tmp_path, 1)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "::error::" in r.stdout
+    assert not (tmp_path / "memory-infra").exists(), "a real failure is a verdict, not an outage"
+    fail = [s for s in _job()["on_failure"]["do"] if s.get("task") == "report-check-run"]
+    assert fail and fail[0]["params"]["CONCLUSION"] == "failure"
+
+
+def test_a_memory_kill_is_an_outage_not_a_verdict(tmp_path) -> None:
+    r = _integration(tmp_path, 137, oom=True)
+    assert r.returncode == 137, r.stdout + r.stderr
+    assert (tmp_path / "memory-infra" / "reason").read_text().strip() == "oom"
+    assert (tmp_path / "memory-infra" / "exit_code").read_text().strip() == "137"
+
+
+def test_a_branch_without_the_subset_says_so_and_fails(tmp_path) -> None:
+    """A head from before TheHub's half of #61110 cannot be judged: rebase it."""
+    r = _integration(tmp_path, 0, subset=False)
+    assert r.returncode != 0
+    assert "pr-integration-subset.txt" in r.stdout
+    assert not (tmp_path / "args").exists()
