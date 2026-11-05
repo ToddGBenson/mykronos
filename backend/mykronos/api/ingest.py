@@ -39,6 +39,7 @@ from fastapi import (
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from mykronos import (
     control_observations,
@@ -72,7 +73,12 @@ from mykronos.fingerprint import (
     v2_predecessor_id,
 )
 from mykronos.github.client import GitHubError
-from mykronos.lake.carry_forward import inherit_decisions
+from mykronos.lake.carry_forward import (
+    INHERITED_ACTION,
+    find_moved_decisions,
+    inherit_decisions,
+    inherit_moved_decisions,
+)
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
 from mykronos.ownership import owner_for_finding
@@ -865,6 +871,9 @@ async def ingest_findings(
     # carrying its decision and its first sighting rather than as a new open
     # finding a gate would count against this commit (D-139).
     inherit_decisions(request.app.state.catalog, rows, predecessors)
+    # And a dispositioned finding whose own code changed, which no exact link
+    # names (TheHub #61129). Also before the buffer, for the same reason.
+    _inherit_moved_decisions(request, batch, rows, token.repo_full_name)
 
     settings = request.app.state.settings
     threshold = _SEVERITY_RANK.get(settings.slack_notify_min_severity, 3)
@@ -915,6 +924,169 @@ async def ingest_findings(
         )
 
     return IngestAccepted(accepted=len(rows), scan_run_id=batch.scan_run_id)
+
+
+def _scan_run_lane(request: Request, scan_run_id: str) -> tuple[str, str] | None:
+    """`(branch, tool_name)` of a scan run, compacted or still buffered.
+
+    The lane `carry_forward` partitions on, less the repository and
+    capability the caller already has. None when the run is not registered
+    yet: an uploader may post findings first, and a lane that is not known
+    cannot be matched within.
+    """
+    try:
+        rows = request.app.state.catalog.query(
+            "SELECT coalesce(branch, ''), coalesce(tool_name, '') FROM scan_runs "
+            "WHERE scan_run_id = ? LIMIT 1",
+            [scan_run_id],
+        )
+    except duckdb.Error:
+        logger.warning("Could not read scan_runs for a lane", exc_info=True)
+        rows = []
+    if rows:
+        return str(rows[0][0]), str(rows[0][1])
+
+    lane: tuple[str, str] | None = None
+    buffer = request.app.state.buffer
+    for segment in buffer.sealed_segments("scan_runs"):
+        try:
+            pending = buffer.read_segment(segment)
+        except OSError:
+            continue  # consumed by compaction since it was listed
+        for row in pending:
+            if row.get("scan_run_id") == scan_run_id:
+                # The finalising post is written after the opening one; the
+                # last segment that names the run has the run's last word.
+                lane = (str(row.get("branch") or ""), str(row.get("tool_name") or ""))
+    return lane
+
+
+def _ids_already_stored(
+    request: Request, rows: list[dict[str, Any]], scan_run_id: str
+) -> tuple[set[str], set[str]]:
+    """(known, seen_this_run) for `find_moved_decisions`.
+
+    `known`: incoming ids an earlier scan already stored, in the lake or a
+    buffered segment. `seen_this_run`: every id an earlier batch of this run
+    reported. A segment of this run carrying an incoming id is a retried
+    batch, not an earlier sighting: it was decided by the same rule against
+    the same lake, and the later write wins compaction, so it is decided
+    again here rather than skipped.
+    """
+    wanted = sorted({str(r["finding_id"]) for r in rows if r.get("file_path")})
+    known: set[str] = set()
+    seen: set[str] = set()
+
+    buffer = request.app.state.buffer
+    for segment in buffer.sealed_segments("findings"):
+        try:
+            pending = buffer.read_segment(segment)
+        except OSError:
+            continue  # consumed by compaction since it was listed
+        for row in pending:
+            finding_id = str(row.get("finding_id"))
+            if row.get("scan_run_id") == scan_run_id:
+                seen.add(finding_id)
+            elif finding_id in wanted:
+                known.add(finding_id)
+
+    catalog = request.app.state.catalog
+    if catalog.all_files("findings"):
+        if wanted:
+            known.update(
+                str(row[0])
+                for row in catalog.query(
+                    "SELECT DISTINCT finding_id FROM findings WHERE finding_id IN "
+                    f"({', '.join('?' for _ in wanted)})",
+                    wanted,
+                )
+            )
+        seen.update(
+            str(row[0])
+            for row in catalog.query(
+                "SELECT DISTINCT finding_id FROM findings WHERE last_seen_scan_run_id = ?",
+                [scan_run_id],
+            )
+        )
+    return known, seen
+
+
+def _inherit_moved_decisions(
+    request: Request, batch: FindingBatch, rows: list[dict[str, Any]], repo_full_name: str
+) -> None:
+    """Carry a person's decision onto the finding its code became (#61129).
+
+    `find_moved_decisions` says which; this decides whether it may be asked,
+    records each carry in the audit log naming both ids, and only then
+    writes it onto the rows.
+
+    Not asked on a full batch. The uploader splits a run at
+    `max_findings_per_request` and sends the remainder last, so a batch
+    shorter than that is the run's last, and a full one may be followed by a
+    batch that reports the very predecessor this one did not -- which would
+    hand a copy of a dismissed call its dismissal while the original still
+    stands. `carry_forward` decides those an hour later, after the run is
+    whole.
+
+    Never fails the ingest. An unreadable lake or an unwritable audit log
+    leaves the rows `open`, which is what they were before this existed; a
+    decision applied without its audit entry would be worse than one applied
+    late.
+    """
+    settings = request.app.state.settings
+    if len(batch.findings) >= settings.max_findings_per_request:
+        return
+    lane = _scan_run_lane(request, batch.scan_run_id)
+    if lane is None:
+        return
+    try:
+        known, seen = _ids_already_stored(request, rows, batch.scan_run_id)
+        moved = find_moved_decisions(
+            request.app.state.catalog,
+            rows,
+            scan_run_id=batch.scan_run_id,
+            branch=lane[0],
+            tool_name=lane[1],
+            known_ids=known,
+            seen_this_run=seen,
+        )
+    except duckdb.Error:
+        logger.warning("Could not read the lake to carry moved decisions", exc_info=True)
+        return
+    if not moved:
+        return
+
+    db = request.app.state.db
+    try:
+        with db.session() as session:
+            for item in moved:
+                carried = item.carried
+                db.audit(
+                    session,
+                    actor=f"ingest:{repo_full_name}",
+                    action=INHERITED_ACTION,
+                    entity_type="finding",
+                    entity_id=carried.to_finding_id,
+                    predecessor_finding_id=carried.from_finding_id,
+                    successor_finding_id=carried.to_finding_id,
+                    disposition=carried.disposition,
+                    similarity=round(carried.similarity, 4),
+                    runner_up=round(carried.runner_up, 4),
+                    rule_id=carried.rule_id,
+                    file_path=carried.file_path,
+                    scan_run_id=batch.scan_run_id,
+                )
+            session.commit()
+    except SQLAlchemyError:
+        logger.warning(
+            "Could not audit %d moved decision(s); the findings land open", len(moved),
+            exc_info=True,
+        )
+        return
+
+    inherit_moved_decisions(rows, moved)
+    for item in moved:
+        logger.info("Carried at ingest: %s", item.carried.describe())
 
 
 def _warn_on_collapse(

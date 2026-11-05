@@ -392,8 +392,11 @@ def test_the_lifecycle_case_from_2026_09_09(
     )
     run_compaction()
 
-    # Before: three open highs, all attributed to bd9e3c6b.
-    assert DashboardQueries(catalog).introduced_by(REPO, "bd9e3c6b") == {"high": 3}
+    # Before carry-forward runs: two open highs. This was three, all
+    # attributed to bd9e3c6b, until ingestion learned to make the same match
+    # before the rows are written (TheHub #61129); the pass below still has
+    # to withdraw the dismissed row.
+    assert DashboardQueries(catalog).introduced_by(REPO, "bd9e3c6b") == {"high": 2}
 
     result = carry_forward(catalog)
 
@@ -538,8 +541,10 @@ def test_dry_run_reports_without_writing(
 
     assert len(result.carried) == 1
     assert result.partitions_written == 0
+    # Nothing withdrawn. The edited row is already dismissed, but by
+    # ingestion (TheHub #61129), not by this dry run.
     assert _row(catalog, dismissed_id)["status"] == "false_positive"
-    assert _row(catalog, _ids_by_line(catalog)[917])["status"] == "open"
+    assert _row(catalog, _ids_by_line(catalog)[917])["status"] == "false_positive"
 
 
 def test_a_finding_still_being_reported_is_never_a_candidate(
