@@ -160,7 +160,8 @@ def _develop(tmp_path: Path, **extra: str | None) -> tuple[Repo, str]:
         "scripts/lib/devb_gate.py": BASE_DEVB_GATE,
         "scripts/deploy.sh": BASE_DEPLOY_SH,
         # A stand-in for the pip-audit and shape gates, which this file does not judge.
-        "scripts/pr_deploy_gates.sh": "#!/usr/bin/env bash\necho 'deploy gates: ok'\n",
+        # [TheHub #61113] It takes --audit-as, as develop's has since then.
+        "scripts/pr_deploy_gates.sh": "#!/usr/bin/env bash\n# --audit-as\necho 'deploy gates: ok'\n",
         "backend/main.py": "app = None\n",
         "backend/api/notifications.py": "ROUTES = []\n",
         "backend/api/binnacle.py": "ROUTES = []\n",
