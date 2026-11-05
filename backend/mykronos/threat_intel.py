@@ -520,13 +520,40 @@ def _nvd_unavailable(exc: Exception) -> bool:
 
 
 
+def _retry_cutoff(at: datetime) -> datetime:
+    """A refusal before this moment is old enough to ask NVD again."""
+    return at - timedelta(days=NVD_RETRY_DAYS)
+
+
+def nvd_given_up(failures: int | None, failed_at: datetime | None, at: datetime) -> bool:
+    """Whether the NVD queue has stopped asking about a row at `at`:
+    `NVD_MAX_FAILURES` refusals, the last one undated or within
+    `NVD_RETRY_DAYS`. `_askable` and `_given_up` are this rule in SQL, and the
+    exploitability sentence reads it here (TheHub #61096), so the sentence
+    stops saying NVD gave up on the day the queue asks again."""
+    return (failures or 0) >= NVD_MAX_FAILURES and (
+        failed_at is None or failed_at >= _retry_cutoff(at)
+    )
+
+
 def _askable(at: datetime) -> Any:
     """Rows NVD may be asked about: fewer than `NVD_MAX_FAILURES` refusals,
-    or `NVD_RETRY_DAYS` since the last one. The queue and its backlog count
-    read the same rule."""
+    or `NVD_RETRY_DAYS` since the last one. The negation of `nvd_given_up`;
+    the queue and its backlog count read the same rule."""
     return or_(
         ThreatIntelMatch.nvd_failures < NVD_MAX_FAILURES,
-        ThreatIntelMatch.nvd_failed_at < at - timedelta(days=NVD_RETRY_DAYS),
+        ThreatIntelMatch.nvd_failed_at < _retry_cutoff(at),
+    )
+
+
+def _given_up(at: datetime) -> Any:
+    """`nvd_given_up` in SQL: the rows `_askable` leaves out."""
+    return and_(
+        ThreatIntelMatch.nvd_failures >= NVD_MAX_FAILURES,
+        or_(
+            ThreatIntelMatch.nvd_failed_at.is_(None),
+            ThreatIntelMatch.nvd_failed_at >= _retry_cutoff(at),
+        ),
     )
 
 
@@ -751,13 +778,7 @@ def vector_backlog(session: Session, *, now: Callable[[], datetime] = utcnow) ->
         vectors=count(needs_vector, askable),
         refs=count(~needs_vector, ThreatIntelMatch.nvd_refs_checked_at.is_(None), askable),
         # Retired until their retry date; a row past it is back in a queue.
-        given_up=count(
-            ThreatIntelMatch.nvd_failures >= NVD_MAX_FAILURES,
-            or_(
-                ThreatIntelMatch.nvd_failed_at.is_(None),
-                ThreatIntelMatch.nvd_failed_at >= at - timedelta(days=NVD_RETRY_DAYS),
-            ),
-        ),
+        given_up=count(_given_up(at)),
     )
 
 
