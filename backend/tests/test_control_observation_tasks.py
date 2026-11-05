@@ -288,6 +288,51 @@ class TestTheRegistration:
         assert code != 0
         assert "spec 14 section 3" in output
 
+    def test_a_custom_task_prefix_names_every_task(
+        self, tmp_path: Path, env_file: Path
+    ) -> None:
+        code, output = self.register(
+            tmp_path,
+            env_file,
+            "-TaskPrefix 'Test Prefix' "
+            "-LanCidr 192.168.0.14/32 -LanAuthorizationReference 'CHG-1: test'",
+        )
+        assert code == 0, output
+        names = re.findall(r'on target "([^"]+)"', output)
+        assert len(names) == 2, output
+        for name in names:
+            assert name.startswith("Test Prefix ("), name
+
+
+needs_pssa = pytest.mark.skipif(
+    shutil.which("pwsh") is None
+    or subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command",
+         "if (Get-Module -ListAvailable PSScriptAnalyzer) { exit 0 } else { exit 1 }"],
+        capture_output=True,
+        timeout=120,
+    ).returncode
+    != 0,
+    reason="PSScriptAnalyzer is not installed",
+)
+
+
+@needs_pssa
+def test_the_registration_script_uses_every_parameter_it_declares() -> None:
+    # PSScriptAnalyzer cannot see a script parameter read only inside a nested
+    # function, so -TaskPrefix was flagged PSReviewUnusedParameter (TheHub #61024).
+    out = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command",
+         f"Invoke-ScriptAnalyzer -Path '{REGISTER}' -IncludeRule PSReviewUnusedParameter"
+         " | ForEach-Object { \"$($_.Line): $($_.Message)\" }"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "", out.stdout
+
 
 class TestTheInternetCollectorIsScheduled:
     def test_exposure_runs_every_six_hours_and_sweeps(
