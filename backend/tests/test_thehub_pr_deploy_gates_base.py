@@ -26,7 +26,7 @@ import textwrap
 
 import pytest
 
-from tests.test_thehub_pr_process_gates import _develop, _inputs_block, _judge, _job, _script
+from tests.test_thehub_pr_process_gates import _develop, _inputs_block, _job, _judge, _script
 
 # A stand-in for develop's scripts/pr_deploy_gates.sh: it says whose it is,
 # shows what it was given to judge, and fails on a "fixable" requirement the

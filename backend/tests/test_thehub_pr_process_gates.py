@@ -161,7 +161,9 @@ def _develop(tmp_path: Path, **extra: str | None) -> tuple[Repo, str]:
         "scripts/deploy.sh": BASE_DEPLOY_SH,
         # A stand-in for the pip-audit and shape gates, which this file does not judge.
         # [TheHub #61113] It takes --audit-as, as develop's has since then.
-        "scripts/pr_deploy_gates.sh": "#!/usr/bin/env bash\n# --audit-as\necho 'deploy gates: ok'\n",
+        "scripts/pr_deploy_gates.sh": (
+            "#!/usr/bin/env bash\n# --audit-as\necho 'deploy gates: ok'\n"
+        ),
         "backend/main.py": "app = None\n",
         "backend/api/notifications.py": "ROUTES = []\n",
         "backend/api/binnacle.py": "ROUTES = []\n",
@@ -388,5 +390,5 @@ def test_the_pick_fetches_the_base_and_deepens_to_the_merge_base() -> None:
 
 def test_the_deploy_gates_still_run_and_both_verdicts_count() -> None:
     gates = _script("gates")
-    assert 'bash pr/scripts/pr_deploy_gates.sh --mykronos "$PWD/live-pipeline"' in gates
-    assert gates.index("PROCESS_RC") < gates.index("bash pr/scripts/pr_deploy_gates.sh")
+    assert 'bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline"' in gates
+    assert gates.index("PROCESS_RC") < gates.index('bash "$JUDGE/scripts/pr_deploy_gates.sh"')

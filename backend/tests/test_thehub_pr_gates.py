@@ -64,10 +64,11 @@ def test_it_runs_on_a_clock_because_no_resource_sees_a_pull_request() -> None:
 
 
 def test_the_code_under_review_gets_no_credential() -> None:
-    """The gates task runs the pull request's own code. It is handed a pip
-    cache path and nothing else: no deploy key, no ingestion or Hub token."""
+    """The gates task runs the pull request's own code. It is handed nothing:
+    no deploy key, no ingestion or Hub token, and since TheHub #61113 no pip
+    cache either."""
     gates = _step("gates")
-    assert gates["params"] == {"PIP_CACHE_DIR": "/pipcache"}
+    assert not gates.get("params")
     assert "((" not in json.dumps(gates["config"])
 
 
@@ -75,7 +76,8 @@ def test_the_gates_are_thehubs_script_not_a_copy_here() -> None:
     """The policy lives beside the deploy that enforces it. This file only
     finds the head and reports, so it cannot drift from deploy.sh."""
     script = _step("gates")["config"]["run"]["args"][-1]
-    assert 'bash pr/scripts/pr_deploy_gates.sh --mykronos "$PWD/live-pipeline"' in script
+    # [TheHub #61113] The base branch's copy of it, not the head's.
+    assert 'bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline"' in script
     assert "pip-audit" not in script
 
 
