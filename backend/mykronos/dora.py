@@ -46,7 +46,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from mykronos.schemas import utcnow
+# Re-exported: the endpoint reads the clock through `dora.utcnow`, so one
+# monkeypatch pins every window (tests/test_dora.py `pinned`).
+from mykronos.schemas import utcnow as utcnow
 
 WINDOWS = (30, 90)
 
@@ -230,10 +232,11 @@ def window(
         )
 
     leads = []
-    for r in runs if first_seen is not None else []:
-        seen = _first_seen(first_seen, r.sha)
-        if seen is not None and r.finished_at is not None and r.finished_at >= seen:
-            leads.append(_hours(r.finished_at - seen))
+    if first_seen is not None:
+        for r in runs:
+            seen = _first_seen(first_seen, r.sha)
+            if seen is not None and r.finished_at is not None and r.finished_at >= seen:
+                leads.append(_hours(r.finished_at - seen))
     lead = (
         Metric(
             value=round(statistics.median(leads), 2),
