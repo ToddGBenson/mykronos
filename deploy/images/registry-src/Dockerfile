@@ -13,6 +13,10 @@
 # Go 1.27.3 (2026-11-04): the standard library fix for CVE-2026-111943 (HIGH),
 # which the 1.27.2 build linked.
 #
+# x/net 0.62.0 (2026-11-05, TheHub #61076): the HTML parser fixes for
+# CVE-2026-78661 and CVE-2026-97045 (both low), which 0.60.0 carried. The
+# build fails unless the binary links exactly the pinned x/net.
+#
 # Everything is pinned: the toolchain and runtime by digest, the source by
 # commit (the build fails if the tag no longer names it), the module bumps by
 # exact version. The flags are upstream's (its Dockerfile and Makefile at
@@ -26,7 +30,7 @@ ARG BASE_IMAGE=registry:3@sha256:852b3e4d378c426dda6b318fe9d9bfe8e92a0eccb992667
 FROM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
 ARG DISTRIBUTION_TAG=v3.1.2
 ARG DISTRIBUTION_COMMIT=3220848f15d9279c66a41aa0a257469e6aede1e9
-ARG X_NET=v0.60.0
+ARG X_NET=v0.62.0
 ARG OTEL_EXPORTERS=v1.45.0
 ARG KLAUSPOST_COMPRESS=v1.18.7
 RUN apk add --no-cache git
@@ -52,7 +56,8 @@ RUN PKG=github.com/distribution/distribution/v3 \
  && go build -trimpath \
       -ldflags "-s -w -X ${PKG}/version.version=${DISTRIBUTION_TAG#v}+mykronos -X ${PKG}/version.revision=${DISTRIBUTION_COMMIT} -X ${PKG}/version.mainpkg=${PKG}" \
       -o /out/registry ./cmd/registry \
- && go version -m /out/registry | grep -E '^\s+(dep\s+(golang.org/x/net|github.com/klauspost/compress)|build\s+-trimpath)|go1\.'
+ && go version -m /out/registry | grep -E '^\s+(dep\s+(golang.org/x/net|github.com/klauspost/compress)|build\s+-trimpath)|go1\.' \
+ && go version -m /out/registry | grep -qE "^\s+dep\s+golang\.org/x/net\s+${X_NET}(\s|$)"
 
 FROM ${BASE_IMAGE}
 ARG APK_REFRESH=unset
