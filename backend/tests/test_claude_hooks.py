@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -737,6 +738,482 @@ def test_a_non_powershell_file_is_not_parsed(estate: Estate, tmp_path: Path) -> 
 
 def test_a_missing_ps1_is_not_an_error(estate: Estate, tmp_path: Path) -> None:
     assert run_hook("check-ps1.sh", ps1_payload(tmp_path / "gone.ps1"), estate.env).returncode == 0
+
+
+# ── 5. Shell writes into the live checkout (TheHub #61108) ──────────────────
+#
+# The Write and Edit tools were guarded; the same change made with sed -i, a
+# redirection or Set-Content walked straight through.
+
+# (case, command, cwd placeholder), for the Bash tool.
+SHELL_WRITE_BYPASSES = [
+    ("redirect", "echo x > <PF>/deploy.sh", "<MYK>"),
+    ("redirect-append", "echo x >> <PF>/deploy.sh", "<MYK>"),
+    ("redirect-no-space", "echo x ><PF>/deploy.sh", "<MYK>"),
+    ("redirect-quoted-target", 'echo x > "<PW>\\deploy.sh"', "<MYK>"),
+    ("redirect-stderr", "make 2> <PF>/err.log", "<MYK>"),
+    ("redirect-both", "make &> <PF>/out.log", "<MYK>"),
+    ("redirect-clobber", "echo x >| <PF>/deploy.sh", "<MYK>"),
+    ("redirect-first", "> <PF>/deploy.sh echo x", "<MYK>"),
+    ("redirect-after-cd", "cd <PF> && echo x > deploy.sh", "<MYK>"),
+    ("redirect-relative-cwd", "printf x > backend/main.py", "<PF>"),
+    ("redirect-variable", "T=<PF>; echo x > $T/deploy.sh", "<MYK>"),
+    ("redirect-heredoc", "cat > <PF>/deploy.sh <<'EOF'\nx\nEOF", "<MYK>"),
+    ("redirect-in-subst", "x=$(echo y > <PF>/deploy.sh)", "<MYK>"),
+    ("sed-i", "sed -i s/a/b/ <PF>/deploy.sh", "<MYK>"),
+    ("sed-i-suffix", "sed -i.bak 's/a/b/' <PF>/deploy.sh", "<MYK>"),
+    ("sed-in-place", "sed --in-place -e s/a/b/ <PF>/backend/main.py", "<MYK>"),
+    ("sed-combined-flags", "sed -Ei s/a/b/ <PF>/deploy.sh", "<MYK>"),
+    ("sed-i-relative", "sed -i s/a/b/ deploy.sh", "<PF>"),
+    ("perl-pi", "perl -pi -e s/a/b/ <PF>/deploy.sh", "<MYK>"),
+    ("tee", "echo x | tee <PF>/deploy.sh", "<MYK>"),
+    ("tee-append-second", "echo x | tee -a /tmp/x <PF>/deploy.sh", "<MYK>"),
+    ("cp-into", "cp /tmp/x <PF>/deploy.sh", "<MYK>"),
+    ("cp-target-dir", "cp -t <PF>/backend /tmp/x", "<MYK>"),
+    ("mv-into", "mv /tmp/x <PF>/backend/", "<MYK>"),
+    ("mv-out", "mv <PF>/deploy.sh /tmp/", "<MYK>"),
+    ("rm", "rm -rf <PF>/backend", "<MYK>"),
+    ("touch", "touch <PF>/x", "<MYK>"),
+    ("mkdir", "mkdir -p <PF>/new", "<MYK>"),
+    ("dd", "dd if=/tmp/x of=<PF>/deploy.sh", "<MYK>"),
+    ("bash-c", "bash -c 'echo x > <PF>/deploy.sh'", "<MYK>"),
+    ("env-wrapped", "env LC_ALL=C sed -i s/a/b/ <PF>/deploy.sh", "<MYK>"),
+    ("dotdot-out-of-worktrees", "sed -i s/a/b/ <WT>/../../../deploy.sh", "<MYK>"),
+    ("cmd-copy", 'cmd /c "copy x <PW>\\deploy.sh"', "<MYK>"),
+    ("cmd-redirect", 'cmd /c "echo x > <PW>\\deploy.sh"', "<MYK>"),
+    # Review of #1130: a target only partly resolvable was judged by the cwd alone,
+    # so the resolvable prefix pointing into the live checkout was never looked at.
+    ("unresolved-loop-var", 'HUB=<PF>; for f in a b; do cp /tmp/x "$HUB/$f"; done', "<MYK>"),
+    ("unresolved-redirect-under-root", 'echo x > "<PF>/$UNSET/x"', "<MYK>"),
+    ("unresolved-redirect-var-prefix", 'HUB=<PF>; echo x > "$HUB/$UNSET/x"', "<MYK>"),
+    ("unresolved-brace", "cp /tmp/x <PF>/{a,b}", "<MYK>"),
+    ("unresolved-partial-component", 'echo x > "<PROJ>/TheHub-ma$UNSET/x"', "<MYK>"),
+    ("unresolved-subst-target", "echo x > $(echo <PF>/x)", "<MYK>"),
+    ("unresolved-subst-target-quoted", 'echo x > "$(echo <PF>/x)"', "<MYK>"),
+    ("unresolved-backtick-target", "echo x > `echo <PF>/x`", "<MYK>"),
+    ("unresolved-sed-i", 'sed -i s/a/b/ "<PF>/$UNSET"', "<MYK>"),
+]
+
+SHELL_WRITE_ALLOWED = [
+    ("redirect-elsewhere", "echo x > <MYK>/x.txt", "<MYK>"),
+    ("redirect-worktree", "echo x > <WT>/deploy.sh", "<MYK>"),
+    ("redirect-sibling", "echo x > <SIB>/deploy.sh", "<MYK>"),
+    ("sed-i-worktree", "sed -i s/a/b/ <WT>/deploy.sh", "<MYK>"),
+    ("sed-read", "sed -n 1,5p <PF>/deploy.sh", "<MYK>"),
+    ("cp-out", "cp <PF>/deploy.sh /tmp/x", "<MYK>"),
+    ("cat-out", "cat <PF>/deploy.sh > /tmp/x", "<MYK>"),
+    ("tee-elsewhere", "git -C <PF> log | tee /tmp/log", "<MYK>"),
+    ("devnull-in-hub", "git status > /dev/null 2>&1", "<PF>"),
+    ("fd-dup-in-hub", "git log 2>&1 | head", "<PF>"),
+    ("quoted-arrow-in-message", 'git commit -m "x > <PF>/y"', "<MYK>"),
+    ("process-substitution", "diff <(git -C <PF> show HEAD:a) <MYK>/a", "<MYK>"),
+    ("unresolved-loop-elsewhere", 'for f in a b; do cp /tmp/x "<MYK>/$f"; done', "<MYK>"),
+    ("unresolved-variable-target", 'f=$(mktemp); echo x > "$f"', "<MYK>"),
+    ("unresolved-under-sibling", 'echo x > "<SIB>/$UNSET"', "<MYK>"),
+    ("unresolved-under-worktree", 'echo x > "<WT>/$UNSET"', "<MYK>"),
+    ("unresolved-under-projects", 'echo x > "<PROJ>/$UNSET"', "<MYK>"),
+    ("unresolved-sed-i-elsewhere", 'sed -i s/a/b/ "/tmp/$UNSET"', "<MYK>"),
+    # Inside [[ ]] the > compares two strings; it is not a redirection.
+    ("test-string-compare-in-hub", '[[ "$a" > "$b" ]] && echo later', "<PF>"),
+    ("test-string-compare-literal", '[[ x > <PF>/y ]] && echo later', "<MYK>"),
+]
+
+
+@pytest.mark.parametrize(("case", "command", "cwd"), cases(SHELL_WRITE_BYPASSES))
+def test_shell_writes_into_the_live_checkout_are_refused(
+    estate: Estate, case: str, command: str, cwd: str
+) -> None:
+    command, cwd = estate.fill(command), estate.fill(cwd)
+    r = guard_bash(estate, command, cwd)
+    assert_blocked(r, command)
+    assert "TheHub-main" in r.stderr
+
+
+@pytest.mark.parametrize(("case", "command", "cwd"), cases(SHELL_WRITE_ALLOWED))
+def test_shell_reads_and_writes_elsewhere_pass(
+    estate: Estate, case: str, command: str, cwd: str
+) -> None:
+    command, cwd = estate.fill(command), estate.fill(cwd)
+    assert_allowed(guard_bash(estate, command, cwd), command)
+
+
+POWERSHELL_WRITE_BYPASSES = [
+    ("set-content", "Set-Content -Path <PW>\\deploy.sh -Value x", "<MYK>"),
+    ("set-content-positional", "Set-Content <PW>\\deploy.sh x", "<MYK>"),
+    ("set-content-literal", "Set-Content -LiteralPath '<PW>\\deploy.sh' -Value x", "<MYK>"),
+    ("set-content-abbrev", "Set-Content -Pa <PW>\\deploy.sh -Va x", "<MYK>"),
+    ("add-content", "Add-Content '<PW>\\deploy.sh' x", "<MYK>"),
+    ("out-file", "'x' | Out-File -FilePath <PW>\\deploy.sh", "<MYK>"),
+    ("out-file-positional", "Get-Date | Out-File <PW>\\x.txt", "<MYK>"),
+    ("tee-object", "'x' | Tee-Object -FilePath <PW>\\x.txt", "<MYK>"),
+    ("redirect", "'x' > <PW>\\deploy.sh", "<MYK>"),
+    ("redirect-all-streams", "git status *> <PW>\\x.txt", "<MYK>"),
+    ("copy-item", "Copy-Item C:\\temp\\x <PW>\\deploy.sh", "<MYK>"),
+    ("copy-item-destination", "Copy-Item -Path x -Destination <PW>\\backend", "<MYK>"),
+    ("copy-item-named-path-first", "Copy-Item -Path x <PW>\\backend", "<MYK>"),
+    ("move-item", "Move-Item x <PW>\\backend", "<MYK>"),
+    ("move-item-out", "Move-Item <PW>\\deploy.sh C:\\temp\\x", "<MYK>"),
+    ("remove-item", "Remove-Item -Recurse <PW>\\backend", "<MYK>"),
+    ("new-item", "New-Item -ItemType File -Path <PW>\\x.txt", "<MYK>"),
+    ("set-location-first", "Set-Location '<PW>'; Set-Content deploy.sh x", "<MYK>"),
+    ("relative-cwd", "Set-Content backend\\main.py x", "<PF>"),
+    ("variable", "$t = '<PW>'; Set-Content \"$t\\deploy.sh\" x", "<MYK>"),
+    ("alias-ac", "ac <PW>\\deploy.sh x", "<MYK>"),
+    ("alias-copy", "copy x <PW>\\deploy.sh", "<MYK>"),
+    ("alias-ri", "ri <PW>\\deploy.sh", "<MYK>"),
+    ("unresolved-var", 'Set-Content "<PW>\\$f" x', "<MYK>"),
+    ("unresolved-foreach", 'foreach ($f in 1,2) { Set-Content "<PW>\\$f" x }', "<MYK>"),
+    ("unresolved-subexpression-redirect", "'x' > $(Join-Path <PW> x)", "<MYK>"),
+]
+
+POWERSHELL_WRITE_ALLOWED = [
+    ("get-content", "Get-Content <PW>\\deploy.sh", "<MYK>"),
+    ("copy-item-out", "Copy-Item <PW>\\deploy.sh C:\\temp\\x", "<MYK>"),
+    ("copy-item-out-named", "Copy-Item -Path <PW>\\deploy.sh -Destination C:\\temp\\x", "<MYK>"),
+    ("set-content-worktree", "Set-Content <WT>\\deploy.sh x", "<MYK>"),
+    ("set-content-elsewhere", "Set-Content -Path <MYK>\\x.txt -Value '<PW>'", "<MYK>"),
+    ("out-null", "git status | Out-Null", "<PF>"),
+    ("redirect-null", "git status > $null", "<PF>"),
+    ("cmd-nul", 'cmd /c "git status > NUL"', "<PF>"),
+    ("unresolved-var-elsewhere", 'Set-Content "<MYK>\\$f" x', "<MYK>"),
+]
+
+
+@pytest.mark.parametrize(("case", "command", "cwd"), cases(POWERSHELL_WRITE_BYPASSES))
+def test_powershell_writes_into_the_live_checkout_are_refused(
+    estate: Estate, case: str, command: str, cwd: str
+) -> None:
+    command, cwd = estate.fill(command), estate.fill(cwd)
+    assert_blocked(guard_bash(estate, command, cwd, tool="PowerShell"), command)
+
+
+@pytest.mark.parametrize(("case", "command", "cwd"), cases(POWERSHELL_WRITE_ALLOWED))
+def test_powershell_reads_and_writes_elsewhere_pass(
+    estate: Estate, case: str, command: str, cwd: str
+) -> None:
+    command, cwd = estate.fill(command), estate.fill(cwd)
+    assert_allowed(guard_bash(estate, command, cwd, tool="PowerShell"), command)
+
+
+def test_without_python_shell_writes_still_fall_back_to_refusing(estate: Estate) -> None:
+    env = {**estate.env, "MYKRONOS_HOOK_PYTHON": str(estate.profile / "no-such-python")}
+    for command in ("echo x > <PF>/deploy.sh", "sed -i s/a/b/ <PF>/deploy.sh"):
+        command = estate.fill(command)
+        assert_blocked(guard_bash(estate, command, env=env), command)
+    command = estate.fill("Set-Content <PW>\\deploy.sh x")
+    assert_blocked(guard_bash(estate, command, tool="PowerShell", env=env), command)
+
+
+# ── 6. Paths are canonicalised before they are compared (TheHub #61108) ─────
+
+
+def _short_name(path: Path) -> str | None:
+    """The real 8.3 short name of a path on Windows, or None where there is none."""
+    if not IS_WINDOWS:
+        return None
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, 1024)  # type: ignore[attr-defined]
+    short = buf.value if n else ""
+    return short if short and short.lower() != str(path).lower() else None
+
+
+# Spellings of the live checkout the earlier textual compare missed.
+CANONICAL_FORMS = [
+    ("short-name", "<PROJ>/THEHUB~1"),
+    ("short-name-2", "<PROJ>/thehub~2"),
+    ("trailing-dot", "<PROJ>/TheHub-main."),
+    ("trailing-dots-and-space", "<PROJ>/TheHub-main.. "),
+    ("glob-star", "<PROJ>/TheHub-m*"),
+    ("glob-question", "<PROJ>/TheHub-ma?n"),
+    ("glob-class", "<PROJ>/TheHub-[m]ain"),
+    ("glob-whole-component", "<PROJ>/*"),
+]
+
+
+@pytest.mark.parametrize(("case", "root"), cases(CANONICAL_FORMS))
+def test_other_spellings_of_the_live_checkout_are_refused(
+    estate: Estate, case: str, root: str
+) -> None:
+    root = estate.fill(root)
+    myk = str(estate.mykronos)
+    path = root + "/backend/main.py"
+    assert_blocked(guard_write(estate, "Write", path, myk), path)
+    command = f'git -C "{root}" commit -m x'
+    assert_blocked(guard_bash(estate, command), command)
+    command = f'echo x > "{root}/deploy.sh"'
+    assert_blocked(guard_bash(estate, command), command)
+
+
+def test_a_glob_that_cannot_match_the_live_checkout_passes(estate: Estate) -> None:
+    path = estate.fill("<PROJ>/mykr*/backend/main.py")
+    assert_allowed(guard_write(estate, "Write", path, str(estate.mykronos)), path)
+    command = estate.fill('git -C "<PROJ>/mykr*" commit -m x')
+    assert_allowed(guard_bash(estate, command), command)
+
+
+def test_a_glob_into_a_worktree_passes(estate: Estate) -> None:
+    path = estate.fill("<PF>/.claude/worktrees/wt*/backend/main.py")
+    assert_allowed(guard_write(estate, "Write", path, str(estate.mykronos)), path)
+
+
+def _unc_forms(estate: Estate) -> list[str]:
+    hub = str(estate.hub).replace("/", "\\")
+    drive, rest = hub[0], hub[2:]
+    return [
+        "\\\\?\\" + hub,
+        "\\\\.\\" + hub,
+        f"\\\\localhost\\{drive}$" + rest,
+        f"\\\\127.0.0.1\\{drive.lower()}$" + rest,
+        f"\\\\?\\UNC\\localhost\\{drive}$" + rest,
+        f"//localhost/{drive}$" + rest.replace("\\", "/"),
+    ]
+
+
+@pytest.mark.skipif(not IS_WINDOWS, reason="UNC and device paths name a Windows drive")
+def test_unc_and_device_paths_to_the_live_checkout_are_refused(estate: Estate) -> None:
+    myk = str(estate.mykronos)
+    for root in _unc_forms(estate):
+        path = root + "\\deploy.sh"
+        assert_blocked(guard_write(estate, "Write", path, myk), path)
+        command = f"git -C '{root}' reset --hard"
+        assert_blocked(guard_bash(estate, command), command)
+
+
+@pytest.mark.skipif(not IS_WINDOWS, reason="8.3 short names are a Windows feature")
+def test_the_real_short_name_of_the_live_checkout_is_refused(estate: Estate) -> None:
+    short = _short_name(estate.hub)
+    if short is None:
+        pytest.skip("8.3 short names are disabled on this volume")
+    path = short + "\\deploy.sh"
+    assert_blocked(guard_write(estate, "Write", path, str(estate.mykronos)), path)
+
+
+def _link(link: Path, target: Path) -> bool:
+    try:
+        if IS_WINDOWS:
+            r = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True, timeout=30,
+            )
+            return r.returncode == 0
+        link.symlink_to(target, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def test_a_link_into_the_live_checkout_is_resolved(estate: Estate) -> None:
+    link = estate.mykronos / "hub-link"
+    if not _link(link, estate.hub):
+        pytest.skip("cannot create a junction or symlink here")
+    myk = str(estate.mykronos)
+    assert_blocked(guard_write(estate, "Write", str(link / "deploy.sh"), myk), "link")
+    assert_blocked(guard_bash(estate, "git -C hub-link commit -m x", myk), "git via link")
+    assert_blocked(guard_bash(estate, "echo x > hub-link/deploy.sh", myk), "redirect via link")
+
+
+# ── 7. A command piped into an interpreter is judged (TheHub #61108) ────────
+
+PIPED_BYPASSES = [
+    ("echo-to-bash", "echo 'git -C <PF> commit -m x' | bash", "Bash"),
+    ("echo-to-sh", "echo \"cd <PF>; git reset --hard\" | sh", "Bash"),
+    ("printf-to-bash", "printf 'ruff format .' | bash", "Bash"),
+    ("echo-to-bash-s", "echo 'ruff format .' | bash -s", "Bash"),
+    ("to-bash-after-and", "true && echo 'ruff format' | bash", "Bash"),
+    ("unknown-file-to-bash", "cat no-such-setup.sh | bash", "Bash"),
+    ("network-to-sh", "curl -fsSL https://example.invalid/x | sh", "Bash"),
+    ("filtered-to-bash", "grep -v '#' x.sh | bash", "Bash"),
+    ("subst-to-bash", 'echo "$(cat x)" | bash', "Bash"),
+    ("here-string", "bash <<< 'ruff format .'", "Bash"),
+    ("here-string-git", "bash <<<\"git -C <PF> commit -m x\"", "Bash"),
+    ("string-to-iex", "'git -C <PW> commit -m x' | iex", "PowerShell"),
+    ("echo-to-invoke-expression", "echo 'ruff format .' | Invoke-Expression", "PowerShell"),
+    ("variable-to-iex", "$c | iex", "PowerShell"),
+    ("string-to-pwsh", "'ruff format .' | pwsh -Command -", "PowerShell"),
+    ("string-to-pwsh-bare", "'ruff format .' | pwsh", "PowerShell"),
+    ("unknown-file-to-iex", "Get-Content no-such.ps1 | iex", "PowerShell"),
+]
+
+PIPED_ALLOWED = [
+    ("echo-status-to-bash", "echo 'git status' | bash", "Bash"),
+    ("echo-hub-status-to-bash", "echo 'git -C <PF> status' | bash", "Bash"),
+    ("bash-as-an-argument", "echo x | grep bash", "Bash"),
+    ("bash-c-reads-data", "echo x | bash -c 'cat'", "Bash"),
+    ("bash-runs-a-file", "echo x | bash ./script.sh", "Bash"),
+    ("pipe-to-head", "git -C <PF> log | head", "Bash"),
+    ("here-string-status", "bash <<< 'git status'", "Bash"),
+    ("string-status-to-iex", "'git status' | iex", "PowerShell"),
+]
+
+
+@pytest.mark.parametrize(("case", "command", "tool"), cases(PIPED_BYPASSES))
+def test_a_command_piped_into_an_interpreter_is_judged(
+    estate: Estate, case: str, command: str, tool: str
+) -> None:
+    command = estate.fill(command)
+    assert_blocked(guard_bash(estate, command, tool=tool), command)
+
+
+@pytest.mark.parametrize(("case", "command", "tool"), cases(PIPED_ALLOWED))
+def test_a_harmless_command_piped_into_an_interpreter_passes(
+    estate: Estate, case: str, command: str, tool: str
+) -> None:
+    command = estate.fill(command)
+    assert_allowed(guard_bash(estate, command, tool=tool), command)
+
+
+def test_a_script_file_piped_into_bash_is_read(estate: Estate) -> None:
+    bad = estate.mykronos / "bad.sh"
+    bad.write_text(estate.fill("cd <PF>\ngit commit -am x\n"), encoding="utf-8")
+    good = estate.mykronos / "good.sh"
+    good.write_text("git status\nruff check .\n", encoding="utf-8")
+    assert_blocked(guard_bash(estate, "cat bad.sh | bash"), "cat bad.sh | bash")
+    assert_allowed(guard_bash(estate, "cat good.sh | bash"), "cat good.sh | bash")
+    r = guard_bash(estate, "Get-Content bad.sh | iex", tool="PowerShell")
+    assert_blocked(r, "Get-Content bad.sh | iex")
+
+
+# ── 8. A command word the guard cannot resolve fails closed (TheHub #61108) ──
+
+UNRESOLVED_BYPASSES = [
+    ("ansi-c-hex", "$'\\x67it' -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("ansi-c-octal", "$'\\147\\151\\164' -C <PF> reset --hard", "<MYK>", "Bash"),
+    ("default-expansion", "${x:-git} -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("default-no-colon", "${x-git} -C <PF> stash", "<MYK>", "Bash"),
+    ("subst-command", "$(echo git) -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("backtick-command", "`echo git` -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("unset-variable", "$NO_SUCH_VAR_61108 -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("pattern-expansion", "${G/x/g} -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("brace-expansion", "{git,x} -C <PF> commit -m x", "<MYK>", "Bash"),
+    ("subst-in-hub-cwd", "$(echo git) commit -am x", "<PF>", "Bash"),
+    ("ps-unknown-variable", "& $g -C <PW> commit -m x", "<MYK>", "PowerShell"),
+    ("ps-assignment-without-spaces", '$g="git"; & $g -C <PW> reset --hard', "<MYK>", "PowerShell"),
+    ("ps-subexpression", "& $(Get-Command git) -C <PW> commit -m x", "<MYK>", "PowerShell"),
+]
+
+UNRESOLVED_ALLOWED = [
+    ("subst-elsewhere", "$(echo git) -C <MYK> commit -m x", "<MYK>", "Bash"),
+    ("variable-elsewhere", '"$PYTHON_61108" -m pytest', "<MYK>", "Bash"),
+    ("default-resolves-elsewhere", "${x:-git} -C <MYK> commit -m x", "<MYK>", "Bash"),
+    ("default-resolves-read-only", "${x:-git} -C <PF> status", "<MYK>", "Bash"),
+    ("ansi-c-read-only", "$'\\x67it' -C <PF> log -1", "<MYK>", "Bash"),
+    ("ps-variable-elsewhere", "& $py -m pytest", "<MYK>", "PowerShell"),
+]
+
+
+@pytest.mark.parametrize(("case", "command", "cwd", "tool"), cases(UNRESOLVED_BYPASSES))
+def test_an_unresolved_command_word_next_to_the_live_checkout_is_refused(
+    estate: Estate, case: str, command: str, cwd: str, tool: str
+) -> None:
+    command, cwd = estate.fill(command), estate.fill(cwd)
+    assert_blocked(guard_bash(estate, command, cwd, tool=tool), command)
+
+
+@pytest.mark.parametrize(("case", "command", "cwd", "tool"), cases(UNRESOLVED_ALLOWED))
+def test_an_unresolved_command_word_elsewhere_passes(
+    estate: Estate, case: str, command: str, cwd: str, tool: str
+) -> None:
+    command, cwd = estate.fill(command), estate.fill(cwd)
+    assert_allowed(guard_bash(estate, command, cwd, tool=tool), command)
+
+
+def test_a_default_expansion_naming_ruff_is_resolved(estate: Estate) -> None:
+    for command in ("${R:-ruff} format .", "$'\\x72uff' format ."):
+        assert_blocked(guard_bash(estate, command), command)
+
+
+# ── 9. Wrapper commands and their flags are unwrapped (TheHub #61108) ───────
+
+WRAPPER_BYPASSES = [
+    ("env-C", "env -C <PF> git commit -m x"),
+    ("env-chdir-eq", "env --chdir=<PF> git reset --hard"),
+    ("env-chdir-space", "env --chdir <PF> git stash"),
+    ("env-C-relative", "env -C ../TheHub-main git checkout ."),
+    ("env-C-packed", "env -C<PF> git commit -m x"),
+    ("env-i-C", "env -i -C <PF> git commit -m x"),
+    ("env-S", "env -S 'git -C <PF> commit -m x'"),
+    ("nice-n", "nice -n 5 git -C <PF> commit -m x"),
+    ("nice-numeric", "nice -10 git -C <PF> commit -m x"),
+    ("nice-adjustment", "nice --adjustment=5 ruff format ."),
+    ("command-p", "command -p git -C <PF> commit -m x"),
+    ("exec-a", "exec -a foo git -C <PF> reset --hard"),
+    ("exec-c-l", "exec -c -l git -C <PF> stash"),
+    ("exec-cla", "exec -cla foo ruff format ."),
+    ("time-p", "time -p git -C <PF> commit -m x"),
+    ("sudo-u", "sudo -u root git -C <PF> commit -m x"),
+    ("nested", "nice -n 1 env -C <PF> command -p git commit -m x"),
+]
+
+WRAPPER_ALLOWED = [
+    ("env-C-elsewhere", "env -C <MYK> git commit -m x"),
+    ("env-C-read-only", "env -C <PF> git status"),
+    ("nice-read-only", "nice -n 5 git -C <PF> log -1"),
+    ("command-v", "command -v git"),
+    ("exec-a-elsewhere", "exec -a foo git commit -m x"),
+    ("env-C-does-not-leak", "env -C <PF> true; git commit -m x"),
+]
+
+
+@pytest.mark.parametrize(("case", "command"), cases(WRAPPER_BYPASSES))
+def test_wrapper_flags_are_unwrapped(estate: Estate, case: str, command: str) -> None:
+    command = estate.fill(command)
+    assert_blocked(guard_bash(estate, command), command)
+
+
+@pytest.mark.parametrize(("case", "command"), cases(WRAPPER_ALLOWED))
+def test_wrapped_commands_elsewhere_pass(estate: Estate, case: str, command: str) -> None:
+    command = estate.fill(command)
+    assert_allowed(guard_bash(estate, command), command)
+
+
+# ── 10. A hook that runs out of time fails closed (TheHub #61108) ───────────
+#
+# Claude Code treats a hook that times out, like any exit other than 2, as a
+# non-blocking error, so the guard keeps its own deadline inside the harness's
+# and refuses once it passes. A missing bash cannot be caught from inside the
+# hook at all; the module docstring says so.
+
+
+def _guard_module() -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("estate_guard", HOOKS / "estate_guard.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("estate_guard", module)  # its dataclasses look themselves up there
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_guard_past_its_deadline_refuses(estate: Estate) -> None:
+    env = {**estate.env, "MYKRONOS_HOOK_DEADLINE_SECONDS": "0"}
+    r = guard_bash(estate, "ruff check .", env=env)
+    assert_blocked(r, "ruff check . past the deadline")
+    assert "time" in r.stderr.lower()
+    path = str(estate.mykronos / "x.py")
+    r = guard_write(estate, "Write", path, str(estate.mykronos), env=env)
+    assert_blocked(r, "Write past the deadline")
+
+
+def test_the_deadline_sits_inside_the_harness_timeout() -> None:
+    deadline = _guard_module().DEFAULT_DEADLINE_SECONDS
+    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    for group in settings["hooks"]["PreToolUse"]:
+        for hook in group["hooks"]:
+            timeout = hook.get("timeout")
+            assert isinstance(timeout, (int, float)), hook
+            assert timeout > deadline + 5, (timeout, deadline)
+
+
+def test_the_fail_open_cases_are_documented() -> None:
+    doc = _guard_module().__doc__ or ""
+    section = doc.split("When a hook cannot block", 1)
+    assert len(section) == 2, "the docstring has no 'When a hook cannot block' section"
+    text = section[1].lower()
+    for needle in ("bash", "timeout", "deadline", "exit"):
+        assert needle in text, needle
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────────

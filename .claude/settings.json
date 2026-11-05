@@ -7,7 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.sh\"",
+            "timeout": 30
           }
         ]
       },
@@ -16,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-write.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-write.sh\"",
+            "timeout": 30
           }
         ]
       }
@@ -27,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-ps1.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-ps1.sh\"",
+            "timeout": 90
           }
         ]
       }
