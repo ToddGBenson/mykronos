@@ -413,10 +413,35 @@ def _predecessor(row: Any) -> str | None:
 def _eligible(predecessor: _Finding, successor: _Finding) -> bool:
     """A successor must have appeared no earlier than its predecessor's last
     sighting. Without this a pre-existing finding in the same file could be
-    handed the history of one that has only just gone."""
+    handed the history of one that has only just gone.
+
+    Except the one that already holds it. A successor ingestion paired with
+    this predecessor (`find_moved_decisions`, TheHub #61129) landed carrying
+    its first sighting and its decision, so by date it predates the row it
+    replaced; it is the only row that can carry that exact first sighting and
+    resolution together, and this pass is what withdraws the predecessor.
+    """
+    if _inherited_from(predecessor, successor):
+        return True
     if predecessor.last_seen_at and successor.first_seen_at:
         return successor.first_seen_at >= predecessor.last_seen_at
     return True
+
+
+def _inherited_from(predecessor: _Finding, successor: _Finding) -> bool:
+    """Whether `successor` carries `predecessor`'s decision as ingestion
+    copied it: the same disposition, resolved at the same instant, and first
+    seen by the same scan at the same instant."""
+    return (
+        predecessor.status in HUMAN_DISPOSITIONS
+        and successor.status == predecessor.status
+        and bool(predecessor.first_seen_scan_run_id)
+        and successor.first_seen_scan_run_id == predecessor.first_seen_scan_run_id
+        and successor.first_seen_at is not None
+        and successor.first_seen_at == predecessor.first_seen_at
+        and successor.resolved_at is not None
+        and successor.resolved_at == predecessor.resolved_at
+    )
 
 
 def match(
@@ -801,3 +826,208 @@ def inherit_decisions(
     for item in stranded:
         logger.warning("Decision stranded: %s", item.describe())
     return stranded
+
+
+#: The audit action an ingest-time carry records (TheHub #61129).
+INHERITED_ACTION = "finding.disposition_inherited"
+
+
+@dataclass(frozen=True)
+class Moved:
+    """A decision an incoming finding takes from the row it replaced."""
+
+    carried: Carried
+    predecessor: _Finding
+
+
+def find_moved_decisions(
+    catalog: Catalog,
+    rows: list[dict[str, Any]],
+    *,
+    scan_run_id: str,
+    branch: str,
+    tool_name: str,
+    known_ids: set[str],
+    seen_this_run: set[str],
+) -> list[Moved]:
+    """Which incoming findings are a dispositioned finding that moved (#61129).
+
+    **Observed 2026-11-01.** A commit inserted 165 lines into one file and
+    edited five `text()` calls below the insert, each of them dismissed as a
+    false positive weeks earlier. All five re-keyed and landed `open`, first
+    seen by that commit, and the commit gate refused it on "introduced 7
+    high". `carry_forward` linked all five correctly -- 37
+    minutes later, on its next pass. The gate had asked in between, and a
+    gate that is right an hour late is wrong when it is asked.
+
+    So the same judgement is made here, before the rows are written: the
+    same floor, the same margin, the same `match`, over the same two sides.
+    One side is the incoming rows that are new identities; the other is the
+    dispositioned rows in this lane, rule and file that this run has not
+    reported. Nothing is inferred that `carry_forward` would not infer an
+    hour later; it is only inferred in time.
+
+    Only a *person's* decision moves here. An `open` predecessor's dates are
+    still `carry_forward`'s to carry, because nothing about it was decided.
+
+    `known_ids` are the ids an earlier scan already stored, in the lake or the
+    buffer: those are not new, and compaction would keep their stored values
+    regardless, so they are never offered as successors. `seen_this_run` are
+    the ids an earlier batch of this same run reported, which are therefore
+    not gone.
+
+    The caller must only ask when no later batch of this run can follow: a
+    predecessor this batch does not report may yet be reported by the next,
+    and then it never went anywhere.
+    """
+    incoming = [
+        row
+        for row in rows
+        if row.get("file_path")
+        and row.get("package_name") is None
+        and row.get("address") is None
+        and str(row.get("code_snippet") or "").strip()
+        and row.get("status") == "open"
+        # A row that already inherited through the exact link (D-139) has
+        # its predecessor's first sighting; this is for what that did not.
+        and row.get("first_seen_scan_run_id") == scan_run_id
+        and str(row["finding_id"]) not in known_ids
+    ]
+    if not incoming or not catalog.all_files("findings"):
+        return []
+
+    rules = sorted({str(r["rule_id"]) for r in incoming})
+    files = sorted({str(r["file_path"]) for r in incoming})
+    repo = str(incoming[0]["asset_id"])
+    capability = str(incoming[0]["capability"])
+    reported = {str(r["finding_id"]) for r in rows} | seen_this_run
+
+    found = catalog.query(
+        f"""
+        SELECT DISTINCT f.finding_id, f.dt, f.asset_id, f.capability, f.rule_id,
+               f.file_path, f.status, coalesce(f.code_snippet, ''),
+               f.first_seen_at, f.first_seen_scan_run_id, f.last_seen_at,
+               f.resolved_at, f.accepted_until, f.accepted_reason_code
+        FROM findings f
+        JOIN scan_runs s ON s.scan_run_id = f.last_seen_scan_run_id
+        WHERE f.asset_id = ? AND f.capability = ?
+          AND f.status IN ({", ".join("?" for _ in HUMAN_DISPOSITIONS)})
+          AND f.package_name IS NULL AND f.address IS NULL
+          AND f.rule_id IN ({", ".join("?" for _ in rules)})
+          AND f.file_path IN ({", ".join("?" for _ in files)})
+          AND coalesce(s.branch, '') = ? AND coalesce(s.tool_name, '') = ?
+          AND f.last_seen_scan_run_id <> ?
+        """,
+        [
+            repo,
+            capability,
+            *HUMAN_DISPOSITIONS,
+            *rules,
+            *files,
+            branch,
+            tool_name,
+            scan_run_id,
+        ],
+    )
+    gone: dict[str, _Finding] = {}
+    for row in found:
+        if str(row[0]) in reported:
+            continue
+        gone.setdefault(
+            str(row[0]),
+            _Finding(
+                finding_id=str(row[0]),
+                dt=str(row[1]),
+                asset_id=str(row[2]),
+                capability=str(row[3]),
+                rule_id=str(row[4]),
+                file_path=str(row[5]),
+                branch=branch,
+                tool_name=tool_name,
+                status=str(row[6]),
+                code_snippet=str(row[7] or ""),
+                first_seen_at=row[8],
+                first_seen_scan_run_id=str(row[9] or ""),
+                last_seen_at=row[10],
+                resolved_at=row[11],
+                accepted_until=row[12],
+                accepted_reason_code=None if row[13] is None else str(row[13]),
+            ),
+        )
+    if not gone:
+        return []
+
+    present = [
+        _Finding(
+            finding_id=finding_id,
+            dt="",
+            asset_id=str(row["asset_id"]),
+            capability=str(row["capability"]),
+            rule_id=str(row["rule_id"]),
+            file_path=str(row["file_path"]),
+            branch=branch,
+            tool_name=tool_name,
+            status="open",
+            code_snippet=str(row.get("code_snippet") or ""),
+            # Unset on purpose: every incoming row is seen now, which is
+            # after any predecessor's last sighting, so `_eligible` passes.
+            first_seen_at=None,
+            first_seen_scan_run_id=scan_run_id,
+            last_seen_at=None,
+            resolved_at=None,
+            accepted_until=None,
+            accepted_reason_code=None,
+        )
+        for finding_id, row in {str(r["finding_id"]): r for r in incoming}.items()
+    ]
+
+    pairs, _refusals = match(list(gone.values()), present)
+    # Refusals are not logged here: `carry_forward` reports every one of them
+    # on its next pass, with the same reason, and saying it twice an hour
+    # apart would read as two decisions stranded rather than one.
+    return [
+        Moved(
+            carried=Carried(
+                from_finding_id=predecessor.finding_id,
+                to_finding_id=successor.finding_id,
+                similarity=score,
+                runner_up=runner_up,
+                asset_id=predecessor.asset_id,
+                capability=predecessor.capability,
+                rule_id=predecessor.rule_id,
+                file_path=predecessor.file_path,
+                disposition=predecessor.status,
+            ),
+            predecessor=predecessor,
+        )
+        for predecessor, successor, score, runner_up in pairs
+    ]
+
+
+def inherit_moved_decisions(rows: list[dict[str, Any]], moved: list[Moved]) -> None:
+    """Write what `find_moved_decisions` found onto the incoming rows.
+
+    The same fields `inherit_decisions` sets, for the same reason: compaction
+    keeps them for a new id, so the finding lands carrying its decision and
+    the scan that first saw it, and `introduced_by` -- which counts `open`
+    rows first seen by this commit -- does not count it. The predecessor is
+    left for `carry_forward` to withdraw as `superseded`; `_eligible` lets it,
+    because the successor now carries that predecessor's own first sighting.
+    """
+    by_successor = {m.carried.to_finding_id: m.predecessor for m in moved}
+    for row in rows:
+        old = by_successor.get(str(row["finding_id"]))
+        if old is None:
+            continue
+        row["first_seen_at"] = old.first_seen_at
+        row["first_seen_scan_run_id"] = old.first_seen_scan_run_id
+        row["status"] = old.status
+        row["resolved_at"] = old.resolved_at
+        # A `date`, which the write-ahead buffer cannot serialise; compaction
+        # casts the ISO string back (as in `inherit_decisions`).
+        row["accepted_until"] = (
+            old.accepted_until.isoformat()
+            if hasattr(old.accepted_until, "isoformat")
+            else old.accepted_until
+        )
+        row["accepted_reason_code"] = old.accepted_reason_code
