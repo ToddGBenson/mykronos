@@ -25,7 +25,9 @@ import {
   RelativeTime,
   type IndicatorTone,
 } from "@/components/primitives";
+import { RaiseToHub } from "@/components/raise-to-hub";
 import type { CiJob, CiPage, CiReporting, CiStage } from "@/lib/api";
+import type { RaisedLink } from "@/lib/raise-to-hub";
 import { failuresWithWhy, recentLine, whyLines } from "@/lib/ci-why";
 
 /** The platform's shared build-status vocabulary, mapped to the palette the
@@ -41,7 +43,19 @@ function jobTone(status: string | null | undefined): IndicatorTone {
   return "idle";
 }
 
-export function PipelineLinks({ ci }: { ci: CiPage }) {
+/** The lane subject a raise is keyed by (TheHub #60911). */
+export function laneSubject(repoFullName: string, lane: string): string {
+  return `${repoFullName}:${lane}`;
+}
+
+export function PipelineLinks({
+  ci,
+  raised,
+}: {
+  ci: CiPage;
+  /** What has been raised from each failing lane, by lane subject (TheHub #60911). */
+  raised?: Map<string, RaisedLink>;
+}) {
   const failing = ci.failing ?? [];
   return (
     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border border-rule bg-paper-2 px-3 py-2">
@@ -78,10 +92,19 @@ export function PipelineLinks({ ci }: { ci: CiPage }) {
         </a>
       ) : null}
       {failing.length > 0 ? (
-        <span className="ml-auto">
+        <span className="ml-auto flex flex-wrap items-baseline gap-2">
           <Pill tone="critical">
             {failing.length} failing: {failing.join(", ")}
           </Pill>
+          {failing.map((lane) => {
+            const subject = laneSubject(ci.repo_full_name, lane);
+            return (
+              <span key={lane} className="flex items-baseline gap-1">
+                <span className="font-mono text-[11px] text-ink-3">{lane}</span>
+                <RaiseToHub kind="lane" subject={subject} link={raised?.get(subject)} />
+              </span>
+            );
+          })}
         </span>
       ) : null}
     </div>

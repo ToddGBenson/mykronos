@@ -3418,6 +3418,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/raise/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Raise Draft
+         * @description What raising this lane, finding or health dependency would send to TheHub
+         *     (TheHub #60911): a title and the evidence MyKronos holds for it.
+         */
+        get: operations["raise_draft_api_dashboard_raise_draft_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/raise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Raise In Hub
+         * @description Open a Hub incident (room devops) or a backlog story for a lane, finding
+         *     or health dependency, with MyKronos's evidence attached (TheHub #60911).
+         *     The raise is audited with the caller's actor, kind and provenance, which is
+         *     also how the row it came from finds its Hub id again.
+         */
+        post: operations["raise_in_hub_api_dashboard_raise_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/raised": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Raised
+         * @description For each subject, the newest Hub incident or story raised from it, who
+         *     raised it, and its status in TheHub now ("unknown" when unreadable).
+         */
+        get: operations["raised_api_dashboard_raised_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/product-owner/estate": {
         parameters: {
             query?: never;
@@ -11237,6 +11302,65 @@ export interface components {
             /** Unreachable */
             unreachable: components["schemas"]["UnreachableRepoOut"][];
         };
+        /** RaiseDraftOut */
+        RaiseDraftOut: {
+            /** Kind */
+            kind: string;
+            /** Subject */
+            subject: string;
+            /** Title */
+            title: string;
+            /** Evidence */
+            evidence: string;
+        };
+        /** RaiseIn */
+        RaiseIn: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "lane" | "finding" | "health";
+            /** Subject */
+            subject: string;
+            /**
+             * Raise As
+             * @enum {string}
+             */
+            raise_as: "incident" | "story";
+            /** Title */
+            title?: string | null;
+            /** Note */
+            note?: string | null;
+        };
+        /** RaiseOut */
+        RaiseOut: {
+            /** Hub Kind */
+            hub_kind: string;
+            /** Hub Id */
+            hub_id: number;
+            /** Title */
+            title: string;
+        };
+        /** RaisedLinkOut */
+        RaisedLinkOut: {
+            /** Subject */
+            subject: string;
+            /** Hub Kind */
+            hub_kind: string;
+            /** Hub Id */
+            hub_id: number;
+            /** Status */
+            status: string;
+            /** Raised By */
+            raised_by: string;
+            /** Raised At */
+            raised_at: string | null;
+        };
+        /** RaisedOut */
+        RaisedOut: {
+            /** Links */
+            links: components["schemas"]["RaisedLinkOut"][];
+        };
         /** RankRequest */
         RankRequest: {
             /** Story Id */
@@ -18703,6 +18827,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PoFleetOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    raise_draft_api_dashboard_raise_draft_get: {
+        parameters: {
+            query: {
+                kind: "lane" | "finding" | "health";
+                subject: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RaiseDraftOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    raise_in_hub_api_dashboard_raise_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RaiseIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RaiseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    raised_api_dashboard_raised_get: {
+        parameters: {
+            query: {
+                kind: "lane" | "finding" | "health";
+                subject: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RaisedOut"];
                 };
             };
             /** @description Validation Error */
