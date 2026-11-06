@@ -43,6 +43,7 @@ from mykronos import (
     inventory,
     jump_search,
     platform_health,
+    reachability_evidence,
     read_coverage,
     regression,
     reown,
@@ -95,6 +96,7 @@ from mykronos.dashboard import (
 from mykronos.db.models import (
     AutoTriageAction,
     CapabilityGrant,
+    DataflowReachabilityReport,
     EnvironmentalScore,
     GatingLaneState,
     JobRun,
@@ -6656,6 +6658,36 @@ class ReachabilityVerdictOut(BaseModel):
     trace: dict[str, Any] | None = None
 
 
+class DataflowStepOut(BaseModel):
+    file_path: str = ""
+    line: int | None = None
+    label: str = ""
+
+
+class DataflowEvidenceOut(BaseModel):
+    """What CodeQL dataflow traced for this finding (TheHub #60891).
+
+    Evidence shown beside `reachability`, never in place of it (the
+    operator's decision: CodeQL sits beside taint).
+    `FindingRecordOut.reachability` (TheHub #60745) stays the verdict; this
+    block never changes it, and where the two disagree both are shown.
+
+    `reachable` carries the path CodeQL traced from an entry point.
+    `unreachable` means never imported, and carries the evidence that proves
+    it. `unknown` says why neither could be shown.
+    """
+
+    verdict: Literal["reachable", "unreachable", "unknown"]
+    reason: str
+    path: list[DataflowStepOut] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    language: str
+    analyser: str
+    analyser_version: str = ""
+    commit_sha: str = ""
+    analysed_at: datetime | None = None
+
+
 class FindingRecordOut(BaseModel):
     """One finding, with everything the platform knows about it (B-032).
 
@@ -6685,6 +6717,11 @@ class FindingRecordOut(BaseModel):
     exploitability: ExploitabilityOut | None = None
     #: Present on every finding; `unknown` where nothing could answer.
     reachability: ReachabilityVerdictOut | None = None
+    #: CodeQL dataflow paths and evidence for this finding (TheHub #60891),
+    #: shown beside `reachability` and never folded into it. Null when no
+    #: CodeQL verdict speaks for it, which is not "unreachable";
+    #: `missing_context` says whether anything ran at all.
+    dataflow_evidence: DataflowEvidenceOut | None = None
     #: Open dependency-bot pull requests that would close it (TheHub #60915).
     fix_pull_requests: list[FixPullRequestOut] = Field(default_factory=list)
     #: True when GitHub could not be asked, so an empty list means nothing.
@@ -6896,13 +6933,34 @@ async def whole_finding_record(
             else 0
         )
 
-    # Reachability lives on its own router; absent is the common case and is a
-    # fact worth reporting rather than an error worth raising.
-    reach_rows = catalog.query(
-        "SELECT analysed FROM reachability WHERE repo_full_name = ? LIMIT 1",
-        [repo_full_name],
-    ) if catalog.all_files("reachability") else []
-    analysed = bool(reach_rows and reach_rows[0][0])
+    # Reachability is operational state in Postgres, not the lake: the import
+    # graph (spec 19 §2.1) and CodeQL dataflow (TheHub #60891). This read a
+    # lake table that never existed, so every record said no analysis had run.
+    # Absent is the common case and is a fact worth reporting.
+    reach_found: DataflowEvidenceOut | None = None
+    analysed = False
+    if onboarding is not None:
+        with request.app.state.db.session() as session:
+            dataflow_reports = list(
+                session.execute(
+                    select(DataflowReachabilityReport).where(
+                        DataflowReachabilityReport.repo_onboarding_id == onboarding.id
+                    )
+                ).scalars()
+            )
+            import_graph = session.execute(
+                select(ReachabilityReport.id).where(
+                    ReachabilityReport.repo_onboarding_id == onboarding.id
+                )
+            ).first()
+            analysed = bool(dataflow_reports) or import_graph is not None
+            match = reachability_evidence.for_finding(
+                reachability_evidence.index(dataflow_reports), row
+            )
+            if match is not None:
+                reach_found = DataflowEvidenceOut.model_validate(
+                    reachability_evidence.as_record(*match)
+                )
 
     pkg_found = finding_record.package_for(
         catalog,
@@ -6986,6 +7044,7 @@ async def whole_finding_record(
         package=PackageOut(**pkg_found) if pkg_found else None,
         exploitability=ExploitabilityOut.model_validate(exploit),
         reachability=ReachabilityVerdictOut(**reach_verdict.as_dict()),
+        dataflow_evidence=reach_found,
         missing_context=[
             RecordGap(**gap)
             for gap in finding_record.missing_context(

@@ -44,6 +44,8 @@ REQUIRED_MODULES: tuple[str, ...] = (
     "mykronos.atlas_sbom",
     "mykronos.atlas_freshness",
     "mykronos.reachability",
+    # TheHub #60891. The sast lane's dataflow reachability step.
+    "mykronos.reachability_dataflow",
     "mykronos.ai_pin_check",
     "mykronos.junit_stage",
     # #427. The containers lane installs the pinned package to ask which

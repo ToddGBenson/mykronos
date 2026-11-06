@@ -26,6 +26,7 @@ import {
 import {
   DossierPanel,
   ExploitabilityPanel,
+  ReachabilityPanel,
   RescoreSteps,
 } from "@/components/finding-workbench";
 import { FindingDecision } from "@/components/finding-decision";
@@ -238,6 +239,14 @@ export default async function FindingRecordPage({
 
         {result.data.exploitability ? (
           <ExploitabilityPanel data={result.data.exploitability} />
+        ) : null}
+
+        {/* CodeQL sits beside taint: the verdict, then CodeQL's evidence. */}
+        {result.data.reachability || result.data.dataflow_evidence ? (
+          <ReachabilityPanel
+            verdict={result.data.reachability}
+            data={result.data.dataflow_evidence}
+          />
         ) : null}
 
         {dossierResult.ok ? (

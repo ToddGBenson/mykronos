@@ -1,0 +1,469 @@
+{
+ "$comment": "Trimmed from `codeql database analyze` (CodeQL 2.27.2) over the fixture in test_reachability_dataflow.py; only the fields the reader uses are kept.",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "CodeQL",
+     "semanticVersion": "2.27.2"
+    }
+   },
+   "results": [
+    {
+     "ruleId": "mykronos/reachability/javascript/package-api-reachable",
+     "message": {
+      "text": "Call into package lodash reachable from [anonymous function](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/render.js"
+        },
+        "region": {
+         "startLine": 3
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 4
+             }
+            },
+            "message": {
+             "text": "anonymous function"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/render.js"
+             },
+             "region": {
+              "startLine": 3
+             }
+            },
+            "message": {
+             "text": "function render"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/render.js"
+             },
+             "region": {
+              "startLine": 3
+             }
+            },
+            "message": {
+             "text": "call into lodash"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-api-reachable",
+     "message": {
+      "text": "Call into package lodash reachable from [anonymous function](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/render.js"
+        },
+        "region": {
+         "startLine": 3
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 4
+             }
+            },
+            "message": {
+             "text": "anonymous function"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/render.js"
+             },
+             "region": {
+              "startLine": 3
+             }
+            },
+            "message": {
+             "text": "function render"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/render.js"
+             },
+             "region": {
+              "startLine": 3
+             }
+            },
+            "message": {
+             "text": "call into lodash"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-api-reachable",
+     "message": {
+      "text": "Call into package express reachable from [top level of server.js](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 3
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             }
+            },
+            "message": {
+             "text": "top level of server.js"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 3
+             }
+            },
+            "message": {
+             "text": "call into express"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-api-reachable",
+     "message": {
+      "text": "Call into package express reachable from [top level of server.js](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 4
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             }
+            },
+            "message": {
+             "text": "top level of server.js"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 4
+             }
+            },
+            "message": {
+             "text": "call into express"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-api-reachable",
+     "message": {
+      "text": "Call into package express reachable from [top level of server.js](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 5
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             }
+            },
+            "message": {
+             "text": "top level of server.js"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 5
+             }
+            },
+            "message": {
+             "text": "call into express"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-api-reachable",
+     "message": {
+      "text": "Call into package express reachable from [top level of server.js](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 6
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             }
+            },
+            "message": {
+             "text": "top level of server.js"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "src/server.js"
+             },
+             "region": {
+              "startLine": 6
+             }
+            },
+            "message": {
+             "text": "call into express"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-import",
+     "message": {
+      "text": "Imports module lodash."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/render.js"
+        },
+        "region": {
+         "startLine": 1
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-import",
+     "message": {
+      "text": "Imports module moment."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/render.js"
+        },
+        "region": {
+         "startLine": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-import",
+     "message": {
+      "text": "Imports module express."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 1
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/package-import",
+     "message": {
+      "text": "Imports module ./render."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/server.js"
+        },
+        "region": {
+         "startLine": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "ruleId": "mykronos/reachability/javascript/source-files",
+     "message": {
+      "text": "Analysed 2 source files."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "src/render.js"
+        }
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

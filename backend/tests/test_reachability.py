@@ -14,6 +14,8 @@ relative import it had to resolve.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from mykronos import reachability
@@ -330,7 +332,9 @@ class TestItRunsWhereTheScansRun:
             config={"import_reachability": False},
         ).content
 
-        assert "mykronos.reachability" not in rendered
+        # Not a substring check: the dataflow step (TheHub #60891) runs
+        # `mykronos.reachability_dataflow`, which has its own switch.
+        assert re.search(r"mykronos[.]reachability(?![_a-z])", rendered) is None
 
     def test_it_is_on_by_default(self) -> None:
         """Unlike the outbound-call features elsewhere, this reads the
