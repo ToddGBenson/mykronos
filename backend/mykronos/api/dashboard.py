@@ -6658,14 +6658,19 @@ class ReachabilityVerdictOut(BaseModel):
     trace: dict[str, Any] | None = None
 
 
-class ReachabilityStepOut(BaseModel):
+class DataflowStepOut(BaseModel):
     file_path: str = ""
     line: int | None = None
     label: str = ""
 
 
-class FindingReachabilityOut(BaseModel):
-    """Is this reachable, and on what evidence (TheHub #60891).
+class DataflowEvidenceOut(BaseModel):
+    """What CodeQL dataflow traced for this finding (TheHub #60891).
+
+    Evidence shown beside `reachability`, never in place of it (the
+    operator's decision: CodeQL sits beside taint).
+    `FindingRecordOut.reachability` (TheHub #60745) stays the verdict; this
+    block never changes it, and where the two disagree both are shown.
 
     `reachable` carries the path CodeQL traced from an entry point.
     `unreachable` means never imported, and carries the evidence that proves
@@ -6674,7 +6679,7 @@ class FindingReachabilityOut(BaseModel):
 
     verdict: Literal["reachable", "unreachable", "unknown"]
     reason: str
-    path: list[ReachabilityStepOut] = Field(default_factory=list)
+    path: list[DataflowStepOut] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
     language: str
     analyser: str
@@ -6712,10 +6717,11 @@ class FindingRecordOut(BaseModel):
     exploitability: ExploitabilityOut | None = None
     #: Present on every finding; `unknown` where nothing could answer.
     reachability: ReachabilityVerdictOut | None = None
-    #: CodeQL dataflow's verdict on this finding, with its path or its
-    #: evidence (TheHub #60891). Null when no verdict speaks for it, which is
-    #: not "unreachable"; `missing_context` says whether anything ran at all.
-    dataflow_evidence: FindingReachabilityOut | None = None
+    #: CodeQL dataflow paths and evidence for this finding (TheHub #60891),
+    #: shown beside `reachability` and never folded into it. Null when no
+    #: CodeQL verdict speaks for it, which is not "unreachable";
+    #: `missing_context` says whether anything ran at all.
+    dataflow_evidence: DataflowEvidenceOut | None = None
     #: Open dependency-bot pull requests that would close it (TheHub #60915).
     fix_pull_requests: list[FixPullRequestOut] = Field(default_factory=list)
     #: True when GitHub could not be asked, so an empty list means nothing.
@@ -6931,7 +6937,7 @@ async def whole_finding_record(
     # graph (spec 19 §2.1) and CodeQL dataflow (TheHub #60891). This read a
     # lake table that never existed, so every record said no analysis had run.
     # Absent is the common case and is a fact worth reporting.
-    reach_found = None
+    reach_found: DataflowEvidenceOut | None = None
     analysed = False
     if onboarding is not None:
         with request.app.state.db.session() as session:
@@ -6952,7 +6958,7 @@ async def whole_finding_record(
                 reachability_evidence.index(dataflow_reports), row
             )
             if match is not None:
-                reach_found = FindingReachabilityOut.model_validate(
+                reach_found = DataflowEvidenceOut.model_validate(
                     reachability_evidence.as_record(*match)
                 )
 

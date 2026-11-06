@@ -798,7 +798,11 @@ class TestTheFindingRecord:
             f"/api/dashboard/findings/{finding_id}/record", headers=admin_auth
         ).json()
 
-        reach = body["reachability"]
+        # CodeQL sits beside taint: its path is `dataflow_evidence`, and the
+        # `reachability` verdict (TheHub #60745) is exactly what it was
+        # without CodeQL - undecided, since no taint run was reported.
+        assert body["reachability"]["verdict"] == "unknown"
+        reach = body["dataflow_evidence"]
         assert reach["verdict"] == "reachable"
         assert reach["language"] == "python"
         assert reach["commit_sha"] == "abc123def456"
@@ -815,7 +819,8 @@ class TestTheFindingRecord:
             f"/api/dashboard/findings/{finding_id}/record", headers=admin_auth
         ).json()
 
-        assert body["reachability"] is None
+        assert body["dataflow_evidence"] is None
+        assert body["reachability"]["verdict"] == "unknown"
         assert "reachability" in {gap["input"] for gap in body["missing_context"]}
 
 

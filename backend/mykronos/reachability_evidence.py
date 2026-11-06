@@ -153,7 +153,7 @@ def for_finding(found: Index, row: Mapping[str, Any]) -> tuple[Any, dict[str, An
 
 
 def as_record(report: Any, verdict: Mapping[str, Any]) -> dict[str, Any]:
-    """The finding record's `reachability` block."""
+    """The finding record's `dataflow_evidence` block, beside `reachability`."""
     return {
         "verdict": verdict.get("verdict"),
         "reason": verdict.get("reason") or "",

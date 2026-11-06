@@ -1,7 +1,9 @@
 /**
- * The finding record's reachability block (TheHub #60891): a reachable
- * verdict shows the path CodeQL traced, and an unreachable one shows the
- * evidence it rests on rather than just the word.
+ * The finding record's reachability panel. CodeQL sits beside taint: the
+ * `reachability` verdict (TheHub #60745) is shown first, and CodeQL's
+ * `dataflow_evidence` (TheHub #60891) beside it. A reachable CodeQL verdict
+ * shows the path it traced, and an unreachable one shows the evidence it
+ * rests on rather than just the word.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -10,7 +12,8 @@ import { describe, expect, it } from "vitest";
 import { ReachabilityPanel } from "../components/finding-workbench";
 import type { components } from "../lib/api-types";
 
-type Reachability = components["schemas"]["FindingReachabilityOut"];
+type Reachability = components["schemas"]["DataflowEvidenceOut"];
+type ReachabilityVerdict = components["schemas"]["ReachabilityVerdictOut"];
 
 const base: Reachability = {
   verdict: "reachable",
@@ -33,6 +36,37 @@ function render(data: Reachability): string {
 }
 
 describe("ReachabilityPanel", () => {
+  it("shows the reachability verdict and CodeQL's evidence beside it", () => {
+    const verdict: ReachabilityVerdict = {
+      verdict: "unknown",
+      basis: "import_floor",
+      reason: "import reachability does not prove a file is reached",
+      trace: null,
+    };
+    const html = renderToStaticMarkup(
+      createElement(ReachabilityPanel, { verdict, data: base }),
+    );
+
+    expect(html).toContain("verdict: import graph");
+    expect(html).toContain("import reachability does not prove");
+    expect(html).toContain("CodeQL dataflow evidence");
+    expect(html.indexOf("import reachability")).toBeLessThan(html.indexOf("CodeQL dataflow"));
+    expect(html).toContain("app/web.py:9");
+  });
+
+  it("shows the verdict alone when CodeQL has nothing for the finding", () => {
+    const verdict: ReachabilityVerdict = {
+      verdict: "reachable",
+      basis: "taint",
+      reason: "request input reaches this sink",
+      trace: null,
+    };
+    const html = renderToStaticMarkup(createElement(ReachabilityPanel, { verdict, data: null }));
+
+    expect(html).toContain("verdict: Semgrep taint");
+    expect(html).not.toContain("CodeQL dataflow evidence");
+  });
+
   it("shows every step of the path, in order", () => {
     const html = render(base);
 

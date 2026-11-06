@@ -7,7 +7,8 @@ import type { FindingDossier } from "@/lib/server";
 type Step = components["schemas"]["RescoreStepOut"];
 type StepFact = components["schemas"]["RescoreStepFactOut"];
 type Exploitability = components["schemas"]["ExploitabilityOut"];
-type Reachability = components["schemas"]["FindingReachabilityOut"];
+type Reachability = components["schemas"]["DataflowEvidenceOut"];
+type ReachabilityVerdict = components["schemas"]["ReachabilityVerdictOut"];
 
 const FRESHNESS_TONE: Record<StepFact["freshness"], "pass" | "warn" | "critical" | "muted"> = {
   fresh: "pass",
@@ -228,22 +229,67 @@ function evidenceValue(value: unknown): string {
   return String(value);
 }
 
+const REACH_VERDICT_TONE: Record<ReachabilityVerdict["verdict"], "critical" | "pass" | "muted"> = {
+  reachable: "critical",
+  unreachable: "pass",
+  unknown: "muted",
+};
+
+const REACH_VERDICT_BASIS: Record<ReachabilityVerdict["basis"], string> = {
+  taint: "Semgrep taint",
+  import_floor: "import graph",
+};
+
 /**
- * Is the vulnerable code reachable, and on what evidence (TheHub #60891).
- * A reachable verdict shows the path CodeQL traced from an entry point; an
- * unreachable one shows the evidence that it is never imported, because
- * that is what the auto-triage lane acted on, if it did.
+ * Is the vulnerable code reachable, and on what evidence.
+ *
+ * CodeQL sits beside taint. `verdict` is the finding's `reachability`
+ * (TheHub #60745: Semgrep taint, the import graph as the floor), the one
+ * auto-triage trusts. `data` is CodeQL dataflow's evidence (TheHub #60891),
+ * shown beside it and never in its place: a reachable path CodeQL traced
+ * from an entry point, or the evidence that a package is never imported.
  */
-export function ReachabilityPanel({ data }: { data: Reachability }) {
+export function ReachabilityPanel({
+  verdict,
+  data,
+}: {
+  verdict?: ReachabilityVerdict | null;
+  data?: Reachability | null;
+}) {
+  return (
+    <section className="border border-rule bg-paper-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-1.5">
+        <Label as="h2">Reachability</Label>
+        {verdict ? (
+          <span className="font-mono text-[11px] text-ink-3">
+            verdict: {REACH_VERDICT_BASIS[verdict.basis]}
+          </span>
+        ) : null}
+      </div>
+      {verdict ? (
+        <div className="flex flex-col gap-1.5 px-3 py-2.5">
+          <span>
+            <Pill tone={REACH_VERDICT_TONE[verdict.verdict]}>{verdict.verdict}</Pill>
+          </span>
+          <p className="text-[13px] leading-relaxed text-ink-2">{verdict.reason}</p>
+        </div>
+      ) : null}
+      {data ? <DataflowEvidence data={data} /> : null}
+    </section>
+  );
+}
+
+/** CodeQL dataflow's evidence, beside the verdict (TheHub #60891). */
+function DataflowEvidence({ data }: { data: Reachability }) {
   const path = data.path ?? [];
   const evidence = (data.evidence ?? {}) as Record<string, unknown>;
   const pill = reachPill(data.verdict, evidence);
   const entry =
     typeof evidence.entry_kind === "string" ? ENTRY_KIND[evidence.entry_kind] : undefined;
   return (
-    <section className="border border-rule bg-paper-2">
-      <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-1.5">
-        <Label as="h2">Reachability</Label>
+    <div className="border-t border-rule-soft">
+      <div className="flex flex-wrap items-baseline gap-x-3 px-3 pt-1.5">
+        <Label as="h3">CodeQL dataflow evidence</Label>
         <span className="font-mono text-[11px] text-ink-3">
           {data.analyser} {data.analyser_version} · {data.language}
           {data.commit_sha ? ` · ${data.commit_sha.slice(0, 12)}` : ""}
@@ -287,7 +333,7 @@ export function ReachabilityPanel({ data }: { data: Reachability }) {
           </ul>
         ) : null}
       </div>
-    </section>
+    </div>
   );
 }
 

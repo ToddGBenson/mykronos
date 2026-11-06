@@ -431,7 +431,10 @@ class TestUnreachable:
         assert body["proposed"] == [] and body["held_serious"] == 1
 
 
-# CodeQL dataflow reachability (TheHub #60891). The verdicts are stored
+# CodeQL dataflow reachability (TheHub #60891). The operator's decision:
+# CodeQL sits beside taint. `reachability` (TheHub #60745) stays the verdict
+# this lane trusts, unchanged for Python; CodeQL informs it only for an npm
+# dependency, where `reachability` gives no verdict. The verdicts are stored
 # directly, bypassing ingest, so the lane's own re-check of the evidence is
 # what is under test: a row that reached the table some other way must still
 # not suppress anything on a claim it cannot back.
@@ -440,18 +443,23 @@ COMPLETE_EVIDENCE: dict[str, Any] = {
     "basis": "codeql_imports",
     "files_analysed": 12,
     "import_count": 0,
-    "import_names": ["certifi"],
-    "import_name_basis": "known_mapping",
+    "import_names": ["left-pad"],
+    "import_name_basis": "npm_package_name",
     "dynamic_imports": 0,
     "direct_runtime_dependency": True,
-    "lockfiles": ["uv.lock"],
+    "lockfiles": ["package-lock.json"],
     "dependents": [],
     "loaded_without_import": False,
     "scoped": False,
 }
 
 
-def add_dataflow(client: TestClient, verdicts: list[dict[str, Any]], language: str = "python"):
+def add_dataflow(
+    client: TestClient,
+    verdicts: list[dict[str, Any]],
+    language: str = "javascript",
+    lockfiles: list[str] | None = None,
+):
     with client.app.state.db.session() as session:  # type: ignore[attr-defined]
         repo = session.execute(
             select(RepoOnboarding).where(RepoOnboarding.github_repo_full_name == REPO)
@@ -465,21 +473,23 @@ def add_dataflow(client: TestClient, verdicts: list[dict[str, Any]], language: s
                 commit_sha="abc123def456",
                 files_analysed=12,
                 dynamic_imports=0,
-                lockfiles=["uv.lock"],
+                lockfiles=lockfiles if lockfiles is not None else ["package-lock.json"],
                 verdicts=verdicts,
             )
         )
 
 
-def package_verdict(name: str, verdict: str, **evidence: Any) -> dict[str, Any]:
+def package_verdict(
+    name: str, verdict: str, ecosystem: str = "npm", **evidence: Any
+) -> dict[str, Any]:
     return {
         "target": "package",
         "package_name": name,
-        "ecosystem": "pypi",
+        "ecosystem": ecosystem,
         "verdict": verdict,
         "reason": "test",
         "path": (
-            [{"file_path": "app/web.py", "line": 9, "label": "function load"}]
+            [{"file_path": "src/web.js", "line": 9, "label": "function load"}]
             if verdict == "reachable"
             else []
         ),
@@ -489,7 +499,7 @@ def package_verdict(name: str, verdict: str, **evidence: Any) -> dict[str, Any]:
 
 def ingest_dependency(
     client: TestClient, admin_auth: dict[str, str], name: str, severity: str = "medium",
-    manifest: str = "uv.lock",
+    manifest: str = "package-lock.json",
 ) -> None:
     activate(client, admin_auth)
     auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'atlas')}"}
@@ -519,12 +529,14 @@ def ingest_dependency(
 
 
 class TestUnreachableFromDataflow:
-    def test_an_unimported_direct_dependency_is_suppressed_on_its_evidence(
+    def test_an_unimported_npm_dependency_is_suppressed_on_its_evidence(
         self, client: TestClient, admin_auth, run_compaction
     ) -> None:
-        ingest_dependency(client, admin_auth, "certifi")
+        """`reachability` gives no verdict for an npm package (taint and the
+        import graph cover Python only), so CodeQL's evidence may close it."""
+        ingest_dependency(client, admin_auth, "left-pad")
         run_compaction()
-        add_dataflow(client, [package_verdict("certifi", "unreachable")])
+        add_dataflow(client, [package_verdict("left-pad", "unreachable")])
 
         run(client, admin_auth)
         run_compaction()
@@ -533,16 +545,55 @@ class TestUnreachableFromDataflow:
         [action] = actions(client)
         assert action.rule == "unreachable"
         assert action.evidence["type"] == "dataflow_reachability"
-        assert action.evidence["package_name"] == "certifi"
-        assert action.evidence["language"] == "python"
+        assert action.evidence["package_name"] == "left-pad"
+        assert action.evidence["language"] == "javascript"
         assert action.evidence["commit_sha"] == "abc123def456"
-        assert action.evidence["lockfiles"] == ["uv.lock"]
-        assert "certifi" in action.summary
+        assert action.evidence["lockfiles"] == ["package-lock.json"]
+        assert "left-pad" in action.summary
+
+    def test_a_python_dependency_is_never_closed_on_codeql_evidence(
+        self, client: TestClient, admin_auth, run_compaction
+    ) -> None:
+        """Python stays with `reachability` alone: complete CodeQL evidence
+        that a PyPI package is never imported still closes nothing."""
+        ingest_dependency(client, admin_auth, "certifi", manifest="uv.lock")
+        run_compaction()
+        add_dataflow(
+            client,
+            [
+                package_verdict(
+                    "certifi", "unreachable", ecosystem="pypi",
+                    import_name_basis="known_mapping", lockfiles=["uv.lock"],
+                )
+            ],
+            language="python",
+            lockfiles=["uv.lock"],
+        )
+
+        assert run(client, admin_auth)["proposed"] == []
+
+    def test_a_decided_reachability_verdict_wins_over_codeql(
+        self, client: TestClient, admin_auth, run_compaction, monkeypatch
+    ) -> None:
+        """Should `reachability` ever decide an npm finding, CodeQL defers to
+        it rather than closing the finding on its own evidence."""
+        ingest_dependency(client, admin_auth, "left-pad")
+        run_compaction()
+        add_dataflow(client, [package_verdict("left-pad", "unreachable")])
+        monkeypatch.setattr(
+            auto_triage_module.taint_reachability,
+            "verdict_for",
+            lambda *a, **k: auto_triage_module.taint_reachability.ReachabilityVerdict(
+                "reachable", "taint", "test"
+            ),
+        )
+
+        assert run(client, admin_auth)["proposed"] == []
 
     @pytest.mark.parametrize(
         "short",
         [
-            {"dependents": ["requests"]},
+            {"dependents": ["express"]},
             {"import_name_basis": None},
             {"lockfiles": []},
             {"dynamic_imports": 1},
@@ -557,18 +608,18 @@ class TestUnreachableFromDataflow:
     def test_a_stored_unreachable_without_full_evidence_closes_nothing(
         self, client: TestClient, admin_auth, run_compaction, short: dict[str, Any]
     ) -> None:
-        ingest_dependency(client, admin_auth, "certifi")
+        ingest_dependency(client, admin_auth, "left-pad")
         run_compaction()
-        add_dataflow(client, [package_verdict("certifi", "unreachable", **short)])
+        add_dataflow(client, [package_verdict("left-pad", "unreachable", **short)])
 
         assert run(client, admin_auth)["proposed"] == []
 
     def test_a_reachable_package_is_left_open(
         self, client: TestClient, admin_auth, run_compaction
     ) -> None:
-        ingest_dependency(client, admin_auth, "pyyaml")
+        ingest_dependency(client, admin_auth, "lodash")
         run_compaction()
-        add_dataflow(client, [package_verdict("pyyaml", "reachable")])
+        add_dataflow(client, [package_verdict("lodash", "reachable")])
 
         assert run(client, admin_auth)["proposed"] == []
 
@@ -576,29 +627,35 @@ class TestUnreachableFromDataflow:
         self, client: TestClient, admin_auth, run_compaction
     ) -> None:
         """A PyPI verdict says nothing about an npm package of the same name."""
-        ingest_dependency(client, admin_auth, "certifi", manifest="package-lock.json")
+        ingest_dependency(client, admin_auth, "certifi")
         run_compaction()
-        add_dataflow(client, [package_verdict("certifi", "unreachable")])
+        add_dataflow(
+            client,
+            [package_verdict("certifi", "unreachable", ecosystem="pypi")],
+            language="python",
+        )
 
         assert run(client, admin_auth)["proposed"] == []
 
     def test_a_high_waits_for_a_person(
         self, client: TestClient, admin_auth, run_compaction
     ) -> None:
-        ingest_dependency(client, admin_auth, "certifi", severity="high")
+        ingest_dependency(client, admin_auth, "left-pad", severity="high")
         run_compaction()
-        add_dataflow(client, [package_verdict("certifi", "unreachable")])
+        add_dataflow(client, [package_verdict("left-pad", "unreachable")])
 
         body = run(client, admin_auth)
 
         assert body["proposed"] == [] and body["held_serious"] == 1
 
-    def test_a_traced_path_through_an_orphaned_file_vetoes_the_import_graph(
+    def test_a_traced_path_does_not_override_the_import_graph(
         self, client: TestClient, admin_auth, run_compaction
     ) -> None:
-        """The import graph says nothing imports `pkg/dead.py`; CodeQL traced
-        a call into it from an entry point (a framework loading it by name,
-        say). The recorded path wins and the finding stays open."""
+        """The import graph says nothing imports `pkg/dead.py`, and CodeQL
+        traced a call into it. `reachability` (the import floor here) is the
+        verdict this lane trusts, unchanged for Python, so the finding is
+        suppressed as before; the traced path is shown beside the verdict on
+        the finding record, not used to veto it."""
         auth = activate(client, admin_auth)
         ingest(client, auth, [code("pkg/dead.py")], capability="sast")
         run_compaction()
@@ -619,9 +676,17 @@ class TestUnreachableFromDataflow:
                     "evidence": {"basis": "codeql_call_path"},
                 }
             ],
+            language="python",
+            lockfiles=["uv.lock"],
         )
 
-        assert run(client, admin_auth)["proposed"] == []
+        run(client, admin_auth)
+        run_compaction()
+
+        assert [v["status"] for v in findings(client).values()] == ["suppressed"]
+        [action] = actions(client)
+        assert action.rule == "unreachable"
+        assert action.evidence["type"] == "reachability_report"
 
 
 # --------------------------------------------------------------------------

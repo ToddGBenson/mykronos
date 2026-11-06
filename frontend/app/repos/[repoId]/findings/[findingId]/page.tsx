@@ -241,8 +241,12 @@ export default async function FindingRecordPage({
           <ExploitabilityPanel data={result.data.exploitability} />
         ) : null}
 
-        {result.data.reachability ? (
-          <ReachabilityPanel data={result.data.reachability} />
+        {/* CodeQL sits beside taint: the verdict, then CodeQL's evidence. */}
+        {result.data.reachability || result.data.dataflow_evidence ? (
+          <ReachabilityPanel
+            verdict={result.data.reachability}
+            data={result.data.dataflow_evidence}
+          />
         ) : null}
 
         {dossierResult.ok ? (
