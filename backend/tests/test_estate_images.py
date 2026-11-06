@@ -253,11 +253,12 @@ class TestThisEstate:
         [
             "hashicorp/vault",
             "concourse/concourse",
-            "pgsty/silo",
             # Adopted 2026-10-19: the registry-src derivative, served by the
             # registry itself. The lane resolves REGISTRY to its LAN address.
             "localhost:5000/library/registry",
             "postgres",
+            # Not pgsty/silo: compose builds it from deploy/images/silo since
+            # TheHub #61023, and the lane builds and scans that (test_silo_image.py).
             # Not ZAP: the demo builds it from deploy/zap/Dockerfile now, and
             # the lane builds and scans that (test_zap_image.py).
         ],

@@ -159,6 +159,8 @@ assets:
     sensitivity: source
     evidence_ref: deploy/concourse/docker-compose.yml
     selectors:
+      paths:
+        - deploy/images/silo/**
       images:
         - pgsty/silo
 
