@@ -2173,7 +2173,8 @@ jobs:
   # Actions are billing-blocked, and every lane above follows `develop`.
   #
   # So this job finds the open pull requests itself and judges one head per
-  # run. What it runs is TheHub's `scripts/pr_deploy_gates.sh`: pip-audit
+  # run. What it runs is TheHub's `scripts/pr_deploy_gates.sh`, the base
+  # branch's copy (TheHub #61113): pip-audit
   # through the SAME function deploy.sh's harden_pip_audit stage decides with,
   # and the pipeline-shape tests against the committed mirror and against this
   # file as set-pipeline applies it. The policy lives in TheHub, beside the
@@ -2209,9 +2210,18 @@ jobs:
   # re-judge a failed head, push to the branch.
   #
   # **Credentials.** The pick holds the deploy key and the ingestion token and
-  # runs no pull-request code. The gates task runs the pull request's code and
-  # is given no params but a pip cache path: no key, no token. The reports run
-  # as hooks with the anchors every lane uses.
+  # runs no pull-request code. The gates task is given no params and no
+  # cache: no key, no token. The reports run as hooks with the anchors every
+  # lane uses.
+  #
+  # [TheHub #61113] **Whose scripts.** The base branch's. The deploy gates
+  # (pr_deploy_gates.sh, harden_findings_report.py, the shape tests and their
+  # hash-pinned tool lock) run from the base commit's tree with the branch's
+  # backend/requirements.txt and pipeline mirror laid over it, as the process
+  # gates already did (#61159). The branch code that still runs is what
+  # pip-audit executes while resolving those requirements, as uid 65534. It
+  # has the worker's network and no credential; TheHub's threat model for
+  # #61113 records that reach.
   #
   # [TheHub #61110] **The cheap integration tier.** deploy.sh runs its
   # integration tier inside the production container, after the swap, and
@@ -2465,6 +2475,13 @@ jobs:
                   git -C pr diff --name-only --diff-filter=A "$MERGE_BASE" "$SHA" > "$pg/added"
                   git -C pr log --format=%B "$MERGE_BASE..$SHA" > "$pg/bodies"
                   printf '%s %s %s\n' "$BASE_SHA" "$MERGE_BASE" "$SHA" > "$pg/range"
+                  # [TheHub #61113] The deploy gates' judge: the BASE commit's
+                  # whole tree. `gates` runs develop's pr_deploy_gates.sh,
+                  # harden_findings_report.py, shape tests and tool lock from
+                  # it, with only the branch's requirements and mirror laid
+                  # over, so a branch cannot edit its own check green.
+                  mkdir -p pr/.git/judge
+                  git -C pr archive "$BASE_SHA" | tar -x -C pr/.git/judge
                   # -- process-gate inputs, end
                 fi
       - task: gates
@@ -2474,14 +2491,19 @@ jobs:
         # deploy.sh measured ~100s cold and ~30s warm in the same image. The
         # shape tests are seconds. 20m is a ceiling for a cold cache on a busy
         # worker, not a budget.
+        #
+        # [TheHub #61113] No cache and no params. A /pipcache that outlived
+        # the run was writable by the branch's code, so one pull request could
+        # plant a download that a later run installed. Every run is cold now
+        # (the tools are hash-pinned; ~35s in this image), and pip-audit, the
+        # one step that executes branch-supplied code (sdist builds while it
+        # resolves the requirements), runs as uid 65534 against a judge tree
+        # only root can write.
         timeout: 20m
-        params:
-          PIP_CACHE_DIR: /pipcache
         config:
           platform: linux
           inputs: [{ name: pr }, { name: live-pipeline }]
           outputs: [{ name: hub_log }]
-          caches: [{ path: /pipcache }]
           run:
             path: bash
             args:
@@ -2621,13 +2643,45 @@ jobs:
                 sys.exit(1 if failed else 0)
                 PROCESS
 
-                if [ ! -f pr/scripts/pr_deploy_gates.sh ]; then
-                  echo "::error::This branch predates scripts/pr_deploy_gates.sh (TheHub #61102),"
-                  echo "          so the deploy's gates cannot be run on it. Rebase it onto develop."
-                  exit 1
-                fi
+                # [TheHub #61113] The deploy gates, judged by DEVELOP. The
+                # review of TheHub #559 found this ran the head's own
+                # pr_deploy_gates.sh, so a branch could edit it, or the
+                # harden_findings_report.py and shape tests it runs, to pass.
+                # The judge is the base commit's tree (`pick` extracted it);
+                # only the branch's DATA is laid over it: the requirements
+                # the dependency audit resolves and the mirror the shape tests
+                # read. Regular files only: a symlink could point the judge at
+                # anything in this container.
                 DEPLOY_RC=0
-                bash pr/scripts/pr_deploy_gates.sh --mykronos "$PWD/live-pipeline" || DEPLOY_RC=$?
+                JUDGE="$(mktemp -d)"
+                if [ ! -f pr/.git/judge/scripts/pr_deploy_gates.sh ]; then
+                  echo "::error::The base branch has no scripts/pr_deploy_gates.sh (TheHub #61102),"
+                  echo "          so there is nothing to judge this pull request with."
+                  DEPLOY_RC=1
+                elif ! grep -q -- '--audit-as' pr/.git/judge/scripts/pr_deploy_gates.sh; then
+                  echo "::error::The base branch's scripts/pr_deploy_gates.sh predates --audit-as (TheHub"
+                  echo "          #61113), so the dependency audit would run the branch's build code with"
+                  echo "          the judge's privileges. Failing closed until TheHub's half of #61113 is on the base."
+                  DEPLOY_RC=1
+                else
+                  cp -R pr/.git/judge/. "$JUDGE/"
+                  for f in backend/requirements.txt concourse/pipelines/thehub.yml; do
+                    rm -f "$JUDGE/$f"
+                    if [ -L "pr/$f" ] || { [ -e "pr/$f" ] && [ ! -f "pr/$f" ]; }; then
+                      echo "::error::$f on this branch is not a regular file; refusing to judge it."
+                      DEPLOY_RC=1
+                    elif [ -f "pr/$f" ]; then
+                      mkdir -p "$JUDGE/$(dirname "$f")"
+                      cp "pr/$f" "$JUDGE/$f"
+                    fi
+                  done
+                  # Readable by the audit's uid (--audit-as), writable only by root.
+                  chmod -R go-w,a+rX "$JUDGE"
+                  if [ "$DEPLOY_RC" -eq 0 ]; then
+                    bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline" \
+                      --audit-as 65534 || DEPLOY_RC=$?
+                  fi
+                fi
                 if [ "$PROCESS_RC" -ne 0 ]; then
                   echo "::error::deploy.sh's process gates refused this pull request (see above)."
                   exit 1
