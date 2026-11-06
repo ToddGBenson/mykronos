@@ -448,6 +448,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dashboard/today/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue Merge
+         * @description Merge in order: queue the batch for the host runner (TheHub #61142). Off by default.
+         *
+         *     A person only. Re-computes the Merge step and reads each pull request's
+         *     live head now. Refuses the whole batch (409) if any one is not ready, is
+         *     not at the head the sheet showed, has moved, is closed or stacked, or
+         *     cannot be read, or if a batch is already queued. The server merges
+         *     nothing: the runner merges each in this order with
+         *     `--match-head-commit` and stops at the first failure.
+         */
+        post: operations["queue_merge_api_dashboard_today_merge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dashboard/today/deploy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue Deploy
+         * @description Deploy: queue a production deploy of main for the host runner (TheHub #61142).
+         *
+         *     Off by default, and a person only. Re-checks now: the Deploy step is
+         *     ready, `sha` is main's head, Delivery succeeded, the deploy lanes are
+         *     green, the risk gate said go, the backup window is clear, and no deploy is
+         *     queued. Any failure is a 409 with the reason. The server deploys nothing.
+         */
+        post: operations["queue_deploy_api_dashboard_today_deploy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/dashboard/portfolio": {
         parameters: {
             query?: never;
@@ -7039,6 +7091,20 @@ export interface components {
              */
             configured: boolean;
         };
+        /** DeployIn */
+        DeployIn: {
+            /**
+             * Sha
+             * @description The sha the Deploy step showed.
+             */
+            sha: string;
+            /**
+             * Acknowledged Host Guards
+             * @description The operator read the guards only the host can check.
+             * @constant
+             */
+            acknowledged_host_guards: true;
+        };
         /**
          * DeployLagOut
          * @description How far a repository's production is behind its branch (#452).
@@ -7069,6 +7135,20 @@ export interface components {
              * @default
              */
             detail: string;
+        };
+        /** DeployQueuedOut */
+        DeployQueuedOut: {
+            /** Id */
+            id: string;
+            /**
+             * State
+             * @constant
+             */
+            state: "queued";
+            /** Sha */
+            sha: string;
+            /** Notes */
+            notes: string[];
         };
         /**
          * DeploymentOut
@@ -9291,6 +9371,62 @@ export interface components {
             manifest: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** MergeAskIn */
+        MergeAskIn: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Number */
+            number: number;
+            /**
+             * Head Sha
+             * @description The head the run sheet showed.
+             */
+            head_sha: string;
+        };
+        /** MergeIn */
+        MergeIn: {
+            /** Pull Requests */
+            pull_requests: components["schemas"]["MergeAskIn"][];
+            /**
+             * Acknowledged Host Guards
+             * @description The operator read the guards only the host can check.
+             * @constant
+             */
+            acknowledged_host_guards: true;
+        };
+        /** MergeOutcomeOut */
+        MergeOutcomeOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /** Number */
+            number: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Result
+             * @enum {string}
+             */
+            result: "accepted" | "refused" | "not_queued";
+            /** Reason */
+            reason: string;
+        };
+        /** MergeQueuedOut */
+        MergeQueuedOut: {
+            /** Id */
+            id: string;
+            /**
+             * State
+             * @constant
+             */
+            state: "queued";
+            /**
+             * Outcomes
+             * @description In merge order: TheHub first.
+             */
+            outcomes: components["schemas"]["MergeOutcomeOut"][];
+            /** Notes */
+            notes: string[];
         };
         /** Metric */
         Metric: {
@@ -12462,6 +12598,12 @@ export interface components {
              * @default
              */
             url: string;
+            /**
+             * Sha
+             * @description For a pull request, the head it was judged at.
+             * @default
+             */
+            sha: string;
         };
         /** RunSheetOut */
         RunSheetOut: {
@@ -12472,6 +12614,12 @@ export interface components {
             generated_at: string;
             /** Steps */
             steps: components["schemas"]["RunSheetStepOut"][];
+            /**
+             * Actions Enabled
+             * @description Whether Merge in order and Deploy answer (`runsheet_actions_enabled`, off by default). False: render no button (TheHub #61142).
+             * @default false
+             */
+            actions_enabled: boolean;
         };
         /** RunSheetStepOut */
         RunSheetStepOut: {
@@ -15103,6 +15251,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunSheetOut"];
+                };
+            };
+        };
+    };
+    queue_merge_api_dashboard_today_merge_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MergeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MergeQueuedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    queue_deploy_api_dashboard_today_deploy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployQueuedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
