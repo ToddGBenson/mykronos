@@ -1030,9 +1030,10 @@ class FindingGroupOut(BaseModel):
     )
     in_kev: bool | None = Field(
         default=None,
-        description="Null when cve_id is null. Otherwise whether that CVE is in "
-        "CISA's KEV catalog — false may mean 'checked, not listed' or 'not yet "
-        "fetched', which `fetched_at` on GET /api/dashboard/threat-intel disambiguates.",
+        description="Whether that CVE is in CISA's KEV catalog. False only when it "
+        "was checked and is not listed. Null when cve_id is null, or when the "
+        "threat-intel refresh has never fetched the CVE: not checked is unknown, "
+        "never 'not listed' (TheHub #61349).",
     )
     epss_score: float | None = Field(default=None, description="0-1, null if not scored yet.")
     fixable: bool | None = Field(
@@ -6308,7 +6309,11 @@ class ThreatIntelEntryOut(BaseModel):
     """One CVE, matched against every open finding that names it (spec 17 §4.4)."""
 
     cve_id: str
-    in_kev: bool
+    in_kev: bool | None = Field(
+        default=None,
+        description="Null until the refresh has fetched this CVE (`fetched_at` "
+        "null too): not checked, which is not the same as not listed.",
+    )
     kev_added_at: date | None = None
     kev_due_date: date | None = None
     epss_score: float | None = None
@@ -6325,8 +6330,8 @@ async def threat_intel(request: Request, principal: PrincipalDep) -> list[dict[s
     portfolio, KEV first then EPSS descending (spec 17 §4.4).
 
     A CVE with no `ThreatIntelMatch` row yet (the refresh job has not run, or
-    ran before this finding existed) is still returned — `in_kev: false`,
-    both scores null — rather than omitted. "Not yet fetched" and "fetched,
+    ran before this finding existed) is still returned — `in_kev` and both
+    scores null — rather than omitted. "Not yet fetched" and "fetched,
     not exploited" must not look the same, and omitting the row is exactly
     how they would.
     """
