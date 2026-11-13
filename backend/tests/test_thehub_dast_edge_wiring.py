@@ -450,12 +450,17 @@ def test_a_clean_edge_is_scanned_and_uploaded_as_zap_edge(tmp_path: Path) -> Non
     assert "via Cloudflare" in r.stdout
 
 
-def test_every_probe_goes_over_ipv4(tmp_path: Path) -> None:
-    """The host's IPv6 route is dead (#59976); ZAP's JVM prefers IPv4."""
-    _run(tmp_path)
-    calls = (tmp_path / "curl.calls").read_text(encoding="utf-8").splitlines()
-    assert calls
-    assert all(" -4 " in f" {call} " for call in calls), calls
+def test_every_probe_goes_over_ipv4() -> None:
+    """The host's IPv6 route is dead (#59976); ZAP's JVM prefers IPv4.
+
+    Read from the script, not by running it: bash with a stubbed curl took over
+    60 s on a loaded host (TheHub #61637) and the property is static anyway.
+    """
+    code = [ln for ln in _script().splitlines() if not ln.lstrip().startswith("#")]
+    probes = [ln for ln in code if re.search(r"(?<![\w-])curl\s", ln)]
+    assert probes
+    bad = [ln for ln in probes if not re.search(r"(?<![\w-])curl\s+-4\s", ln)]
+    assert not bad, bad
 
 
 def test_a_response_without_cloudflare_is_not_an_edge_scan(tmp_path: Path) -> None:
