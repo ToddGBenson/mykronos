@@ -689,6 +689,7 @@ class TestWriteFailedUnderGrantTellsTheTruth:
         result = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(accepting))
 
         assert result.dependabot_blocked == []
+        assert result.resynced == [REPO]
         puts = [c for c in accepting.calls if c[0] == "put_dependabot_secret"]
         assert len(puts) == 1
         assert _active_token(db).dependabot_sync_blocker == ""

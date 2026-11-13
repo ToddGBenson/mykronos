@@ -73,10 +73,11 @@ DONE_WHEN: dict[str, str] = {
 #: `agent-playbooks-v1.yaml` quotes it for HubOps and a test compares the two,
 #: so the operator page and the playbook cannot drift apart again.
 WRITE_FAILED_RETRY = (
-    "fix the cause (the grant or the repository's Dependabot write permission), "
-    "then either wait for the next due rotation or retry now with "
-    "`mykronos rotate-token <repo>` followed by `mykronos rotate-due` (the "
-    "credential is rotated once more)"
+    "fix the cause (the repository's Dependabot settings, or the GitHub-side refusal "
+    "named in the recorded reason), then either wait for the next due rotation, or retry "
+    "now with `mykronos rotate-token <repo>` followed by `mykronos rotate-due`. The token "
+    "rotate-token prints is discarded: the sweep issues and delivers its own (one extra "
+    "rotation, two tokens burned)"
 )
 
 _CONCOURSE_PREFIX = "The Dependabot secret is not written:"
@@ -116,7 +117,7 @@ def remedy_for(reason: str, rotate_after: datetime | None = None) -> Remedy:
         when = f" ({rotate_after:%Y-%m-%d})" if rotate_after is not None else ""
         action = (
             f"{action}; a plain re-run of the sweep skips this repository until its next "
-            f"due rotation{when}. To retry sooner: {WRITE_FAILED_RETRY}"
+            f"due rotation{when}. To clear it: {WRITE_FAILED_RETRY}"
         )
         if rotate_after is not None:
             done_when = done_when.replace(

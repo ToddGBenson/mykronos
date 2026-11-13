@@ -456,12 +456,13 @@ already exists.
 
    If the reason says the write *failed under a held grant*, the sweep skips
    that repository until its next due rotation, so a plain re-run retries
-   nothing. Fix the cause (the grant or the repository's Dependabot write
-   permission), then either wait for the next due rotation, or retry now with
-   `mykronos rotate-token <owner/repo>` followed by `mykronos rotate-due`. The
-   first command issues a fresh token with no recorded blocker and the sweep
-   then writes both stores; the cost is that the credential is rotated once
-   more.
+   nothing. Fix the cause (the repository's Dependabot settings, or the GitHub-side
+   refusal named in the recorded reason), then either wait for the next due
+   rotation, or retry now with `mykronos rotate-token <owner/repo>` followed
+   by `mykronos rotate-due`. The token `rotate-token` prints is discarded: it
+   only makes a fresh token with no recorded blocker, and the sweep then
+   issues and delivers its own to both stores, so do not paste the printed
+   value. The cost is one extra rotation (two tokens burned).
 
 5. Verify, per repository:
 
