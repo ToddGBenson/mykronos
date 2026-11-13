@@ -695,13 +695,16 @@ jobs:
                 # group alone does not fit six workers in a 3 GiB worker that
                 # other pipelines' jobs share. Fewer workers is slower, not
                 # weaker: every test still runs.
+                # [TheHub #61607] 2, not 4: unit #496 was SIGKILLed at a ~950
+                # MiB peak because its worker, not the task, ran out; at -n 2
+                # it fits in half a 3g worker beside the light jobs there.
                 # No --cov here, deliberately (D-117): this worker measured the
                 # same suite at 218s clean against 541s with coverage - 2.5x, on
                 # a lane that carries `trigger: true` with seven jobs gating on
                 # `passed: [unit, ...]`. Coverage is collected by the weekly
                 # `coverage` job below instead (D-121), where nothing waits on it.
                 # (It was on the Actions unit lane until D-118 retired that lane.)
-                python -m pytest -q -n 4 --junitxml=../../results/unit.xml || rc=$?
+                python -m pytest -q -n 2 --junitxml=../../results/unit.xml || rc=$?
 
                 # [TheHub #61117] Killed for memory is not a verdict. pytest
                 # SIGKILLed (137), or exit 1 where every failure is a crashed
