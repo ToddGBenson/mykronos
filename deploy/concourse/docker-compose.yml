@@ -95,8 +95,9 @@ x-worker: &worker
   #   #61607). 3g held one pipeline's heavy lanes, not two: at 06:00Z
   #   worker-2 sat at 2.998/3 GiB with eight lanes of both pipelines while
   #   worker-1 held 670 MiB, and thehub/unit #389 and mykronos/unit #496
-  #   were SIGKILLed at ~950 MiB peaks because the worker ran out, not the
-  #   task. serial_groups cannot fix that - they serialise within one
+  #   were SIGKILLed while their own memory-guard was well under budget
+  #   (thehub/unit's green runs peak at 1263-1330 MiB): the worker ran out,
+  #   not the task. serial_groups cannot fix that - they serialise within one
   #   pipeline - and placement counts containers, not memory. So worker-2
   #   carries `CONCOURSE_TAG: thehub` and every task of TheHub's heavy jobs
   #   (unit, sast, build, containers, and each job with MEMORY_BUDGET_MB)

@@ -695,9 +695,9 @@ jobs:
                 # group alone does not fit six workers in a 3 GiB worker that
                 # other pipelines' jobs share. Fewer workers is slower, not
                 # weaker: every test still runs.
-                # [TheHub #61607] 2, not 4: unit #496 was SIGKILLed at a ~950
-                # MiB peak because its worker, not the task, ran out; at -n 2
-                # it fits in half a 3g worker beside the light jobs there.
+                # [TheHub #61607] 2, not 4: unit #496 was SIGKILLed because
+                # its worker, not the task, ran out; at -n 2 the suite holds
+                # fewer xdist workers beside the light jobs on worker-1.
                 # No --cov here, deliberately (D-117): this worker measured the
                 # same suite at 218s clean against 541s with coverage - 2.5x, on
                 # a lane that carries `trigger: true` with seven jobs gating on

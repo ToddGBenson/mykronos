@@ -2823,11 +2823,12 @@ jobs:
           REQUIRE_NODE: "1"
           # [#61106] The memory budget for each pytest tier, enforced by
           # memory-guard because `container_limits.memory` is refused on these
-          # workers (see the anchor). [#61607] 1536, not post-merge's 2560: the
-          # serial suite peaked at ~950 MiB, and half a 3g worker leaves room
-          # for the sast/build lanes beside it on worker-2 (compose, tags).
+          # workers (see the anchor). [#61607] 2048, not post-merge's 2560:
+          # the last four green runs peaked at 1263-1330 MiB (memory-guard,
+          # #384-#390), so 2048 clears them by ~700 MiB and leaves 1 GiB of
+          # worker-2's 3g (compose, tags) for the steps beside it.
           MEMORY_GUARD: *memory_guard
-          MEMORY_BUDGET_MB: "1536"
+          MEMORY_BUDGET_MB: "2048"
         # A build that hangs must fail rather than occupy a worker. One ran for
         # 47 minutes and was still going when it was killed by hand; nothing in
         # the pipeline would ever have stopped it, and `unit` gates build,
