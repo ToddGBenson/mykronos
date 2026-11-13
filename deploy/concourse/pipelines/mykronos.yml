@@ -492,9 +492,25 @@ jobs:
       - get: pipelines
         trigger: true
         attempts: *retry_fetch
+      # TheHub #61608: also triggered by `source`, so that EVERY commit passes
+      # through here and pin-check can wait on it (a `passed:` edge needs the
+      # job to have produced that exact `source` version). `set_pipeline` is a
+      # no-op on an unchanged file, so a commit that touches no pipeline file
+      # costs one empty build.
+      #
+      # The file and vars are read from `source`, not `pipelines`. The two are
+      # independently polled resources on one repository, so a build could
+      # hold (pipelines@X, source@Y) and apply X's file and vars while
+      # pin-check then judges Y. Reading `source` means any build on source@Y
+      # applies Y's file and vars, which is what pin-check's `passed:` edge
+      # relies on. `pipelines` stays a trigger-only get (its `paths:` filter
+      # still starts an apply on a pipeline-file commit).
+      - get: source
+        trigger: true
+        attempts: *retry_fetch
       - set_pipeline: self
-        file: pipelines/deploy/concourse/pipelines/mykronos.yml
-        var_files: [pipelines/deploy/concourse/vars/mykronos.yml]
+        file: source/deploy/concourse/pipelines/mykronos.yml
+        var_files: [source/deploy/concourse/vars/mykronos.yml]
 
   # -- Stage 1: quality gate (spec 15 §3) ---------------------------------
   #
@@ -562,9 +578,24 @@ jobs:
     # superseded before they finished.
     serial_groups: [worker-a]
     plan:
+      # TheHub #61608: pin-check waits for `set-pipeline`, on BOTH inputs.
+      # It compares the pinned `mykronos-ref` against the checkout, and
+      # `set-pipeline` is what applies the vars that carry that pin. Pin-check
+      # #359 started 47 s before set-pipeline #84 ended and failed against the
+      # stale vars. Now `source` is `passed: [set-pipeline]` too, so no build
+      # starts on a commit until set-pipeline has run on that same commit.
+      # Guaranteed: pin-check never runs under vars older than its own commit's.
+      # If set-pipeline FAILS on a commit, pin-check does not run for it and
+      # stays held until the next commit set-pipeline applies cleanly; the
+      # failed set-pipeline build is the signal, not a stale pin-check.
       - get: source
         attempts: *retry_fetch
         trigger: true
+        passed: [set-pipeline]
+      - get: pipelines
+        attempts: *retry_fetch
+        trigger: true
+        passed: [set-pipeline]
       - get: python
         attempts: *retry_fetch
       - task: check
@@ -2574,6 +2605,12 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
+        # TheHub #61608, decision: this list is final and `build` is NOT on it
+        # directly. The task below reads no build output (inputs: `source`
+        # only); it asks the platform to score the commit. `containers` stays
+        # because the score includes the image-scan findings it uploads, and
+        # `containers` already sits behind publish and build, so dropping it
+        # would score a partial picture. See the Stage 3 note above.
         passed: [secrets, dependencies, sast, insider, containers, iac]
       - get: python
         attempts: *retry_fetch

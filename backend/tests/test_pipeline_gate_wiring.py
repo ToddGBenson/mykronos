@@ -607,6 +607,38 @@ class TestFetchReadsLargeFiles:
 
 
 
+MYKRONOS = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+
+
+def _mykronos_passed(job_name: str) -> dict[str, list[str]]:
+    document = yaml.safe_load(MYKRONOS.read_text(encoding="utf-8"))
+    job = next(j for j in document["jobs"] if j["name"] == job_name)
+    return {
+        step["get"]: step.get("passed", [])
+        for step in job["plan"]
+        if isinstance(step, dict) and "get" in step
+    }
+
+
+def test_pin_check_waits_for_set_pipeline_and_oracle_gate_does_not_read_build() -> None:
+    """TheHub #61608: pin-check ran 47 s before set-pipeline applied the vars.
+
+    Pins both orders. `oracle-gate` takes no direct edge on `build` (the image
+    reaches it only through `containers`, whose findings the score needs).
+    """
+    pin = _mykronos_passed("pin-check")
+    assert pin.get("pipelines") == ["set-pipeline"]
+    assert pin.get("source") == ["set-pipeline"], "the source-side edge closes the race"
+    assert "source" in _mykronos_passed("set-pipeline"), "set-pipeline must get source"
+    document = yaml.safe_load(MYKRONOS.read_text(encoding="utf-8"))
+    job = next(j for j in document["jobs"] if j["name"] == "set-pipeline")
+    applied = next(step for step in job["plan"] if "set_pipeline" in step)
+    assert applied["file"].startswith("source/"), "apply the file of the commit pin-check judges"
+    assert all(v.startswith("source/") for v in applied["var_files"])
+    gate = _mykronos_passed("oracle-gate")["source"]
+    assert "build" not in gate
+    assert "containers" in gate
+
 def test_gate_smoke_runs_the_pr_gates_task_nightly_on_a_clock() -> None:
     """TheHub #61613: the gate is exercised nightly, not only by real pull requests."""
     document = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
