@@ -60,6 +60,7 @@ from mykronos.auth import Resolution, TokenRegistry
 from mykronos.ci_check_run import CheckRunNotPostedError
 from mykronos.ci_check_run import report as report_check_run
 from mykronos.db.models import (
+    DataflowReachabilityReport,
     NetassessRun,
     ReachabilityReport,
     RepoOnboarding,
@@ -82,6 +83,7 @@ from mykronos.lake.carry_forward import (
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
 from mykronos.ownership import owner_for_finding
+from mykronos.reachability_evidence import downgrade as downgrade_unproven
 from mykronos.schemas import (
     AegisAccepted,
     AtlasAccepted,
@@ -90,6 +92,8 @@ from mykronos.schemas import (
     CheckRunReport,
     ControlObservationAccepted,
     ControlObservationBatch,
+    DataflowReachabilityAccepted,
+    DataflowReachabilitySubmission,
     FindingBatch,
     FindingStatus,
     HealthResponse,
@@ -1528,6 +1532,76 @@ async def ingest_reachability(
         accepted=1,
         orphaned=len(body.orphaned_paths),
         files_analysed=body.files_analysed,
+    )
+
+
+@router.post("/reachability/dataflow", response_model=DataflowReachabilityAccepted)
+async def ingest_dataflow_reachability(
+    request: Request, body: DataflowReachabilitySubmission, token: TokenDep
+) -> DataflowReachabilityAccepted:
+    """Record what CodeQL's dataflow said, for one language (TheHub #60891).
+
+    Under the `sast` capability's token, like the import analysis: the
+    verdicts come from the CodeQL database the `sast` lane builds.
+
+    One row per repository and language, replaced outright. An `unreachable`
+    whose evidence does not prove it is stored as `unknown` with the reason,
+    and counted in `downgraded`; a `reachable` without its path is refused by
+    the schema, because the path is the claim.
+    """
+    _require_capability(token, Capability.SAST.value)
+    verdicts, downgraded = downgrade_unproven(
+        v.model_dump(mode="json") for v in body.verdicts
+    )
+
+    with request.app.state.db.session() as session:
+        onboarding = (
+            session.execute(
+                select(RepoOnboarding).where(
+                    RepoOnboarding.github_repo_full_name == token.repo_full_name
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if onboarding is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{token.repo_full_name} is not onboarded.",
+            )
+        report = (
+            session.execute(
+                select(DataflowReachabilityReport).where(
+                    DataflowReachabilityReport.repo_onboarding_id == onboarding.id,
+                    DataflowReachabilityReport.language == body.language,
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if report is None:
+            report = DataflowReachabilityReport(
+                repo_onboarding_id=onboarding.id, language=body.language
+            )
+            session.add(report)
+        report.analyser = body.analyser
+        report.analyser_version = body.analyser_version
+        report.commit_sha = body.commit_sha
+        report.files_analysed = body.files_analysed
+        report.dynamic_imports = body.dynamic_imports
+        report.lockfiles = list(body.lockfiles)
+        report.verdicts = verdicts
+        report.updated_at = utcnow()
+
+    def count(name: str) -> int:
+        return sum(1 for v in verdicts if v["verdict"] == name)
+
+    return DataflowReachabilityAccepted(
+        accepted=len(verdicts),
+        reachable=count("reachable"),
+        unreachable=count("unreachable"),
+        unknown=count("unknown"),
+        downgraded=downgraded,
     )
 
 

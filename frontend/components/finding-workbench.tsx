@@ -7,6 +7,8 @@ import type { FindingDossier } from "@/lib/server";
 type Step = components["schemas"]["RescoreStepOut"];
 type StepFact = components["schemas"]["RescoreStepFactOut"];
 type Exploitability = components["schemas"]["ExploitabilityOut"];
+type Reachability = components["schemas"]["DataflowEvidenceOut"];
+type ReachabilityVerdict = components["schemas"]["ReachabilityVerdictOut"];
 
 const FRESHNESS_TONE: Record<StepFact["freshness"], "pass" | "warn" | "critical" | "muted"> = {
   fresh: "pass",
@@ -172,6 +174,166 @@ export function ExploitabilityPanel({ data }: { data: Exploitability }) {
         </p>
       </div>
     </section>
+  );
+}
+
+const REACH_LABEL: Record<Reachability["verdict"], string> = {
+  reachable: "reachable",
+  unreachable: "never imported",
+  unknown: "not proven either way",
+};
+
+const REACH_TONE: Record<Reachability["verdict"], "critical" | "pass" | "muted"> = {
+  reachable: "critical",
+  unreachable: "pass",
+  unknown: "muted",
+};
+
+/**
+ * The pill for one verdict. A security result's code flow is a traced flow,
+ * not proof of remote reach: some stock queries start from a local source,
+ * so it is shown as such rather than as a red `reachable` (review of #1102).
+ */
+function reachPill(
+  verdict: Reachability["verdict"],
+  evidence: Record<string, unknown>,
+): { label: string; tone: "critical" | "warn" | "pass" | "muted" } {
+  if (verdict === "reachable" && evidence.basis === "codeql_code_flow") {
+    return { label: "flow traced", tone: "warn" };
+  }
+  return { label: REACH_LABEL[verdict], tone: REACH_TONE[verdict] };
+}
+
+/** What kind of entry point a reachable path starts at. */
+const ENTRY_KIND: Record<string, string> = {
+  function: "entry: a function",
+  module_top_level:
+    "entry: module top level, which runs whenever the module loads, so tests and scripts count",
+};
+
+/** Which evidence fields an `unreachable` rests on, in reading order. */
+const REACH_EVIDENCE: [string, string][] = [
+  ["files_analysed", "files analysed"],
+  ["import_names", "imported as"],
+  ["import_count", "imports found"],
+  ["dynamic_imports", "dynamic imports"],
+  ["lockfiles", "lockfiles"],
+  ["dependents", "required by"],
+  ["loaded_without_import", "runs without import"],
+  ["scoped", "path-scoped analysis"],
+];
+
+function evidenceValue(value: unknown): string {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
+  if (value == null) return "—";
+  return String(value);
+}
+
+const REACH_VERDICT_TONE: Record<ReachabilityVerdict["verdict"], "critical" | "pass" | "muted"> = {
+  reachable: "critical",
+  unreachable: "pass",
+  unknown: "muted",
+};
+
+const REACH_VERDICT_BASIS: Record<ReachabilityVerdict["basis"], string> = {
+  taint: "Semgrep taint",
+  import_floor: "import graph",
+};
+
+/**
+ * Is the vulnerable code reachable, and on what evidence.
+ *
+ * CodeQL sits beside taint. `verdict` is the finding's `reachability`
+ * (TheHub #60745: Semgrep taint, the import graph as the floor), the one
+ * auto-triage trusts. `data` is CodeQL dataflow's evidence (TheHub #60891),
+ * shown beside it and never in its place: a reachable path CodeQL traced
+ * from an entry point, or the evidence that a package is never imported.
+ */
+export function ReachabilityPanel({
+  verdict,
+  data,
+}: {
+  verdict?: ReachabilityVerdict | null;
+  data?: Reachability | null;
+}) {
+  return (
+    <section className="border border-rule bg-paper-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 border-b border-rule-soft px-3 py-1.5">
+        <Label as="h2">Reachability</Label>
+        {verdict ? (
+          <span className="font-mono text-[11px] text-ink-3">
+            verdict: {REACH_VERDICT_BASIS[verdict.basis]}
+          </span>
+        ) : null}
+      </div>
+      {verdict ? (
+        <div className="flex flex-col gap-1.5 px-3 py-2.5">
+          <span>
+            <Pill tone={REACH_VERDICT_TONE[verdict.verdict]}>{verdict.verdict}</Pill>
+          </span>
+          <p className="text-[13px] leading-relaxed text-ink-2">{verdict.reason}</p>
+        </div>
+      ) : null}
+      {data ? <DataflowEvidence data={data} /> : null}
+    </section>
+  );
+}
+
+/** CodeQL dataflow's evidence, beside the verdict (TheHub #60891). */
+function DataflowEvidence({ data }: { data: Reachability }) {
+  const path = data.path ?? [];
+  const evidence = (data.evidence ?? {}) as Record<string, unknown>;
+  const pill = reachPill(data.verdict, evidence);
+  const entry =
+    typeof evidence.entry_kind === "string" ? ENTRY_KIND[evidence.entry_kind] : undefined;
+  return (
+    <div className="border-t border-rule-soft">
+      <div className="flex flex-wrap items-baseline gap-x-3 px-3 pt-1.5">
+        <Label as="h3">CodeQL dataflow evidence</Label>
+        <span className="font-mono text-[11px] text-ink-3">
+          {data.analyser} {data.analyser_version} · {data.language}
+          {data.commit_sha ? ` · ${data.commit_sha.slice(0, 12)}` : ""}
+          {data.analysed_at ? (
+            <>
+              {" · "}
+              <RelativeTime value={data.analysed_at} />
+            </>
+          ) : null}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1.5 px-3 py-2.5">
+        <span>
+          <Pill tone={pill.tone}>{pill.label}</Pill>
+        </span>
+        <p className="text-[13px] leading-relaxed text-ink-2">{data.reason}</p>
+        {entry ? <p className="text-[12px] text-ink-3">{entry}</p> : null}
+        {path.length > 0 ? (
+          <ol className="flex flex-col gap-0.5" aria-label="Path from the entry point">
+            {path.map((step, index) => (
+              <li
+                key={`${index}:${step.file_path}:${step.line}`}
+                className="font-mono text-[12px]"
+              >
+                <span className="text-ink-3">{index + 1}.</span>{" "}
+                {step.file_path}
+                {step.line != null ? `:${step.line}` : ""}
+                {step.label ? <span className="text-ink-2"> — {step.label}</span> : null}
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {data.verdict === "unreachable" ? (
+          <ul className="flex flex-col gap-0.5 border-t border-rule-soft pt-1.5">
+            {REACH_EVIDENCE.filter(([key]) => key in evidence).map(([key, label]) => (
+              <li key={key} className="text-[12px]">
+                <span className="font-semibold">{label}</span>{" "}
+                <span className="font-mono text-ink-2">{evidenceValue(evidence[key])}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

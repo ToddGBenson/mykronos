@@ -356,6 +356,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/ingest/reachability/dataflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest Dataflow Reachability
+         * @description Record what CodeQL's dataflow said, for one language (TheHub #60891).
+         *
+         *     Under the `sast` capability's token, like the import analysis: the
+         *     verdicts come from the CodeQL database the `sast` lane builds.
+         *
+         *     One row per repository and language, replaced outright. An `unreachable`
+         *     whose evidence does not prove it is stored as `unknown` with the reason,
+         *     and counted in `downgraded`; a `reachable` without its path is refused by
+         *     the schema, because the path is the claim.
+         */
+        post: operations["ingest_dataflow_reachability_api_ingest_reachability_dataflow_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/check-runs": {
         parameters: {
             query?: never;
@@ -6923,6 +6951,245 @@ export interface components {
             /** Sections */
             sections: components["schemas"]["BriefingSectionOut"][];
         };
+        /**
+         * DataflowEvidenceOut
+         * @description What CodeQL dataflow traced for this finding (TheHub #60891).
+         *
+         *     Evidence shown beside `reachability`, never in place of it (the
+         *     operator's decision: CodeQL sits beside taint).
+         *     `FindingRecordOut.reachability` (TheHub #60745) stays the verdict; this
+         *     block never changes it, and where the two disagree both are shown.
+         *
+         *     `reachable` carries the path CodeQL traced from an entry point.
+         *     `unreachable` means never imported, and carries the evidence that proves
+         *     it. `unknown` says why neither could be shown.
+         */
+        DataflowEvidenceOut: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "reachable" | "unreachable" | "unknown";
+            /** Reason */
+            reason: string;
+            /** Path */
+            path?: components["schemas"]["DataflowStepOut"][];
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            };
+            /** Language */
+            language: string;
+            /** Analyser */
+            analyser: string;
+            /**
+             * Analyser Version
+             * @default
+             */
+            analyser_version: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /** Analysed At */
+            analysed_at?: string | null;
+        };
+        /**
+         * DataflowPathStep
+         * @description One step of a recorded path: an entry point, a call, the sink.
+         */
+        DataflowPathStep: {
+            /**
+             * File Path
+             * @default
+             */
+            file_path: string;
+            /** Line */
+            line?: number | null;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+        };
+        /** DataflowReachabilityAccepted */
+        DataflowReachabilityAccepted: {
+            /** Accepted */
+            accepted: number;
+            /** Reachable */
+            reachable: number;
+            /** Unreachable */
+            unreachable: number;
+            /** Unknown */
+            unknown: number;
+            /** Downgraded */
+            downgraded: number;
+            /**
+             * Note
+             * @default Reachable means CodeQL traced a call path from an entry point, and the path is stored. Unreachable means never imported, with the evidence that proves it; no call path found is not proof and is stored as unknown.
+             */
+            note: string;
+        };
+        /**
+         * DataflowReachabilitySubmission
+         * @description What `python -m mykronos.reachability_dataflow report` posts.
+         *
+         *     Conclusions and their paths, not the database: a path is a handful of
+         *     file names and line numbers, which is what a triager needs to check the
+         *     claim, and nothing more of the repository's structure travels.
+         */
+        DataflowReachabilitySubmission: {
+            /**
+             * Language
+             * @enum {string}
+             */
+            language: "python" | "javascript";
+            /**
+             * Analyser
+             * @default codeql
+             * @constant
+             */
+            analyser: "codeql";
+            /**
+             * Analyser Version
+             * @default
+             */
+            analyser_version: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Files Analysed
+             * @default 0
+             */
+            files_analysed: number;
+            /**
+             * Dynamic Imports
+             * @default 0
+             */
+            dynamic_imports: number;
+            /** Lockfiles */
+            lockfiles?: string[];
+            /**
+             * Scoped
+             * @default false
+             */
+            scoped: boolean;
+            /** Verdicts */
+            verdicts?: components["schemas"]["DataflowVerdict"][];
+        };
+        /**
+         * DataflowReportOut
+         * @description One language's CodeQL dataflow analysis, as counts (TheHub #60891).
+         *
+         *     The verdicts themselves, with their paths, are on each finding's record.
+         */
+        DataflowReportOut: {
+            /** Language */
+            language: string;
+            /** Analyser */
+            analyser: string;
+            /**
+             * Analyser Version
+             * @default
+             */
+            analyser_version: string;
+            /**
+             * Commit Sha
+             * @default
+             */
+            commit_sha: string;
+            /**
+             * Files Analysed
+             * @default 0
+             */
+            files_analysed: number;
+            /**
+             * Dynamic Imports
+             * @default 0
+             */
+            dynamic_imports: number;
+            /** Lockfiles */
+            lockfiles?: string[];
+            /**
+             * Reachable
+             * @default 0
+             */
+            reachable: number;
+            /**
+             * Unreachable
+             * @default 0
+             */
+            unreachable: number;
+            /**
+             * Unknown
+             * @default 0
+             */
+            unknown: number;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** DataflowStepOut */
+        DataflowStepOut: {
+            /**
+             * File Path
+             * @default
+             */
+            file_path: string;
+            /** Line */
+            line?: number | null;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+        };
+        /**
+         * DataflowVerdict
+         * @description One package's or one result's reachability (TheHub #60891).
+         */
+        DataflowVerdict: {
+            /**
+             * Target
+             * @enum {string}
+             */
+            target: "package" | "location";
+            /** Package Name */
+            package_name?: string | null;
+            /** Ecosystem */
+            ecosystem?: ("pypi" | "npm") | null;
+            /** Rule Id */
+            rule_id?: string | null;
+            /** File Path */
+            file_path?: string | null;
+            /** Line */
+            line?: number | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "reachable" | "unreachable" | "unknown";
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Path
+             * @description From the entry point to the call or sink. Required for `reachable`.
+             */
+            path?: components["schemas"]["DataflowPathStep"][];
+            /**
+             * Evidence
+             * @description What an `unreachable` rests on. Ingest checks it, and stores any `unreachable` it does not prove as `unknown`.
+             */
+            evidence?: {
+                [key: string]: unknown;
+            };
+        };
         /** DecisionIn */
         DecisionIn: {
             /** Verdict */
@@ -8445,6 +8712,7 @@ export interface components {
             missing_context: components["schemas"]["RecordGap"][];
             exploitability?: components["schemas"]["ExploitabilityOut"] | null;
             reachability?: components["schemas"]["ReachabilityVerdictOut"] | null;
+            dataflow_evidence?: components["schemas"]["DataflowEvidenceOut"] | null;
             /** Fix Pull Requests */
             fix_pull_requests?: components["schemas"]["FixPullRequestOut"][];
             /**
@@ -11362,6 +11630,8 @@ export interface components {
             taint_matches: number;
             /** Updated At */
             updated_at?: string | null;
+            /** Dataflow */
+            dataflow?: components["schemas"]["DataflowReportOut"][];
             /**
              * Note
              * @description Served with the data so a consumer cannot over-read it.
@@ -15013,6 +15283,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReachabilityAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_dataflow_reachability_api_ingest_reachability_dataflow_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DataflowReachabilitySubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataflowReachabilityAccepted"];
                 };
             };
             /** @description Validation Error */

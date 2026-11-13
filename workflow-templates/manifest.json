@@ -16,7 +16,7 @@
     "sast": {
       "template": "sast.yml.j2",
       "target": ".github/workflows/mykronos-sast.yml",
-      "version": "1.2.2",
+      "version": "1.3.0",
       "summary": "Static analysis with CodeQL"
     },
     "secrets": {

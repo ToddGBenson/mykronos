@@ -223,6 +223,16 @@ class SastConfig(BaseCapabilityConfig):
             "by name, say, where nothing imports anything."
         ),
     )
+    dataflow_reachability: bool = Field(
+        default=True,
+        description=(
+            "Run Mykronos's CodeQL reachability queries over the database the "
+            "scan built, for Python and JS/TS (TheHub #60891): which "
+            "dependencies are called from an entry point, with the path, and "
+            "which are never imported, with the evidence. Reads nothing the "
+            "scan does not already have and sends only its conclusions."
+        ),
+    )
 
 
 class SecretsConfig(BaseCapabilityConfig):

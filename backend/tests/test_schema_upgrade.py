@@ -332,6 +332,10 @@ GRANDFATHERED = {
     "auto_triage_actions.finding_id",
     "auto_triage_actions.rule",
     "auto_triage_actions.new_status",
+    # New table (TheHub #60891); a report with a defaulted repository or
+    # language would be a verdict about nothing in particular.
+    "dataflow_reachability_reports.repo_onboarding_id",
+    "dataflow_reachability_reports.language",
 }
 
 

@@ -1,0 +1,134 @@
+{
+ "$comment": "Trimmed from `codeql database analyze` (CodeQL 2.27.2) over the fixture in test_reachability_dataflow.py; only the fields the reader uses are kept.",
+ "version": "2.1.0",
+ "runs": [
+  {
+   "tool": {
+    "driver": {
+     "name": "CodeQL",
+     "semanticVersion": "2.27.2"
+    }
+   },
+   "results": [
+    {
+     "ruleId": "py/unsafe-deserialization",
+     "message": {
+      "text": "Unsafe deserialization depends on a [user-provided value](1)."
+     },
+     "locations": [
+      {
+       "physicalLocation": {
+        "artifactLocation": {
+         "uri": "app/helpers.py"
+        },
+        "region": {
+         "startLine": 6
+        }
+       }
+      }
+     ],
+     "codeFlows": [
+      {
+       "threadFlows": [
+        {
+         "locations": [
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 1
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for ImportMember"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 1
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for request"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 10
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for request"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/web.py"
+             },
+             "region": {
+              "startLine": 10
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for Subscript"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/helpers.py"
+             },
+             "region": {
+              "startLine": 5
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for text"
+            }
+           }
+          },
+          {
+           "location": {
+            "physicalLocation": {
+             "artifactLocation": {
+              "uri": "app/helpers.py"
+             },
+             "region": {
+              "startLine": 6
+             }
+            },
+            "message": {
+             "text": "ControlFlowNode for text"
+            }
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
