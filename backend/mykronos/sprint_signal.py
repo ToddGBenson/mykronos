@@ -99,7 +99,9 @@ FILE_LIMIT = 3
 FOCUS_TOP = 3
 
 #: Risk per finding by the scanner's severity. A severity nobody recorded is
-#: counted at `UNKNOWN_WEIGHT`, never as nothing.
+#: not weighted at all (`UNKNOWN_WEIGHT` is None, TheHub #61349): it used to
+#: count as 1.0, which is `low`'s weight, so an unknown read as a low. It is
+#: shown instead - every line names how many findings it could not weigh.
 SEVERITY_WEIGHT: dict[str, float] = {
     "critical": 10.0,
     "high": 5.0,
@@ -107,7 +109,7 @@ SEVERITY_WEIGHT: dict[str, float] = {
     "low": 1.0,
     "info": 0.0,
 }
-UNKNOWN_WEIGHT = 1.0
+UNKNOWN_WEIGHT: float | None = None
 
 #: Where the code runs. Read from the briefing's own inputs: the public
 #: endpoint probes (`exposure`) and the deployment probe sweep.
@@ -177,11 +179,19 @@ class Candidate:
 
     def explain(self) -> str:
         risk = ", ".join(f"{n} {sev}" for sev, n in self.risk_basis.items()) or "none"
+        unknown = unweighted(self.risk_basis)
+        unknown_note = (
+            f" {unknown} of unknown severity: not weighted, because an unknown "
+            "severity is not a low one."
+            if unknown
+            else ""
+        )
         return (
             f"Score {self.score:g} = risk removed {self.risk_removed:g} x exposure "
             f"{self.exposure:g} / effort {self.effort:g}. Risk: {self.findings} finding(s) "
             f"(scanner: {risk}; {self._contextual()}); exposure: {self.exposure_basis}; "
             f"effort: {self.effort_basis}."
+            f"{unknown_note}"
         )
 
     def _contextual(self) -> str:
@@ -231,9 +241,16 @@ def signal_key(repo_full_name: str, kind: str, ident: str) -> str:
 
 
 def risk(severities: dict[str, int]) -> float:
+    """The weighted risk of the findings whose severity is known."""
     return round(
-        sum(SEVERITY_WEIGHT.get(sev, UNKNOWN_WEIGHT) * n for sev, n in severities.items()), 2
+        sum(SEVERITY_WEIGHT[sev] * n for sev, n in severities.items() if sev in SEVERITY_WEIGHT),
+        2,
     )
+
+
+def unweighted(severities: dict[str, int]) -> int:
+    """How many findings `risk` could not weigh: no severity on record."""
+    return sum(n for sev, n in severities.items() if sev not in SEVERITY_WEIGHT)
 
 
 def _ordered(severities: dict[str, int]) -> dict[str, int]:

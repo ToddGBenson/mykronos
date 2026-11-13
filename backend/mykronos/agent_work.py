@@ -1050,6 +1050,11 @@ def _finding_actions(
     return actions
 
 
+def _kev(value: Any) -> str:
+    """No threat-intel row is "not checked", never False (D-176)."""
+    return "not checked" if value is None else str(bool(value))
+
+
 def _finding_items(
     rows: list[dict[str, Any]], briefing: Briefing, principal: Principal
 ) -> list[WorkItem]:
@@ -1096,7 +1101,7 @@ def _finding_items(
                         ref=finding_id,
                         detail=(
                             f"rank {row.get('rank')}, first seen {row.get('first_seen_at')}, "
-                            f"KEV {bool(row.get('in_kev'))}, EPSS {row.get('epss_score')}"
+                            f"KEV {_kev(row.get('in_kev'))}, EPSS {row.get('epss_score')}"
                         ),
                     )
                 ],

@@ -109,6 +109,11 @@ class RiskProfilePolicy:
     #: Unbounded on purpose: an asset in four regimes really does carry four
     #: kinds of exposure, and a cap would hide the fourth.
     compliance_scope_points_per_entry: float
+    #: What a recorded profile whose `internet_facing` is unset adds (TheHub
+    #: #61349, policy 1.19). Unset is not `false`: nobody has said whether the
+    #: internet reaches it. Defaulted after the other fields so a caller that
+    #: builds this by hand keeps working; the shipped policy states it.
+    internet_facing_unknown_points: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -808,6 +813,10 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             compliance_scope_points_per_entry=_number(
                 profile_raw.get("compliance_scope_points_per_entry", 0),
                 "risk_profile.compliance_scope_points_per_entry",
+            ),
+            internet_facing_unknown_points=_number(
+                profile_raw.get("internet_facing_unknown_points", 0),
+                "risk_profile.internet_facing_unknown_points",
             ),
         ),
         toxic_combinations=ToxicCombinationsPolicy(

@@ -69,7 +69,7 @@ class TestInternetFacing:
 
         internet = _field(out, "internet_facing")
         assert internet.value is True
-        assert internet.confidence == "observed"
+        assert internet.confidence == "declared"
         assert "Production app (tcp/8000)" in internet.evidence
 
     def test_surfaces_that_are_all_internal_propose_false(self) -> None:
@@ -90,7 +90,7 @@ class TestInternetFacing:
 
         internet = _field(out, "internet_facing")
         assert internet.value is False
-        assert internet.confidence == "observed"
+        assert internet.confidence == "declared"
 
     def test_an_unclassified_surface_is_an_open_question(self) -> None:
         """`unknown` exposure is not a quiet no.
@@ -146,12 +146,14 @@ class TestInternetFacing:
         internet = _field(out, "internet_facing")
         assert internet.value is False
 
-    def test_an_answering_port_settles_it(self) -> None:
+    def test_an_answering_port_proposes_it_as_inferred(self) -> None:
+        """Was `observed` until TheHub #61349: where the scanner stood is not
+        recorded on the finding, and a LAN sweep answers the same way."""
         out = builder.propose(_Catalog(network=3), REPO)
 
         internet = _field(out, "internet_facing")
         assert internet.value is True
-        assert internet.confidence == "observed"
+        assert internet.confidence == "inferred"
 
 
 class TestTheFieldsItRefuses:

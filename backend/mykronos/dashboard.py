@@ -380,11 +380,24 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
     if item.get("in_kev"):
         add("in_kev", rank.in_kev, "listed in CISA KEV — exploited in the wild")
     epss = item.get("epss_score")
-    if epss:
+    if epss is not None:
+        # Listed even at zero (TheHub #61349): a measured near-zero EPSS is an
+        # answer, and it must read differently from one never scored.
         add(
             "epss",
             rank.epss_at_1_0 * float(epss),
             f"EPSS {float(epss):.2f} — probability of exploitation in 30 days",
+            keep_zero=True,
+        )
+    elif item.get("cve_id"):
+        # A CVE the feed has not scored. Zero points, because the rank has no
+        # number to use, but named, so it is not read as "EPSS 0". The queue
+        # sort lists these above an equal-ranked row whose EPSS was measured.
+        add(
+            "epss",
+            0.0,
+            "EPSS not scored yet — exploitation probability unknown, not zero",
+            keep_zero=True,
         )
     # The exploitability verdict (TheHub #60890). Only the two rungs that mean
     # "an exploit can be picked up today", and never on top of KEV, which
@@ -454,6 +467,11 @@ def rank_terms(item: dict[str, Any], policy: Any) -> tuple[float, list[dict[str,
             )
 
     return (sum(term["points"] for term in terms), terms)
+
+
+def epss_unknown(item: dict[str, Any]) -> bool:
+    """A row naming a CVE the feed has no EPSS score for (TheHub #61349)."""
+    return bool(item.get("cve_id")) and item.get("epss_score") is None
 
 
 def ranking_inputs(
@@ -2351,7 +2369,13 @@ class DashboardQueries:
             for item in queue:
                 item["environmental"] = readings.get(str(item["finding_id"]))
                 item["rank"], item["rank_terms"] = rank_terms(item, policy)
-            queue.sort(key=lambda item: (-float(item["rank"]), item["first_seen_at"]))
+            queue.sort(
+                key=lambda item: (
+                    -float(item["rank"]),
+                    0 if epss_unknown(item) else 1,
+                    item["first_seen_at"],
+                )
+            )
 
         # Stamped on every row, not only when filtering - the same contract
         # the KEV badge above has, so a caller can render "the machine could
@@ -3537,8 +3561,9 @@ class DashboardQueries:
     @staticmethod
     def _attach_threat_intel(session: Session, rows: list[dict[str, Any]]) -> None:
         """Stamp `cve_id`/`in_kev`/`epss_score` onto each row, in place
-        (spec 17 §4.4, #20). `None` for a row naming no CVE — distinct from
-        `in_kev: False`, which means a CVE was found and checked. Mutates
+        (spec 17 §4.4, #20). `None` for a row naming no CVE, or naming one the
+        feed has never fetched — distinct from `in_kev: False`, which means a
+        CVE was found and checked (TheHub #61349). Mutates
         rather than returns a new list: every other per-row field here is
         already attached this way (`_group_findings`), and a second
         convention would be the odd one out.
@@ -3575,11 +3600,12 @@ class DashboardQueries:
             if cve_id is None:
                 continue
             match = matches.get(cve_id)
-            # Three states, not two: `in_kev` stays `None` above when the
-            # row names no CVE at all; it becomes `False` here — "a CVE was
-            # checked, and it isn't KEV-listed (or hasn't been fetched yet)"
-            # — only once one was found to check.
-            row["in_kev"] = bool(match and match.in_kev)
+            # `in_kev` stays `None` above when the row names no CVE, and stays
+            # `None` here when it names one the feed has no row for (TheHub
+            # #61349): never fetched is not checked, and `False` used to say
+            # both. `exploit_verdict` tells the two nulls apart (`no_cve` /
+            # `not_checked`). `False` is only ever "checked, not listed".
+            row["in_kev"] = bool(match.in_kev) if match is not None else None
             row["epss_score"] = match.epss_score if match else None
             row["exploit_verdict"] = exploitability.verdict_for(cve_id, match)
 
@@ -3637,7 +3663,7 @@ class DashboardQueries:
             results.append(
                 {
                     "cve_id": cve_id,
-                    "in_kev": match.in_kev if match else False,
+                    "in_kev": bool(match.in_kev) if match else None,
                     "kev_added_at": match.kev_added_at if match else None,
                     "kev_due_date": match.kev_due_date if match else None,
                     "epss_score": match.epss_score if match else None,
@@ -3649,6 +3675,13 @@ class DashboardQueries:
                 }
             )
 
-        # KEV first, then EPSS descending (nulls last) — spec 17 §4.4.
-        results.sort(key=lambda r: (not r["in_kev"], -(r["epss_score"] or 0.0)))
+        # KEV first, then EPSS descending, nulls last — spec 17 §4.4. The null
+        # is its own key: `-(None or 0.0)` tied it with a measured 0 (#61349).
+        results.sort(
+            key=lambda r: (
+                not r["in_kev"],
+                r["epss_score"] is None,
+                -(r["epss_score"] or 0.0),
+            )
+        )
         return results

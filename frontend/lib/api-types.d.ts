@@ -1818,8 +1818,8 @@ export interface paths {
          *     portfolio, KEV first then EPSS descending (spec 17 §4.4).
          *
          *     A CVE with no `ThreatIntelMatch` row yet (the refresh job has not run, or
-         *     ran before this finding existed) is still returned — `in_kev: false`,
-         *     both scores null — rather than omitted. "Not yet fetched" and "fetched,
+         *     ran before this finding existed) is still returned — `in_kev` and both
+         *     scores null — rather than omitted. "Not yet fetched" and "fetched,
          *     not exploited" must not look the same, and omitting the row is exactly
          *     how they would.
          */
@@ -8217,7 +8217,7 @@ export interface components {
             cve_id?: string | null;
             /**
              * In Kev
-             * @description Null when cve_id is null. Otherwise whether that CVE is in CISA's KEV catalog — false may mean 'checked, not listed' or 'not yet fetched', which `fetched_at` on GET /api/dashboard/threat-intel disambiguates.
+             * @description Whether that CVE is in CISA's KEV catalog. False only when it was checked and is not listed. Null when cve_id is null, or when the threat-intel refresh has never fetched the CVE: not checked is unknown, never 'not listed' (TheHub #61349).
              */
             in_kev?: boolean | null;
             /**
@@ -13544,8 +13544,11 @@ export interface components {
         ThreatIntelEntryOut: {
             /** Cve Id */
             cve_id: string;
-            /** In Kev */
-            in_kev: boolean;
+            /**
+             * In Kev
+             * @description Null until the refresh has fetched this CVE (`fetched_at` null too): not checked, which is not the same as not listed.
+             */
+            in_kev?: boolean | null;
             /** Kev Added At */
             kev_added_at?: string | null;
             /** Kev Due Date */

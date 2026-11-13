@@ -57,9 +57,12 @@ logger = logging.getLogger(__name__)
 #: How much to trust a proposed value.
 #:
 #: `observed` — the platform watched this and it cannot reasonably mean
-#: something else. `inferred` — consistent with the evidence and not proven by
-#: it. `unknown` — say so, and let the score assume the worst.
-CONFIDENCE = ("observed", "inferred", "unknown")
+#: something else. `declared` — a person stated it (a classified surface): it
+#: outranks an inference, and nothing here verified it (TheHub #61349; until
+#: then a declaration was labelled `observed`). `inferred` — consistent with
+#: the evidence and not proven by it. `unknown` — say so, and let the score
+#: assume the worst.
+CONFIDENCE = ("observed", "declared", "inferred", "unknown")
 
 
 @dataclass
@@ -169,7 +172,7 @@ def propose(
             Proposal(
                 field="internet_facing",
                 value=True,
-                confidence="observed",
+                confidence="declared",
                 evidence=(
                     f"{len(exposed)} declared surface(s) carry exposure "
                     f"`internet`: {_name_list(exposed)}. A declared exposure is "
@@ -203,11 +206,11 @@ def propose(
             Proposal(
                 field="internet_facing",
                 value=False,
-                confidence="observed",
+                confidence="declared",
                 evidence=(
                     f"All {len(declared_surfaces)} declared surface(s) are "
                     "`internal` or `local`, and none is `internet`. Somebody "
-                    "classified every one of them."
+                    "classified every one of them; nothing here has verified it."
                 ),
             )
         )
@@ -216,10 +219,19 @@ def propose(
             Proposal(
                 field="internet_facing",
                 value=True,
-                confidence="observed",
+                # Not `observed` (TheHub #61349): a port answered *a* scanner,
+                # and the lake does not record that the scanner stood on the
+                # internet. A LAN sweep's findings read the same, and cloud
+                # posture findings are counted here too.
+                confidence="inferred",
                 evidence=(
-                    f"{network} open network finding(s) — a port answered from "
-                    "outside the host."
+                    f"{network} open network or cloud finding(s): something "
+                    "outside the host reached it. Where the scanner stood (the "
+                    "internet, or the same network) is not recorded on the finding."
+                ),
+                what_would_settle_it=(
+                    "Declare the attack surface with its exposure, or confirm the "
+                    "finding came from an internet vantage (the WAN-edge lane)."
                 ),
             )
         )
