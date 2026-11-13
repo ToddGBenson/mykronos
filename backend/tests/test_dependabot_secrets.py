@@ -42,6 +42,7 @@ from mykronos.github.client import (
     RepoPublicKey,
 )
 from mykronos.github.factory import FakeGitHubClientFactory
+from mykronos.github.secrets import dependabot_gap_reason
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary, WorkflowInstaller
 from mykronos.jobs import deliveries_awaiting_operator, rotate_ingestion_tokens
 from mykronos.schemas import utcnow
@@ -346,6 +347,69 @@ class TestTheRotationJobSealsBothStores:
         assert result.rotated == [] and result.resynced == []
         assert result.unverified == [] and result.deferred == []
         assert github.calls == []
+
+    async def test_a_read_only_grant_never_rotates(self, db: Database) -> None:
+        """Independent review of #1142: `dependabot_secrets: read` lets the
+        key be read and the secret not be written. A probe that only reads
+        the key therefore passes, rotates, fails the PUT, records the
+        blocker, and does the same on every sweep. The sweep must read the
+        installation's grant, not the key, and a Read-only grant is the gap."""
+        github = _github({**WITHOUT_DEPENDABOT, "dependabot_secrets": "read"})
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        before = _active_token(db).token_sha256
+
+        for _ in range(3):
+            result = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(github))
+            assert result.rotated == [] and result.resynced == []
+            assert [repo for repo, _reason in result.dependabot_blocked] == [REPO]
+
+        assert _active_token(db).token_sha256 == before
+        assert not any(call[0] == "put_actions_secret" for call in github.calls)
+        assert "Read and write" in _active_token(db).dependabot_sync_blocker
+
+    @pytest.mark.parametrize("status", [403, 422])
+    async def test_a_write_that_keeps_failing_under_the_grant_is_not_retried_by_rotation(
+        self, db: Database, status: int
+    ) -> None:
+        """The grant is held and the PUT still fails (SSO, a rate limit, a
+        malformed key). One rotation to find that out is the price of
+        delivery; a second is churn. The reviewer measured three sweeps as
+        four active tokens on the previous head."""
+
+        class RefusesTheWrite(FakeGitHubClient):
+            async def put_dependabot_secret(
+                self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+            ) -> None:
+                self.calls.append(("put_dependabot_secret", f"{repo_full_name}:{name}"))
+                raise GitHubError(f"PUT .../dependabot/secrets/{name} -> {status}", status=status)
+
+        github = RefusesTheWrite()
+        github.add_repo(REPO)
+        github.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        before = _active_token(db).token_sha256
+
+        for _ in range(3):
+            result = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(github))
+            assert [repo for repo, _reason in result.dependabot_blocked] == [REPO]
+
+        actions_writes = [call for call in github.calls if call[0] == "put_actions_secret"]
+        assert len(actions_writes) == 1, "one rotation delivers or fails; more is churn"
+        token = _active_token(db)
+        assert token.token_sha256 != before
+        assert not token.dependabot_secret_synced
+        assert str(status) in token.dependabot_sync_blocker
+        assert "holds" in token.dependabot_sync_blocker
+
+    def test_a_permission_gap_reason_keeps_githubs_detail(self) -> None:
+        """A 403 is also what a secondary rate limit or an SSO enforcement
+        answers; the reason names the usual remedy and still quotes what
+        GitHub actually said."""
+        reason = dependabot_gap_reason(403, "GET ... -> 403: secondary rate limit")
+        assert "Read and write" in reason
+        assert "secondary rate limit" in reason
 
 
 # ---------------------------------------------------------------------------

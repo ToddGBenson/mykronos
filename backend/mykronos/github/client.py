@@ -1173,10 +1173,11 @@ class FakeGitHubClient:
 
     async def get_dependabot_public_key(self, repo_full_name: str) -> RepoPublicKey:
         self.calls.append(("get_dependabot_public_key", repo_full_name))
-        # GitHub answers 403 for an installation without the permission; the
-        # fake's refusal carries the same status, so the callers' 403 path is
-        # the one exercised.
-        self._require("dependabot_secrets", "write", "Reading the Dependabot public key")
+        # `read`, as declared: a Read-only grant can read the key and still
+        # cannot write the secret, and the sweep has to be modelled against
+        # exactly that installation. GitHub answers 403 for an installation
+        # without the permission; the fake's refusal carries the same status.
+        self._require("dependabot_secrets", "read", "Reading the Dependabot public key")
         repo = self._repo(repo_full_name)
         # A different published key from the Actions one, as GitHub's is.
         return repo.dependabot_public_key or RepoPublicKey(
@@ -1257,9 +1258,14 @@ class FakeGitHubClient:
     async def get_installation(self, installation_id: int) -> dict[str, Any]:
         self.calls.append(("get_installation", str(installation_id)))
         try:
-            return self.installations[installation_id]
+            record = self.installations[installation_id]
         except KeyError:
             raise GitHubError(f"Installation {installation_id} not found", status=404) from None
+        # GitHub's payload carries the installation's granted `permissions`.
+        # Unless a test says otherwise the installation holds what this fake
+        # enforces, so a sweep that reads the grant and a write that spends
+        # it see the same App (TheHub #60855).
+        return {**record, "permissions": record.get("permissions", dict(self.permissions))}
 
     async def dispatch_workflow(
         self,
