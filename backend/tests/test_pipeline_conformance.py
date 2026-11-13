@@ -729,8 +729,11 @@ def test_every_pipeline_applies_itself(path: Path) -> None:
     applies = [step for step in job["plan"] if "set_pipeline" in step]
     assert applies, f"{path.name}:set-pipeline has no set_pipeline step"
     assert applies[0]["set_pipeline"] == "self"
-    assert applies[0]["file"] == f"pipelines/deploy/concourse/pipelines/{stem}.yml"
-    assert applies[0]["var_files"] == [f"pipelines/deploy/concourse/vars/{stem}.yml"]
+    # mykronos.yml applies from `source` (the same repo, and the commit pin-check
+    # judges; TheHub #61608). The other two live outside the repo they scan.
+    root = "source" if stem == "mykronos" else "pipelines"
+    assert applies[0]["file"] == f"{root}/deploy/concourse/pipelines/{stem}.yml"
+    assert applies[0]["var_files"] == [f"{root}/deploy/concourse/vars/{stem}.yml"]
 
     # The difference from keel, and the thing easiest to get wrong: keel's
     # pipeline lives in keel's own repo, so its `repo` resource is already the

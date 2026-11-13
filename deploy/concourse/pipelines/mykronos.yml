@@ -497,12 +497,20 @@ jobs:
       # job to have produced that exact `source` version). `set_pipeline` is a
       # no-op on an unchanged file, so a commit that touches no pipeline file
       # costs one empty build.
+      #
+      # The file and vars are read from `source`, not `pipelines`. The two are
+      # independently polled resources on one repository, so a build could
+      # hold (pipelines@X, source@Y) and apply X's file and vars while
+      # pin-check then judges Y. Reading `source` means any build on source@Y
+      # applies Y's file and vars, which is what pin-check's `passed:` edge
+      # relies on. `pipelines` stays a trigger-only get (its `paths:` filter
+      # still starts an apply on a pipeline-file commit).
       - get: source
         trigger: true
         attempts: *retry_fetch
       - set_pipeline: self
-        file: pipelines/deploy/concourse/pipelines/mykronos.yml
-        var_files: [pipelines/deploy/concourse/vars/mykronos.yml]
+        file: source/deploy/concourse/pipelines/mykronos.yml
+        var_files: [source/deploy/concourse/vars/mykronos.yml]
 
   # -- Stage 1: quality gate (spec 15 §3) ---------------------------------
   #

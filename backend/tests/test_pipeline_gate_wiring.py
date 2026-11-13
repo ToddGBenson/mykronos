@@ -625,6 +625,11 @@ def test_pin_check_waits_for_set_pipeline_and_oracle_gate_does_not_read_build() 
     assert pin.get("pipelines") == ["set-pipeline"]
     assert pin.get("source") == ["set-pipeline"], "the source-side edge closes the race"
     assert "source" in _mykronos_passed("set-pipeline"), "set-pipeline must get source"
+    document = yaml.safe_load(MYKRONOS.read_text(encoding="utf-8"))
+    job = next(j for j in document["jobs"] if j["name"] == "set-pipeline")
+    applied = next(step for step in job["plan"] if "set_pipeline" in step)
+    assert applied["file"].startswith("source/"), "apply the file of the commit pin-check judges"
+    assert all(v.startswith("source/") for v in applied["var_files"])
     gate = _mykronos_passed("oracle-gate")["source"]
     assert "build" not in gate
     assert "containers" in gate
