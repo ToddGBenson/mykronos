@@ -32,13 +32,13 @@ from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
 from mykronos.db.models import GatingLaneState, JobRun, RepoOnboarding, capability_config_for
-from mykronos.github.client import GitHubError
+from mykronos.github.client import GitHubClient, GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import (
-    PERMISSION_GAP_STATUSES,
-    dependabot_gap_reason,
+    permission_not_held_reason,
     seal_secret,
     sync_dependabot_secret,
+    write_failed_under_grant,
 )
 from mykronos.installer import DEFAULT_SECRET_NAME
 from mykronos.knowledge import KnowledgeStore
@@ -190,6 +190,25 @@ def hand_rotation_instruction(repo: str) -> str:
         f"deploy/concourse/repair-ingestion-token.ps1 -Repo {repo} -WhatIf, "
         "then again without -WhatIf"
     )
+
+
+async def _dependabot_grant(github: GitHubClient, installation_id: int) -> str | None:
+    """What the installation holds for `dependabot_secrets`: `write`, `read`
+    or None (not granted, or the installation could not be read).
+
+    Read from the installation rather than inferred from a successful key
+    read, because `read` can fetch the key and still cannot write the secret
+    (independent review of #1142). An unreadable installation is None: "could
+    not check" must not rotate, for the same reason it must not elsewhere.
+    """
+    try:
+        installation = await github.get_installation(installation_id)
+    except (GitHubError, OSError) as exc:
+        logger.warning("Could not read installation %s: %s", installation_id, exc)
+        return None
+    permissions = installation.get("permissions") or {}
+    held = permissions.get("dependabot_secrets")
+    return str(held) if held else None
 
 
 def deliveries_awaiting_operator(db: Database) -> list[TokenDelivery]:
@@ -429,18 +448,27 @@ async def rotate_ingestion_tokens(
         try:
             if only_dependabot:
                 # The only way to deliver a Dependabot copy is a rotation,
-                # because the plaintext is not stored. While the App lacks
-                # the permission that rotation would churn a working
-                # credential on every run and deliver nothing, so GitHub is
-                # asked for the Dependabot key first and the token is left
-                # alone until the answer is yes (TheHub #60855).
-                try:
-                    await github.get_dependabot_public_key(repo)
-                except GitHubError as exc:
-                    if exc.status in PERMISSION_GAP_STATUSES:
-                        _record_dependabot_gap(repo, dependabot_gap_reason(exc.status, str(exc)))
-                        continue
-                    raise
+                # because the plaintext is not stored, and a rotation that
+                # then fails the write churns a working credential for
+                # nothing. So the token is rotated only on evidence the
+                # write will land (TheHub #60855, independent review of
+                # #1142): the installation's grant says `write` -- reading
+                # the public key proves nothing, a Read-only grant can do
+                # that -- and no earlier write failed under that grant.
+                held = await _dependabot_grant(github, onboarding.github_installation_id)
+                if held != "write":
+                    _record_dependabot_gap(repo, permission_not_held_reason(held))
+                    continue
+                with db.session() as session:
+                    token = TokenRegistry(session, overlap_hours=overlap_hours).active_token_for(
+                        repo
+                    )
+                    blocker = token.dependabot_sync_blocker if token is not None else ""
+                if write_failed_under_grant(blocker):
+                    # Recorded last time; still shown, not retried. The next
+                    # due rotation attempts the copy again.
+                    result.dependabot_blocked.append((repo, blocker))
+                    continue
 
             with db.session() as session:
                 registry = TokenRegistry(session, overlap_hours=overlap_hours)
@@ -477,8 +505,12 @@ async def rotate_ingestion_tokens(
 
             # The same plaintext into the Dependabot store (TheHub #60855).
             # After the Actions write is recorded, so a refusal here cannot
-            # undo it, and never raising, so it cannot land in `failed`.
-            outcome = await sync_dependabot_secret(github, repo, secret_name, plaintext)
+            # undo it, and never raising, so it cannot land in `failed`. A
+            # refusal after the grant was read as `write` is recorded as
+            # such, which is what stops the next sweep rotating to retry it.
+            outcome = await sync_dependabot_secret(
+                github, repo, secret_name, plaintext, grant_verified=only_dependabot
+            )
             if outcome.synced:
                 with db.session() as session:
                     TokenRegistry(session, overlap_hours=overlap_hours).mark_dependabot_synced(
