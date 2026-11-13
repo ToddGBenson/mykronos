@@ -100,6 +100,80 @@ function Test-AutoDeployAttempted {
     return $false
 }
 
+function ConvertTo-UtcTime {
+    param($Value)
+    if ($null -eq $Value -or "$Value" -eq '') { return $null }
+    if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
+    return [DateTime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal)
+}
+
+function Get-AutoDeployRetryCap {
+    <#
+        PURE. A not_attempted run spends nothing, so without a cap a head
+        the gate keeps refusing (or never scores) is retried every tick, and
+        an unjudged one holds the lock ~45 of every ~55 minutes. The memo
+        entry for a sha carries not_attempted_count and the first and last
+        times; Capped is true when Cap or more fell inside the window that
+        started at the first. A new sha has its own entry, so it starts at 0.
+        Returns $null when the memo has no not_attempted entry for Sha.
+    #>
+    param(
+        [AllowNull()][object[]]$Attempts,
+        [string]$Sha,
+        [Parameter(Mandatory = $true)][DateTime]$NowUtc,
+        [int]$Cap = 3,
+        [int]$WindowHours = 24
+    )
+    foreach ($a in @($Attempts)) {
+        if ($null -eq $a -or $a -is [string]) { continue }
+        if (-not (Test-ShaMatch $Sha ([string]$a.sha))) { continue }
+        if ([string]$a.result -ne 'not_attempted') { continue }
+        $count = 0
+        if ($null -ne $a.not_attempted_count) { $count = [int]$a.not_attempted_count }
+        $first = ConvertTo-UtcTime $a.not_attempted_first
+        if (-not $first) { $first = ConvertTo-UtcTime $a.at }
+        if (-not $first) { $first = $NowUtc }
+        $until = $first.AddHours($WindowHours)
+        $capped = ($count -ge $Cap -and $NowUtc -lt $until)
+        return [pscustomobject]@{
+            Capped = $capped; Count = $count
+            First = $first.ToString('yyyy-MM-ddTHH:mm:ssZ'); Until = $until.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        }
+    }
+    return $null
+}
+
+function Get-NotAttemptedTally {
+    <#
+        PURE. The not_attempted counters for Sha after one more such run at
+        NowUtc, from the sha's previous memo entry (or $null). A run whose
+        window (WindowHours from the first) has passed starts a new window
+        at 1.
+    #>
+    param(
+        [AllowNull()][object]$Previous,
+        [Parameter(Mandatory = $true)][DateTime]$NowUtc,
+        [int]$WindowHours = 24
+    )
+    $count = 0
+    $first = $null
+    if ($Previous -and $null -ne $Previous.not_attempted_count) {
+        $count = [int]$Previous.not_attempted_count
+        $first = ConvertTo-UtcTime $Previous.not_attempted_first
+    }
+    if (-not $first -or $NowUtc -ge $first.AddHours($WindowHours)) {
+        $count = 0
+        $first = $NowUtc
+    }
+    $stamp = $NowUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    return [ordered]@{
+        not_attempted_count = $count + 1
+        not_attempted_first = $first.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        not_attempted_last  = $stamp
+    }
+}
+
 function Get-AutoDeployOutcome {
     <#
         PURE. What a finished deploy.ps1 run amounts to, from what the
@@ -207,6 +281,9 @@ function Get-AutoDeployDecision {
         # $true when the running sha's images can be pulled back; $false or
         # $null (could not ask) is a skip: no deploy without a way back.
         [AllowNull()][object]$RollbackAvailable = $null,
+        # not_attempted runs of one sha allowed per window before retry_cap.
+        [int]$RetryCap = 3,
+        [int]$RetryWindowHours = 24,
         [ValidateSet('DryRun', 'Live')][string]$Mode = 'DryRun',
         [int]$VmFloorMB = 4096,
         [int]$WindowsFloorMB = 1536,
@@ -264,6 +341,18 @@ function Get-AutoDeployDecision {
         Add-Reason 'already_attempted' "$(Get-Short $promoted) was attempted before; one attempt per sha (remove it from attempts.json to retry)"
     } else {
         $checks.Add('not_attempted')
+    }
+    $cap = $null
+    if ($promotedOk -and -not $tried) {
+        $cap = Get-AutoDeployRetryCap -Attempts $Attempts -Sha $promoted -NowUtc $NowUtc `
+            -Cap $RetryCap -WindowHours $RetryWindowHours
+    }
+    if ($cap -and $cap.Capped) {
+        Add-Reason 'retry_cap' ("$(Get-Short $promoted) stopped before changing anything $($cap.Count) times since " +
+            "$($cap.First) (the gate refused or never answered, a pull failed, the lock was taken); " +
+            "no more tries until $($cap.Until) or a new promoted head")
+    } elseif ($cap) {
+        $checks.Add('under_retry_cap')
     }
 
     # 3. Is the host free and fit.
@@ -353,9 +442,20 @@ function Save-AutoDeployAttempt {
         [Parameter(Mandatory = $true)][string]$Result,
         [hashtable]$Extra = @{}
     )
-    $existing = @(Read-AutoDeployAttemptList -Path $Path | Where-Object { $_.sha -ne $Sha })
-    $entry = [ordered]@{ sha = $Sha; result = $Result; at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    $now = (Get-Date).ToUniversalTime()
+    $all0 = @(Read-AutoDeployAttemptList -Path $Path)
+    $prior = $all0 | Where-Object { $_.sha -eq $Sha } | Select-Object -Last 1
+    $existing = @($all0 | Where-Object { $_.sha -ne $Sha })
+    $entry = [ordered]@{ sha = $Sha; result = $Result; at = $now.ToString('yyyy-MM-ddTHH:mm:ssZ') }
     foreach ($k in $Extra.Keys) { $entry[$k] = $Extra[$k] }
+    # The retry tally survives the 'started' that precedes every run, and
+    # grows on each not_attempted (Get-AutoDeployRetryCap reads it).
+    if ($Result -eq 'not_attempted') {
+        $tally = Get-NotAttemptedTally -Previous $prior -NowUtc $now
+        foreach ($k in $tally.Keys) { $entry[$k] = $tally[$k] }
+    } elseif ($prior -and $null -ne $prior.not_attempted_count) {
+        foreach ($k in @('not_attempted_count', 'not_attempted_first', 'not_attempted_last')) { $entry[$k] = $prior.$k }
+    }
     $all = @($existing) + @([pscustomobject]$entry)
     if ($all.Count -gt 100) { $all = $all[($all.Count - 100)..($all.Count - 1)] }
     $dir = Split-Path -Parent $Path

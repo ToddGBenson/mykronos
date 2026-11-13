@@ -201,6 +201,58 @@ Describe 'one attempt per sha, counting only runs that moved the stack (61644)' 
     }
 }
 
+Describe 'the retry cap on not_attempted' {
+    BeforeAll {
+        function Get-NaEntry([int]$Count, [string]$First) {
+            return [pscustomobject]@{ sha = $script:H; result = 'not_attempted'; at = $First
+                not_attempted_count = $Count; not_attempted_first = $First; not_attempted_last = $First }
+        }
+    }
+    It 'allows three not_attempted runs, then skips with retry_cap' {
+        foreach ($c in 1..2) {
+            $in = Get-GreenInput; $in.Attempts = @(Get-NaEntry $c '2026-11-13T12:00:00Z')
+            (Get-AutoDeployDecision @in).Action | Should -Be 'Deploy' -Because "count $c"
+        }
+        $in = Get-GreenInput; $in.Attempts = @(Get-NaEntry 3 '2026-11-13T12:00:00Z')
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Skip'
+        $d.Reason | Should -Be 'retry_cap'
+    }
+    It 'lifts the cap 24 h after the first not_attempted run' {
+        $in = Get-GreenInput; $in.Attempts = @(Get-NaEntry 3 '2026-11-12T17:00:01Z')
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'retry_cap'
+        $in.Attempts = @(Get-NaEntry 3 '2026-11-12T17:00:00Z')
+        (Get-AutoDeployDecision @in).Action | Should -Be 'Deploy'
+    }
+    It 'counts up, survives a started entry and rolls over after 24 h in the memo' {
+        $p = Join-Path $TestDrive 'attempts-cap.json'
+        foreach ($i in 1..3) {
+            Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'started'
+            Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'not_attempted'
+        }
+        $e = @(Read-AutoDeployAttemptList -Path $p)[0]
+        $e.not_attempted_count | Should -Be 3
+        $in = Get-GreenInput; $in.Attempts = @(Read-AutoDeployAttemptList -Path $p); $in.NowUtc = [DateTime]::UtcNow
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'retry_cap'
+        $old = [pscustomobject]@{ sha = $script:H; result = 'not_attempted'; not_attempted_count = 3
+            not_attempted_first = '2026-11-01T00:00:00Z' }
+        $t = Get-NotAttemptedTally -Previous $old -NowUtc ([DateTime]::SpecifyKind([DateTime]'2026-11-13T17:00:00', 'Utc'))
+        $t.not_attempted_count | Should -Be 1
+        $t.not_attempted_first | Should -Be '2026-11-13T17:00:00Z'
+    }
+    It 'starts a new sha at zero' {
+        $in = Get-GreenInput
+        $in.Attempts = @([pscustomobject]@{ sha = $script:Prev; result = 'not_attempted'; not_attempted_count = 9
+                not_attempted_first = '2026-11-13T12:00:00Z' })
+        (Get-AutoDeployDecision @in).Action | Should -Be 'Deploy'
+    }
+    It 'is a blocking reason: the stuck streak alerts once on it' {
+        $s = $null; $alerts = 0
+        foreach ($i in 1..8) { $s = Step-AutoDeployStreak -Previous $s -Reason 'retry_cap'; if ($s.Alert) { $alerts++ } }
+        $alerts | Should -Be 1
+    }
+}
+
 Describe 'the rollback supply' {
     It 'skips when the running sha''s images are gone' {
         $in = Get-GreenInput; $in.RollbackAvailable = $false

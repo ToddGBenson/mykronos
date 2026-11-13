@@ -596,7 +596,10 @@ and it exited 75), production is still healthy on the previous sha. The memo
 then records `result: not_attempted` with the reason, the decision ignores
 that entry, and the next tick that passes every rule tries the same head
 again. No hand edit is needed. The incident still opens, once per sha while
-it stays open.
+it stays open. The retries are capped: after 3 `not_attempted` runs of one sha
+within 24 hours of the first, the watcher skips it with `retry_cap` (a blocking
+reason, so the stuck alert fires once) until that window ends or a new head is
+promoted.
 
 If `deploy.ps1` exits non-zero but both containers are healthy on the new
 sha (the briefing or the recorder failed after the deploy), the result is

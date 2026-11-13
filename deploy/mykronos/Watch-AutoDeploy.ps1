@@ -152,7 +152,7 @@ function Send-HostJobRun {
 
 function Open-DeployIncident {
     # One open incident per source_ref: a sha's deploy, or a stuck reason.
-    param([string]$Ref, [string]$Title, [string]$Detail)
+    param([string]$Ref, [string]$Title, [string]$Detail, [string]$Severity = 'error')
     try {
         $open = @(Invoke-Hub -Method 'GET' -Path '/api/ops/devops/incidents?limit=100' -Body $null)
         $already = $open | Where-Object {
@@ -163,7 +163,7 @@ function Open-DeployIncident {
         Write-Host "WARN could not list incidents: $($_.Exception.Message)" -ForegroundColor Yellow
     }
     $body = @{
-        room = 'devops'; severity = 'error'; priority = 'high'
+        room = 'devops'; severity = $Severity; priority = $(if ($Severity -eq 'error') { 'high' } else { 'medium' })
         title = $Title
         impact = $Title.Substring(0, [Math]::Min(64, $Title.Length))
         detail = ($Detail + " Stop it: Disable-ScheduledTask -TaskName 'MyKronos Auto Deploy'.")
@@ -361,7 +361,13 @@ try {
             } else {
                 "Nothing changed, so $s12 is not counted as attempted and the next tick that passes every rule tries it again."
             })
-        $incident = Open-DeployIncident -Ref "mykronos-auto-deploy:$sha" -Title "MyKronos auto-deploy of $s12 $result" -Detail (
+        # success_with_warning: the deploy succeeded (healthy on H) and a
+        # later step failed. Said as a warning, not an error.
+        $sev = $(if ($result -eq 'success_with_warning') { 'warn' } else { 'error' })
+        $title = $(if ($result -eq 'success_with_warning') {
+                "MyKronos auto-deploy of $s12 succeeded with a warning (exit $code)"
+            } else { "MyKronos auto-deploy of $s12 $result" })
+        $incident = Open-DeployIncident -Ref "mykronos-auto-deploy:$sha" -Title $title -Severity $sev -Detail (
             "Watch-AutoDeploy.ps1 ran deploy.ps1 -Tag $sha -Registry $Registry. result=$result exit=$code ($($outcome.Why)) " +
             "backend=$($after.Backend) frontend=$($after.Frontend) running=$(Get-Short $after.Sha) rollback=$rollback. " +
             "Output: $deployLog" + $(if ($rollbackLog) { "; rollback output: $rollbackLog." } else { '.' }) + " $retry")
