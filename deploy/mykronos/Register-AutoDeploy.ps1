@@ -29,7 +29,8 @@
                  reach Docker on this host.
       Instances  IgnoreNew: a tick that fires during a deploy is dropped,
                  never queued and never run beside it
-      Limit      3 hours per run
+      Limit      4 hours per run (a deploy waits up to 90 min, a rollback
+                 another 90: the limit must never be what stops it)
 
     STOP IT
       Disable-ScheduledTask -TaskName 'MyKronos Auto Deploy'     # pause
@@ -62,13 +63,13 @@ $argLine = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode
 $action = New-ScheduledTaskAction -Execute $pwsh -Argument $argLine -WorkingDirectory $PSScriptRoot
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMin)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $logon = $(if ($UsePassword) { 'Password' } else { 'S4U' })
 $stateDir = Join-Path $env:LOCALAPPDATA 'mykronos\auto-deploy'
 
 Write-Host "Task   : $TaskName"
-Write-Host "Every  : $IntervalMin minutes (IgnoreNew, 3 h limit)"
+Write-Host "Every  : $IntervalMin minutes (IgnoreNew, 4 h limit)"
 Write-Host "Runs   : $pwsh $argLine"
 Write-Host "As     : $user ($logon, limited)"
 if ($Live) {
@@ -78,9 +79,11 @@ if ($Live) {
 }
 
 if ($PSCmdlet.ShouldProcess($TaskName, "register every $IntervalMin minutes, mode $mode")) {
+    # Register-ScheduledTask takes -Principal OR -User/-Password/-RunLevel:
+    # they are disjoint parameter sets, so the password path names no
+    # principal.
     if ($UsePassword) {
         $cred = Get-Credential -UserName $user -Message "Password for the '$TaskName' task"
-        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Password -RunLevel Limited
     } else {
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited
     }
@@ -93,10 +96,15 @@ if ($PSCmdlet.ShouldProcess($TaskName, "register every $IntervalMin minutes, mod
         Action      = $action
         Trigger     = $trigger
         Settings    = $settings
-        Principal   = $principal
         Description = "MyKronos deploys itself after Concourse promote (TheHub #61610). Mode $mode. Stop: Disable-ScheduledTask -TaskName '$TaskName'."
     }
-    if ($UsePassword) { $taskArgs['User'] = $user; $taskArgs['Password'] = $cred.GetNetworkCredential().Password }
+    if ($UsePassword) {
+        $taskArgs['User'] = $user
+        $taskArgs['Password'] = $cred.GetNetworkCredential().Password
+        $taskArgs['RunLevel'] = 'Limited'
+    } else {
+        $taskArgs['Principal'] = $principal
+    }
     Register-ScheduledTask @taskArgs | Out-Null
     Write-Host "Registered '$TaskName' ($mode). First run in about a minute."
 }

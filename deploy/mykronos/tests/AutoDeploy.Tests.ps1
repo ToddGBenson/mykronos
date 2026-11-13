@@ -24,7 +24,8 @@ BeforeAll {
             VmFreeMB      = 5000
             WindowsFreeMB = 4000
             NowUtc        = $script:Noon
-            AttemptedShas = @()
+            Attempts      = @()
+            RollbackAvailable = $true
             Mode          = 'Live'
         }
     }
@@ -95,14 +96,14 @@ Describe 'Get-AutoDeployDecision' {
     }
 
     It 'makes one attempt per sha' {
-        $in = Get-GreenInput; $in.AttemptedShas = @($script:Prev, $script:H)
+        $in = Get-GreenInput; $in.Attempts = @($script:Prev, $script:H)
         $d = Get-AutoDeployDecision @in
         $d.Action | Should -Be 'Skip'
         $d.Reason | Should -Be 'already_attempted'
     }
 
     It 'is not blocked by an attempt of a different sha' {
-        $in = Get-GreenInput; $in.AttemptedShas = @($script:Prev)
+        $in = Get-GreenInput; $in.Attempts = @($script:Prev)
         (Get-AutoDeployDecision @in).Action | Should -Be 'Deploy'
     }
 
@@ -175,6 +176,114 @@ Describe 'Get-AutoDeployDecision' {
         $d.Checks | Should -Contain 'promoted_is_main_head'
         $d.Checks | Should -Contain 'vault_unsealed'
         $d.Checks | Should -Contain 'outside_quiet_hours'
+    }
+}
+
+Describe 'one attempt per sha, counting only runs that moved the stack (61644)' {
+    It 'counts a memo entry that moved the stack or died after starting' {
+        foreach ($r in @('started', 'success', 'failed', 'rolled_back', 'rollback_failed', 'timeout')) {
+            $in = Get-GreenInput; $in.Attempts = @([pscustomobject]@{ sha = $script:H; result = $r })
+            (Get-AutoDeployDecision @in).Reason | Should -Be 'already_attempted' -Because $r
+        }
+    }
+    It 'ignores a not_attempted entry, so the head is retried without editing the memo' {
+        $in = Get-GreenInput; $in.Attempts = @([pscustomobject]@{ sha = $script:H; result = 'not_attempted' })
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Deploy'
+        $d.Checks | Should -Contain 'not_attempted'
+    }
+    It 'round-trips through the memo file' {
+        $p = Join-Path $TestDrive 'attempts-61644.json'
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'started'
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'not_attempted' -Extra @{ why = 'gate refused' }
+        $in = Get-GreenInput; $in.Attempts = @(Read-AutoDeployAttemptList -Path $p)
+        (Get-AutoDeployDecision @in).Action | Should -Be 'Deploy'
+    }
+}
+
+Describe 'the rollback supply' {
+    It 'skips when the running sha''s images are gone' {
+        $in = Get-GreenInput; $in.RollbackAvailable = $false
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Skip'
+        $d.Reason | Should -Be 'rollback_unavailable'
+    }
+    It 'skips when the supply could not be checked' {
+        $in = Get-GreenInput; $in.RollbackAvailable = $null
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'rollback_unavailable'
+    }
+    It 'does not ask for a way back when production already runs the sha' {
+        $in = Get-GreenInput; $in.RunningSha = $script:H; $in.RollbackAvailable = $false
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'already_running'
+    }
+}
+
+Describe 'Get-AutoDeployOutcome' {
+    It 'is success on exit 0 healthy on the new sha' {
+        $o = Get-AutoDeployOutcome -Code 0 -HealthyOnNew $true -HealthyOnPrevious $false -PreviousKnown $true
+        $o.Result | Should -Be 'success'; $o.Counted | Should -BeTrue; $o.Rollback | Should -BeFalse
+    }
+    It 'does not roll back a non-zero exit that left both containers healthy on the new sha' {
+        $o = Get-AutoDeployOutcome -Code 1 -HealthyOnNew $true -HealthyOnPrevious $false -PreviousKnown $true
+        $o.Result | Should -Be 'success_with_warning'; $o.Rollback | Should -BeFalse; $o.Counted | Should -BeTrue
+    }
+    It 'gives the attempt back when deploy.ps1 stopped before changing the stack (gate, pull, lock)' {
+        foreach ($c in @(1, 75)) {
+            $o = Get-AutoDeployOutcome -Code $c -HealthyOnNew $false -HealthyOnPrevious $true -PreviousKnown $true
+            $o.Result | Should -Be 'not_attempted'; $o.Counted | Should -BeFalse; $o.Rollback | Should -BeFalse
+        }
+    }
+    It 'rolls back a changed, unhealthy stack' {
+        $o = Get-AutoDeployOutcome -Code 1 -HealthyOnNew $false -HealthyOnPrevious $false -PreviousKnown $true
+        $o.Result | Should -Be 'failed'; $o.Rollback | Should -BeTrue; $o.Counted | Should -BeTrue
+    }
+    It 'rolls back on exit 0 when the new stack is not healthy' {
+        (Get-AutoDeployOutcome -Code 0 -HealthyOnNew $false -HealthyOnPrevious $false -PreviousKnown $true).Rollback | Should -BeTrue
+    }
+    It 'cannot roll back without a previous tag' {
+        $o = Get-AutoDeployOutcome -Code 1 -HealthyOnNew $false -HealthyOnPrevious $false -PreviousKnown $false
+        $o.Result | Should -Be 'failed'; $o.Rollback | Should -BeFalse
+    }
+    It 'leaves a timed-out deploy alone' {
+        $o = Get-AutoDeployOutcome -Code 124 -HealthyOnNew $false -HealthyOnPrevious $false -PreviousKnown $true
+        $o.Result | Should -Be 'timeout'; $o.Rollback | Should -BeFalse; $o.Counted | Should -BeTrue
+    }
+    It 'rolls back a healthy stack under -SimulateFailedHealth' {
+        $o = Get-AutoDeployOutcome -Code 0 -HealthyOnNew $true -HealthyOnPrevious $false -PreviousKnown $true -Simulate $true
+        $o.Result | Should -Be 'failed'; $o.Rollback | Should -BeTrue
+    }
+}
+
+Describe 'Step-AutoDeployStreak' {
+    It 'alerts once, on the sixth tick of the same blocking reason' {
+        $s = $null; $alerts = 0
+        foreach ($i in 1..10) {
+            $s = Step-AutoDeployStreak -Previous $s -Reason 'lock_held'
+            if ($s.Alert) { $alerts++; $s.Count | Should -Be 6 }
+        }
+        $alerts | Should -Be 1
+        $s.Count | Should -Be 10
+    }
+    It 'restarts the count when the reason changes' {
+        $s = $null
+        foreach ($i in 1..5) { $s = Step-AutoDeployStreak -Previous $s -Reason 'lock_held' }
+        $s = Step-AutoDeployStreak -Previous $s -Reason 'vault_sealed'
+        $s.Count | Should -Be 1
+        $s.Alert | Should -BeFalse
+    }
+    It 'never counts waiting states' {
+        foreach ($r in @('ready', 'quiet_hours', 'already_running', 'already_attempted', 'main_ahead_of_promote')) {
+            $s = $null
+            foreach ($i in 1..8) { $s = Step-AutoDeployStreak -Previous $s -Reason $r; $s.Alert | Should -BeFalse }
+        }
+    }
+    It 're-arms after the streak breaks' {
+        $s = $null
+        foreach ($i in 1..6) { $s = Step-AutoDeployStreak -Previous $s -Reason 'lock_held' }
+        $s = Step-AutoDeployStreak -Previous $s -Reason 'already_running'
+        $hit = $false
+        foreach ($i in 1..6) { $s = Step-AutoDeployStreak -Previous $s -Reason 'lock_held'; if ($s.Alert) { $hit = $true } }
+        $hit | Should -BeTrue
     }
 }
 

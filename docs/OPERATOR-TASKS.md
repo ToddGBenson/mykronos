@@ -501,13 +501,23 @@ failed:
 |---|---|
 | a `promote` build succeeded, and its sha is main's head (a newer main head means wait for its promote) | `no_promoted_build`, `main_unread`, `main_ahead_of_promote` |
 | production does not already run it, and the running sha can be read (it is the rollback target) | `already_running`, `running_unread` |
-| it was never attempted: **one attempt per sha**, whatever the result | `already_attempted` |
+| the images of the sha production runs now are on this host and in the registry, so a failed deploy has a way back | `rollback_unavailable` |
+| it was never attempted: **one attempt per sha**. Only a run that moved the stack, or died after it started, counts (see the carve-out below) | `already_attempted` |
 | no MyKronos deploy holds the lock, and no TheHub deploy holds its own | `lock_held`, `thehub_deploy_running` |
 | Vault is unsealed | `vault_sealed`, `vault_unread` |
 | the Docker VM has at least 4096 MB available, Windows at least 1536 MB free | `vm_memory_low`, `windows_memory_low`, `*_unread` |
 | it is not 22:00–07:00 Arizona time | `quiet_hours` |
 
 "Could not read" is always a skip, never a pass.
+
+**A skip that does not end is reported once.** When the same blocking reason
+(a held lock, a sealed Vault, low memory, an unreadable source, no way back)
+is the headline for 6 ticks in a row (an hour), the watcher writes one
+`stuck` line to the JSONL and, in Live, sends one failed host-job run and
+opens one Hub incident (`source_ref mykronos-auto-deploy:stuck:<reason>`).
+Waiting states are never reported: quiet hours, already running, already
+attempted, waiting for promote. The usual cause is a lock left by a run that
+was killed; check nothing is running and remove the lock directory.
 
 ### Steps
 
@@ -579,12 +589,36 @@ The failed sha is **not retried**. A new promoted main head re-arms the
 watcher. To retry the same sha after fixing the cause, remove its entry from
 `%LOCALAPPDATA%\mykronos\auto-deploy\attempts.json`.
 
+**The carve-out: a deploy that changed nothing is not an attempt.** When
+`deploy.ps1` stops before it touches the stack (the risk gate refused it or
+never answered within its wait, a pull failed, another deploy held the lock
+and it exited 75), production is still healthy on the previous sha. The memo
+then records `result: not_attempted` with the reason, the decision ignores
+that entry, and the next tick that passes every rule tries the same head
+again. No hand edit is needed. The incident still opens, once per sha while
+it stays open.
+
+If `deploy.ps1` exits non-zero but both containers are healthy on the new
+sha (the briefing or the recorder failed after the deploy), the result is
+`success_with_warning` and nothing is rolled back.
+
+Before it deploys, the watcher checks that both images of the running sha
+are still on this host and in the registry (`rollback_unavailable` if not).
+`deploy.ps1` has no option to protect a sha from registry retention, so do not
+run `deploy\concourse\Invoke-RegistryRetention.ps1 -Apply` while a deploy is
+running, and always pass it `-KeepShas` with the running sha.
+
 A `deploy.ps1` still running after 90 minutes is left running, not killed,
 and the lock stays held: every later tick says `lock_held` until a person
 checks and removes the lock directory.
 
 ### Expected, and not a bug
 
+- The task's run limit is 4 hours. A deploy waits up to 90 minutes and a
+  rollback another 90, so the limit never stops a run part way.
+- The Hub answers 422 for the host job `mykronos-auto-deploy` until TheHub
+  allow-lists it (a one-line TheHub change). The watcher logs this and
+  carries on, and `decisions.jsonl` keeps the record.
 - `running_unread` while the backend container is down: with no running sha
   there is nothing to roll back to, so the watcher will not deploy over it.
   Deploy by hand.

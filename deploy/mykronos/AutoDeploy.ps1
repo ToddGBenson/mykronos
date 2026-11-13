@@ -28,8 +28,15 @@
       running_unread        the running image's sha could not be read, so
                             there would be nothing to roll back to
       already_running       production already runs the promoted sha
+      rollback_unavailable  the images of the sha production runs now are
+                            not on this host and in the registry, so a
+                            failed deploy would have no way back
       already_attempted     this sha was attempted before: one attempt per
-                            sha, whatever the result
+                            sha. Only a run that moved the stack (or died
+                            after it started) counts; a deploy.ps1 that
+                            stopped before changing anything (the risk gate
+                            refused or never answered, a pull failed, the
+                            lock was taken: result `not_attempted`) does not
       lock_held             a MyKronos deploy holds the lock
       thehub_deploy_running TheHub's deploy holds its lock (one deploy on the
                             host at a time; they share the memory)
@@ -78,6 +85,97 @@ function Test-QuietHour {
     return ($hour -ge $StartHour -or $hour -lt $EndHour)
 }
 
+function Test-AutoDeployAttempted {
+    # PURE. True when the memo holds an entry for Sha that counts as the one
+    # attempt: anything but 'not_attempted'. A bare string is a sha that
+    # counts.
+    param([AllowNull()][object[]]$Attempts, [string]$Sha)
+    foreach ($a in @($Attempts)) {
+        if ($null -eq $a) { continue }
+        if ($a -is [string]) { $aSha = $a; $aResult = 'started' }
+        else { $aSha = [string]$a.sha; $aResult = [string]$a.result }
+        if ($aResult -eq 'not_attempted') { continue }
+        if (Test-ShaMatch $Sha $aSha) { return $true }
+    }
+    return $false
+}
+
+function Get-AutoDeployOutcome {
+    <#
+        PURE. What a finished deploy.ps1 run amounts to, from what the
+        watcher saw afterwards:
+          Code              deploy.ps1's exit code (124 = still running)
+          HealthyOnNew      both containers healthy and the backend on H
+          HealthyOnPrevious both healthy and the backend still on the sha
+                            that ran before
+          PreviousKnown     a rollback target was recorded
+          Simulate          -SimulateFailedHealth: treat the new stack as
+                            failed whatever it reports
+        Returns Result, Counted (does this spend the sha's one attempt),
+        Rollback (should the watcher roll back) and Why.
+    #>
+    param(
+        [int]$Code,
+        [bool]$HealthyOnNew,
+        [bool]$HealthyOnPrevious,
+        [bool]$PreviousKnown,
+        [bool]$Simulate = $false
+    )
+    function Format-Outcome([string]$Result, [bool]$Counted, [bool]$Rollback, [string]$Why) {
+        return [pscustomobject]@{ Result = $Result; Counted = $Counted; Rollback = $Rollback; Why = $Why }
+    }
+    if ($Code -eq 124) {
+        return (Format-Outcome 'timeout' $true $false 'deploy.ps1 still running; left running, lock held')
+    }
+    if ($HealthyOnNew -and -not $Simulate) {
+        if ($Code -eq 0) { return (Format-Outcome 'success' $true $false 'healthy on the new sha') }
+        # The deploy's intent was met; something after it (the briefing,
+        # the recorder) exited non-zero. Rolling back a healthy, correct
+        # stack would be the worse outcome.
+        return (Format-Outcome 'success_with_warning' $true $false "deploy.ps1 exited $Code but both containers are healthy on the new sha")
+    }
+    if ($HealthyOnPrevious -and -not $Simulate) {
+        # deploy.ps1 stopped before it changed the stack: the risk gate
+        # refused or never answered, a pull failed, the lock was taken (75).
+        # Nothing moved, so the sha's one attempt is not spent.
+        return (Format-Outcome 'not_attempted' $false $false "deploy.ps1 exited $Code before changing the stack; production is unchanged and healthy")
+    }
+    if (-not $PreviousKnown) {
+        return (Format-Outcome 'failed' $true $false 'no previous sha was recorded; rollback impossible')
+    }
+    return (Format-Outcome 'failed' $true $true 'the stack changed and is not healthy on the new sha')
+}
+
+function Step-AutoDeployStreak {
+    <#
+        PURE. Counts consecutive ticks whose headline is the same blocking
+        reason, so a watcher that is stuck (a lock left by a killed run, a
+        sealed Vault, an unreadable Docker) says so once instead of skipping
+        silently forever. Waiting states are not blocking: ready, quiet
+        hours, already running, already attempted, waiting for promote.
+        Returns the new streak (Reason, Count, Alerted) and Alert: $true on
+        exactly the tick the count reaches Threshold, once per streak.
+    #>
+    param(
+        [AllowNull()][object]$Previous,
+        [AllowNull()][string]$Reason,
+        [int]$Threshold = 6
+    )
+    $waiting = @('ready', 'quiet_hours', 'already_running', 'already_attempted', 'main_ahead_of_promote')
+    if (-not $Reason -or $waiting -contains $Reason) {
+        return [pscustomobject]@{ Reason = $Reason; Count = 0; Alerted = $false; Alert = $false }
+    }
+    $count = 1
+    $alerted = $false
+    if ($Previous -and ([string]$Previous.Reason) -eq $Reason) {
+        $count = [int]$Previous.Count + 1
+        $alerted = [bool]$Previous.Alerted
+    }
+    $alert = ($count -ge $Threshold -and -not $alerted)
+    if ($alert) { $alerted = $true }
+    return [pscustomobject]@{ Reason = $Reason; Count = $count; Alerted = $alerted; Alert = $alert }
+}
+
 function Get-AutoDeployDecision {
     <#
         PURE. Returns:
@@ -103,7 +201,12 @@ function Get-AutoDeployDecision {
         [AllowNull()][object]$VmFreeMB = $null,
         [AllowNull()][object]$WindowsFreeMB = $null,
         [Parameter(Mandatory = $true)][DateTime]$NowUtc,
-        [AllowNull()][string[]]$AttemptedShas = @(),
+        # The attempts memo: objects with .sha and .result, or bare shas.
+        # An entry whose result is 'not_attempted' is ignored.
+        [AllowNull()][object[]]$Attempts = @(),
+        # $true when the running sha's images can be pulled back; $false or
+        # $null (could not ask) is a skip: no deploy without a way back.
+        [AllowNull()][object]$RollbackAvailable = $null,
         [ValidateSet('DryRun', 'Live')][string]$Mode = 'DryRun',
         [int]$VmFloorMB = 4096,
         [int]$WindowsFloorMB = 1536,
@@ -148,11 +251,15 @@ function Get-AutoDeployDecision {
         Add-Reason 'already_running' "production already runs $(Get-Short $promoted)"
     } else {
         $checks.Add('production_behind')
+        if ($RollbackAvailable -eq $true) {
+            $checks.Add('rollback_available')
+        } else {
+            Add-Reason 'rollback_unavailable' ("the images of $(Get-Short $RunningSha), which production runs now, " +
+                'could not be found on this host and in the registry: a failed deploy would have no way back')
+        }
     }
     $tried = $false
-    foreach ($a in @($AttemptedShas)) {
-        if ($promotedOk -and (Test-ShaMatch $promoted $a)) { $tried = $true }
-    }
+    if ($promotedOk -and (Test-AutoDeployAttempted -Attempts $Attempts -Sha $promoted)) { $tried = $true }
     if ($tried) {
         Add-Reason 'already_attempted' "$(Get-Short $promoted) was attempted before; one attempt per sha (remove it from attempts.json to retry)"
     } else {
@@ -374,6 +481,59 @@ function Get-WindowsFreeMB {
     } catch {
         return $null
     }
+}
+
+function Get-RollbackImage {
+    <#
+        Can the sha production runs now be deployed again? deploy.ps1 pulls
+        "$Registry/<image>:<tag>" for the backend and the frontend, so both
+        must be in the registry; they are checked on this host too (docker
+        image inspect). The tag may be the full sha or a prefix a hand
+        deploy used, so the local tags are searched for either.
+        Returns Available ($true, $false, $null = could not ask), Tag, Detail.
+    #>
+    param(
+        [string]$Sha,
+        [string]$Registry = 'localhost:5000',
+        [string[]]$Images = @('mykronos-backend', 'mykronos-frontend')
+    )
+    function Format-Answer($Available, [string]$Tag, [string]$Detail) {
+        return [pscustomobject]@{ Available = $Available; Tag = $Tag; Detail = $Detail }
+    }
+    if (-not $Sha) { return (Format-Answer $null $null 'no running sha') }
+    # ::1 resets on this host; the registry answers on 127.0.0.1.
+    $api = 'http://' + ($Registry -replace '^localhost', '127.0.0.1')
+    $accept = 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, ' +
+        'application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
+    $tag = $null
+    foreach ($name in $Images) {
+        try {
+            $local = @(docker images --format '{{.Tag}}' "$Registry/$name" 2>$null)
+            if ($LASTEXITCODE -ne 0) { return (Format-Answer $null $null 'docker images failed') }
+        } catch {
+            return (Format-Answer $null $null 'docker images failed')
+        }
+        if ($tag -and ($local -contains $tag)) {
+            $t = $tag
+        } else {
+            $match = @($local | Where-Object { Test-ShaMatch $_ $Sha } | Sort-Object Length -Descending)
+            if ($match.Count -eq 0) { return (Format-Answer $false $null "no local $Registry/$name tag for $Sha") }
+            $t = [string]$match[0]
+        }
+        docker image inspect "$Registry/${name}:$t" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { return (Format-Answer $false $null "docker image inspect $Registry/${name}:$t failed") }
+        try {
+            Invoke-WebRequest -Method Head -Uri "$api/v2/$name/manifests/$t" -Headers @{ Accept = $accept } `
+                -TimeoutSec 15 -ErrorAction Stop | Out-Null
+        } catch {
+            $status = $null
+            try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = $null }
+            if ($status -eq 404) { return (Format-Answer $false $null "the registry has no ${name}:$t (retention?)") }
+            return (Format-Answer $null $null "the registry did not answer for ${name}:$t")
+        }
+        if (-not $tag) { $tag = $t }
+    }
+    return (Format-Answer $true $tag "both images present as :$tag")
 }
 
 function Get-StackState {
