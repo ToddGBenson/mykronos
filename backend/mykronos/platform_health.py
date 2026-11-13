@@ -145,7 +145,9 @@ def assess_ingestion(
     return DependencyHealth(name="ingestion", reachable=False, detail=result.detail + why)
 
 
-def assess_reviewer_key(probe: Any | None) -> DependencyHealth:
+def assess_reviewer_key(
+    probe: Any | None, *, stale: bool = False, now: datetime | None = None
+) -> DependencyHealth:
     """The "platform reviewer key" row (TheHub #61614): state and as-of.
 
     A state, a time and an HTTP status, and nothing of the key itself - no
@@ -159,6 +161,29 @@ def assess_reviewer_key(probe: Any | None) -> DependencyHealth:
             reachable=True,
             configured=False,
             detail="not probed yet: the hourly probe has not run",
+        )
+    if stale:
+        moment = now or datetime.now(UTC)
+        as_of = probe.as_of if probe.as_of.tzinfo else probe.as_of.replace(tzinfo=UTC)
+        hours = int((moment - as_of).total_seconds() // 3600)
+        status = f" (HTTP {probe.http_status})" if probe.http_status else ""
+        return DependencyHealth(
+            name=name,
+            reachable=False,
+            detail=(
+                f"stale: last probe {probe.state}{status} at {as_of:%Y-%m-%d %H:%MZ}, "
+                f"{hours}h ago; the hourly probe has stopped"
+            ),
+        )
+    if probe.state == "off":
+        return DependencyHealth(
+            name=name,
+            reachable=True,
+            configured=False,
+            detail=(
+                "off: probing is disabled (no key or reviewer off) as of "
+                f"{probe.as_of:%Y-%m-%d %H:%MZ}"
+            ),
         )
     stamp = probe.as_of.strftime("%Y-%m-%d %H:%MZ")
     status = f" (HTTP {probe.http_status})" if probe.http_status else ""
