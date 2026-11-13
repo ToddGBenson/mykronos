@@ -34,7 +34,12 @@ from mykronos.db import Database
 from mykronos.db.models import GatingLaneState, JobRun, RepoOnboarding, capability_config_for
 from mykronos.github.client import GitHubError
 from mykronos.github.factory import GitHubClientFactory
-from mykronos.github.secrets import seal_secret
+from mykronos.github.secrets import (
+    PERMISSION_GAP_STATUSES,
+    dependabot_gap_reason,
+    seal_secret,
+    sync_dependabot_secret,
+)
 from mykronos.installer import DEFAULT_SECRET_NAME
 from mykronos.knowledge import KnowledgeStore
 from mykronos.knowledge import PurgeResult as KnowledgePurgeResult
@@ -110,11 +115,18 @@ class RotationResult:
     #: "deferred" is what let TheHub be reported as due for rotation with 88
     #: days left on its clock.
     unverified: list[str] = field(default_factory=list)
+    #: Repositories whose Actions secret is delivered and whose *Dependabot*
+    #: copy could not be written, with the reason (TheHub #60855). Usually the
+    #: App lacks `dependabot_secrets: write`; the reason says so and names the
+    #: grant. Not `failed`: the rotation itself succeeded, or was correctly
+    #: not attempted, and the operator's action is a permission, not a retry.
+    dependabot_blocked: list[tuple[str, str]] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"rotated {len(self.rotated)}, resynced {len(self.resynced)}, "
             f"deferred {len(self.deferred)}, unverified {len(self.unverified)}, "
+            f"dependabot blocked {len(self.dependabot_blocked)}, "
             f"failed {len(self.failed)}, purged {self.purged}"
         )
 
@@ -232,6 +244,28 @@ def deliveries_awaiting_operator(db: Database) -> list[TokenDelivery]:
                     scanned_by=scanned_by,
                 )
             )
+
+        # A Dependabot copy the sweep tried to write and could not (TheHub
+        # #60855). Only a *recorded* refusal is a person's work: a token
+        # nothing has tried to deliver yet is the sweep's next run, and a
+        # repository the sweep does not drive never records one. Any scanner,
+        # because the remedy is a permission on the App, not a hand rotation.
+        for repo in sorted(registry.dependabot_unsynced_repos()):
+            if repo not in scanners:
+                continue
+            token = registry.active_token_for(repo)
+            if token is None or not token.dependabot_sync_blocker:
+                continue
+            waiting.append(
+                TokenDelivery(
+                    repo_full_name=repo,
+                    state="dependabot_unsynced",
+                    issued_at=token.issued_at,
+                    rotate_after=token.rotate_after,
+                    scanned_by=scanners[repo],
+                    reason=token.dependabot_sync_blocker,
+                )
+            )
         return waiting
 
 
@@ -261,6 +295,11 @@ async def rotate_ingestion_tokens(
         registry = TokenRegistry(session, overlap_hours=overlap_hours)
         due = set(registry.due_for_rotation())
         unsynced = set(registry.unsynced_repos())
+        # The Dependabot store is the third reason to visit a repository
+        # (TheHub #60855). Walked with the other two, but a repository that is
+        # *only* here is handled differently below: its Actions token works,
+        # so it is probed before anything is rotated.
+        dependabot_pending = set(registry.dependabot_unsynced_repos())
 
         onboardings = {
             row.github_repo_full_name: row
@@ -271,12 +310,25 @@ async def rotate_ingestion_tokens(
             ).scalars()
         }
 
-    for repo in sorted(due | unsynced):
+    def _record_dependabot_gap(repo: str, reason: str) -> None:
+        with db.session() as session:
+            TokenRegistry(session, overlap_hours=overlap_hours).mark_dependabot_unsynced(
+                repo, reason
+            )
+        result.dependabot_blocked.append((repo, reason))
+
+    for repo in sorted(due | unsynced | dependabot_pending):
         onboarding = onboardings.get(repo)
         if onboarding is None:
             # Offboarded or suspended. Its token is revoked or dormant; there
             # is no repo to write a secret to.
             continue
+
+        # Actions delivery is confirmed and only the Dependabot copy is
+        # missing. Nothing below is a reason to call such a token due or
+        # unverified; it is a reason to write one more secret, if the job
+        # can.
+        only_dependabot = repo not in due and repo not in unsynced
 
         # A rotated token is only useful where the scanner can read it, and
         # the only delivery path this job has is a GitHub Actions secret
@@ -291,6 +343,13 @@ async def rotate_ingestion_tokens(
         # repository as soon as its overlap expires. Doing nothing loudly beats
         # doing the wrong thing quietly.
         if onboarding.scanned_by != "github_actions":
+            if only_dependabot:
+                # Its Actions token is confirmed delivered, and D-086 says
+                # this job writes nothing to a repository it does not drive.
+                # A Dependabot copy serves Actions lanes, which this
+                # repository declares it has retired, so there is nothing
+                # to deliver and nobody to tell.
+                continue
             if repo in due:
                 # Matches on the word 'token'. Logs a repo name and a command, never a token.
                 # nosemgrep: python-logger-credential-disclosure
@@ -336,6 +395,18 @@ async def rotate_ingestion_tokens(
                     if has_pipeline
                     else "Concourse could not be reached to rule one out"
                 )
+                if only_dependabot:
+                    # Delivering the Dependabot copy takes a rotation (the
+                    # plaintext is not stored), and a rotation here is what
+                    # D-097 forbids. Recorded, not skipped: the work queue
+                    # says the copy is missing and why.
+                    _record_dependabot_gap(
+                        repo,
+                        f"The Dependabot secret is not written: {repo} {blocker}, so "
+                        "this job will not rotate to deliver it. Rotate by hand: "
+                        f"{hand_rotation_instruction(repo)}.",
+                    )
+                    continue
                 if repo in due:
                     # Matches on the word 'token'. Logs a repo name and a reason, never a token.
                     # nosemgrep: python-logger-credential-disclosure
@@ -356,11 +427,31 @@ async def rotate_ingestion_tokens(
         github = github_factory.for_installation(onboarding.github_installation_id)
 
         try:
+            if only_dependabot:
+                # The only way to deliver a Dependabot copy is a rotation,
+                # because the plaintext is not stored. While the App lacks
+                # the permission that rotation would churn a working
+                # credential on every run and deliver nothing, so GitHub is
+                # asked for the Dependabot key first and the token is left
+                # alone until the answer is yes (TheHub #60855).
+                try:
+                    await github.get_dependabot_public_key(repo)
+                except GitHubError as exc:
+                    if exc.status in PERMISSION_GAP_STATUSES:
+                        _record_dependabot_gap(repo, dependabot_gap_reason(exc.status, str(exc)))
+                        continue
+                    raise
+
             with db.session() as session:
                 registry = TokenRegistry(session, overlap_hours=overlap_hours)
                 if repo in due:
                     plaintext = registry.rotate(repo, label="rotation-job")
                     action = "rotated"
+                elif only_dependabot:
+                    # Delivered to Actions; the Dependabot copy is missing
+                    # and the permission is now held.
+                    plaintext = registry.rotate(repo, label="dependabot-resync")
+                    action = "resynced"
                 else:
                     # Already rotated; only the secret write failed last time.
                     plaintext = registry.rotate(repo, label="rotation-resync")
@@ -383,6 +474,18 @@ async def rotate_ingestion_tokens(
                 )
 
             (result.rotated if action == "rotated" else result.resynced).append(repo)
+
+            # The same plaintext into the Dependabot store (TheHub #60855).
+            # After the Actions write is recorded, so a refusal here cannot
+            # undo it, and never raising, so it cannot land in `failed`.
+            outcome = await sync_dependabot_secret(github, repo, secret_name, plaintext)
+            if outcome.synced:
+                with db.session() as session:
+                    TokenRegistry(session, overlap_hours=overlap_hours).mark_dependabot_synced(
+                        repo
+                    )
+            else:
+                _record_dependabot_gap(repo, outcome.reason)
 
         except (GitHubError, OSError) as exc:
             # Deliberately not fatal to the job: one unreachable repo must not

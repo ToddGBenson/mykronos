@@ -88,6 +88,11 @@ METHOD_PERMISSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "add_pull_request_labels": (("pull_requests", "write"),),
     "get_actions_public_key": (("secrets", "read"),),
     "put_actions_secret": (("secrets", "write"),),
+    # The Dependabot store is separate from the Actions one and sits behind
+    # its own permission, held optionally (TheHub #60855): without it the
+    # platform records the gap on the token instead of failing the install.
+    "get_dependabot_public_key": (("dependabot_secrets", "read"),),
+    "put_dependabot_secret": (("dependabot_secrets", "write"),),
     "create_check_run": (("checks", "write"),),
     "update_check_run": (("checks", "write"),),
     "get_branch_protection": (("administration", "read"),),
@@ -129,8 +134,15 @@ UNGRANTABLE_PERMISSIONS = frozenset({"organization_projects"})
 #: An App without it reports every governance control as `unknown`, with the
 #: reason and the permission named. That is the correct outcome: a permissions
 #: gap is not a security failure and must never be scored as one.
+#:
+#: `dependabot_secrets: write` is optional for the same reason (TheHub #60855).
+#: It lets the platform seal the ingestion token into a repository's Dependabot
+#: secrets, the store a Dependabot-triggered run reads; without it the Actions
+#: write still lands and the token records why its Dependabot copy is missing,
+#: which the work queue shows until the operator grants the permission.
 OPTIONAL_PERMISSIONS = {
     "administration": "read",
+    "dependabot_secrets": "write",
 }
 
 WORKFLOW_PATH_PREFIX = ".github/workflows/"
@@ -558,6 +570,21 @@ class GitHubClient(Protocol):
         self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
     ) -> None: ...
 
+    async def get_dependabot_public_key(self, repo_full_name: str) -> RepoPublicKey:
+        """The repo's *Dependabot* secrets public key (TheHub #60855).
+
+        A different key from the Actions one: a value sealed under the Actions
+        key is rejected by the Dependabot endpoint, so the two stores are two
+        reads and two writes. Behind `dependabot_secrets`, which the App holds
+        optionally; a 403 or 404 here is the permission gap, not an outage.
+        """
+
+    async def put_dependabot_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        """Create or update a Dependabot secret from ciphertext sealed under
+        `get_dependabot_public_key`'s key (TheHub #60855)."""
+
     async def pull_request_files(
         self, repo_full_name: str, number: int
     ) -> list[PullRequestFile]:
@@ -789,6 +816,13 @@ class FakeRepo:
     files: dict[str, str] = field(default_factory=dict)
     branches: dict[str, dict[str, str]] = field(default_factory=dict)
     secrets: dict[str, str] = field(default_factory=dict)
+    #: The Dependabot secret store, separate from `secrets` as GitHub's is
+    #: (TheHub #60855). A test that wants to prove what was sealed sets the
+    #: two public keys to halves of keypairs it holds and decrypts; left
+    #: `None`, each store answers with a fixed published key.
+    dependabot_secrets: dict[str, str] = field(default_factory=dict)
+    actions_public_key: RepoPublicKey | None = None
+    dependabot_public_key: RepoPublicKey | None = None
     pull_requests: list[PullRequest] = field(default_factory=list)
     #: PR number -> the files it changes.
     pull_request_files: dict[int, list[PullRequestFile]] = field(default_factory=dict)
@@ -1121,10 +1155,11 @@ class FakeGitHubClient:
     async def get_actions_public_key(self, repo_full_name: str) -> RepoPublicKey:
         self.calls.append(("get_actions_public_key", repo_full_name))
         self._require("secrets", "write", "Reading the Actions public key")
-        self._repo(repo_full_name)
-        # A fixed, published test key. Real sealing is exercised in
-        # tests/test_github.py against a generated keypair.
-        return RepoPublicKey(
+        repo = self._repo(repo_full_name)
+        # A fixed, published test key unless the test supplied its own. Real
+        # sealing is exercised in tests/test_github.py against a generated
+        # keypair.
+        return repo.actions_public_key or RepoPublicKey(
             key_id="568250167242549743",
             key_base64="2Sg8iYjAxxmI2LvUXpJjkYrMxURPc8r+dB7TJyvvcCU=",
         )
@@ -1135,6 +1170,26 @@ class FakeGitHubClient:
         self.calls.append(("put_actions_secret", f"{repo_full_name}:{name}"))
         self._require("secrets", "write", "Creating an Actions secret")
         self._repo(repo_full_name).secrets[name] = encrypted_value
+
+    async def get_dependabot_public_key(self, repo_full_name: str) -> RepoPublicKey:
+        self.calls.append(("get_dependabot_public_key", repo_full_name))
+        # GitHub answers 403 for an installation without the permission; the
+        # fake's refusal carries the same status, so the callers' 403 path is
+        # the one exercised.
+        self._require("dependabot_secrets", "write", "Reading the Dependabot public key")
+        repo = self._repo(repo_full_name)
+        # A different published key from the Actions one, as GitHub's is.
+        return repo.dependabot_public_key or RepoPublicKey(
+            key_id="012345678901234567",
+            key_base64="0aKsZv7SGBqQRRkhyp9WTXiJpls9d/aF2SdiHUHu7RA=",
+        )
+
+    async def put_dependabot_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        self.calls.append(("put_dependabot_secret", f"{repo_full_name}:{name}"))
+        self._require("dependabot_secrets", "write", "Creating a Dependabot secret")
+        self._repo(repo_full_name).dependabot_secrets[name] = encrypted_value
 
     async def create_check_run(
         self,
@@ -2019,6 +2074,21 @@ class RestGitHubClient:
         await self._json(
             "PUT",
             f"/repos/{repo_full_name}/actions/secrets/{name}",
+            json={"encrypted_value": encrypted_value, "key_id": key_id},
+        )
+
+    async def get_dependabot_public_key(self, repo_full_name: str) -> RepoPublicKey:
+        payload = await self._json(
+            "GET", f"/repos/{repo_full_name}/dependabot/secrets/public-key"
+        )
+        return RepoPublicKey(key_id=str(payload["key_id"]), key_base64=str(payload["key"]))
+
+    async def put_dependabot_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        await self._json(
+            "PUT",
+            f"/repos/{repo_full_name}/dependabot/secrets/{name}",
             json={"encrypted_value": encrypted_value, "key_id": key_id},
         )
 

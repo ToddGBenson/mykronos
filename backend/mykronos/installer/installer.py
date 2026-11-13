@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from mykronos.auth import TokenRegistry
 from mykronos.db.models import CapabilityConfig, RepoOnboarding, WorkflowInstallEvent
 from mykronos.github.client import FileChange, GitHubClient, PullRequest
-from mykronos.github.secrets import seal_secret
+from mykronos.github.secrets import seal_secret, sync_dependabot_secret
 from mykronos.installer.extra_lanes import lanes_for
 from mykronos.installer.pins import PinDecision, kept, reconcile_pins
 from mykronos.installer.templates import (
@@ -521,6 +521,19 @@ class WorkflowInstaller:
         # and the rotation job picks it up rather than leaving a repo holding
         # a credential the platform has never heard of.
         registry.mark_secret_synced(repo_full_name)
+
+        # The same plaintext into the Dependabot store, under its own key
+        # (TheHub #60855). This is the only moment the plaintext exists, so
+        # the second write happens here or needs a rotation. It never raises:
+        # the Actions write above stands on its own, and a refusal is recorded
+        # on the token, where the work queue reads it.
+        outcome = await sync_dependabot_secret(
+            self.github, repo_full_name, self.secret_name, plaintext
+        )
+        if outcome.synced:
+            registry.mark_dependabot_synced(repo_full_name)
+        else:
+            registry.mark_dependabot_unsynced(repo_full_name, outcome.reason)
         return True
 
     def _pr_body(self, plan: InstallPlan) -> str:

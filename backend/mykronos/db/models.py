@@ -349,6 +349,24 @@ class IngestionToken(Base):
     #: column existed, which is why the flag remains the thing queried.
     delivery_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
+    #: Whether this token's plaintext reached the repository's *Dependabot*
+    #: secrets, a store separate from the Actions one that `secret_synced`
+    #: tracks (TheHub #60855). A Dependabot-triggered run reads only this
+    #: store, so a token delivered to Actions alone fails every Dependabot
+    #: pull request's lanes closed.
+    #:
+    #: Separate from `secret_synced` because the two writes can succeed
+    #: independently: the Dependabot one needs a permission the App did not
+    #: hold until the operator granted it, and the Actions write must not be
+    #: held back by that.
+    dependabot_secret_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    #: Why the Dependabot copy is not there, when a write was attempted and
+    #: refused. Empty while synced, and empty for a token nothing has tried
+    #: to deliver yet. A non-empty value is what the work queue shows, so a
+    #: refusal is never a silent skip.
+    dependabot_sync_blocker: Mapped[str] = mapped_column(String(1024), default="")
+
     label: Mapped[str] = mapped_column(String(255), default="")
 
 

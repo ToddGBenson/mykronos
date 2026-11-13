@@ -21,7 +21,7 @@ from mykronos.github.client import (
     PullRequest,
     RestGitHubClient,
 )
-from mykronos.github.secrets import seal_secret
+from mykronos.github.secrets import DependabotSyncOutcome, seal_secret, sync_dependabot_secret
 
 __all__ = [
     "AppCredentials",
@@ -33,4 +33,6 @@ __all__ = [
     "PullRequest",
     "RestGitHubClient",
     "seal_secret",
+    "sync_dependabot_secret",
+    "DependabotSyncOutcome",
 ]

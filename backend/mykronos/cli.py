@@ -993,6 +993,11 @@ def main(argv: list[str] | None = None) -> int:
                         "scans are arriving before touching the credential — "
                         "rotating one whose Vault copy works is what breaks it."
                     )
+                # A third sentence for a third remedy (TheHub #60855): the
+                # Actions secret is fine and the Dependabot copy was refused,
+                # usually for a permission the App does not hold yet.
+                for repo, reason in rotation.dependabot_blocked:
+                    print(f"  NO DEPENDABOT SECRET {repo}: {reason}")
             else:
                 sync = asyncio.run(reconcile_installations(db, factory))
                 print(

@@ -28,7 +28,7 @@ import pytest
 from nacl import encoding, public
 from sqlalchemy.orm import Session
 
-from mykronos import agent_work, platform_health
+from mykronos import platform_health
 from mykronos.auth import TokenRegistry
 from mykronos.briefing import TokenDelivery
 from mykronos.config import get_settings
