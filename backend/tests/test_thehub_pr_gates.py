@@ -455,3 +455,124 @@ def test_a_branch_without_the_subset_says_so_and_fails(tmp_path) -> None:
     assert r.returncode != 0
     assert "pr-integration-subset.txt" in r.stdout
     assert not (tmp_path / "args").exists()
+
+
+# -- a requirements.txt pull request gets a verdict (TheHub #61636) ----------
+#
+# TheHub #692 (a dependency floor) changed requirements.txt, so container-tiers
+# tried `pip install -r` inside the cached develop image, which has python and
+# no pip. That printed NO VERDICT, exited 2, and the job reported failed. It
+# also merged without the regenerated committed SBOM, because nothing had judged
+# it. These tests execute the integration task's script with python3 stubbed.
+
+SBOM_TEST = "backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py"
+
+
+def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int = 0,
+                     changed: str = "backend/requirements.txt\n",
+                     req_differs: bool = True,
+                     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """The integration script with a stub python3 that logs every call."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required")
+    pr = tmp_path / "pr"
+    (pr / ".git" / "process-gates").mkdir(parents=True)
+    (pr / ".git" / "HEAD").write_text(OPEN_HEAD + "\n")
+    (pr / ".git" / "pr-number").write_text("12\n")
+    (pr / ".git" / "process-gates" / "changed").write_text(changed)
+    (pr / "scripts" / "ci").mkdir(parents=True)
+    (pr / "config" / "ci").mkdir(parents=True)
+    (pr / "config" / "ci" / "pr-integration-subset.txt").write_text("x  # y\n")
+    (pr / "backend" / "tests" / "unit" / "scripts").mkdir(parents=True)
+    (pr / SBOM_TEST).write_text("# stub\n")
+    (pr / "backend" / "requirements.txt").write_text("soupsieve>=2.8\n")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "requirements.txt").write_text("soupsieve>=2.7\n" if req_differs else "soupsieve>=2.8\n")
+    log = tmp_path / "calls"
+    (pr / "scripts" / "ci" / "container-tiers.sh").write_text(
+        f'echo "container-tiers $*" >> "{log.as_posix()}"\nexit {tiers_rc}\n')
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    py = stubs / "python3"
+    py.write_text(
+        "#!/bin/bash\n"
+        f'echo "python3 $*" >> "{log.as_posix()}"\n'
+        'case "$*" in\n'
+        f'  "-m pip --version") exit {0 if pip else 1} ;;\n'
+        f'  *pytest*) exit {sbom_rc} ;;\n'
+        "esac\nexit 0\n")
+    py.chmod(0o755)
+    script = _step("integration")["config"]["run"]["args"][-1].replace(
+        "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
+    env = {**os.environ, "PATH": f"{stubs.as_posix()}:{os.environ['PATH']}",
+           "APP_DIR": app.as_posix()}
+    r = subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+                       timeout=60, env=env)
+    calls = log.read_text().splitlines() if log.exists() else []
+    return r, calls
+
+
+def test_pip_is_bootstrapped_before_the_requirements_install(tmp_path) -> None:
+    """(a) The cached image has no pip: ensurepip must run before container-tiers
+    (whose `pip install -r` is what died in #692)."""
+    r, calls = _requirements_pr(tmp_path, 0, pip=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    ensure = [i for i, c in enumerate(calls) if "-m ensurepip" in c]
+    tiers = [i for i, c in enumerate(calls) if c.startswith("container-tiers")]
+    assert ensure and tiers and ensure[0] < tiers[0], calls
+
+
+def test_pip_is_left_alone_when_requirements_match(tmp_path) -> None:
+    _, calls = _requirements_pr(tmp_path, 0, pip=False, req_differs=False)
+    assert not any("ensurepip" in c for c in calls), calls
+
+
+def test_pip_is_left_alone_when_it_exists(tmp_path) -> None:
+    _, calls = _requirements_pr(tmp_path, 0, pip=True)
+    assert not any("ensurepip" in c for c in calls), calls
+
+
+def test_no_verdict_reports_unjudged_not_failed(tmp_path) -> None:
+    """(b) container-tiers exit 2 leaves the infra marker the hooks read, so the
+    Hub stage is errored and the check run cancelled -- never failed."""
+    r, _ = _requirements_pr(tmp_path, 2, pip=True, changed="README.md\n", req_differs=False)
+    assert r.returncode == 2, r.stdout + r.stderr
+    reason = (tmp_path / "memory-infra" / "reason").read_text()
+    assert "NO VERDICT" in reason and "not a test failure" in reason.lower()
+    assert (tmp_path / "memory-infra" / "exit_code").read_text().strip() == "2"
+
+
+def test_a_real_failure_still_leaves_no_infra_marker(tmp_path) -> None:
+    r, _ = _requirements_pr(tmp_path, 1, pip=True, changed="README.md\n", req_differs=False)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert not (tmp_path / "memory-infra").exists()
+
+
+def test_the_report_hooks_downgrade_an_infra_marker() -> None:
+    """The mapping the marker relies on: hub_report turns failed into errored,
+    and the check run turns failure into cancelled, whenever infra/reason exists."""
+    text = PIPELINE.read_text(encoding="utf-8")
+    assert 'if [ "$STATUS" = "failed" ] && [ -s infra/reason ]' in text
+    assert '[ "${CONCLUSION:-}" = "failure" ] && [ -s infra/reason ]' in text
+
+
+def test_a_requirements_change_runs_the_committed_sbom_test(tmp_path) -> None:
+    """(c) requirements.txt among the changed paths selects the SBOM test."""
+    r, calls = _requirements_pr(tmp_path, 0, pip=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert any("pytest" in c and "test_the_committed_sbom_satisfies_requirements.py" in c
+               for c in calls), calls
+
+
+def test_a_stale_sbom_fails_the_pull_request(tmp_path) -> None:
+    r, _ = _requirements_pr(tmp_path, 0, pip=True, sbom_rc=1)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "latest-python.cdx.json" in r.stdout
+    assert not (tmp_path / "memory-infra").exists(), "a stale SBOM is a verdict"
+
+
+def test_a_pull_request_without_requirements_skips_the_sbom_test(tmp_path) -> None:
+    _, calls = _requirements_pr(tmp_path, 0, pip=True, changed="README.md\n", req_differs=False)
+    assert not any("pytest" in c for c in calls), calls
