@@ -1,7 +1,8 @@
 # A vendor image on Debian, plus the package fixes its vendor has not shipped
 # yet. Built out of band by the `image-refresh` job (deploy/concourse/
 # pipelines/mykronos.yml) for the services that declare it under
-# `x-mykronos-build`: Concourse's Postgres.
+# `x-mykronos-build`. None does today: Concourse's Postgres moved to
+# postgres-gosu (TheHub #61617), which adds the same upgrade to a gosu rebuild.
 #
 # BASE_IMAGE is the vendor image pinned by digest in the recipe, so the only
 # drift is the deliberate upgrade. APT_REFRESH carries the build date and
