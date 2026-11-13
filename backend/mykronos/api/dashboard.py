@@ -8216,10 +8216,9 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
     except Exception:  # noqa: BLE001 — job health still stands
         logger.warning("Self-check failed while rendering platform health")
 
-    probe = await asyncio.to_thread(
-        reviewer_key.fresh, request.app.state.db, request.app.state.settings
-    )
-    dependencies.append(platform_health.assess_reviewer_key(probe))
+    probe = await asyncio.to_thread(reviewer_key.current, request.app.state.db)
+    stale = probe is not None and reviewer_key.is_stale(probe, request.app.state.settings)
+    dependencies.append(platform_health.assess_reviewer_key(probe, stale=stale))
 
     stall = await _ci_stall_now(request)
     health = platform_health.PlatformHealth(

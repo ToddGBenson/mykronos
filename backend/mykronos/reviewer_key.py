@@ -105,13 +105,30 @@ def fresh(
     now (the job stopped, or was never rescheduled), so readers ignore it.
     """
     row = current(db)
-    if row is None:
-        return None
-    moment = now or datetime.now(UTC)
-    age = (moment - _utc(row.as_of)).total_seconds()
-    if age > STALE_AFTER_INTERVALS * _interval(settings):
+    if row is None or is_stale(row, settings, now=now):
         return None
     return row
+
+
+def is_stale(row: ReviewerKeyProbe, settings: Any, *, now: datetime | None = None) -> bool:
+    """True when the row is older than two probe intervals (exactly two is fresh)."""
+    moment = now or datetime.now(UTC)
+    age = (moment - _utc(row.as_of)).total_seconds()
+    return age > STALE_AFTER_INTERVALS * _interval(settings)
+
+
+def reviewer_availability(
+    db: Database, settings: Any, *, now: datetime | None = None
+) -> tuple[bool | None, datetime | None]:
+    """(reviewer_available, unavailable_since): None is unknown (off, or stale)."""
+    row = current(db)
+    if row is None:
+        return True, None
+    if row.state == "off" or is_stale(row, settings, now=now):
+        return None, None
+    if row.state == "ok":
+        return True, None
+    return False, _utc(row.since)
 
 
 def unavailable_since(

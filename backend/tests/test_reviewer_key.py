@@ -338,12 +338,17 @@ class TestApprovalsSurface:
         self._record(client, "refused", 401, as_of=stale)
 
         items = client.get("/api/approvals?state=pending", headers=admin_auth).json()
-        assert items[0]["reviewer_available"] is True
+        assert items[0]["reviewer_available"] is None
         assert items[0]["reviewer_unavailable_since"] is None
         queue = client.get(
             "/api/dashboard/product-owner/review-queue", headers=admin_auth
         ).json()
         assert queue["reviewer"]["unavailable_since"] is None
+        health = client.get("/api/dashboard/platform-health", headers=admin_auth).json()
+        row = next(d for d in health["dependencies"] if d["name"] == "platform reviewer key")
+        assert row["detail"].startswith("stale: last probe refused (HTTP 401) at ")
+        assert "2h ago; the hourly probe has stopped" in row["detail"]
+        assert row["reachable"] is False
         response = _review(client, {"Authorization": f"Bearer {author['token']}"}, request)
         assert response.status_code == 503
         assert "hourly probe" not in response.text
@@ -409,3 +414,30 @@ def test_main_registers_the_probe_job(
     with TestClient(main.create_app(settings.model_copy(update={"run_jobs_in_background": True}))):
         pass
     assert reviewer_key.REVIEWER_KEY_JOB in names
+
+
+def test_the_staleness_boundary_is_two_intervals(db: Database, configured: Any) -> None:
+    settings = SimpleNamespace(reviewer_key_probe_interval_seconds=3600)
+    with db.session() as session:
+        session.add(
+            ReviewerKeyProbe(
+                id=1,
+                state="refused",
+                as_of=NOW.replace(tzinfo=None),
+                since=NOW.replace(tzinfo=None),
+                model="m",
+                http_status=401,
+            )
+        )
+    exactly = NOW + timedelta(seconds=7200)
+    assert reviewer_key.fresh(db, settings, now=exactly) is not None
+    assert reviewer_key.reviewer_availability(db, settings, now=exactly)[0] is False
+    over = NOW + timedelta(seconds=7201)
+    assert reviewer_key.fresh(db, settings, now=over) is None
+    assert reviewer_key.reviewer_availability(db, settings, now=over) == (None, None)
+    row = reviewer_key.current(db)
+    detail = platform_health.assess_reviewer_key(row, stale=True, now=over).detail
+    assert detail == (
+        "stale: last probe refused (HTTP 401) at 2026-11-13 04:00Z, 2h ago; "
+        "the hourly probe has stopped"
+    )
