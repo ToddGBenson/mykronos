@@ -650,19 +650,25 @@ anchors:
         wait_s = float(os.environ.get("MEMORY_GUARD_RETRY_WAIT_S") or "300")
         soft_s = float(os.environ.get("MEMORY_GUARD_SOFT_TIMEOUT_S") or "0")
         remaining = soft_s - first_s
+        # The second run is sized by the tier's normal full run length when the
+        # caller says it (MEMORY_GUARD_EXPECTED_S): a kill early in a long run
+        # says nothing about how long the re-run takes. Unset, the first run's
+        # own time is the estimate.
+        expected_s = float(os.environ.get("MEMORY_GUARD_EXPECTED_S") or "0")
+        run_s = max(first_s, expected_s)
         if stopped:
             decision = "no: the build was told to stop"
         elif not soft_s:
             decision = "no: this task has no soft timeout to fit a re-run in"
-        elif remaining <= first_s + wait_s:
+        elif remaining <= run_s + wait_s:
             decision = (f"no: {remaining:.0f}s of the {soft_s:.0f}s soft timeout are left and a "
-                        f"wait of up to {wait_s:.0f}s plus a second run needs more than "
-                        f"{first_s + wait_s:.0f}s")
+                        f"wait of up to {wait_s:.0f}s plus a second run of {run_s:.0f}s needs "
+                        f"more than {run_s + wait_s:.0f}s")
         else:
-            decision = "yes"
+            decision = f"yes (second run sized at {run_s:.0f}s)"
         print(f"memory-guard: {label} was killed (137) after {first_s:.0f}s; re-run: {decision}.",
               flush=True)
-        if decision == "yes":
+        if decision.startswith("yes"):
             print(f"memory-guard: waiting up to {wait_s:.0f}s for MemAvailable over "
                   f"{budget_mb} MiB, then re-running once.", flush=True)
             deadline = time.monotonic() + wait_s
@@ -1988,6 +1994,7 @@ jobs:
                     export MEMORY_GUARD_DIR="${1%.log}.oom"
                     export MEMORY_GUARD_LABEL="pytest --collect-only tests/unit tests/integration tests/security"
                     export MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S"
+                    export MEMORY_GUARD_EXPECTED_S=300
                     # [TheHub #61321] COLLECT, do not re-run. `unit` and
                     # `container-tiers` run the suite on every develop commit,
                     # and develop is linear (squash merges), so the tip is
@@ -3447,7 +3454,7 @@ jobs:
                 started=$(date +%s)
                 if command -v timeout >/dev/null 2>&1; then
                   MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
-                    MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S" \
+                    MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S" MEMORY_GUARD_EXPECTED_S=2760 \
                     python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
                     python -m pytest tests/unit -q -p no:cacheprovider \
                     --junitxml=/tmp/results/unit.xml || rc=$?
@@ -3533,6 +3540,7 @@ jobs:
                     export MEMORY_GUARD_DIR="$MEMGUARD/security"
                     export MEMORY_GUARD_LABEL="pytest tests/security"
                     export MEMORY_GUARD_SOFT_TIMEOUT_S="$SEC_SOFT_TIMEOUT_S"
+                    export MEMORY_GUARD_EXPECTED_S=600
                     if command -v timeout >/dev/null 2>&1; then
                       python -c "$MEMORY_GUARD" timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
                         python -m pytest tests/security -q -p no:cacheprovider -ra \

@@ -177,6 +177,7 @@ def _run_guard(
     soft: str | None = "1000",
     budget: str = "0",
     wait: str = "0",
+    expected: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Budget 0 means no budget kill: a real one would race the scripted exit on Linux."""
     env = {
@@ -188,6 +189,9 @@ def _run_guard(
         "MEMORY_GUARD_RETRY_WAIT_S": wait,
     }
     env.pop("MEMORY_GUARD_SOFT_TIMEOUT_S", None)
+    env.pop("MEMORY_GUARD_EXPECTED_S", None)
+    if expected is not None:
+        env["MEMORY_GUARD_EXPECTED_S"] = expected
     if soft is not None:
         env["MEMORY_GUARD_SOFT_TIMEOUT_S"] = soft
     return subprocess.run(
@@ -255,8 +259,23 @@ def test_thehub_guard_no_time_left_means_no_re_run(tmp_path: Path) -> None:
 
 def test_thehub_guard_time_left_means_a_re_run(tmp_path: Path) -> None:
     r = _run_guard(tmp_path, _counting(137, 0), soft="1000")
-    assert "re-run: yes." in r.stdout
+    assert "re-run: yes (second run sized at 0s)." in r.stdout
     assert r.returncode == 0
+
+
+def test_thehub_guard_an_early_kill_is_sized_by_the_expected_run(tmp_path: Path) -> None:
+    """Killed at once, but the tier normally runs 2760s and only 1000s are left: no re-run."""
+    r = _run_guard(tmp_path, _counting(137, 0), soft="1000", expected="2760")
+    assert r.returncode == 137
+    assert (tmp_path / "runs").read_text() == "1"
+    assert "a second run of 2760s" in r.stdout and "re-run: no:" in r.stdout
+
+
+def test_thehub_guard_an_expected_run_that_fits_is_re_run(tmp_path: Path) -> None:
+    r = _run_guard(tmp_path, _counting(137, 0), soft="4200", expected="2760")
+    assert r.returncode == 0
+    assert "re-run: yes (second run sized at 2760s)." in r.stdout
+    assert (tmp_path / "runs").read_text() == "2"
 
 
 @pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="measured from /proc")
