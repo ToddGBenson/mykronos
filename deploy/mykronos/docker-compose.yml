@@ -73,6 +73,9 @@ services:
       MYKRONOS_REVIEWER_MODE: ${MYKRONOS_REVIEWER_MODE:-shadow}
       MYKRONOS_REVIEWER_MODEL: ${MYKRONOS_REVIEWER_MODEL:-claude-opus-5-5}
       MYKRONOS_REVIEWER_API_KEY: ${MYKRONOS_REVIEWER_API_KEY:-}
+      # The Dependabot autopilot (TheHub #61615): dry-run lists, live requests
+      # approval and merges approved heads. The code default is dry-run.
+      MYKRONOS_DEPENDABOT_AUTOPILOT_MODE: ${MYKRONOS_DEPENDABOT_AUTOPILOT_MODE:-dry-run}
       # Optional NVD API key (TheHub #61034): raises NVD's rate limit and the
       # CVSS-vector lookup's batch with it. Empty is the unauthenticated budget.
       MYKRONOS_NVD_API_KEY: ${MYKRONOS_NVD_API_KEY:-}
