@@ -6,6 +6,10 @@ tasks call this after the suite and before the upload:
     python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml
     python ../scripts/memory_kill.py lint --rc-ruff "$rc_ruff" --rc-mypy "$rc_mypy"
 
+`run` (TheHub #61606) wraps the suite itself: `python ../scripts/memory_kill.py run -- <cmd>`
+re-runs it once, after waiting up to 5 minutes for MemAvailable to pass the
+budget, when and only when it exited 137, and returns the command's own exit code.
+
 It prints one line, the reason, when the run reached no verdict because
 something was SIGKILLed for memory, and prints nothing otherwise. It always
 exits 0: the task decides what to do with the answer.
@@ -28,8 +32,12 @@ defusedxml is there; nothing else outside the standard library is needed.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import subprocess
 import sys
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from xml.etree import ElementTree  # ParseError only; the parse is defusedxml's
 
@@ -100,6 +108,73 @@ def lint_verdict(rc_ruff: int, rc_mypy: int) -> str:
     return _reason(f"{names} {verb} SIGKILLed (exit {KILLED}) before it reached a verdict")
 
 
+def mem_available_mb() -> int | None:
+    """MemAvailable from /proc/meminfo in MiB, or None where there is no /proc."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _call(cmd: Sequence[str]) -> int:
+    """subprocess.call, with a death by signal N returned as 128+N like a shell does."""
+    rc = subprocess.call(list(cmd))
+    return 128 - rc if rc < 0 else rc
+
+
+def run_with_retry(
+    cmd: Sequence[str],
+    *,
+    budget_mb: int = 1536,
+    wait_s: float = 300.0,
+    poll_s: float = 5.0,
+    call: Callable[[Sequence[str]], int] = _call,
+    available: Callable[[], int | None] = mem_available_mb,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """Run `cmd`; when, and only when, it dies with 137, wait for memory and run it once more.
+
+    A lane killed for memory judged nothing (TheHub #61117), and Concourse never
+    re-runs a job without a new commit, so a person re-triggered it 30-60
+    minutes later (TheHub #61606). Any other exit code, including 1, 2 and 5
+    (a real failure), is returned as it is and never retried. The second run's
+    exit code is the result; if it is 137 again the report says it was re-run.
+    """
+    rc = call(cmd)
+    if rc != KILLED:
+        return rc
+    name = " ".join(cmd[:3])
+    print(
+        f"memory-retry: {name} exited {KILLED} (SIGKILL); waiting for memory, then re-running once.",
+        flush=True,
+    )
+    deadline = clock() + wait_s
+    while True:
+        free = available()
+        if free is None or free > budget_mb:
+            break
+        if clock() >= deadline:
+            print(
+                f"memory-retry: {free} MiB available, under the {budget_mb} MiB budget "
+                f"after {wait_s:.0f}s; re-running anyway.",
+                flush=True,
+            )
+            break
+        sleep(poll_s)
+    rc = call(cmd)
+    if rc == KILLED:
+        again = f"{name} was SIGKILLed (exit {KILLED}) again on the re-run; re-ran once"
+        print(f"::error::{_reason(again)}", file=sys.stderr, flush=True)
+    else:
+        print(f"memory-retry: re-ran once after exit {KILLED}; the re-run exited {rc}.", flush=True)
+    return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="lane", required=True)
@@ -109,7 +184,16 @@ def main(argv: list[str] | None = None) -> int:
     lint = sub.add_parser("lint")
     lint.add_argument("--rc-ruff", type=int, required=True)
     lint.add_argument("--rc-mypy", type=int, required=True)
+    r = sub.add_parser("run", help="run a command, re-running it once if it is SIGKILLed")
+    r.add_argument("--budget-mb", type=int, default=int(os.environ.get("MEMORY_BUDGET_MB") or "1536"))
+    r.add_argument("--wait-s", type=float, default=300.0)
+    r.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.lane == "run":
+        cmd = args.command[1:] if args.command[:1] == ["--"] else args.command
+        if not cmd:
+            parser.error("run: no command")
+        return run_with_retry(cmd, budget_mb=args.budget_mb, wait_s=args.wait_s)
     if args.lane == "pytest":
         reason = pytest_verdict(args.rc, args.junit)
     else:

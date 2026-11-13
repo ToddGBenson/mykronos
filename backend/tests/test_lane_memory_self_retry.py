@@ -1,0 +1,309 @@
+"""A lane killed for memory re-runs itself once before it reports (TheHub #61606).
+
+thehub/unit #389 and mykronos/unit #496 died with exit 137 ("INFRASTRUCTURE, NOT
+A VERDICT") and waited for a person, because Concourse never re-runs a job
+without a new commit. Both memory wrappers now re-run the guarded command once,
+after waiting for MemAvailable, when and only when it exited 137:
+
+- mykronos.yml: `python ../scripts/memory_kill.py run -- <cmd>` (this file
+  executes `run_with_retry` and the real command line);
+- thehub.yml: the `memory_guard` anchor (this file executes it as it stands).
+
+A real failure (exit 1, 2, 5) never retries. Not Concourse `attempts:`, which
+would double every genuinely red lane.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+PIPELINES = ROOT / "deploy" / "concourse" / "pipelines"
+SCRIPT = ROOT / "scripts" / "memory_kill.py"
+WRAP = "memory_kill.py run --"
+
+
+def _load() -> Any:
+    spec = importlib.util.spec_from_file_location("memory_kill_under_test", SCRIPT)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+mk = _load()
+
+
+def _script_of(doc: dict[str, Any], job: str, task: str) -> str:
+    plan = next(j for j in doc["jobs"] if j["name"] == job)["plan"]
+    t = next(s for s in _walk(plan) if s.get("task") == task)
+    return str(t["config"]["run"]["args"][-1])
+
+
+def _walk(steps: Any) -> Any:
+    """Every step dict in a plan, however deep (in_parallel, do, try, hooks)."""
+    if isinstance(steps, list):
+        for s in steps:
+            yield from _walk(s)
+    elif isinstance(steps, dict):
+        yield steps
+        for v in steps.values():
+            if isinstance(v, (list, dict)):
+                yield from _walk(v)
+
+
+# -- run_with_retry, executed ------------------------------------------------
+
+
+class _Fake:
+    def __init__(self, *codes: int) -> None:
+        self.codes = list(codes)
+        self.runs = 0
+        self.slept: list[float] = []
+        self.now = 0.0
+
+    def call(self, cmd: Any) -> int:
+        self.runs += 1
+        return self.codes.pop(0)
+
+    def sleep(self, s: float) -> None:
+        self.slept.append(s)
+        self.now += s
+
+    def clock(self) -> float:
+        return self.now
+
+
+def _retry(fake: _Fake, avail: Any = lambda: 9999) -> int:
+    return int(
+        mk.run_with_retry(
+            ["python", "-m", "pytest"],
+            budget_mb=1000,
+            call=fake.call,
+            available=avail,
+            sleep=fake.sleep,
+            clock=fake.clock,
+        )
+    )
+
+
+def test_137_then_0_exits_0_and_says_it_re_ran_once(capsys: pytest.CaptureFixture[str]) -> None:
+    fake = _Fake(137, 0)
+    assert _retry(fake) == 0
+    assert fake.runs == 2
+    assert "re-ran once" in capsys.readouterr().out
+
+
+def test_137_then_137_reports_as_today_plus_re_ran_once(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = _Fake(137, 137)
+    assert _retry(fake) == 137
+    assert fake.runs == 2, "one re-run, never a third"
+    err = capsys.readouterr().err
+    assert "INFRASTRUCTURE, NOT A VERDICT: killed: out of memory" in err
+    assert "re-ran once" in err
+
+
+@pytest.mark.parametrize("rc", [1, 2, 5])
+def test_a_real_failure_never_retries(rc: int) -> None:
+    fake = _Fake(rc)
+    assert _retry(fake) == rc
+    assert fake.runs == 1
+
+
+def test_a_pass_never_retries() -> None:
+    fake = _Fake(0)
+    assert _retry(fake) == 0
+    assert fake.runs == 1
+
+
+def test_137_then_a_real_failure_returns_that_failure() -> None:
+    assert _retry(_Fake(137, 1)) == 1
+
+
+def test_it_waits_for_memory_then_runs_again() -> None:
+    fake = _Fake(137, 0)
+    readings = iter([100, 200, 5000])
+    assert _retry(fake, avail=lambda: next(readings)) == 0
+    assert len(fake.slept) == 2, "polled until MemAvailable passed the budget"
+
+
+def test_it_waits_at_most_five_minutes_then_runs_anyway() -> None:
+    fake = _Fake(137, 0)
+    assert _retry(fake, avail=lambda: 10) == 0
+    assert fake.runs == 2
+    assert 300 <= sum(fake.slept) <= 305
+
+
+def test_a_signal_death_is_returned_as_137_like_a_shell_does() -> None:
+    code = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+    if sys.platform == "win32":
+        pytest.skip("no SIGKILL on Windows")
+    assert mk._call([sys.executable, "-c", code]) == 137
+
+
+def test_the_cli_returns_the_command_exit_code(tmp_path: Path) -> None:
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "run", "--", sys.executable, "-c", "import sys; sys.exit(5)"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=60,
+    )
+    assert r.returncode == 5
+
+
+# -- the thehub memory_guard anchor, executed ---------------------------------
+
+
+def _guard() -> str:
+    doc = yaml.safe_load((PIPELINES / "thehub.yml").read_text(encoding="utf-8"))
+    return str(doc["anchors"]["memory_guard"])
+
+
+def _run_guard(tmp_path: Path, child: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "MEMORY_BUDGET_MB": "1",
+        "MEMORY_GUARD_DIR": str(tmp_path / "oom"),
+        "MEMORY_GUARD_LABEL": "pytest tests/unit",
+        "MEMORY_GUARD_INTERVAL_S": "0.05",
+        "MEMORY_GUARD_RETRY_WAIT_S": "0",
+    }
+    # `child` counts its runs in a file: the first run gets 137 from `first`.
+    return subprocess.run(
+        [sys.executable, "-c", _guard(), sys.executable, "-c", child],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _counting(first: int, second: int) -> str:
+    return (
+        "import os, sys\n"
+        "n = int(open('runs').read()) if os.path.exists('runs') else 0\n"
+        "open('runs', 'w').write(str(n + 1))\n"
+        f"sys.exit({first} if n == 0 else {second})\n"
+    )
+
+
+def test_thehub_guard_137_then_0_exits_0_and_says_it_re_ran_once(tmp_path: Path) -> None:
+    r = _run_guard(tmp_path, _counting(137, 0))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "re-ran once" in r.stdout
+    assert (tmp_path / "runs").read_text() == "2"
+    assert not (tmp_path / "oom").exists(), "a recovered kill leaves no infra marker"
+
+
+def test_thehub_guard_137_then_137_reports_as_today_plus_re_ran_once(tmp_path: Path) -> None:
+    r = _run_guard(tmp_path, _counting(137, 137))
+    assert r.returncode == 137
+    assert (tmp_path / "runs").read_text() == "2"
+    reason = (tmp_path / "oom" / "reason").read_text(encoding="utf-8")
+    assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: killed: out of memory")
+    assert "re-ran once" in reason
+
+
+@pytest.mark.parametrize("rc", [1, 2, 5])
+def test_thehub_guard_a_real_failure_never_retries(tmp_path: Path, rc: int) -> None:
+    r = _run_guard(tmp_path, _counting(rc, 0))
+    assert r.returncode == rc
+    assert (tmp_path / "runs").read_text() == "1"
+    assert not (tmp_path / "oom").exists()
+
+
+# -- every heavy task goes through the wrapper --------------------------------
+
+# The mykronos tasks that run the suite, mypy or ruff, and the number of
+# heavy command lines each must route through the wrapper.
+MYKRONOS_HEAVY = {
+    ("unit", "pytest"): ["python -m pytest"],
+    ("coverage", "pytest-cov"): ["python -m pytest"],
+    ("time-travel", "pytest-time-travel"): ["python -m pytest -q -n 4"],
+    ("lint-and-types", "ruff-and-mypy"): ["python -m ruff", "python -m mypy"],
+}
+HEAVY = re.compile(r"python -m (pytest|mypy|ruff)\b")
+
+
+def _doc(name: str) -> dict[str, Any]:
+    return yaml.safe_load((PIPELINES / f"{name}.yml").read_text(encoding="utf-8"))
+
+
+def _find_task(doc: dict[str, Any], job: str) -> list[tuple[str, str]]:
+    plan = next(j for j in doc["jobs"] if j["name"] == job)["plan"]
+    return [
+        (s["task"], str(s["config"]["run"]["args"][-1]))
+        for s in _walk(plan)
+        if "task" in s and isinstance(s.get("config"), dict) and "run" in s["config"]
+    ]
+
+
+@pytest.mark.parametrize("job,task", sorted(MYKRONOS_HEAVY))
+def test_every_mykronos_heavy_command_runs_under_the_wrapper(job: str, task: str) -> None:
+    doc = _doc("mykronos")
+    scripts = dict(_find_task(doc, job))
+    assert task in scripts, f"{job} has no {task} task"
+    lines = [ln.strip() for ln in scripts[task].splitlines()]
+    for needle in MYKRONOS_HEAVY[(job, task)]:
+        hits = [ln for ln in lines if needle in ln and not ln.startswith("#")]
+        assert hits, f"{job}/{task} no longer runs {needle}"
+        for ln in hits:
+            if "tests/test_time_travel_canary.py" in ln:
+                continue  # the two-test canary, not the suite
+            assert WRAP in ln, f"{job}/{task} runs {needle} outside the wrapper: {ln}"
+
+
+def test_no_mykronos_suite_runs_pytest_unwrapped_in_a_memory_job() -> None:
+    """A new heavy line in a memory job must not slip past the list above."""
+    doc = _doc("mykronos")
+    for job in ("unit", "coverage", "time-travel", "lint-and-types"):
+        for task, script in _find_task(doc, job):
+            for ln in script.splitlines():
+                s = ln.strip()
+                if s.startswith("#") or not HEAVY.search(s):
+                    continue
+                if "tests/test_time_travel_canary.py" in s or "import " in s:
+                    continue
+                assert WRAP in s, f"{job}/{task}: {s}"
+
+
+def test_thehub_heavy_tasks_go_through_the_guard() -> None:
+    """Every task given MEMORY_GUARD calls it, or hands it to the repo's tier runner.
+
+    The tier runner (`CONTAINER_TIERS_OUT`, in TheHub's own scripts) takes the
+    guard from the environment, so it gets the retry from the same anchor.
+    """
+    doc = _doc("thehub")
+    guarded = 0
+    for job in doc["jobs"]:
+        for step in _walk(job["plan"]):
+            params = step.get("params") or {}
+            if "task" not in step or "MEMORY_GUARD" not in params:
+                continue
+            guarded += 1
+            assert params["MEMORY_GUARD"] == _guard(), f"{job['name']}/{step['task']}"
+            script = str(step["config"]["run"]["args"][-1])
+            assert 'python -c "$MEMORY_GUARD"' in script or "CONTAINER_TIERS_OUT" in script, (
+                f"{job['name']}/{step['task']} is given the guard and never runs it"
+            )
+    assert guarded >= 4
+
+
+def test_personal_soc_has_no_memory_heavy_task() -> None:
+    """personal-soc runs a PowerShell harness; if it ever grows a pytest, wrap it."""
+    text = (PIPELINES / "personal-soc.yml").read_text(encoding="utf-8")
+    code = [ln for ln in text.splitlines() if not ln.strip().startswith("#")]
+    assert not [ln for ln in code if HEAVY.search(ln)], "wrap it in scripts/memory_kill.py run"

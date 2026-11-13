@@ -582,9 +582,10 @@ anchors:
         except (OSError, AttributeError):
             pass
 
-    child = subprocess.Popen(cmd, start_new_session=True)
+    live = []
 
     def forward(signum, _frame):
+        child = live[-1]
         try:
             os.killpg(child.pid, signum)
         except (OSError, AttributeError):
@@ -593,27 +594,60 @@ anchors:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, forward)
 
-    peak_kib, over_kib, measured = 0, 0, False
-    while child.poll() is None:
-        pids = members(child.pid)
-        if pids is not None:
-            measured = True
-            kib = sum(kib_of(p) for p in pids)
-            peak_kib = max(peak_kib, kib)
-            if budget_mb and kib > budget_mb * 1024:
-                over_kib = kib
-                kill_session(child.pid, pids)
-                break
-        time.sleep(interval)
-    rc = child.wait()
-    if rc < 0:
-        rc = 128 - rc
+    def attempt():
+        child = subprocess.Popen(cmd, start_new_session=True)
+        live.append(child)
+        peak_kib, over_kib, measured = 0, 0, False
+        while child.poll() is None:
+            pids = members(child.pid)
+            if pids is not None:
+                measured = True
+                kib = sum(kib_of(p) for p in pids)
+                peak_kib = max(peak_kib, kib)
+                if budget_mb and kib > budget_mb * 1024:
+                    over_kib = kib
+                    kill_session(child.pid, pids)
+                    break
+            time.sleep(interval)
+        rc = child.wait()
+        if rc < 0:
+            rc = 128 - rc
+        peak = f"{peak_kib // 1024} MiB" if measured else "unmeasured (no /proc here)"
+        print(f"memory-guard: {label} exited {rc}; peak {peak} of a {budget_mb} MiB budget.", flush=True)
+        return rc, over_kib, peak
 
-    peak = f"{peak_kib // 1024} MiB" if measured else "unmeasured (no /proc here)"
-    print(f"memory-guard: {label} exited {rc}; peak {peak} of a {budget_mb} MiB budget.", flush=True)
+    def mem_available_mb():
+        try:
+            with open("/proc/meminfo", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) // 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    rc, over_kib, peak = attempt()
+    reran = ""
+    if rc == 137 or over_kib:
+        # TheHub #61606: a kill is not a verdict and nothing re-runs the job
+        # without a new commit, so wait for memory and run the command once
+        # more. Only an exit of 137 gets here; a real failure (1, 2, 5) never does.
+        wait_s = float(os.environ.get("MEMORY_GUARD_RETRY_WAIT_S") or "300")
+        print(f"memory-guard: {label} was killed (137); waiting up to {wait_s:.0f}s for "
+              f"MemAvailable over {budget_mb} MiB, then re-running once.", flush=True)
+        deadline = time.monotonic() + wait_s
+        while True:
+            free = mem_available_mb()
+            if free is None or free > budget_mb or time.monotonic() >= deadline:
+                break
+            time.sleep(min(5.0, interval))
+        rc, over_kib, peak = attempt()
+        reran = "re-ran once and was killed again; "
+        if rc != 137 and not over_kib:
+            print(f"memory-guard: re-ran once after the kill; the re-run exited {rc}.", flush=True)
 
     reason = ""
-    tail = "Nothing was judged; re-run once the host has memory (TheHub #61106)."
+    tail = f"Nothing was judged; {reran}re-run once the host has memory (TheHub #61106)."
     if over_kib:
         rc = 137
         reason = (f"INFRASTRUCTURE, NOT A VERDICT: killed: out of memory - {label} reached "
