@@ -145,6 +145,30 @@ def assess_ingestion(
     return DependencyHealth(name="ingestion", reachable=False, detail=result.detail + why)
 
 
+def assess_reviewer_key(probe: Any | None) -> DependencyHealth:
+    """The "platform reviewer key" row (TheHub #61614): state and as-of.
+
+    A state, a time and an HTTP status, and nothing of the key itself - no
+    value, no prefix. With no probe on record the row is not configured, so a
+    fresh deployment is not called degraded before the first hourly run.
+    """
+    name = "platform reviewer key"
+    if probe is None:
+        return DependencyHealth(
+            name=name,
+            reachable=True,
+            configured=False,
+            detail="not probed yet: the hourly probe has not run",
+        )
+    stamp = probe.as_of.strftime("%Y-%m-%d %H:%MZ")
+    status = f" (HTTP {probe.http_status})" if probe.http_status else ""
+    return DependencyHealth(
+        name=name,
+        reachable=probe.state == "ok",
+        detail=f"{probe.state}{status} as of {stamp}",
+    )
+
+
 def assess_job(row: Any, *, now: datetime, started_at: datetime | None = None) -> JobHealth:
     """One job's state, from its stored row.
 

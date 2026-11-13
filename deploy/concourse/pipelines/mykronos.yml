@@ -704,7 +704,7 @@ jobs:
                 # `passed: [unit, ...]`. Coverage is collected by the weekly
                 # `coverage` job below instead (D-121), where nothing waits on it.
                 # (It was on the Actions unit lane until D-118 retired that lane.)
-                python -m pytest -q -n 2 --junitxml=../../results/unit.xml || rc=$?
+                python ../scripts/memory_kill.py run -- python -m pytest -q -n 2 --junitxml=../../results/unit.xml || rc=$?
 
                 # [TheHub #61117] Killed for memory is not a verdict. pytest
                 # SIGKILLed (137), or exit 1 where every failure is a crashed
@@ -837,7 +837,7 @@ jobs:
                 # [TheHub #61210] -n 4, not 6, for `unit`'s reason (#61117):
                 # coverage #8 ran 8,583 tests green and went red on one
                 # "worker 'gw5' crashed" at -n 6 under host memory pressure.
-                python -m pytest -q -n 4 \
+                python ../scripts/memory_kill.py run -- python -m pytest -q -n 4 \
                   --cov=mykronos --cov-branch \
                   --cov-report=xml:../../results/coverage.xml \
                   --junitxml=../../results/unit.xml || rc=$?
@@ -1011,7 +1011,7 @@ jobs:
 
                 rc=0
                 # [TheHub #61288] -n 4, not 6, for `unit`'s reason (#61117).
-                under_faketime python -m pytest -q -n 4 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+                under_faketime python ../scripts/memory_kill.py run -- python -m pytest -q -n 4 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
 
                 # [TheHub #61288] Killed for memory is not a time bomb. The
                 # classifier runs on the real clock, outside faketime. On a
@@ -1172,10 +1172,10 @@ jobs:
                 # silently again, in a new way. `demo-and-dast` already had to
                 # learn this; it is written down here so the next one does not.
                 set +e
-                python -m ruff check . 2>&1 | tee /tmp/ruff.txt
+                python ../scripts/memory_kill.py run -- python -m ruff check . 2>&1 | tee /tmp/ruff.txt
                 rc_ruff=${PIPESTATUS[0]}
 
-                python -m mypy mykronos 2>&1 | tee /tmp/mypy.txt
+                python ../scripts/memory_kill.py run -- python -m mypy mykronos 2>&1 | tee /tmp/mypy.txt
                 rc_mypy=${PIPESTATUS[0]}
                 set -e
 

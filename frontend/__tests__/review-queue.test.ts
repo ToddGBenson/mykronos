@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { mergeReadiness, reviewerStanding } from "../lib/review-queue";
+import { mergeReadiness, reviewerBanner, reviewerStanding } from "../lib/review-queue";
 
 const base = { github_state: "ready", check_posted: true, ready: true } as const;
 
@@ -60,5 +60,18 @@ describe("reviewerStanding", () => {
     const standing = reviewerStanding({ verdict: "reject", counts: false, delegable: false });
     expect(standing.tone).toBe("muted");
     expect(standing.word).toMatch(/goes to a person/);
+  });
+});
+
+describe("reviewerBanner", () => {
+  it("is silent while the key works or was never probed", () => {
+    expect(reviewerBanner({})).toBeNull();
+    expect(reviewerBanner({ unavailable_since: null })).toBeNull();
+  });
+
+  it("names the time and the consequence when the probe is not ok", () => {
+    expect(reviewerBanner({ unavailable_since: "2026-11-13 03:48Z" })).toBe(
+      "Platform reviewer unavailable since 2026-11-13 03:48Z: production-tier requests will not progress",
+    );
   });
 });

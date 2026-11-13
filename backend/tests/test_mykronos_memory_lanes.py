@@ -276,7 +276,11 @@ class TestTheClassifier:
 def _tail(job: str, task: str) -> str:
     """The script from the classifier call to the line that records a verdict."""
     lines = _script(_task(job, task)).splitlines()
-    start = next((i for i, x in enumerate(lines) if "memory_kill.py" in x), None)
+    # The classifier call, not the `memory_kill.py run --` wrapper line (#61606).
+    start = next(
+        (i for i, x in enumerate(lines) if "memory_kill.py" in x and "memory_kill.py run" not in x),
+        None,
+    )
     assert start is not None, f"{job}/{task} never asks scripts/memory_kill.py for a verdict"
     end = next((i for i in range(start, len(lines)) if "judged/verdict" in lines[i]), None)
     assert end is not None, f"{job}/{task} never records judged/verdict after the classifier"

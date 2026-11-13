@@ -22,9 +22,10 @@ These are floors, not exact pins: image-refresh moves tags and digests
 (mykronos #976), so a later release or a `-p<date>` derivative passes, and only
 a pin back onto a build that links the vulnerable standard library fails.
 
-Not covered: `gosu` in `postgres:15`. The newest `postgres:15` still ships a
-gosu built on go1.24.6, so there is no vendor build to move to, and that one
-finding is a risk acceptance, not a pin.
+Not covered here: `gosu` in `postgres:15`. The newest `postgres:15` still ships
+a gosu built on go1.24.6, so there is no vendor build to move to; since TheHub
+#61617 the Concourse database's recipe rebuilds it, and
+test_concourse_db_image.py holds that build's toolchain to the same floor.
 """
 
 from __future__ import annotations
