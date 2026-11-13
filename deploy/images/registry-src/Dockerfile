@@ -16,7 +16,8 @@
 # Go 1.27.4 (2026-11-13, TheHub #61620): released 2026-11-10 with security
 # fixes to net/http, cgo, the go command, the compiler and the linker. Was
 # golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb
-# (rollback: put that FROM back).
+# (rollback: put that FROM back). The 1.27.3-alpine3.24 tag index has since
+# moved, so that digest resolves by content only, not by its tag.
 #
 # x/net 0.62.0 (2026-11-05, TheHub #61076): the HTML parser fixes for
 # CVE-2026-78661 and CVE-2026-97045 (both low), which 0.60.0 carried. The

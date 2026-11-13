@@ -290,7 +290,7 @@ services:
   # deletes off, so the environment below keeps them off. Its default log
   # level is `debug`; `info` matches what v2 actually logged.
   registry:
-    image: ${REGISTRY:-localhost:5000}/library/registry:3-p20261030
+    image: ${REGISTRY:-localhost:5000}/library/registry:3-p20261113@sha256:b86788ae16179294a40fd956450e669fbbf9d36d64e6af18044d3e6f61a3aaa7
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better.
@@ -316,10 +316,14 @@ services:
     # x/net moved to 0.62.0 on 2026-11-05 (TheHub #61076: CVE-2026-78661 and
     # CVE-2026-97045, both low); the running tag carries 0.60.0 until
     # image-refresh publishes a newer -p<date> and this `image:` adopts it.
-    # 2026-11-13 (TheHub #61620): 3-p20261112 still links go-jose/v4 4.1.4
-    # (CVE-2026-116587, HIGH) because it predates the GO_JOSE pin; the builder
-    # moved to Go 1.27.4 and a local build of the recipe scans 0 high (Trivy
-    # 0.58.1). Adopt the first -p<date> image-refresh publishes after this.
+    # ADOPTED 2026-11-13 (TheHub #61620, #61635): 3-p20261113, the first build
+    # after the GO_JOSE pin (#1127): go-jose/v4 4.1.7, x/net 0.62.0, Go 1.27.3.
+    # Trivy 0.58.1: 3-p20261030 at 3 high (stdlib 1.27.2, go-jose 4.1.4, x/net
+    # 0.60.0), 3-p20261113 at 0. 3-p20261112 still linked go-jose 4.1.4. The
+    # builder then moved to Go 1.27.4; the next -p<date> carries it. Pinned by
+    # digest: the tag is a single-platform manifest (no index), so this is its
+    # manifest digest. Rollback (what ran before):
+    #   ${REGISTRY:-localhost:5000}/library/registry:3-p20261030@sha256:461fb33eebc74cb1470a0806ca1f8e286209850d63fd25f6cd92f9f9a4346e6d
     x-mykronos-build:
       context: ../images/registry-src
       # The digest this host runs (2026-10-15); `image:` itself is unpinned.
