@@ -106,11 +106,13 @@ class TestTheRecipe:
         assert alias == "certs"
         assert VENDOR_FROM.match(runtime), runtime
 
-    def test_the_vendor_pin_is_the_one_compose_ran_before(self) -> None:
-        """The binary does not move in this change: only the CA files do."""
+    def test_the_vendor_pin_is_the_reviewed_release(self) -> None:
+        """RELEASE.2026-11-12 (TheHub #61620): x/net 0.62.0, Go 1.27.4. The
+        binary moves only by a reviewed change to this digest."""
         (_, _), (runtime, _) = _stages()
+        assert runtime.startswith("pgsty/silo:RELEASE.2026-11-12T00-00-00Z-distroless@")
         assert runtime.endswith(
-            "@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885"
+            "@sha256:a72e17773bdeb151999f9bf9d3bd842fb03850a577b730ab8c63343bb1f468fd"
         )
 
     def test_the_build_refuses_a_package_older_than_the_fix(self) -> None:
