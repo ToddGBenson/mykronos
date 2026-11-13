@@ -1734,8 +1734,10 @@ jobs:
         attempts: *retry_fetch
       - get: python
         attempts: *retry_fetch
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       - task: grade
+        tags: [thehub]
         container_limits: {cpu: 512}
         image: python
         # Two tiers at a 45m soft cap each, plus the bootstrap and the report.
@@ -2384,8 +2386,10 @@ jobs:
         attempts: *retry_fetch
       - get: python313
         attempts: *retry_fetch
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       - task: pick
+        tags: [thehub]
         container_limits: {cpu: 512}
         image: python313
         timeout: 10m
@@ -2592,6 +2596,7 @@ jobs:
                 fi
       - &pr_gates_task
         task: gates
+        tags: [thehub]
         container_limits: {cpu: 512}
         image: python313
         # pip-audit resolves the whole requirements set into a scratch venv:
@@ -2803,6 +2808,7 @@ jobs:
       # Postgres/Redis install ~1.5m, the bootstrap ~0.5m, the scratch
       # database ~0.75m; the subset is four modules.
       - task: integration
+        tags: [thehub]
         container_limits: {cpu: 512}
         timeout: 9m
         params:
@@ -2925,6 +2931,7 @@ jobs:
       # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
       # owes no report.
       - <<: *check_run
+        tags: [thehub]
         input_mapping: { source: pr }
         params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: success, NO_COMMIT_OK: "1" }
 
@@ -3031,8 +3038,12 @@ jobs:
         attempts: *retry_fetch
       - get: python313
         attempts: *retry_fetch
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       - task: smoke-inputs
+        # [TheHub #61607] With `gates` (tagged by its anchor), so its
+        # outputs stay on the worker that task runs on.
+        tags: [thehub]
         container_limits: {cpu: 512}
         image: python313
         timeout: 10m
@@ -3096,11 +3107,14 @@ jobs:
         trigger: true
       - get: python
         attempts: *retry_fetch
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       # D-136: `Concourse / thehub` goes in_progress on this commit.
       - <<: *check_run
+        tags: [thehub]
         params: { <<: *check_params, JOB: unit, PHASE: start }
       - task: pytest
+        tags: [thehub]
         container_limits: {cpu: 512}
         image: python
         # 45 minutes was not a slow test suite; it was a full reinstall of
@@ -3117,9 +3131,12 @@ jobs:
           REQUIRE_NODE: "1"
           # [#61106] The memory budget for each pytest tier, enforced by
           # memory-guard because `container_limits.memory` is refused on these
-          # workers (see the anchor). Same number and reason as post-merge's.
+          # workers (see the anchor). [#61607] 2048, not post-merge's 2560:
+          # the last four green runs peaked at 1263-1330 MiB (memory-guard,
+          # #384-#390), so 2048 clears them by ~700 MiB and leaves 1 GiB of
+          # worker-2's 3g (compose, tags) for the steps beside it.
           MEMORY_GUARD: *memory_guard
-          MEMORY_BUDGET_MB: "2560"
+          MEMORY_BUDGET_MB: "2048"
         # A build that hangs must fail rather than occupy a worker. One ran for
         # 47 minutes and was still going when it was killed by hand; nothing in
         # the pipeline would ever have stopped it, and `unit` gates build,
@@ -3989,13 +4006,15 @@ jobs:
         passed: [unit]
       - get: python
         attempts: *retry_fetch
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       - get: kaniko
         attempts: *retry_fetch
 
       # kaniko's image is busybox with no git, so the SHA is computed here and
       # handed over as a file.
       - task: resolve-sha
+        tags: [thehub]
         container_limits: {cpu: 512}
         timeout: 5m
         image: python
@@ -4018,6 +4037,7 @@ jobs:
                 echo "Building $(cat meta/sha)"
 
       - task: kaniko
+        tags: [thehub]
         container_limits: {cpu: 512}
         # 71m, not 60m (#60002). MEASURED 2026-09-18 over the last 95 successful
         # builds: p50 4.6m, p90 14.9m, worst 50.0m. Target = max(p90 x 5.10,
@@ -4308,8 +4328,10 @@ jobs:
         attempts: *retry_fetch
       - get: pwsh
         attempts: *retry_fetch
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       - task: semgrep
+        tags: [thehub]
         container_limits: {cpu: 512}
         timeout: 130m
         image: python313
@@ -4886,11 +4908,13 @@ jobs:
       - get: trivy
         attempts: *retry_fetch
 
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       # The SHA is resolved in a task that has git, and handed over as a file.
       # Trivy's image does not, and reading `.git/HEAD` by hand works right up
       # until the ref is packed.
       - task: resolve-sha
+        tags: [thehub]
         container_limits: {cpu: 512}
         timeout: 5m
         image: python
@@ -4927,6 +4951,7 @@ jobs:
       # file that starts the container is a fact rather than a guess about
       # which it is.
       - task: derive-estate-images
+        tags: [thehub]
         container_limits: {cpu: 512}
         timeout: 10m
         image: python
@@ -4961,6 +4986,7 @@ jobs:
                 python -m mykronos.estate_images --root source --output estate/images.txt --set "REGISTRY=${REGISTRY}"
 
       - task: scan-image
+        tags: [thehub]
         container_limits: {cpu: 512}
         # 45m covered one application image. TheHub's stack adds eight more,
         # and a cap below the observed worst case does not make a slow job
@@ -5204,10 +5230,12 @@ jobs:
       - get: python
         attempts: *retry_fetch
 
-      - *preflight
+      - <<: *preflight
+        tags: [thehub]
       # The SHA names the image to run, so it is resolved with git (as
       # `containers` does) and loaded as a build-local var for the task below.
       - task: resolve-sha
+        tags: [thehub]
         container_limits: {cpu: 512}
         timeout: 5m
         image: python
@@ -5233,6 +5261,7 @@ jobs:
         reveal: true
 
       - task: tiers
+        tags: [thehub]
         container_limits: {cpu: 512}
         # Two tiers at a 50m soft cap each (TIER_SOFT_TIMEOUT_S), plus the
         # service install and the bootstrap. The soft cap is the one that

@@ -89,9 +89,32 @@ x-worker: &worker
   #   never a production kill. memswap_limit equals it, because Docker's
   #   default lets each worker add as much swap again, and swap was at
   #   52-67% during the 2026-10-23 outage (#36488).
-  #   If the unit lane OOMs inside 3g: raise ONE worker to 3.5g, or pin the
-  #   unit lane to one worker with tags. Never let the workers' sum exceed
-  #   the VM minus 5 GiB.
+  #   Never let the workers' sum exceed the VM minus 5 GiB: the VM is 9.9
+  #   GiB with ~3.3 GiB free at idle (2026-11-13), so neither can grow.
+  # - Heavy lanes of different pipelines never share a worker (TheHub
+  #   #61607). 3g held one pipeline's heavy lanes, not two: at 06:00Z
+  #   worker-2 sat at 2.998/3 GiB with eight lanes of both pipelines while
+  #   worker-1 held 670 MiB, and thehub/unit #389 and mykronos/unit #496
+  #   were SIGKILLed while their own memory-guard was well under budget
+  #   (thehub/unit's green runs peak at 1263-1330 MiB): the worker ran out,
+  #   not the task. serial_groups cannot fix that - they serialise within one
+  #   pipeline - and placement counts containers, not memory. So worker-2
+  #   carries `CONCOURSE_TAG: thehub` and every task of TheHub's heavy jobs
+  #   (unit, sast, build, containers, and each job with MEMORY_BUDGET_MB)
+  #   says `tags: [thehub]`; worker-1 stays untagged and runs everything
+  #   else - mykronos and personal-soc's heavy jobs, every light job and
+  #   every resource check.
+  #   Why one tagged worker and not two: a tagged worker takes ONLY steps
+  #   that name its tags, and an untagged step runs only on an untagged
+  #   worker. Tagging both would strand every untagged step, check and
+  #   resource type of all three pipelines unless each one were tagged
+  #   too - hundreds of lines, and the first step someone adds without a
+  #   tag would hang "no workers". One untagged worker keeps every default
+  #   schedulable. TheHub goes to the tagged one because its suites are the
+  #   ones with the largest budgets (post-merge, pr-gates, container-tiers).
+  #   The cost: worker-2 runs only TheHub's heavy steps, so if it stalls
+  #   they wait rather than fall back to worker-1 - which is the point.
+  #   Held by backend/tests/test_concourse_worker_tags.py.
   #
   # `docker update` applies cpu-shares, memory and memswap live;
   # oom_score_adj takes effect only when the workers are recreated, which
@@ -610,6 +633,8 @@ services:
       # trust boundary, so this buys little today; it costs two lines and
       # means one worker can be revoked without locking the other out.
       CONCOURSE_TSA_WORKER_PRIVATE_KEY: /keys/worker2_key
+      # [TheHub #61607] TheHub's heavy steps only; see `mem_limit` above.
+      CONCOURSE_TAG: thehub
     volumes:
       - concourse-worker-2-data:/worker-state
       - ./keys:/keys:ro
