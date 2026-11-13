@@ -565,6 +565,18 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
+      # TheHub #61608: pin-check also waits for `set-pipeline`. It compares the
+      # pinned `mykronos-ref` against the checkout, and `set-pipeline` is what
+      # applies the vars that carry that pin. Pin-check #359 started 47 s
+      # before set-pipeline #84 ended and failed against the stale vars. A
+      # `pipelines` version only exists once set-pipeline has passed on it, so
+      # a run triggered here always sees the vars it is judging. (`pipelines`
+      # has `paths:`, so a commit touching no pipeline file is still judged on
+      # `source` alone, which is correct: nothing was re-applied.)
+      - get: pipelines
+        attempts: *retry_fetch
+        trigger: true
+        passed: [set-pipeline]
       - get: python
         attempts: *retry_fetch
       - task: check
@@ -2574,6 +2586,12 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
+        # TheHub #61608, decision: this list is final and `build` is NOT on it
+        # directly. The task below reads no build output (inputs: `source`
+        # only); it asks the platform to score the commit. `containers` stays
+        # because the score includes the image-scan findings it uploads, and
+        # `containers` already sits behind publish and build, so dropping it
+        # would score a partial picture. See the Stage 3 note above.
         passed: [secrets, dependencies, sast, insider, containers, iac]
       - get: python
         attempts: *retry_fetch

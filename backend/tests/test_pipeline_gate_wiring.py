@@ -600,3 +600,28 @@ class TestFetchReadsLargeFiles:
 
         assert gates_check.fetch("o/r", "p.yml", "develop") is None
 
+
+
+MYKRONOS = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+
+
+def _mykronos_passed(job_name: str) -> dict[str, list[str]]:
+    document = yaml.safe_load(MYKRONOS.read_text(encoding="utf-8"))
+    job = next(j for j in document["jobs"] if j["name"] == job_name)
+    return {
+        step["get"]: step.get("passed", [])
+        for step in job["plan"]
+        if isinstance(step, dict) and "get" in step
+    }
+
+
+def test_pin_check_waits_for_set_pipeline_and_oracle_gate_does_not_read_build() -> None:
+    """TheHub #61608: pin-check ran 47 s before set-pipeline applied the vars.
+
+    Pins both orders. `oracle-gate` takes no direct edge on `build` (the image
+    reaches it only through `containers`, whose findings the score needs).
+    """
+    assert _mykronos_passed("pin-check").get("pipelines") == ["set-pipeline"]
+    gate = _mykronos_passed("oracle-gate")["source"]
+    assert "build" not in gate
+    assert "containers" in gate
