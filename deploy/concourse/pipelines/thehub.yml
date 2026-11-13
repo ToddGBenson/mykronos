@@ -2465,6 +2465,18 @@ jobs:
                 judged = set()
                 if os.path.exists(memo):
                     judged = set(open(memo, encoding="utf-8").read().split())
+                # [TheHub #61636] A head whose run keeps ending `cancelled` (a
+                # NO VERDICT that recurs: an unsatisfiable environment) is asked
+                # again once, then remembered like any other judged head, so it
+                # cannot occupy the memory group every tick. Pushing a new head
+                # re-judges it. Counts: "<sha> <times seen cancelled>".
+                cancelled_memo = "memo/cancelled"
+                cancelled = {}
+                if os.path.exists(cancelled_memo):
+                    for line in open(cancelled_memo, encoding="utf-8").read().splitlines():
+                        parts = line.split()
+                        if len(parts) == 2 and parts[1].isdigit():
+                            cancelled[parts[0]] = int(parts[1])
 
                 def start(sha):
                     body = json.dumps({
@@ -2496,6 +2508,12 @@ jobs:
                     if sha in judged:
                         continue
                     answer = start(sha)
+                    if answer.get("status") == "completed" and answer.get("conclusion") == "cancelled":
+                        cancelled[sha] = cancelled.get(sha, 0) + 1
+                        if cancelled[sha] >= 2:
+                            print(f"#{n} ({br}) {sha[:12]}: cancelled {cancelled[sha]} times, not asked again")
+                            judged.add(sha)
+                            continue
                     if (answer.get("outcome") == "unchanged" and answer.get("status") == "completed"
                             and answer.get("conclusion") != "cancelled"):
                         print(f"#{n} ({br}) {sha[:12]}: already judged, {answer.get('conclusion')}")
@@ -2505,6 +2523,8 @@ jobs:
                     break
 
                 open_shas = {sha for _, sha, _ in heads}
+                with open(cancelled_memo, "w", encoding="utf-8") as fh:
+                    fh.write("".join(f"{k} {v}\n" for k, v in sorted(cancelled.items()) if k in open_shas))
                 with open(memo, "w", encoding="utf-8") as fh:
                     fh.write("\n".join(sorted(judged & open_shas)) + "\n")
                 with open(os.environ.get("PR_PICK", "/tmp/pick"), "w", encoding="utf-8") as fh:
@@ -2831,17 +2851,72 @@ jobs:
                 fi
                 # The image's entrypoint is not run: this is not the server.
                 export CONTAINER_TIERS_OUT=/tmp/container-tiers
-                bash pr/scripts/ci/container-tiers.sh pr subset
-                RC=$?
+                # [TheHub #61636] A pull request that changes requirements.txt
+                # makes container-tiers `pip install -r` the checkout's file
+                # into this cached image, and the image has python but no pip
+                # ("No module named pip"): TheHub #692 (a dependency floor) got
+                # NO VERDICT and was reported failed by construction. Bootstrap
+                # pip from the interpreter's own ensurepip first. If that too
+                # cannot run, container-tiers says NO VERDICT and the report
+                # below says unjudged, not failed.
+                PY="$(command -v python3 || command -v python || true)"
+                REQ_CHANGED=0
+                BOOTSTRAP_FAILED=0
+                if [ -f pr/backend/requirements.txt ] && ! cmp -s pr/backend/requirements.txt "${APP_DIR:-/app}/requirements.txt"; then
+                  REQ_CHANGED=1
+                fi
+                if [ "$REQ_CHANGED" -eq 1 ] && [ -n "$PY" ] && ! "$PY" -m pip --version >/dev/null 2>&1; then
+                  echo "pr-gates: the cached image has no pip; bootstrapping it with ensurepip"
+                  "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
+                fi
+                bash pr/scripts/ci/container-tiers.sh pr subset 2>&1 | tee /tmp/container-tiers.log
+                RC=${PIPESTATUS[0]}
+                # [TheHub #61636] A failed `pip install -r` of the checkout's own
+                # requirements.txt is usually the pull request's fault (a pin
+                # nothing satisfies), so it is a verdict: failure, with pip's
+                # error (container-tiers tails pip.log above). Only when the pip
+                # bootstrap itself failed is it the environment's fault.
+                if [ "$RC" -eq 2 ] && [ "$BOOTSTRAP_FAILED" -eq 0 ] \
+                   && grep -q "could not install the checkout's requirements.txt" /tmp/container-tiers.log; then
+                  echo "::error::this pull request's backend/requirements.txt could not be installed (pip's error is above): a real failure, not an outage"
+                  RC=1
+                fi
                 if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
                   mkdir -p memory-infra
                   cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
                   printf '137\n' > memory-infra/exit_code
                 fi
+                # [TheHub #61636] Exit 2 is "NO VERDICT: the environment was not
+                # built". That is an outage, not a test failure: leave the same
+                # infra marker a memory kill leaves, so the hooks report the Hub
+                # stage `errored` and the check run `cancelled` (could not run,
+                # nothing judged) instead of failed. Exit 1 stays a real failure.
+                if [ "$RC" -eq 2 ]; then
+                  mkdir -p memory-infra
+                  printf '%s\n' "NO VERDICT: the integration subset's environment was not built (container-tiers exit 2), so this pull request's code was not judged. Not a test failure." > memory-infra/reason
+                  printf '2\n' > memory-infra/exit_code
+                fi
+                # [TheHub #61636] A requirements.txt change must also satisfy the
+                # committed SBOM (TheHub #692 merged without regenerating
+                # docs/sbom/latest-python.cdx.json and broke develop's unit
+                # lane). A pure file check, so it runs from the checkout. Only
+                # once the subset reached a verdict; a miss is a real failure.
+                if [ "$RC" -le 1 ] && [ -n "$PY" ] && { [ "$REQ_CHANGED" -eq 1 ] || grep -qx 'backend/requirements.txt' pr/.git/process-gates/changed 2>/dev/null; }; then
+                  SBOM_TEST=pr/backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py
+                  if [ -f "$SBOM_TEST" ]; then
+                    echo "pr-gates: requirements.txt changed; running the committed-SBOM test"
+                    if ! "$PY" -m pytest "$SBOM_TEST" --noconftest -c /dev/null --rootdir pr -p no:cacheprovider -q; then
+                      echo "::error::backend/requirements.txt changed but docs/sbom/latest-python.cdx.json does not satisfy it: regenerate the SBOM in the same pull request"
+                      RC=1
+                    fi
+                  else
+                    echo "::warning::this branch has no $SBOM_TEST; the committed SBOM was not checked"
+                  fi
+                fi
                 case "$RC" in
                   0) echo "pr-gates: the integration subset passed on this pull request's code" ;;
                   1) echo "::error::the integration subset failed: deploy.sh's integration tier would fail this code after the swap" ;;
-                  2) echo "::error::the environment was not built; the integration subset was not judged" ;;
+                  2) echo "::error::the environment was not built; the integration subset was not judged (reported unjudged, not failed)" ;;
                   124) echo "::error::the integration subset hit its soft timeout; its results are partial" ;;
                   137) echo "::error::the integration subset was killed for memory; nothing was judged" ;;
                 esac
