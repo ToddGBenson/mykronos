@@ -7,6 +7,9 @@ import { NAV } from "../lib/nav";
 // backend; the mock hands the page a result directly so the render is pure.
 const getPlatformHealth = vi.fn();
 vi.mock("@/lib/server", () => ({ getPlatformHealth }));
+// TheHub #60911: what has been raised from each dependency row, also server-only.
+const getRaised = vi.fn(async () => ({ ok: true, data: { links: [] } }));
+vi.mock("@/lib/raise-to-hub-server", () => ({ getRaised }));
 
 const items = NAV.flatMap((group) => group.items);
 
@@ -53,6 +56,42 @@ describe("MyKronos Health (TheHub #60883)", () => {
     expect(html).toContain("Not configured");
     expect(html).not.toContain("Unreachable");
     expect(html).toContain("Healthy");
+    // Nothing degraded, so nothing to raise.
+    expect(html).not.toContain("Raise in TheHub");
+  });
+
+  it("offers to raise an unreachable dependency in TheHub, and shows one already raised (TheHub #60911)", async () => {
+    getPlatformHealth.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        degraded: true,
+        jobs: [],
+        dependencies: [
+          { name: "vault", reachable: false, detail: "sealed", configured: true },
+          { name: "concourse", reachable: false, detail: "down", configured: true },
+        ],
+        note: null,
+      },
+    });
+    getRaised.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        links: [
+          {
+            subject: "concourse",
+            hub_kind: "incident",
+            hub_id: 42,
+            status: "open",
+            raised_by: "operator",
+            raised_at: null,
+          },
+        ],
+      },
+    } as never);
+    const { default: PlatformHealthPage } = await import("../app/platform-health/page");
+    const html = renderToStaticMarkup(await PlatformHealthPage());
+    expect(html.match(/Raise in TheHub/g)?.length).toBe(1);
+    expect(html).toContain("TheHub incident #42 · open");
   });
 
   const stallJobs = [

@@ -1,5 +1,8 @@
 import { ErrorPanel, Label, Pill, Section } from "@/components/primitives";
+import { RaiseToHub } from "@/components/raise-to-hub";
 import type { components } from "@/lib/api-types";
+import { raisedLookup, type RaisedLink } from "@/lib/raise-to-hub";
+import { getRaised } from "@/lib/raise-to-hub-server";
 import { getPlatformHealth } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -91,7 +94,15 @@ function JobRow({ job }: { job: Job }) {
   );
 }
 
-function DependencyRow({ dependency }: { dependency: Dependency }) {
+function DependencyRow({
+  dependency,
+  link,
+}: {
+  dependency: Dependency;
+  link: RaisedLink | undefined;
+}) {
+  // TheHub #60911: a degraded dependency can be raised in TheHub from here.
+  const degraded = dependency.configured !== false && !dependency.reachable;
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-rule-soft px-3 py-2.5">
       <span className="font-mono text-[13px] font-bold text-ink">{dependency.name}</span>
@@ -107,6 +118,9 @@ function DependencyRow({ dependency }: { dependency: Dependency }) {
           </Pill>
         )}
       </span>
+      {degraded || link ? (
+        <RaiseToHub kind="health" subject={dependency.name} link={link} />
+      ) : null}
     </div>
   );
 }
@@ -268,6 +282,12 @@ export default async function PlatformHealthPage() {
     return <ErrorPanel title="MyKronos Health unavailable" detail={result.error} />;
   }
   const { degraded, jobs, dependencies, note } = result.data;
+  const raised = raisedLookup(
+    await getRaised(
+      "health",
+      dependencies.map((d) => d.name),
+    ),
+  );
   // Optional at runtime: a backend older than this page has no ci_stall.
   const stall: CiStall | undefined = result.data.ci_stall;
   const stalled = stall?.status === "red";
@@ -318,7 +338,11 @@ export default async function PlatformHealthPage() {
       <Section title="Dependencies" detail="probed live on every render">
         {dependencies.length > 0 ? (
           dependencies.map((dependency) => (
-            <DependencyRow key={dependency.name} dependency={dependency} />
+            <DependencyRow
+              key={dependency.name}
+              dependency={dependency}
+              link={raised.get(dependency.name)}
+            />
           ))
         ) : (
           <p className="px-3 py-2.5 text-[13px] text-ink-3">
