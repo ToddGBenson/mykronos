@@ -71,11 +71,15 @@ def deploy(tmp_path: Path, answer: dict[str, Any], *extra: str) -> tuple[int, st
     (tree / "deploy" / "mykronos").mkdir(parents=True)
     (tree / "backend").mkdir()
     shutil.copy(SCRIPT, tree / "deploy" / "mykronos" / "deploy.ps1")
+    # deploy.ps1 dot-sources its lock (TheHub #61610); the lock directory is
+    # pointed into the scratch tree so a test never touches the host's.
+    shutil.copy(SCRIPT.parent / "DeployLock.ps1", tree / "deploy" / "mykronos" / "DeployLock.ps1")
     (tree / "backend" / ".env").write_text("MYKRONOS_VIEWER_TOKEN=t\n", encoding="utf-8")
     fixture = tmp_path / "answer.json"
     fixture.write_text(json.dumps(answer), encoding="utf-8")
     args = " ".join(f"'{a}'" if " " in a else a for a in extra)
     program = f"""
+$env:MYKRONOS_DEPLOY_LOCK_DIR = '{tmp_path / "deploy.lock"}'
 function Invoke-RestMethod {{ Get-Content -Raw '{fixture}' | ConvertFrom-Json }}
 function docker {{ $global:LASTEXITCODE = 0 }}
 function Start-Sleep {{ }}
