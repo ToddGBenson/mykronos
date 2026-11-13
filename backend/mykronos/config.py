@@ -549,6 +549,16 @@ class Settings(BaseSettings):
         le=60,
         description="How long one validation request waits for the demo to answer.",
     )
+    runsheet_actions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the Today run sheet's Merge in order and Deploy actions answer "
+            "(TheHub #61142). Off by default: while off, both routes refuse with 403 "
+            "and the sheet reports `actions_enabled: false`, so no button renders. "
+            "Operator decision 2026-11-04: shipped off, turned on after 2026-11-08 "
+            "at the earliest. Set on the server; nothing a browser sends changes it."
+        ),
+    )
     reviewer_mode: str = Field(
         default="shadow",
         pattern="^(off|shadow|live)$",

@@ -11,8 +11,12 @@
 import type { components } from "./api-types";
 
 export type RunSheet = components["schemas"]["RunSheetOut"];
-export type StepLike = Omit<components["schemas"]["RunSheetStepOut"], "key"> & { key: string };
-export type ItemLike = components["schemas"]["RunSheetItemOut"];
+/** A line. `sha` is a pull request's or main's head (#61142); the Watch lines have none. */
+export type ItemLike = Omit<components["schemas"]["RunSheetItemOut"], "sha"> & { sha?: string };
+export type StepLike = Omit<components["schemas"]["RunSheetStepOut"], "key" | "items"> & {
+  key: string;
+  items: ItemLike[];
+};
 export type RunState = StepLike["state"];
 
 /** Every state is a colour, an icon and a word; colour never carries it alone. */

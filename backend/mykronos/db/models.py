@@ -1986,6 +1986,35 @@ class LibraryRepoPolicy(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class RunsheetRequest(Base):
+    """A merge batch or a deploy the operator asked for from the Today run sheet (#61142).
+
+    The server never merges and never deploys (spec 08 §3, spec 10 §2): it
+    re-checks what it can read, records the request, and a runner on the
+    host, which can read the deploy lock and the Delivery hold and holds
+    the operator's own GitHub credential, carries it out. At most one of
+    each kind is queued at a time.
+    """
+
+    __tablename__ = "runsheet_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    #: merge | deploy
+    kind: Mapped[str] = mapped_column(String(16), default="", index=True)
+    #: queued | taken | done | failed | cancelled
+    state: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    #: For a deploy: the sha the Deploy step showed.
+    sha: Mapped[str] = mapped_column(String(40), default="")
+    #: For a merge: the batch in merge order, each `{repo_full_name, number,
+    #: head_sha}`; the runner merges each at exactly that head and stops at
+    #: the first failure.
+    items: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    requested_by: Mapped[str] = mapped_column(String(255), default="")
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: What the runner reported, once it has.
+    outcome: Mapped[str] = mapped_column(Text, default="")
+
+
 class LibraryCheck(Base):
     """The library-allowlist check posted on one pull request head (#60898)."""
 

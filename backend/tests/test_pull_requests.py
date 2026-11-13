@@ -278,4 +278,18 @@ class TestTheApi:
             path for path in schema["paths"] if "merge" in path.lower()
         ]
 
-        assert merge_routes == []
+        # The one exception, and a visible one (TheHub #61142, operator decision
+        # 2026-11-04): the Today run sheet's Merge in order. It merges nothing:
+        # it re-checks and queues the batch for the host runner, which merges
+        # with the operator's own credential, as Start-Here does. The GitHub
+        # client still has no merge method (test_patchwork.py). It ships off.
+        assert merge_routes == ["/api/dashboard/today/merge"]
+        refused = client.post(
+            "/api/dashboard/today/merge",
+            json={
+                "pull_requests": [{"repo_full_name": "a/b", "number": 1, "head_sha": "a" * 40}],
+                "acknowledged_host_guards": True,
+            },
+            headers=admin_auth,
+        )
+        assert refused.status_code == 403, "Merge in order must ship switched off"
