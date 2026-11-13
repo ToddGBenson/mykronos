@@ -37,7 +37,12 @@ RUN version="$(dpkg-query -W -f='${Version}' ca-certificates)" \
  && cp /var/lib/dpkg/info/ca-certificates.md5sums /out/status.d/ca-certificates.md5sums \
  && test -s /etc/ssl/certs/ca-certificates.crt
 
-FROM pgsty/silo:RELEASE.2026-10-26T00-00-00Z-distroless@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885
+# RELEASE.2026-11-12, pinned by digest (2026-11-13, TheHub #61620): Go 1.27.4
+# and golang.org/x/net 0.62.0 (CVE-2026-78661, HIGH, was 0.61.0), plus the
+# 20261109/20261112 security advisories. Trivy 0.58.1: 2 high -> 1 (CVE-2026-39414
+# against the github.com/minio/minio pseudo-version, no fixed version). Rollback:
+# pgsty/silo:RELEASE.2026-10-26T00-00-00Z-distroless@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885
+FROM pgsty/silo:RELEASE.2026-11-12T00-00-00Z-distroless@sha256:a72e17773bdeb151999f9bf9d3bd842fb03850a577b730ab8c63343bb1f468fd
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=certs /usr/share/doc/ca-certificates/copyright /usr/share/doc/ca-certificates/copyright
 COPY --from=certs /out/status.d/ /var/lib/dpkg/status.d/
