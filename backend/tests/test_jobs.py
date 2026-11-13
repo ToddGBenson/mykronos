@@ -373,6 +373,10 @@ class TestRotation:
         with db.session() as session:
             TokenRegistry(session).issue(REPO)
             TokenRegistry(session).mark_secret_synced(REPO)
+            # Delivered to both stores (TheHub #60855). A token missing its
+            # Dependabot copy, against an App that holds the permission, is
+            # resynced on purpose: see test_dependabot_secrets.
+            TokenRegistry(session).mark_dependabot_synced(REPO)
 
         result = await rotate_ingestion_tokens(db, factory)
 
@@ -486,6 +490,9 @@ class TestRotation:
             registry.mark_secret_synced(REPO)
             registry.rotate(REPO)
             registry.mark_secret_synced(REPO)
+            # Both stores delivered, so the sweep has no resync of its own
+            # to add to the count (TheHub #60855).
+            registry.mark_dependabot_synced(REPO)
 
         result = await rotate_ingestion_tokens(db, factory, overlap_hours=0)
 

@@ -191,6 +191,40 @@ class TokenRegistry:
             token.secret_synced = True
             token.delivery_confirmed_at = utcnow()
 
+    def dependabot_unsynced_repos(self) -> list[str]:
+        """Repos whose active token has not reached their Dependabot secrets.
+
+        A separate list from `unsynced_repos` because it is a separate store
+        and a separate write (TheHub #60855): a token can be delivered to
+        Actions and still be missing from every Dependabot-triggered run.
+        Includes tokens nothing has tried to deliver yet, which is every token
+        issued before the Dependabot write existed.
+        """
+        rows = self.session.execute(
+            select(IngestionToken.repo_full_name)
+            .where(IngestionToken.status == "active")
+            .where(IngestionToken.dependabot_secret_synced.is_(False))
+        ).scalars()
+        return list(rows)
+
+    def mark_dependabot_synced(self, repo_full_name: str) -> None:
+        """Record that the repo's active token reached its Dependabot secret."""
+        token = self._active_token(repo_full_name)
+        if token is not None:
+            token.dependabot_secret_synced = True
+            token.dependabot_sync_blocker = ""
+
+    def mark_dependabot_unsynced(self, repo_full_name: str, reason: str) -> None:
+        """Record that the Dependabot write was attempted and refused, and why.
+
+        The reason is what a person reads in the work queue, so it names the
+        remedy (usually the App permission) rather than only the status code.
+        """
+        token = self._active_token(repo_full_name)
+        if token is not None:
+            token.dependabot_secret_synced = False
+            token.dependabot_sync_blocker = reason
+
     def confirm_delivery(self, token_sha256: str) -> bool:
         """Record that whoever holds this token has the *active* one (#263).
 

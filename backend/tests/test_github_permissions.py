@@ -110,9 +110,23 @@ class TestEveryWriteIsDeclared:
 
 
 class TestTheRequiredSetIsEarned:
-    def test_every_declared_write_is_required_at_write(self) -> None:
+    def test_every_declared_write_is_held_at_write(self) -> None:
+        """Required or optional, never undeclared. An optional write is one
+        the platform degrades without, by recording the gap where a person
+        reads it (TheHub #60855); requiring it would fail the spec 02 §8 smoke
+        test for every installation that already exists."""
+        held = {**REQUIRED_PERMISSIONS, **OPTIONAL_PERMISSIONS}
         for permission in _declared_writes():
-            assert REQUIRED_PERMISSIONS.get(permission) == "write", permission
+            assert held.get(permission) == "write", permission
+
+    def test_the_optional_set_is_what_is_recorded(self) -> None:
+        """The literal set, for the same reason as the required one below:
+        `dependabot_secrets: write` is optional because today's installations
+        do not hold it and must keep working (TheHub #60855)."""
+        assert OPTIONAL_PERMISSIONS == {
+            "administration": "read",
+            "dependabot_secrets": "write",
+        }
 
     def test_every_required_write_is_spent_by_a_method(self) -> None:
         required_writes = {p for p, level in REQUIRED_PERMISSIONS.items() if level == "write"}
@@ -161,6 +175,7 @@ class TestTheFakeEnforcesTheDeclaredWrites:
         "close_pull_request": lambda c: c.close_pull_request(REPO, 1),
         "add_pull_request_labels": lambda c: c.add_pull_request_labels(REPO, 1, ["l"]),
         "put_actions_secret": lambda c: c.put_actions_secret(REPO, "S", "v", "k"),
+        "put_dependabot_secret": lambda c: c.put_dependabot_secret(REPO, "S", "v", "k"),
         "create_check_run": lambda c: c.create_check_run(
             REPO, name="n", head_sha="s", conclusion=None, title="t", summary="s"
         ),
