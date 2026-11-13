@@ -258,8 +258,11 @@ def test_thehub_guard_no_time_left_means_no_re_run(tmp_path: Path) -> None:
 
 
 def test_thehub_guard_time_left_means_a_re_run(tmp_path: Path) -> None:
-    r = _run_guard(tmp_path, _counting(137, 0), soft="1000")
-    assert "re-run: yes (second run sized at 0s)." in r.stdout
+    # Expected run pinned: the sizing is max(first-run wall time, expected), so
+    # without it the "0s" depended on the host spawning python in under 0.5 s
+    # (TheHub #61637). Any first run under 30 s is sized at exactly 30s.
+    r = _run_guard(tmp_path, _counting(137, 0), soft="1000", expected="30")
+    assert "re-run: yes (second run sized at 30s)." in r.stdout
     assert r.returncode == 0
 
 

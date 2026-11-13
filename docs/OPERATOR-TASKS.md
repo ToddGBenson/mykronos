@@ -1,6 +1,6 @@
 # Operator tasks
 
-Nine things this platform cannot do for itself. Each needs a credential this
+Ten things this platform cannot do for itself. Each needs a credential this
 repository must not hold, or a decision only the operator can make.
 
 They are not defects and not unfinished work. Every one of them is a built
@@ -482,7 +482,49 @@ what D-097 forbids.
 
 ---
 
-## 9 · TheHub #61610 — let MyKronos deploy itself after promote
+## 9 · TheHub #61615 — switch the Dependabot autopilot to `live`
+
+**Effort:** one line, after reading one listing. **Unblocks:** green
+minor/patch dependency groups merging without the feature train.
+
+The `dependabot-autopilot` job walks every open pull request opened by
+`dependabot[bot]` on an onboarded repository every fifteen minutes. A pull
+request goes ahead only when it is in a minor/patch group
+(`pip-minor-patch`, `npm-minor-patch`), changes nothing but that group's
+manifests and lockfiles, carries no major bump (a `0.x` minor counts as one)
+and no security advisory above moderate, and has every required check of its
+base branch plus `library-allowlist` green on its current head. Everything
+else is skipped with the reason.
+
+It ships in `dry-run`: each Dependabot pull request appears in the agent work
+queue (`GET /api/agent/work`, `waiting`, kind `dependabot_autopilot`)
+with what the job would do — `would_request`, `awaiting_approval`,
+`would_merge` — or why it skipped it. Nothing is requested or merged.
+
+### Steps
+
+1. Read the listing once and check that every `skipped` reason and every
+   `would_request` is what you expect.
+2. In `backend/.env` set `MYKRONOS_DEPENDABOT_AUTOPILOT_MODE=live` and
+   redeploy the backend.
+
+In `live` the job requests `pull_request_merge` approval for each green head
+through the same path as `POST /api/approvals/pull-requests` (an existing
+request counts as requested), and once a request is approved and
+`independent-review` is green on that head, the GitHub App squash-merges at
+exactly that sha, at most five per run. The squash commit carries
+`Approval-Request: <id>`. `off` stops the job.
+
+### Expected, and not a bug
+
+A single-dependency or lockfile-only Dependabot pull request (Dependabot opens
+these outside the groups) is skipped: it is not a group update, and a person
+reviews it as before. A push after the approval moves the head; the old
+approval is never merged, and the new head is judged from scratch.
+
+---
+
+## 10 · TheHub #61610 — let MyKronos deploy itself after promote
 
 **Effort:** ~5 minutes now, a day of reading, then one command. **Unblocks:**
 production keeping up with main without a hand run.

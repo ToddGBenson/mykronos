@@ -559,6 +559,31 @@ class Settings(BaseSettings):
             "at the earliest. Set on the server; nothing a browser sends changes it."
         ),
     )
+    dependabot_autopilot_mode: str = Field(
+        default="dry-run",
+        pattern="^(off|dry-run|live)$",
+        description=(
+            "What the Dependabot autopilot job does with an open Dependabot pull request "
+            "in a minor/patch group whose required checks and `library-allowlist` are "
+            "green on its current head (TheHub #61615). `dry-run` (the default) lists "
+            "each one on the agent work queue with what it would do or why it skips "
+            "it, and requests nothing. `live` requests `pull_request_merge` approval "
+            "through the same path as POST /api/approvals/pull-requests and, once a "
+            "request is approved, has the GitHub App squash-merge at exactly the "
+            "approved head. `off` does nothing. Set on the server "
+            "(`MYKRONOS_DEPENDABOT_AUTOPILOT_MODE=live`); flip to live only after the "
+            "operator has read a dry-run listing."
+        ),
+    )
+    dependabot_autopilot_interval_seconds: int = Field(
+        default=900,
+        ge=60,
+        description=(
+            "How often the Dependabot autopilot walks open Dependabot pull requests "
+            "(TheHub #61615). Fifteen minutes: Dependabot opens its groups weekly, "
+            "and an approved head waits at most one interval for its merge."
+        ),
+    )
     reviewer_mode: str = Field(
         default="shadow",
         pattern="^(off|shadow|live)$",
