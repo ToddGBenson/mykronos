@@ -2058,3 +2058,28 @@ class LibraryCheck(Base):
     #: retrying at `library_check.MAX_ATTEMPTS`.
     attempts: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ReviewerKeyProbe(Base):
+    """What the hourly probe last learned of the platform reviewer's model key (TheHub #61614).
+
+    One row, `id = 1`. It holds a state, a time, a model name and an HTTP
+    status, and nothing of the key: no value, no prefix, no response header.
+    `alerted` is the de-duplication key: a refusal is announced once, when it
+    is first seen, and the recovery note is sent only for a refusal that was.
+    """
+
+    __tablename__ = "reviewer_key_probe"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    #: `ok` | `refused` | `unreachable`
+    state: Mapped[str] = mapped_column(String(16), default="ok")
+    #: When the probe last ran.
+    as_of: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: When the current state began.
+    since: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    model: Mapped[str] = mapped_column(String(100), default="")
+    #: Null when the API never answered (timeout, connection error).
+    http_status: Mapped[int | None] = mapped_column(Integer, default=None)
+    #: Whether the alert for the current non-ok state has been delivered.
+    alerted: Mapped[bool] = mapped_column(Boolean, default=False)

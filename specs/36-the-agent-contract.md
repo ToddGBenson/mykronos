@@ -106,6 +106,7 @@ cannot disagree. The agent learns before it asks whether a person will be involv
 | 4 | `acceptance_attention` | Acceptances `review_due`, `premise_failed`, with scope drift, or expiring within 14 days | Renewed, revoked or closed; for `premise_failed`, which neither renew nor revoke accepts, every covered finding fixed or held by a new acceptance with corrected premises |
 | 5 | `token_delivery` | Tokens the rotation sweep deferred to a person | Rotated (`due`) or a scan confirmed arriving (`unverified`) |
 | 6 | `triage` | The ranked triage queue, unclaimed or claimed by this principal | The finding is dispositioned or two scans observe it gone |
+| 7 | `analyser_gap` | The briefing's cached B-051 language read, measured by `read_coverage.measure` (TheHub #60798) | An analyser that reads the unread languages reports, and the share no analyser reads is zero |
 
 Within a band, items sort by severity, then by how many findings they hold, then by `item_id`, so two calls
 with the same state return the same order.
@@ -123,7 +124,9 @@ offers no action for a repository with no onboarding row rather than a dead one.
 
 ### 2.3 What the queue does not include, yet
 
-`unread` lanes (B-051) need a live GitHub read per repository and are left to the briefing. Patchwork's
+`unread` lanes (B-051) are in the queue since TheHub #60798 (decision option A) as `analyser_gap`, read from
+the briefing's cached language mix and never from GitHub. A repository with no cached read, or one older
+than the briefing's cache lifetime, is named in `unknown`; the queue makes no per-repository GitHub call. Patchwork's
 draft pull requests and an agent's own pull requests arrived after phase 3 as `pull_request_attention`
 (TheHub #60797, the operator's option B): built from `approval_requests` and `remediation_events`, with no
 GitHub call. A rejection stays work until a request names a newer head of the same pull request; the

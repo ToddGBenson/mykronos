@@ -122,6 +122,18 @@ class TestEveryAllowlist:
             assert pattern.startswith("^") and pattern.endswith("$"), pattern
             assert not re.search(pattern, LOOKALIKE), pattern
 
+    def test_every_regex_matches_text_in_its_file(self, rule_id: str, entry: dict) -> None:
+        # A dead regex (an unescaped `+`, a typo) suppresses nothing and
+        # leaves the finding open while the entry looks like it covers it.
+        # The match is anchored by `^`/`$` over gitleaks' match, not over a
+        # line, so check the unanchored body against the file's text.
+        for path in entry["paths"]:
+            relative = path.removeprefix("(^|/)").removesuffix("$").replace("\\.", ".")
+            text = (REPO_ROOT / relative).read_text(encoding="utf-8")
+            for pattern in entry["regexes"]:
+                body = pattern.removeprefix("^").removesuffix("$")
+                assert re.search(body, text), f"{pattern} matches nothing in {relative}"
+
     def test_has_a_reason(self, rule_id: str, entry: dict) -> None:
         assert len(entry.get("description", "")) > 20
 

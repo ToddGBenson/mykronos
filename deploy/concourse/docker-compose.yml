@@ -156,21 +156,38 @@ services:
   # 141 high in Trivy against 2 and 85 here, none new). Major 15 on purpose:
   # 16 needs a dump-and-restore of this volume. Not alpine either, which
   # would drop gosu but changes the libc under every existing text index.
-  # gosu 1.19 is still Go 1.24.6 (CVE-2026-78669 and friends); upstream has
-  # not rebuilt it, so those findings stay until it does.
+  # gosu 1.19 is still Go 1.24.6 (CVE-2025-68121, CRITICAL, and friends);
+  # upstream has not rebuilt it, so the recipe below does (TheHub #61617).
   concourse-db:
+    # Rollback: the vendor 15.19 this host ran before the derivative.
+    #   postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
     image: postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
-    # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
-    # the distribution's fixes, published as <registry>/<publish>-p<date> only
-    # when strictly better. Declared, not adopted: `image:` stays the vendor's
-    # until a reviewed change pins a published date.
+    # Out-of-band rebuild (mykronos.yml `image-refresh`): postgres 15.20 with
+    # gosu rebuilt from source on Go 1.27.3 and `apt-get upgrade`, published
+    # as <registry>/library/postgres:15.20-p<date> only when strictly better.
+    # Declared, not adopted: `image:` stays the vendor's until a reviewed
+    # change pins a published date, so the estate scan never reads a tag the
+    # registry does not have yet (a missing image reads as fixed). Adoption is
+    #   image: ${REGISTRY:-localhost:5000}/library/postgres:15.20-p<date>
+    # and drops `baseline:` below, so later dates compare against what runs.
+    #
+    # Trivy 0.58.1, 2026-11-13 (critical/high): vendor 15.19 2/149, vendor
+    # 15.20 2/149, this build 1/122. The one CRITICAL left is libxml2
+    # CVE-2026-6653, no Debian fix; `apt-get upgrade` takes it when one ships.
     x-mykronos-build:
-      context: ../images/apt-upgrade
-      base: postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+      context: ../images/postgres-gosu
+      base: postgres:15.20@sha256:ad51f1a9aec85898aff1d1702ac361039286460de92d25610c85d76950f5d212
+      # Compared against its own vendor base, not the running 15.19: 15.20's
+      # postgresql-common (294) newly installs `systemd`, which brings
+      # CVE-2026-16742 (HIGH, no Debian fix) into two more packages
+      # (systemd, libsystemd-shared). 15.19 already carries that CVE in
+      # libsystemd0 and libudev1, but per (vulnerability, package) the lane
+      # would read the move as `regressed` and never publish the 30 it fixes.
+      baseline: postgres:15.20@sha256:ad51f1a9aec85898aff1d1702ac361039286460de92d25610c85d76950f5d212
       # library/: identity drops the registry host but adds library/ only
       # without one, so this is what keeps findings (and acceptances) keyed
       # to the vendor image.
-      publish: library/postgres:15.19
+      publish: library/postgres:15.20
       refresh_arg: APT_REFRESH
     container_name: mykronos-concourse-db
     restart: unless-stopped
@@ -210,10 +227,22 @@ services:
   # RELEASE.2026-10-26, pinned by digest (2026-11-04): built on Go 1.27.3,
   # which fixes CVE-2026-111943 (HIGH, standard library). Trivy 0.73.0 on
   # one database: 2026-10-15 at 3 high, 2026-10-26 at 1 high.
+  #
+  # Built here since TheHub #61023: deploy/images/silo/Dockerfile is that
+  # vendor image, at that digest (its FROM is now the pin), with Debian's
+  # fixed ca-certificates laid over it. Every SILO release to 2026-10-26
+  # ships 20250419~deb12u1 (DLA-4845-1), and distroless has no package
+  # manager, so no x-mykronos-build recipe or pull reaches it. To move SILO,
+  # edit that FROM. `image:` names the local build: it is a tag no registry
+  # has, so a vendor tag already in the local store can never stand in for
+  # the build, and `pull_policy: build` keeps compose from looking for it.
+  # The containers lane builds the same Dockerfile and scans it as
+  # pgsty/silo, the name its findings already carry.
   minio:
-    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z-distroless@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885
-    # No x-mykronos-build: distroless, so there is no package manager to
-    # upgrade with. SILO moves only by a new upstream release.
+    build:
+      context: ../images/silo
+    image: pgsty/silo:local
+    pull_policy: build
     container_name: mykronos-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"

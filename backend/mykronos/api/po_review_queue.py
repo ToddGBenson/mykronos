@@ -153,6 +153,9 @@ class PoReviewerStateOut(BaseModel):
     #: Agreement with people's decisions on delegable tiers, or None with no
     #: decided history.
     agreement: float | None
+    #: When the hourly probe of the reviewer's model key last turned refused
+    #: or unreachable (TheHub #61614); None while it is ok or never probed.
+    unavailable_since: str | None = None
 
 
 class PoQueueCountsOut(BaseModel):
@@ -512,6 +515,13 @@ async def _ready_to_merge(request: Request, policy: Any) -> list[PoMergeRowOut]:
     return [row for row in found if row is not None]
 
 
+def _unavailable_since(db: Any) -> str | None:
+    from mykronos import reviewer_key
+
+    since = reviewer_key.unavailable_since(db)
+    return since.strftime("%Y-%m-%d %H:%MZ") if since else None
+
+
 @router.get("/product-owner/review-queue", response_model=PoReviewQueueOut)
 async def review_queue(request: Request, principal: PrincipalDep) -> PoReviewQueueOut:
     """What is waiting on a person: pending decisions and approved pull requests."""
@@ -574,7 +584,9 @@ async def review_queue(request: Request, principal: PrincipalDep) -> PoReviewQue
     merge = await _ready_to_merge(request, policy)
     return PoReviewQueueOut(
         reviewer=PoReviewerStateOut(
-            mode=reviewer.mode(request.app.state.settings), agreement=report.get("agreement")
+            mode=reviewer.mode(request.app.state.settings),
+            agreement=report.get("agreement"),
+            unavailable_since=_unavailable_since(request.app.state.db),
         ),
         counts=PoQueueCountsOut(
             pending=len(pending),

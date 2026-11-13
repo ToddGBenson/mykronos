@@ -163,6 +163,17 @@ def mode(settings: Any) -> str:
     return value if value in MODES else "shadow"
 
 
+def _probe_note(db: Any) -> str:
+    """When the hourly key probe has reported refused, say since when, so the
+    503 points at the key and not at this one request (TheHub #61614)."""
+    from mykronos import reviewer_key
+
+    row = reviewer_key.current(db)
+    if row is None or row.state != "refused":
+        return ""
+    return f"; the hourly probe has reported refused since {row.since:%Y-%m-%d %H:%MZ}"
+
+
 def api_key(settings: Any) -> str | None:
     """The reviewer's key: its own setting first, then the SDK's variable."""
     configured = str(getattr(settings, "reviewer_api_key", "") or "").strip()
@@ -399,6 +410,7 @@ def run_review(
         except anthropic.APIStatusError as exc:
             raise ReviewerUnavailableError(
                 f"The model API refused the review ({exc.status_code}): {exc.message}"
+                + _probe_note(db)
             ) from exc
 
         api_request_id = getattr(response, "_request_id", None)

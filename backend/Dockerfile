@@ -12,7 +12,7 @@
 # not the build toolchain. A smaller image is a smaller thing for the
 # container scanner to find CVEs in, and this platform scans its own images.
 
-FROM python:3.13-slim AS build
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS build
 
 WORKDIR /src
 RUN pip install --no-cache-dir --quiet build
@@ -25,7 +25,7 @@ COPY backend/mykronos ./mykronos
 RUN python -m build --wheel --outdir /dist
 
 
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS runtime
 
 # Non-root, created before anything else so the layers it owns are correct
 # from the start. This process holds the GitHub App key path, every repo's

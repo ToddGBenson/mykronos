@@ -22,9 +22,10 @@ These are floors, not exact pins: image-refresh moves tags and digests
 (mykronos #976), so a later release or a `-p<date>` derivative passes, and only
 a pin back onto a build that links the vulnerable standard library fails.
 
-Not covered: `gosu` in `postgres:15`. The newest `postgres:15` still ships a
-gosu built on go1.24.6, so there is no vendor build to move to, and that one
-finding is a risk acceptance, not a pin.
+Not covered here: `gosu` in `postgres:15`. The newest `postgres:15` still ships
+a gosu built on go1.24.6, so there is no vendor build to move to; since TheHub
+#61617 the Concourse database's recipe rebuilds it, and
+test_concourse_db_image.py holds that build's toolchain to the same floor.
 """
 
 from __future__ import annotations
@@ -69,12 +70,23 @@ def _references() -> list[tuple[str, str]]:
     Both the service's `image:` and its `x-mykronos-build` base and publish
     name count: image-refresh builds the derivative on the base, so a base
     that lagged the image would rebuild the vulnerable binary.
+
+    A service compose builds itself (`build:`, as SILO is since TheHub
+    #61023) runs a local tag no registry has, so its vendor pin is the
+    `FROM` lines of that build's Dockerfile instead of its `image:`.
     """
     found: list[tuple[str, str]] = []
     for name, service in (_compose().get("services") or {}).items():
         if not isinstance(service, dict):
             continue
-        if isinstance(service.get("image"), str):
+        local = service.get("build")
+        if isinstance(local, dict) and isinstance(local.get("context"), str):
+            dockerfile = COMPOSE.parent / local["context"] / local.get("dockerfile", "Dockerfile")
+            for match in re.finditer(
+                r"^FROM\s+(\S+)", dockerfile.read_text(encoding="utf-8"), re.M
+            ):
+                found.append((f"{name}.build FROM", match.group(1)))
+        elif isinstance(service.get("image"), str):
             found.append((f"{name}.image", service["image"]))
         build = service.get("x-mykronos-build")
         if isinstance(build, dict):
