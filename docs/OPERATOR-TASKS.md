@@ -454,6 +454,15 @@ already exists.
    `NO DEPENDABOT SECRET <repo>: <reason>` per repository, with the owner and
    the next step for that reason.
 
+   If the reason says the write *failed under a held grant*, the sweep skips
+   that repository until its next due rotation, so a plain re-run retries
+   nothing. Fix the cause (the grant or the repository's Dependabot write
+   permission), then either wait for the next due rotation, or retry now with
+   `mykronos rotate-token <owner/repo>` followed by `mykronos rotate-due`. The
+   first command issues a fresh token with no recorded blocker and the sweep
+   then writes both stores; the cost is that the credential is rotated once
+   more.
+
 5. Verify, per repository:
 
        gh secret list --app dependabot -R <owner>/<repo>

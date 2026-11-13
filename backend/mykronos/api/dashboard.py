@@ -3708,6 +3708,8 @@ class TokenDeliveryOut(BaseModel):
     scanned_by: str = ""
     #: Why the Dependabot copy is missing; empty for the other states.
     reason: str = ""
+    #: When that reason was first recorded (the as-of); None for the other states.
+    recorded_at: datetime | None = None
 
 
 class UnhealthyJobOut(BaseModel):

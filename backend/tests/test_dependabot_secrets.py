@@ -34,7 +34,7 @@ from mykronos.briefing import TokenDelivery
 from mykronos.config import get_settings
 from mykronos.db import Database
 from mykronos.db.models import IngestionToken, Organization, RepoOnboarding
-from mykronos.dependabot_remedy import remedy_for
+from mykronos.dependabot_remedy import WRITE_FAILED_RETRY, remedy_for
 from mykronos.github import FakeGitHubClient
 from mykronos.github.client import (
     OPTIONAL_PERMISSIONS,
@@ -534,7 +534,7 @@ PERMISSION_REASON = permission_not_held_reason(None)
 REASON_PATHS = [
     (PERMISSION_REASON, "operator", "Dependabot secrets: Read and write", "repair-ingestion"),
     (CONCOURSE_REASON, "hubops", "Rotate by hand: repair-ingestion-token.ps1", "grant the App"),
-    (WRITE_FAILED_REASON, "hubops", "retried at the next due rotation", "grant the App"),
+    (WRITE_FAILED_REASON, "hubops", "mykronos rotate-token <repo>", "grant the App"),
 ]
 
 
@@ -626,26 +626,33 @@ class TestTheRemedyFollowsTheRecordedReason:
         assert deliveries_awaiting_operator(db) == []
 
 
+class RefusesTheWrite(FakeGitHubClient):
+    async def put_dependabot_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        raise GitHubError("PUT .../dependabot/secrets/x -> 500: boom", status=500)
+
+
+async def _record_a_write_failure(db: Database) -> str:
+    refusing = RefusesTheWrite()
+    refusing.add_repo(REPO)
+    refusing.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+    onboard(db)
+    _issue_actions_synced(db, dependabot_synced=False)
+    await rotate_ingestion_tokens(db, FakeGitHubClientFactory(refusing))
+    recorded = _active_token(db).dependabot_sync_blocker
+    assert write_failed_under_grant(recorded)
+    return recorded
+
+
 class TestWriteFailedUnderGrantTellsTheTruth:
     """The remedy for a write that failed under a held grant must agree with
     what the sweep does: it skips the repository until its next due rotation,
-    so "re-run the sweep" would promise a retry that never happens."""
+    so a bare "re-run the sweep" retries nothing, and `mykronos rotate-token`
+    followed by a sweep does."""
 
     async def test_the_remedy_and_the_sweep_agree(self, db: Database) -> None:
-        class RefusesTheWrite(FakeGitHubClient):
-            async def put_dependabot_secret(
-                self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
-            ) -> None:
-                raise GitHubError("PUT .../dependabot/secrets/x -> 500: boom", status=500)
-
-        refusing = RefusesTheWrite()
-        refusing.add_repo(REPO)
-        refusing.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
-        onboard(db)
-        _issue_actions_synced(db, dependabot_synced=False)
-        await rotate_ingestion_tokens(db, FakeGitHubClientFactory(refusing))
-        recorded = _active_token(db).dependabot_sync_blocker
-        assert write_failed_under_grant(recorded)
+        recorded = await _record_a_write_failure(db)
 
         # A re-run against a GitHub that would now accept the write.
         accepting = FakeGitHubClient()
@@ -660,7 +667,29 @@ class TestWriteFailedUnderGrantTellsTheTruth:
         [waiting] = deliveries_awaiting_operator(db)
         remedy = remedy_for(waiting.reason, waiting.rotate_after)
         assert f"{waiting.rotate_after:%Y-%m-%d}" in remedy.action
-        assert "next due rotation" in remedy.action
-        assert "re-running the sweep skips" in remedy.action
-        assert "re-run the sweep" not in remedy.action.replace("re-running the sweep", "")
+        assert "a plain re-run of the sweep skips this repository" in remedy.action
+        assert WRITE_FAILED_RETRY in remedy.action
+        assert "no command or route exists" not in remedy.action
+        assert "mykronos rotate-token <repo>" in remedy.done_when
         assert f"{waiting.rotate_after:%Y-%m-%d}" in remedy.done_when
+
+    async def test_rotate_token_then_the_sweep_clears_the_blocker(self, db: Database) -> None:
+        """The route the remedy names: `mykronos rotate-token <repo>` (which is
+        `TokenRegistry.rotate`) issues a token with no blocker, and the next
+        sweep writes both stores."""
+        await _record_a_write_failure(db)
+
+        with db.session() as session:
+            TokenRegistry(session).rotate(REPO)
+        assert _active_token(db).dependabot_sync_blocker == ""
+
+        accepting = FakeGitHubClient()
+        accepting.add_repo(REPO)
+        accepting.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+        result = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(accepting))
+
+        assert result.dependabot_blocked == []
+        puts = [c for c in accepting.calls if c[0] == "put_dependabot_secret"]
+        assert len(puts) == 1
+        assert _active_token(db).dependabot_sync_blocker == ""
+        assert deliveries_awaiting_operator(db) == []

@@ -794,7 +794,11 @@ playbooks:
           operator grants the App 'Dependabot secrets: Read and write'. The
           scanner cannot receive a rotated token: HubOps rotates by hand with
           repair-ingestion-token.ps1. Write failed under a held grant: HubOps
-          reads the sweep log, fixes the cause and re-runs the sweep. Scans
+          reads the sweep log, then: fix the cause (the grant or the
+          repository's Dependabot write permission), then either wait for the
+          next due rotation or retry now with `mykronos rotate-token <repo>`
+          followed by `mykronos rotate-due` (the credential is rotated once
+          more). A plain re-run of the sweep skips the repository. Scans
           arriving on Actions never closes this item.
         check: >-
           The next rotation sweep reports the Dependabot secret written and a
@@ -803,7 +807,7 @@ playbooks:
           - "GET /api/dashboard/platform-health"
         if_found: >-
           The item is done only when the sweep has written the secret. Name the
-          owner and the as-of in the evidence and stop; do not rotate.
+          owner and the as-of in the evidence and stop; do not rotate, except the write-failed retry above.
         then: stop
       - id: check-scans-arrive
         do: >-

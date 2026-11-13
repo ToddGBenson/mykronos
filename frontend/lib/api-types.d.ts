@@ -14319,6 +14319,8 @@ export interface components {
              * @default
              */
             reason: string;
+            /** Recorded At */
+            recorded_at?: string | null;
         };
         /** ToxicCombinationMemberOut */
         ToxicCombinationMemberOut: {

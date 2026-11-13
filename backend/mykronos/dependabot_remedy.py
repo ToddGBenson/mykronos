@@ -27,9 +27,11 @@ ACTIONS: dict[str, str] = {
         "installation; the next sweep writes the secret"
     ),
     CONCOURSE_BLOCKER: "Rotate by hand: repair-ingestion-token.ps1",
-    # Not "re-run the sweep": `jobs.rotate_ingestion_tokens` skips a repository
-    # whose blocker is WRITE_FAILED until its next due rotation, so a re-run
-    # retries nothing. See `remedy_for`, which adds the date.
+    # Not a bare "re-run the sweep": `jobs.rotate_ingestion_tokens` skips a
+    # repository whose blocker is WRITE_FAILED until its next due rotation, so a
+    # re-run alone retries nothing. `mykronos rotate-token` makes a fresh token
+    # row with an empty blocker, which the next sweep then writes. See
+    # `remedy_for`, which adds the date.
     WRITE_FAILED: "the grant is held and the write failed",
     UNKNOWN: "",
 }
@@ -56,14 +58,26 @@ DONE_WHEN: dict[str, str] = {
         "risk-decision records a decision."
     ),
     WRITE_FAILED: (
-        "The next due rotation writes the Dependabot secret and the sweep reports it "
-        "written, and a Dependabot pull request's risk-decision records a decision."
+        "The cause is fixed, then the next due rotation, or `mykronos rotate-token <repo>` "
+        "followed by `mykronos rotate-due`, writes the Dependabot secret and the sweep "
+        "reports it written, and a Dependabot pull request's risk-decision records a "
+        "decision."
     ),
     UNKNOWN: (
         "The sweep reports the Dependabot secret written and a Dependabot pull "
         "request's risk-decision records a decision."
     ),
 }
+
+#: The sentence that says how to retry a write that failed under a held grant.
+#: `agent-playbooks-v1.yaml` quotes it for HubOps and a test compares the two,
+#: so the operator page and the playbook cannot drift apart again.
+WRITE_FAILED_RETRY = (
+    "fix the cause (the grant or the repository's Dependabot write permission), "
+    "then either wait for the next due rotation or retry now with "
+    "`mykronos rotate-token <repo>` followed by `mykronos rotate-due` (the "
+    "credential is rotated once more)"
+)
 
 _CONCOURSE_PREFIX = "The Dependabot secret is not written:"
 
@@ -99,15 +113,13 @@ def remedy_for(reason: str, rotate_after: datetime | None = None) -> Remedy:
     action = ACTIONS[kind]
     done_when = DONE_WHEN[kind]
     if kind == WRITE_FAILED:
-        when = f" on {rotate_after:%Y-%m-%d}" if rotate_after is not None else ""
+        when = f" ({rotate_after:%Y-%m-%d})" if rotate_after is not None else ""
         action = (
-            f"{action}; the copy is retried at the next due rotation{when}. Nothing "
-            "clears the blocker sooner: no command or route exists for it, and "
-            "re-running the sweep skips this repository until then. Read the sweep log "
-            "for the cause meanwhile"
+            f"{action}; a plain re-run of the sweep skips this repository until its next "
+            f"due rotation{when}. To retry sooner: {WRITE_FAILED_RETRY}"
         )
         if rotate_after is not None:
             done_when = done_when.replace(
-                "The next due rotation", f"The next due rotation ({rotate_after:%Y-%m-%d})"
+                "the next due rotation,", f"the next due rotation ({rotate_after:%Y-%m-%d}),"
             )
     return Remedy(kind=kind, action=action, owner=OWNERS[kind], done_when=done_when)

@@ -46,6 +46,22 @@ def _document() -> dict[str, Any]:
     return loaded
 
 
+def test_the_write_failed_step_quotes_the_remedy_modules_retry_sentence() -> None:
+    """HubOps reads the playbook and a person reads the remedy; they must say
+    the same thing about how to retry a write that failed under a held grant."""
+    from mykronos.dependabot_remedy import WRITE_FAILED_RETRY, remedy_for
+    from mykronos.github.secrets import WRITE_FAILED_UNDER_GRANT
+
+    step = next(
+        s
+        for s in _document()["playbooks"]["token_delivery"]["steps"]
+        if s["id"] == "check-the-dependabot-copy"
+    )
+    assert WRITE_FAILED_RETRY in " ".join(step["do"].split())
+    reason = f"{WRITE_FAILED_UNDER_GRANT}: GitHub answered 500: boom."
+    assert WRITE_FAILED_RETRY in remedy_for(reason).action
+
+
 def _app_routes(app: FastAPI) -> set[tuple[str, str]]:
     """Every `(method, path template)` the app serves.
 
