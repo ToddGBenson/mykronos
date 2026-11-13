@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -23,11 +24,17 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from mykronos import agent_work, briefing, briefing_sources, playbooks
+from mykronos import agent_work, briefing, briefing_sources, playbooks, read_coverage
 from mykronos import risk_acceptance as ra
 from mykronos.adminauth import Principal, PrincipalDep
 from mykronos.dashboard import DashboardQueries
-from mykronos.db.models import ApprovalDecision, ApprovalRequest, AuditLogEntry, RiskAcceptance
+from mykronos.db.models import (
+    ApprovalDecision,
+    ApprovalRequest,
+    AuditLogEntry,
+    RepoOnboarding,
+    RiskAcceptance,
+)
 from mykronos.risk_acceptance import serialize as serialize_acceptance
 from mykronos.schemas import utcnow
 
@@ -297,6 +304,66 @@ def _triage_rows(request: Request, repo: str | None, limit: int) -> list[dict[st
     return rows
 
 
+def _analyser_coverage(
+    request: Request, repo: str | None
+) -> list[read_coverage.ReadCoverage] | None:
+    """What each onboarded repository's analysers read, from the briefing's
+    cache only (TheHub #60798, decision option A).
+
+    The briefing reads each repository's language mix from GitHub and keeps it
+    for `LANGUAGES_TTL_SECONDS`. This reads that cache and never GitHub: an
+    agent calls the queue on every loop, and one GitHub call per repository
+    per loop is what made the briefing slow (#730). A repository with no
+    cached read, or one older than the briefing itself would use, is measured
+    as unavailable, so the queue names it in `unknown` rather than leaving it
+    out. None when the onboarding ledger or the lake could not be read.
+    """
+    from mykronos.api.dashboard import LANGUAGES_TTL_SECONDS, _sast_tools
+
+    try:
+        with request.app.state.db.session() as session:
+            names = [
+                str(name)
+                for name in session.execute(
+                    select(RepoOnboarding.github_repo_full_name).where(
+                        RepoOnboarding.status != "removed"
+                    )
+                )
+                .scalars()
+                .all()
+            ]
+        if repo is not None:
+            names = [name for name in names if name == repo]
+        tools = _sast_tools(request, names)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not read the analyser coverage inputs for the work queue")
+        return None
+
+    cache: dict[str, tuple[float, dict[str, int]]] = (
+        getattr(request.app.state, "languages_cache", None) or {}
+    )
+    now = time.monotonic()
+    out = []
+    for name in sorted(names):
+        hit = cache.get(name)
+        if hit is None or now - hit[0] >= LANGUAGES_TTL_SECONDS:
+            out.append(
+                read_coverage.ReadCoverage(
+                    repo_full_name=name,
+                    available=False,
+                    reason=(
+                        "The briefing holds no language read for this repository"
+                        + (" newer than its cache lifetime" if hit is not None else "")
+                        + ", and the queue does not ask GitHub. "
+                        "GET /api/dashboard/briefing reads it."
+                    ),
+                )
+            )
+            continue
+        out.append(read_coverage.measure(name, hit[1], tools[name]))
+    return out
+
+
 @router.get("/work", response_model=WorkQueueOut)
 async def work(
     request: Request,
@@ -364,6 +431,7 @@ async def work(
     own = await asyncio.to_thread(_own_requests, state.db, principal)
     pr_requests = await asyncio.to_thread(_pull_request_requests, state.db)
     patchwork_prs = await asyncio.to_thread(_patchwork_prs, state.catalog, repo)
+    coverage = await asyncio.to_thread(_analyser_coverage, request, repo)
 
     queue = agent_work.build(
         report,
@@ -373,9 +441,11 @@ async def work(
         approval_requests=own,
         pull_request_requests=pr_requests,
         patchwork_prs=patchwork_prs,
+        analyser_coverage=coverage,
         now=utcnow(),
         probe_interval_seconds=int(settings.exposure_probe_interval_seconds),
         playbook_version=playbook_version,
+        repo_ids=repo_ids,
     )
     return WorkQueueOut.model_validate(dataclasses.asdict(queue))
 

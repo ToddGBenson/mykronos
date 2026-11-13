@@ -931,3 +931,62 @@ playbooks:
       - "Set a critical or high finding's status directly as an agent."
       - "Hand-set a finding to fixed; scans own that."
       - "Recommend pulling an image because a package has a fixed_version."
+
+  # -------------------------------------------------------------------------
+  # Band 7: source no analyser reads
+  # -------------------------------------------------------------------------
+
+  analyser_gap:
+    purpose: >-
+      Part of a repository's application source is in languages no analyser
+      that reports for it implements (B-051), so every SAST run reports
+      success and reads none of those bytes. There is no finding to fix and
+      re-running the lane changes nothing; the gap closes when an analyser
+      that reads those languages runs beside the existing one. The item is
+      measured from the briefing's cached language read, never a live GitHub
+      call, and is ranked below the findings because closing it is a tool
+      choice for the repository, not work on a known defect.
+    steps:
+      - id: read-the-gap
+        do: >-
+          Read the repository's coverage: the share no analyser reads, the
+          languages and their bytes, and which analysers report SAST there.
+        check: >-
+          The languages and the share match the item's evidence. If the share
+          is now zero, an analyser was added since the briefing's read.
+        routes:
+          - "GET /api/dashboard/repos/{repo_id}/coverage"
+        if_found: >-
+          The share is zero: the item is stale and goes on the next queue read.
+        then: stop
+      - id: confirm-it-is-source
+        do: >-
+          Look at what the unread languages are in the repository: generated
+          files, vendored code or fixtures are not application source and are
+          a reason to exclude them from GitHub's language count, not to add an
+          analyser.
+        check: >-
+          You know whether the unread bytes are code someone wrote and runs.
+        outside:
+          - "The repository tree and its .gitattributes (linguist-generated, linguist-vendored)"
+      - id: propose-an-analyser
+        do: >-
+          Propose an analyser for the unread languages as a story in TheHub,
+          naming the languages, their bytes and the analyser that would read
+          them. Search the board first so you do not file a duplicate. Adding
+          a lane is a decision about the repository and goes through review.
+        check: >-
+          One TheHub story tracks the gap.
+        outside:
+          - "TheHub dev_stories, the system of record for work items (D-133)"
+    stop_when:
+      - "An analyser that reads the unread languages reports a successful SAST run, and the share no analyser reads is zero."
+      - "A TheHub story proposing the analyser exists."
+    escalate:
+      when:
+        - "The unread source is most of a repository that runs in production."
+      evidence:
+        - "The coverage route's output and the item's evidence."
+    never:
+      - "Re-run the SAST lane to close the gap; it reads the same bytes and reports success again."
+      - "Call the repository clean because its SAST lane is green."

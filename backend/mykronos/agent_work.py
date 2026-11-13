@@ -39,6 +39,7 @@ from mykronos import finding_disposition
 from mykronos.adminauth import Principal
 from mykronos.briefing import Briefing
 from mykronos.dependabot_remedy import remedy_for
+from mykronos.read_coverage import ReadCoverage
 from mykronos.risk_acceptance import LIVE
 
 #: Bands, in the order an agent works them (spec 36 §2.2).
@@ -48,6 +49,10 @@ BAND_APPROVAL = 3
 BAND_ACCEPTANCE = 4
 BAND_TOKEN = 5
 BAND_FINDING = 6
+#: Below the findings (TheHub #60798). Source no analyser reads produces no
+#: finding to work, and closing the gap is a tool choice for the repository,
+#: so it never displaces a finding that can be fixed today.
+BAND_ANALYSER_GAP = 7
 
 #: Every kind of work item `build` can emit, in band order (spec 36 §2.2).
 #:
@@ -67,6 +72,7 @@ KINDS: tuple[str, ...] = (
     "acceptance_attention",
     "token_delivery",
     "triage",
+    "analyser_gap",
 )
 
 #: An acceptance this close to `expires_at` is surfaced before it lapses.
@@ -1151,6 +1157,87 @@ def _finding_items(
 
 
 # ---------------------------------------------------------------------------
+# Band 7: source no analyser reads (B-051, TheHub #60798)
+
+
+def _kb(count: int) -> str:
+    return f"{count / 1000:.0f} KB"
+
+
+def _analyser_gap_items(
+    coverage: list[ReadCoverage], repo_ids: dict[str, str]
+) -> tuple[list[WorkItem], list[Unknown]]:
+    """One item per repository with source no analyser here implements.
+
+    The measurements are the shared `read_coverage.measure`, so the queue and
+    `GET /api/dashboard/repos/{repo_id}/coverage` cannot disagree about a
+    repository. One that could not be measured is named in `unknown` with the
+    reason; it is never left out, which would read as fully analysed.
+    """
+    items: list[WorkItem] = []
+    unknown: list[Unknown] = []
+    for measured in coverage:
+        repo = measured.repo_full_name
+        if not measured.available or measured.share_unread is None:
+            unknown.append(Unknown("analyser_coverage", f"{repo}: {measured.reason}"))
+            continue
+        if not measured.unread:
+            continue
+        share = measured.share_unread
+        tools = " + ".join(measured.tools) if measured.tools else "nothing"
+        languages = ", ".join(name for name, _ in measured.unread[:3])
+        unread = ", ".join(f"{name} {_kb(count)}" for name, count in measured.unread[:5])
+        repo_id = repo_ids.get(repo, "")
+        items.append(
+            WorkItem(
+                item_id=f"analyser_gap:{repo}",
+                kind="analyser_gap",
+                band=BAND_ANALYSER_GAP,
+                repo_full_name=repo,
+                # The share in whole percent: the larger gap comes first.
+                weight=round(share * 100),
+                title=f"{share:.0%} of {repo} is read by no analyser",
+                summary=(
+                    f"{share:.0%} of this repository's application source is {languages}, "
+                    f"which {tools} does not implement. Every SAST run over it reports "
+                    "success and reads none of it; re-running the lane changes nothing."
+                ),
+                done_when=(
+                    f"An analyser that reads {languages} reports a successful SAST run "
+                    "here, and the share no analyser reads is zero."
+                ),
+                evidence=[
+                    Evidence(
+                        source="read_coverage",
+                        ref=repo,
+                        detail=(
+                            f"{share:.0%} of {_kb(measured.source_bytes)} of application "
+                            f"source no analyser reads ({unread}); analysers: {tools}. "
+                            "From the briefing's cached language read."
+                        ),
+                    )
+                ],
+                actions=(
+                    []
+                    if not repo_id
+                    else [
+                        ActionRef(
+                            label="Read what the scanners cannot read",
+                            method="GET",
+                            path=f"/api/dashboard/repos/{repo_id}/coverage",
+                            effect=(
+                                "Reads this repository's analyser gap beside its "
+                                "regression coverage. Changes nothing."
+                            ),
+                        )
+                    ]
+                ),
+            )
+        )
+    return items, unknown
+
+
+# ---------------------------------------------------------------------------
 
 
 def _briefing_unknowns(briefing: Briefing) -> list[Unknown]:
@@ -1166,9 +1253,11 @@ def build(
     approval_requests: list[dict[str, Any]] | None,
     pull_request_requests: list[dict[str, Any]] | None,
     patchwork_prs: list[dict[str, Any]] | None,
+    analyser_coverage: list[ReadCoverage] | None,
     now: datetime,
     probe_interval_seconds: int,
     playbook_version: str,
+    repo_ids: dict[str, str] | None = None,
 ) -> WorkQueue:
     """The queue for one principal. `None` for any input means it was not read.
 
@@ -1179,6 +1268,10 @@ def build(
     reached a pull request, in every status.
 
     Paths come from the briefing, which names them by onboarding id (#60739).
+    `analyser_coverage` is each onboarded repository measured from the
+    briefing's cached language read (TheHub #60798, option A); the caller
+    never asks GitHub for it. `repo_ids` names the analyser-gap routes, and a
+    repository missing from it gets no path.
     `playbook_version` is the loaded `agent-playbooks-v1.yaml`'s version; every
     item names its playbook with it.
     """
@@ -1232,6 +1325,18 @@ def build(
         queue.unknown.append(Unknown("triage", "The triage queue could not be read."))
     else:
         items += _finding_items(triage_rows, briefing, principal)
+
+    if analyser_coverage is None:
+        queue.unknown.append(
+            Unknown(
+                "analyser_coverage",
+                "What each repository's analysers can read could not be read.",
+            )
+        )
+    else:
+        gap_items, gap_unknown = _analyser_gap_items(analyser_coverage, repo_ids or {})
+        items += gap_items
+        queue.unknown += gap_unknown
 
     for awaiting in briefing.awaiting:
         queue.waiting.append(

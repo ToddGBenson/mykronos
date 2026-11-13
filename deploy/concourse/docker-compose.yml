@@ -210,10 +210,22 @@ services:
   # RELEASE.2026-10-26, pinned by digest (2026-11-04): built on Go 1.27.3,
   # which fixes CVE-2026-111943 (HIGH, standard library). Trivy 0.73.0 on
   # one database: 2026-10-15 at 3 high, 2026-10-26 at 1 high.
+  #
+  # Built here since TheHub #61023: deploy/images/silo/Dockerfile is that
+  # vendor image, at that digest (its FROM is now the pin), with Debian's
+  # fixed ca-certificates laid over it. Every SILO release to 2026-10-26
+  # ships 20250419~deb12u1 (DLA-4845-1), and distroless has no package
+  # manager, so no x-mykronos-build recipe or pull reaches it. To move SILO,
+  # edit that FROM. `image:` names the local build: it is a tag no registry
+  # has, so a vendor tag already in the local store can never stand in for
+  # the build, and `pull_policy: build` keeps compose from looking for it.
+  # The containers lane builds the same Dockerfile and scans it as
+  # pgsty/silo, the name its findings already carry.
   minio:
-    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z-distroless@sha256:e6544a902f426f2b4e775b89f3c1cd78310dbffc262d1ed82e9800c1cb1b5885
-    # No x-mykronos-build: distroless, so there is no package manager to
-    # upgrade with. SILO moves only by a new upstream release.
+    build:
+      context: ../images/silo
+    image: pgsty/silo:local
+    pull_policy: build
     container_name: mykronos-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
