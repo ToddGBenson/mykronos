@@ -3996,9 +3996,42 @@ jobs:
                 # carries HUB_BUILD_SHA as an env var for exactly this class of
                 # question". It did not, and that sentence is why nobody looked.
                 # It is corrected in this change.
+                #
+                # The frontend placeholder is copied from the context, not from the
+                # `frontend` stage (TheHub #61640). TheHub #61029 (develop 3312ab33,
+                # 2026-11-13) added `FROM scratch AS frontend` and, in the shipped
+                # stage, `COPY --from=frontend / /app/frontend/`. A cross-stage
+                # dependency on `/` makes kaniko save its own root filesystem for the
+                # later stage, and that copy skips only /kaniko, not the ignore list
+                # (pkg/util/fs_util.go CopyFileOrSymlink, `skipKanikoDir`, unchanged
+                # through v1.24 and the chainguard fork). It reads /proc and dies:
+                # "could not save file: copying file: read
+                # /proc/1/attr/apparmor/current: invalid argument" (builds 230 and
+                # 231). --ignore-path=/proc does not help, measured; this is not the
+                # workers, it reproduces under plain `docker run`.
+                #
+                # For kaniko that stage IS the placeholder (Dockerfile: "Concourse's
+                # kaniko ... gets this stage instead"), so copying
+                # frontend_not_baked/ straight from the context builds the same
+                # /app/frontend. The rewrite goes to meta/, never into source/backend,
+                # where `COPY . .` would bake it in. When TheHub's Dockerfile drops
+                # the line this builds the Dockerfile as committed; a different
+                # `--from=frontend` fails here by name instead of inside kaniko.
+                DOCKERFILE=source/backend/Dockerfile
+                FRONTEND_COPY='COPY --from=frontend / /app/frontend/'
+                if grep -qxF "$FRONTEND_COPY" "$DOCKERFILE"; then
+                  sed 's|^COPY --from=frontend / /app/frontend/$|COPY frontend_not_baked/ /app/frontend/|' \
+                    "$DOCKERFILE" > meta/Dockerfile.kaniko
+                  DOCKERFILE=meta/Dockerfile.kaniko
+                  echo "kaniko: the frontend placeholder is copied from the context (TheHub #61640)"
+                fi
+                if grep -qiE '^[[:space:]]*COPY[[:space:]].*--from=frontend[[:space:]]' "$DOCKERFILE"; then
+                  echo "kaniko: $DOCKERFILE copies from the frontend stage, which kaniko cannot save (TheHub #61640)" >&2
+                  exit 1
+                fi
                 /kaniko/executor \
                   --context source/backend \
-                  --dockerfile source/backend/Dockerfile \
+                  --dockerfile "$DOCKERFILE" \
                   --build-arg "HUB_BUILD_SHA=${SHA}" \
                   --build-arg "HUB_BUILD_DIRTY=clean" \
                   --destination "${REGISTRY}/thehub:${SHA}" \
