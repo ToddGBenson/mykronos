@@ -2225,25 +2225,47 @@ def is_major(old: str, new: str) -> bool:
     return a[0] == 0 and (a[1:2] or [0]) != (b[1:2] or [0])
 
 
-_ADVISORY = re.compile(
-    r"\b(GHSA-[0-9a-z]{4}-|CVE-\d{4}-|security (?:update|advisory|fix)|vulnerab)", re.I
+#: An advisory's own identifier. Matched anywhere, URLs included: in
+#: Dependabot's quoted release notes the GHSA ids are only in the links
+#: (`.../security/advisories/GHSA-mfr8-8qww-v76h`), and no badge or docs URL
+#: carries one.
+_ADVISORY_ID = re.compile(r"\bGHSA(?:-[0-9a-z]{4}){3}\b|\bCVE-\d{4}-\d{4,}\b", re.I)
+#: Words that say "advisory", matched only with every URL removed: the
+#: compatibility badge in every Dependabot body links to
+#: `.../managing-security-vulnerabilities/...`, which is not an advisory.
+_ADVISORY_WORDS = re.compile(
+    r"\bsecurity (?:fix(?:es)?|advisor(?:y|ies)|update|release)\b", re.I
 )
+_SEVERITIES = "critical|high|moderate|medium|low"
+#: How a severity is written. Dependabot quotes the upstream release notes, and
+#: next.js's put each severity in its own heading above its advisories:
+#: `<p>This release contains security fixes ...</p><h2>Moderate</h2><ul>...`.
 _SEVERITY = re.compile(
-    r"\b(critical|high|moderate|medium|low)[ -]severity\b"
-    r"|\bseverity\W{0,3}(critical|high|moderate|medium|low)\b",
-    re.I,
+    rf"<h[1-6]>\s*({_SEVERITIES})\s*</h[1-6]>"
+    rf"|^\s*#{{1,6}}\s*({_SEVERITIES})\s*$"
+    rf"|\b({_SEVERITIES})[ -]severity\b"
+    rf"|\bseverity\W{{0,3}}({_SEVERITIES})\b",
+    re.I | re.M,
 )
+_URL = re.compile(r"""href=(["'])[^"']*\1|\]\([^)]*\)|https?://[^\s)"'<>]+""", re.I)
 
 
 def advisory_reason(title: str, body: str, labels: tuple[str, ...]) -> str | None:
     """Why a security-advisory bump is skipped, or None when it may go.
 
     Above moderate is skipped; so is an advisory whose severity the
-    description does not state, which is not assumed to be low."""
-    text = f"{title}\n{body}"
-    if not (_ADVISORY.search(text) or any("security" in label.lower() for label in labels)):
+    description does not state, which is not assumed to be low. Words are
+    read with the URLs taken out, so a link's path never makes a bump an
+    advisory; advisory ids count wherever they are."""
+    raw = f"{title}\n{body}"
+    text = _URL.sub(" ", raw)
+    if not (
+        _ADVISORY_ID.search(raw)
+        or _ADVISORY_WORDS.search(text)
+        or any("security" in label.lower() for label in labels)
+    ):
         return None
-    severities = {(a or b).lower() for a, b in _SEVERITY.findall(text)}
+    severities = {next(g for g in m if g).lower() for m in _SEVERITY.findall(text)}
     above = severities & {"critical", "high"}
     if above:
         return (

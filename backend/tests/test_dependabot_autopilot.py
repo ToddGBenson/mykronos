@@ -48,6 +48,14 @@ REQUIRED = ("independent-review", "backend-tests", "secret-hygiene")
 GREEN = ("backend-tests", "secret-hygiene", "library-allowlist")
 
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "dependabot"
+
+
+def _body(name: str) -> str:
+    """A real Dependabot description, trimmed to the block that matters."""
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
 @dataclass
 class FakeMerger:
     calls: list[dict[str, Any]] = field(default_factory=list)
@@ -235,6 +243,49 @@ class TestSelection:
         assert item.outcome == jobs.SKIPPED
         assert "security advisory" in item.reason
         assert _requests(client) == []
+
+    def test_a_real_moderate_advisory_body_goes_ahead(self, client, repo) -> None:
+        """#1138's body, verbatim: the severity is a `<h2>Moderate</h2>`
+        heading in next.js's quoted release notes, and the GHSA ids are only
+        in the links."""
+        body = _body("pr-1138-next-moderate.txt")
+        assert jobs.advisory_reason("", body, ()) is None
+        _pr(
+            repo,
+            title="chore(npm): Bump the npm-minor-patch group in /frontend with 4 updates",
+            branch="dependabot/npm_and_yarn/frontend/npm-minor-patch-a4827704b6",
+            body=body,
+            files=("frontend/package.json", "frontend/package-lock.json"),
+        )
+        _checks(repo)
+
+        assert _only(_run(client, "dry-run")).outcome == jobs.WOULD_REQUEST
+
+    @pytest.mark.parametrize("heading", ["High", "Critical"])
+    def test_a_real_body_with_a_higher_heading_is_skipped(self, heading: str) -> None:
+        body = _body("pr-1138-next-moderate.txt").replace(
+            "<h2>Moderate</h2>", f"<h2>{heading}</h2>"
+        )
+
+        reason = jobs.advisory_reason("", body, ())
+
+        assert reason is not None and heading.lower() in reason
+
+    def test_a_real_advisory_with_no_severity_is_skipped(self) -> None:
+        body = _body("pr-1138-next-moderate.txt").replace("<h2>Moderate</h2>", "")
+
+        assert "does not state" in (jobs.advisory_reason("", body, ()) or "")
+
+    @pytest.mark.parametrize(
+        "name", ["pr-1139-pip-group.txt", "pr-1140-badge-only.txt", "pr-1141-badge-only.txt"]
+    )
+    def test_a_badge_link_is_not_an_advisory(self, name: str) -> None:
+        """Every Dependabot body links its compatibility badge to
+        `.../managing-security-vulnerabilities/...`; a URL is not an advisory."""
+        body = _body(name)
+        assert "managing-security-vulnerabilities" in body or name.startswith("pr-1139")
+
+        assert jobs.advisory_reason("", body, ()) is None
 
     def test_a_moderate_advisory_goes_ahead(self, client, repo) -> None:
         _pr(repo, body=GROUP_BODY + "\nFixes CVE-2026-1234, a moderate severity issue.")
@@ -539,6 +590,22 @@ class TestTheWorkQueue:
         assert "would_request" in details[f"{REPO}#11"]
         assert "skipped" in details[f"{REPO}#12"] and "major" in details[f"{REPO}#12"]
         assert all(w.kind == "dependabot_autopilot" for w in queue.waiting)
+
+    def test_before_the_first_run_it_says_so(self) -> None:
+        queue = agent_work.WorkQueue(generated_at=None, actor="a", actor_kind="agent")  # type: ignore[arg-type]
+
+        agent_work.add_dependabot_autopilot(queue, None, mode="dry-run")
+
+        [row] = queue.waiting
+        assert row.kind == "dependabot_autopilot"
+        assert "has not run since" in row.detail
+
+    def test_off_lists_nothing(self) -> None:
+        queue = agent_work.WorkQueue(generated_at=None, actor="a", actor_kind="agent")  # type: ignore[arg-type]
+
+        agent_work.add_dependabot_autopilot(queue, None, mode="off")
+
+        assert queue.waiting == []
 
     def test_the_route_shows_the_last_run(self, client, repo, admin_auth) -> None:
         _pr(repo)

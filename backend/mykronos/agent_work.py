@@ -1369,10 +1369,23 @@ def add_dependabot_autopilot(
 
     Waiting, not work: the job acts on its own and a skipped bump is a person's
     ordinary review. `run` is `jobs.AutopilotRun`, or None when the job has not
-    run since the backend started; its first run is within ninety seconds of
-    a start, and whether it is running at all is platform health's to say.
+    run since the backend started (the listing is in memory); that is one
+    row saying so, never an empty listing that reads as "nothing open".
     """
-    if mode == "off" or run is None:
+    if mode == "off":
+        return
+    if run is None:
+        queue.waiting.append(
+            Waiting(
+                kind=DEPENDABOT_AUTOPILOT_WAITING,
+                ref="dependabot-autopilot",
+                repo_full_name="",
+                detail=(
+                    f"[{mode}] The Dependabot autopilot has not run since the backend "
+                    "started; its first run is within ninety seconds of a start."
+                ),
+            )
+        )
         return
     for name, why in run.unreadable:
         if repo is None or name == repo:

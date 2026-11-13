@@ -1,0 +1,4 @@
+Bumps [types-pyyaml](https://github.com/python/typeshed) from 6.0.12.20260906 to 6.0.12.20261030.
+<details>
+<summary>Commits</summary>
+[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=types-pyyaml&package-manager=pip&previous-version=6.0.12.20260906&new-version=6.0.12.20261030)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)

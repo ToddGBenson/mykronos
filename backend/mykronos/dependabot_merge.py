@@ -18,6 +18,16 @@ This module is the deliberate, narrow exception the operator decided on
   (`dependabot_autopilot_mode`). `tests/test_dependabot_autopilot.py` fails
   if any other module in the backend sends a merge.
 
+**What is not a control here.** The job's selector reads the pull request's
+title, branch and body, and anyone with triage can edit a body. A push to a
+`dependabot/*` branch leaves the pull request's `user.login` as
+`dependabot[bot]`, so the author check says who *opened* it, not who wrote
+the head. Neither is relied on. The controls are: every changed file lies
+inside the group's manifests and lockfiles (`AutopilotGroup.owns`); every
+required check and `library-allowlist` is green on the current head; and a
+person or the platform reviewer approves the real diff of that head through
+`pull_request_merge`, whose evidence the platform reads from GitHub itself.
+
 It spends `contents: write`, which the App already holds for the Workflow
 Installer (D-008); `REQUIRED_PERMISSIONS` is not widened by it.
 """
