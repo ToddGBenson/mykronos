@@ -92,7 +92,8 @@ def test_the_frontend_placeholder_is_copied_from_the_context(tmp_path: Path) -> 
 
 def test_the_rewrite_never_lands_in_the_build_context(tmp_path: Path) -> None:
     """`COPY . .` would bake a file written under source/backend into the image."""
-    _run(tmp_path, DOCKERFILE)
+    rc, output, _ = _run(tmp_path, DOCKERFILE)
+    assert rc == 0, output
     assert sorted(p.name for p in (tmp_path / "source" / "backend").iterdir()) == [
         "Dockerfile"
     ]
@@ -106,10 +107,32 @@ def test_a_dockerfile_without_the_stage_copy_is_built_as_committed(
     assert given == "source/backend/Dockerfile"
 
 
-def test_any_other_copy_from_the_frontend_stage_fails_by_name(tmp_path: Path) -> None:
-    rc, output, given = _run(
-        tmp_path, DOCKERFILE.replace(STAGE_COPY, "COPY --from=frontend /x /app/x")
-    )
+def test_a_subdirectory_of_the_frontend_stage_is_built_as_committed(
+    tmp_path: Path,
+) -> None:
+    """TheHub #61642's durable shape: kaniko saves a subdirectory fine, as it
+    saves /wheels, so the guard must not refuse it."""
+    durable = DOCKERFILE.replace(
+        "COPY frontend_not_baked/ /\n", "COPY frontend_not_baked/ /frontend/\n"
+    ).replace(STAGE_COPY, "COPY --from=frontend /frontend/ /app/frontend/")
+    rc, output, given = _run(tmp_path, durable)
+    assert rc == 0, output
+    assert given == "source/backend/Dockerfile"
+    assert not (tmp_path / "meta" / "Dockerfile.kaniko").exists()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "COPY --from=frontend / /app/static/",
+        "COPY --from=frontend /. /app/frontend/",
+        "copy --chown=0:0 --from=frontend / /app/frontend",
+    ],
+)
+def test_any_other_copy_of_the_stage_root_fails_by_name(
+    tmp_path: Path, line: str
+) -> None:
+    rc, output, given = _run(tmp_path, DOCKERFILE.replace(STAGE_COPY, line))
     assert rc != 0
     assert "#61640" in output
     assert given == "", "kaniko ran on a Dockerfile it cannot build"

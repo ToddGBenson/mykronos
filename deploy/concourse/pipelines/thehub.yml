@@ -4015,8 +4015,11 @@ jobs:
                 # frontend_not_baked/ straight from the context builds the same
                 # /app/frontend. The rewrite goes to meta/, never into source/backend,
                 # where `COPY . .` would bake it in. When TheHub's Dockerfile drops
-                # the line this builds the Dockerfile as committed; a different
-                # `--from=frontend` fails here by name instead of inside kaniko.
+                # the line this builds the Dockerfile as committed. Only a ROOT
+                # source is refused: kaniko saves a subdirectory such as /wheels or
+                # /frontend/ fine (TheHub #61642 moves the stage to that shape), but
+                # any other `COPY --from=frontend / ...` fails here by name instead
+                # of inside kaniko.
                 DOCKERFILE=source/backend/Dockerfile
                 FRONTEND_COPY='COPY --from=frontend / /app/frontend/'
                 if grep -qxF "$FRONTEND_COPY" "$DOCKERFILE"; then
@@ -4025,8 +4028,8 @@ jobs:
                   DOCKERFILE=meta/Dockerfile.kaniko
                   echo "kaniko: the frontend placeholder is copied from the context (TheHub #61640)"
                 fi
-                if grep -qiE '^[[:space:]]*COPY[[:space:]].*--from=frontend[[:space:]]' "$DOCKERFILE"; then
-                  echo "kaniko: $DOCKERFILE copies from the frontend stage, which kaniko cannot save (TheHub #61640)" >&2
+                if grep -qiE '^[[:space:]]*COPY[[:space:]].*--from=frontend[[:space:]]+/\.?[[:space:]]' "$DOCKERFILE"; then
+                  echo "kaniko: $DOCKERFILE copies the root of the frontend stage, which kaniko cannot save (TheHub #61640)" >&2
                   exit 1
                 fi
                 /kaniko/executor \
