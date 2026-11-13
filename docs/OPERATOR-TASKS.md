@@ -1,6 +1,6 @@
 # Operator tasks
 
-Nine things this platform cannot do for itself. Each needs a credential this
+Ten things this platform cannot do for itself. Each needs a credential this
 repository must not hold, or a decision only the operator can make.
 
 They are not defects and not unfinished work. Every one of them is a built
@@ -521,6 +521,154 @@ A single-dependency or lockfile-only Dependabot pull request (Dependabot opens
 these outside the groups) is skipped: it is not a group update, and a person
 reviews it as before. A push after the approval moves the head; the old
 approval is never merged, and the new head is judged from scratch.
+
+---
+
+## 10 · TheHub #61610 — let MyKronos deploy itself after promote
+
+**Effort:** ~5 minutes now, a day of reading, then one command. **Unblocks:**
+production keeping up with main without a hand run.
+
+**The hand deploy is now the exception.** Concourse's `promote` job proves a
+commit (it runs only after `oracle-gate`), and then nothing happened until a
+person ran `deploy.ps1`, so production drifted days behind main. The
+scheduled task "MyKronos Auto Deploy" closes that gap: every 10 minutes
+`deploy/mykronos/Watch-AutoDeploy.ps1` decides whether to deploy, and in Live
+mode runs `deploy.ps1 -Tag <full sha> -Registry localhost:5000` itself.
+
+It deploys only when **all** of these hold, and otherwise logs every rule that
+failed:
+
+| Rule | Skip reason |
+|---|---|
+| a `promote` build succeeded, and its sha is main's head (a newer main head means wait for its promote) | `no_promoted_build`, `main_unread`, `main_ahead_of_promote` |
+| production does not already run it, and the running sha can be read (it is the rollback target) | `already_running`, `running_unread` |
+| the images of the sha production runs now are on this host and in the registry, so a failed deploy has a way back | `rollback_unavailable` |
+| it was never attempted: **one attempt per sha**. Only a run that moved the stack, or died after it started, counts (see the carve-out below) | `already_attempted` |
+| no MyKronos deploy holds the lock, and no TheHub deploy holds its own | `lock_held`, `thehub_deploy_running` |
+| Vault is unsealed | `vault_sealed`, `vault_unread` |
+| the Docker VM has at least 4096 MB available, Windows at least 1536 MB free | `vm_memory_low`, `windows_memory_low`, `*_unread` |
+| it is not 22:00–07:00 Arizona time | `quiet_hours` |
+
+"Could not read" is always a skip, never a pass.
+
+**A skip that does not end is reported once.** When the same blocking reason
+(a held lock, a sealed Vault, low memory, an unreadable source, no way back)
+is the headline for 6 ticks in a row (an hour), the watcher writes one
+`stuck` line to the JSONL and, in Live, sends one failed host-job run and
+opens one Hub incident (`source_ref mykronos-auto-deploy:stuck:<reason>`).
+Waiting states are never reported: quiet hours, already running, already
+attempted, waiting for promote. The usual cause is a lock left by a run that
+was killed; check nothing is running and remove the lock directory.
+
+### Steps
+
+1. From a PowerShell 7 prompt in the production checkout, on a current main:
+
+       .\deploy\mykronos\Register-AutoDeploy.ps1 -DryRun
+
+   It registers the task to **decide and log only**. Nothing is deployed in
+   this mode, the Hub is not written to, and the attempts memo is untouched.
+   `-DryRun -WhatIf` shows what it would register without registering it.
+
+2. Optional, for the Hub record and incidents: put an agent Hub credential
+   (never the admin token) in `$HOME\.mykronos-agents\mykronos-auto-deploy-hub.token`.
+   Without it, Live runs still deploy and log; they are just not reported to
+   the Hub. The story-lifecycle record of a deploy is `deploy.ps1`'s own
+   recorder (`MYKRONOS_DEPLOY_RECORDER` in `backend/.env`, task from
+   TheHub #61046), which runs on any confirmed deploy, hand or scheduled.
+
+3. Read 24 hours of decisions. One JSON line per tick, in
+   `%LOCALAPPDATA%\mykronos\auto-deploy\decisions.jsonl`:
+
+       Get-Content "$env:LOCALAPPDATA\mykronos\auto-deploy\decisions.jsonl" -Tail 200 |
+           ForEach-Object { $_ | ConvertFrom-Json } |
+           Format-Table at, mode, action, reason, sha
+
+   `event` is `decision` on every tick, and `deploy_start` / `deploy` on a Live
+   attempt. `reason` is the headline, `reasons` every failing rule, `checks`
+   every rule that passed, and `inputs` the raw values it decided on (shas,
+   lock, seal, memory). A `deploy` line carries `result`, `exit`, the health it
+   saw afterwards, `rollback`, timings and the paths of the deploy logs.
+   Expect `quiet_hours` overnight, `already_running` most of the day and
+   `action: Deploy` on the first tick after a promote. If every line is
+   `*_unread`, the task cannot reach Docker or Concourse under its logon:
+   re-register with `-UsePassword`.
+
+4. Flip it to Live:
+
+       .\deploy\mykronos\Register-AutoDeploy.ps1 -Live
+
+   The same command replaces the task. Check the first real deploy: a
+   `deploy` line with `result: success`, and
+   `(Get-ScheduledTaskInfo -TaskName 'MyKronos Auto Deploy').LastTaskResult`
+   is `0` (`3` skip, `1` failed, `75` lost the lock, `124` still running).
+
+### Stopping it
+
+    Disable-ScheduledTask -TaskName 'MyKronos Auto Deploy'                       # pause
+    Unregister-ScheduledTask -TaskName 'MyKronos Auto Deploy' -Confirm:$false    # remove
+    .\deploy\mykronos\Register-AutoDeploy.ps1 -DryRun                            # back to decide-and-log
+
+A hand `deploy.ps1` run is still fine and needs no disarming: it takes the same
+lock (`%LOCALAPPDATA%\Temp\mykronos-deploy.lock`), so the two cannot overlap,
+and a second one exits 75 with nothing pulled.
+
+### When a deploy fails
+
+The watcher judges the result itself: both containers healthy and the
+backend's `MYKRONOS_BUILD_SHA` equal to the sha it asked for. If the stack
+changed and is not healthy on the new sha, it **rolls back** by running
+`deploy.ps1` again with the sha that was running before (recorded before the
+attempt), with `-GateWaitMinutes 0`, and opens one Hub incident (room devops,
+`source_ref mykronos-auto-deploy:<sha>`). If `deploy.ps1` refused before it
+changed anything (the risk gate, a failed pull), production is untouched and
+there is nothing to roll back; the incident still opens. The rollback goes
+through the risk gate like any deploy and is not forced, so a previous sha the
+gate never scored is refused and the incident says `rollback_failed`.
+
+The failed sha is **not retried**. A new promoted main head re-arms the
+watcher. To retry the same sha after fixing the cause, remove its entry from
+`%LOCALAPPDATA%\mykronos\auto-deploy\attempts.json`.
+
+**The carve-out: a deploy that changed nothing is not an attempt.** When
+`deploy.ps1` stops before it touches the stack (the risk gate refused it or
+never answered within its wait, a pull failed, another deploy held the lock
+and it exited 75), production is still healthy on the previous sha. The memo
+then records `result: not_attempted` with the reason, the decision ignores
+that entry, and the next tick that passes every rule tries the same head
+again. No hand edit is needed. The incident still opens, once per sha while
+it stays open. The retries are capped: after 3 `not_attempted` runs of one sha
+within 24 hours of the first, the watcher skips it with `retry_cap` (a blocking
+reason, so the stuck alert fires once) until that window ends or a new head is
+promoted.
+
+If `deploy.ps1` exits non-zero but both containers are healthy on the new
+sha (the briefing or the recorder failed after the deploy), the result is
+`success_with_warning` and nothing is rolled back.
+
+Before it deploys, the watcher checks that both images of the running sha
+are still on this host and in the registry (`rollback_unavailable` if not).
+`deploy.ps1` has no option to protect a sha from registry retention, so do not
+run `deploy\concourse\Invoke-RegistryRetention.ps1 -Apply` while a deploy is
+running, and always pass it `-KeepShas` with the running sha.
+
+A `deploy.ps1` still running after 90 minutes is left running, not killed,
+and the lock stays held: every later tick says `lock_held` until a person
+checks and removes the lock directory.
+
+### Expected, and not a bug
+
+- The task's run limit is 4 hours. A deploy waits up to 90 minutes and a
+  rollback another 90, so the limit never stops a run part way.
+- The Hub answers 422 for the host job `mykronos-auto-deploy` until TheHub
+  allow-lists it (a one-line TheHub change). The watcher logs this and
+  carries on, and `decisions.jsonl` keeps the record.
+- `running_unread` while the backend container is down: with no running sha
+  there is nothing to roll back to, so the watcher will not deploy over it.
+  Deploy by hand.
+- A hand rollback is not undone: the rolled-back-from sha was attempted, and
+  the watcher waits for a newer promote.
 
 ---
 

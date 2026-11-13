@@ -712,6 +712,25 @@ if ($Force -and $verdict.State -notin @("refused", "unjudged")) {
 $previousSha = Get-RunningBuildSha -Quiet
 if ($previousSha -notmatch '^[0-9a-f]{7,40}$') { $previousSha = $null }
 
+# [TheHub #61610] ONE DEPLOY AT A TIME. Taken here, after the risk gate and
+# before the first pull: the gate is read-only and can wait 45 minutes, and
+# everything from the pull on changes the host. A hand deploy and the
+# scheduled one (Watch-AutoDeploy.ps1) share this lock; the watcher holds it
+# for its whole attempt and passes its token down, so this run proceeds under
+# it. Exit 75 is "another deploy holds the lock", the same code TheHub's
+# deploy.sh uses. Nothing has been pulled when it fires.
+. (Join-Path $here "DeployLock.ps1")
+$deployLock = Enter-MykronosDeployLock -Holder "deploy.ps1 -Tag $Tag"
+if (-not $deployLock.Acquired) {
+    Write-Host ("Another MyKronos deploy holds $($deployLock.Path) (" +
+        (Format-MykronosDeployLockOwner $deployLock.Owner) + "). Nothing has been pulled.") -ForegroundColor Red
+    Write-Host "If nothing is running, remove that directory and re-run." -ForegroundColor Red
+    exit 75
+}
+# The rest of the script runs inside this try, unindented to keep the diff
+# readable; the matching finally is the last line of the file.
+try {
+
 Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
 foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
     docker pull "$Registry/$name`:$Tag"
@@ -959,4 +978,10 @@ try {
 } finally {
     foreach ($name in $slackResolved) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
     Pop-Location
+}
+
+} finally {
+    # [TheHub #61610] Released only by the run that took it: a run under the
+    # watcher's token leaves the lock for the watcher's rollback step.
+    Exit-MykronosDeployLock $deployLock
 }
