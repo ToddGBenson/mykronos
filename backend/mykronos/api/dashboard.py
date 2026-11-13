@@ -48,6 +48,7 @@ from mykronos import (
     regression,
     reown,
     rescore_panel,
+    reviewer_key,
     risk_profile_builder,
     ssdf,
     supply_chain,
@@ -8196,6 +8197,9 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
             )
     except Exception:  # noqa: BLE001 — job health still stands
         logger.warning("Self-check failed while rendering platform health")
+
+    probe = await asyncio.to_thread(reviewer_key.current, request.app.state.db)
+    dependencies.append(platform_health.assess_reviewer_key(probe))
 
     stall = await _ci_stall_now(request)
     health = platform_health.PlatformHealth(

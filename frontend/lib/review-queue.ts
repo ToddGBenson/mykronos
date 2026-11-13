@@ -24,6 +24,18 @@ export function mergeReadiness(row: {
 }
 
 /**
+ * The one-line banner for a reviewer whose model key the hourly probe has
+ * found refused or unreachable (TheHub #61614), or null while it works or has
+ * never been probed. `unavailable_since` comes from the backend, already
+ * formatted; this never invents a time.
+ */
+export function reviewerBanner(reviewer: { unavailable_since?: string | null }): string | null {
+  const since = reviewer.unavailable_since;
+  if (!since) return null;
+  return `Platform reviewer unavailable since ${since}: production-tier requests will not progress`;
+}
+
+/**
  * The platform reviewer's verdict, as advice. A shadow verdict counts for
  * nothing; on a tier only a person may approve the reviewer is told to reject
  * so a person decides, so that reject is procedural (the same rule as

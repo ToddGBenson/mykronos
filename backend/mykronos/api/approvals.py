@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from mykronos import reviewer_key
 from mykronos.adminauth import HumanDep, PrincipalDep
 from mykronos.approvals import pull_requests, reviewer, sampling
 from mykronos.approvals.engine import (
@@ -97,6 +98,10 @@ class RequestOut(BaseModel):
     expires_at: datetime
     decided_at: datetime | None
     decisions: list[DecisionOut] = Field(default_factory=list)
+    #: Set on a pending listing (TheHub #61614): False when the hourly probe
+    #: of the reviewer's model key last reported refused or unreachable.
+    reviewer_available: bool | None = None
+    reviewer_unavailable_since: datetime | None = None
 
 
 class EvidenceOut(BaseModel):
@@ -240,7 +245,13 @@ async def list_requests(
             stmt = stmt.where(ApprovalRequest.state == state)
         if duty:
             stmt = stmt.where(ApprovalRequest.duty == duty)
-        return [_request_out(session, r) for r in session.execute(stmt).scalars()]
+        items = [_request_out(session, r) for r in session.execute(stmt).scalars()]
+    if state == "pending":
+        since = await asyncio.to_thread(reviewer_key.unavailable_since, request.app.state.db)
+        for item in items:
+            item.reviewer_available = since is None
+            item.reviewer_unavailable_since = since
+    return items
 
 
 @router.get("/delegations", response_model=list[DelegationOut])

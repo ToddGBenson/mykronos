@@ -27,6 +27,7 @@ from mykronos import (
     logsafe,
     platform_health,
     premise_monitor,
+    reviewer_key,
     risk_acceptance,
     sprint_signal,
 )
@@ -883,6 +884,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 notifier=app.state.notifier,
             )
 
+        async def _reviewer_key() -> None:
+            # Does the platform reviewer's model key still answer (TheHub
+            # #61614)? Records ok | refused | unreachable; a change into a bad
+            # state alerts once and the way back to ok says so. No key or
+            # reviewer off raises JobSkipped.
+            await reviewer_key.probe_reviewer_key(
+                app.state.db, settings, notifier=app.state.notifier
+            )
+
         async def _briefing_dm() -> None:
             # The 07:00 DM (TheHub #60864): due once a local day, read through
             # the briefing route so it says what the page says. Not due raises
@@ -1077,6 +1087,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 [(CI_STALL_JOB, settings.ci_stall_interval_seconds, _ci_stall)]
                 if settings.concourse_url
                 else []
+            ),
+            (
+                reviewer_key.REVIEWER_KEY_JOB,
+                settings.reviewer_key_probe_interval_seconds,
+                _reviewer_key,
             ),
             # Always scheduled: with no Slack configured for it, it records
             # `skipped` with the missing setting, rather than being absent
