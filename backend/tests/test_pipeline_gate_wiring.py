@@ -631,3 +631,43 @@ def test_gate_smoke_runs_the_pr_gates_task_nightly_on_a_clock() -> None:
     verdict = next(s for s in smoke["on_failure"]["do"] if s.get("task") == "smoke-verdict")
     script = verdict["config"]["run"]["args"][-1]
     assert "GATE SMOKE" in script
+
+
+def _verdict_report(log_lines: list[str], exit_code: str | None) -> str:
+    """Run the real smoke-verdict script and return what hub_report would send."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is needed to run the verdict script")
+    document = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+    smoke = next(j for j in document["jobs"] if j["name"] == "gate-smoke")
+    verdict = next(s for s in smoke["on_failure"]["do"] if s.get("task") == "smoke-verdict")
+    with tempfile.TemporaryDirectory() as work:
+        hub_log = Path(work) / "hub_log"
+        hub_log.mkdir()
+        (hub_log / "output.log").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+        if exit_code is not None:
+            (hub_log / "exit_code").write_text(exit_code + "\n", encoding="utf-8")
+        script = Path(work) / "step.sh"
+        script.write_text(verdict["config"]["run"]["args"][-1] + "\n", encoding="utf-8", newline="\n")
+        subprocess.run([bash, "step.sh"], cwd=work, check=True, capture_output=True)
+        text = (hub_log / "output.log").read_text(encoding="utf-8")
+    # hub_report: `tail -n 60 hub_log/output.log`
+    return "\n".join(text.splitlines()[-60:])
+
+
+def test_the_gate_smoke_verdict_survives_hub_reports_sixty_line_tail() -> None:
+    noise = [f"gates output line {n}" for n in range(200)]
+    gate = _verdict_report(noise + ["Traceback (most recent call last):"], "1")
+    assert "GATE SMOKE" in gate and "THE GATE ITSELF FAILED" in gate
+    assert gate.splitlines()[-1].startswith("GATE SMOKE")
+
+    finding = _verdict_report(noise + ["::error::pip-audit: a vulnerable dependency"], "1")
+    assert "a real finding on the branch head" in finding.splitlines()[-1]
+    assert "heuristic:" in finding.splitlines()[-1]
+
+    crashed = _verdict_report(noise, "127")
+    assert "THE GATE ITSELF FAILED" in crashed.splitlines()[-1]

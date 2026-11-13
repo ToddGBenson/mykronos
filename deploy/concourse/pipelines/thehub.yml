@@ -2823,14 +2823,31 @@ jobs:
                   set -uo pipefail
                   mkdir -p hub_log
                   LOG=hub_log/output.log
+                  # HEURISTIC. The gates task exits 1 for a finding and for a
+                  # crash alike, so the two are told apart from its exit code
+                  # when it left one (anything but 0 or 1 is a crash: 126/127
+                  # not runnable, 137 killed) and otherwise from what it
+                  # printed. The markers are the gate's own failure texts and
+                  # the gate scripts' paths, not general words.
+                  RC=$(tr -dc '0-9' < hub_log/exit_code 2>/dev/null || true)
                   if [ ! -s "$LOG" ]; then
-                    VERDICT="GATE SMOKE: THE GATE ITSELF FAILED. It produced no output, so it never ran to a judgement. Fix the gate; this is not a finding on the head."
-                  elif grep -qE 'Traceback|failing closed|inputs are missing|no longer reads the way|predates|nothing to judge this|is not a regular file|command not found|No such file or directory|Killed' "$LOG"; then
-                    VERDICT="GATE SMOKE: THE GATE ITSELF FAILED. Fix the gate; this is not a finding on the head."
+                    KIND=gate; WHY="it produced no output"
+                  elif [ -n "$RC" ] && [ "$RC" != "0" ] && [ "$RC" != "1" ]; then
+                    KIND=gate; WHY="exit code $RC"
+                  elif grep -qE 'Traceback \(most recent call last\)|failing closed|inputs are missing|no longer reads the way|predates --audit-as|has no scripts/pr_deploy_gates.sh|is not a regular file|memory-guard: .*(exited 137|SIGKILL)|(pr_deploy_gates\.sh|devb_gate\.py|deploy\.sh|harden_findings_report\.py): (No such file|command not found|Permission denied)' "$LOG"; then
+                    KIND=gate; WHY="its output names a gate fault"
                   else
-                    VERDICT="GATE SMOKE: a real finding on the branch head. The gate ran and judged; fix the head. This is not gate breakage."
+                    KIND=finding; WHY="no gate fault was recognised"
                   fi
-                  { echo "$VERDICT"; echo "(a nightly run of pr-gates' gates task on the branch head, not a pull request)"; cat "$LOG" 2>/dev/null; } > hub_log/output.new
+                  if [ "$KIND" = gate ]; then
+                    VERDICT="GATE SMOKE (heuristic: $WHY): THE GATE ITSELF FAILED. Fix the gate; this is not a finding on the head."
+                  else
+                    VERDICT="GATE SMOKE (heuristic: $WHY): a real finding on the branch head. The gate ran and judged; fix the head. This is not gate breakage."
+                  fi
+                  # First AND last: hub_report sends only `tail -n 60`, and a
+                  # real gates run is longer than that, so the verdict has to
+                  # be the final line to reach the Hub row.
+                  { echo "$VERDICT"; echo "(a nightly run of pr-gates' gates task on the branch head, not a pull request)"; cat "$LOG" 2>/dev/null; echo "$VERDICT"; } > hub_log/output.new
                   mv hub_log/output.new "$LOG"
                   echo "$VERDICT"
         - <<: *hub_report
