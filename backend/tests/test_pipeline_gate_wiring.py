@@ -621,7 +621,10 @@ def test_pin_check_waits_for_set_pipeline_and_oracle_gate_does_not_read_build() 
     Pins both orders. `oracle-gate` takes no direct edge on `build` (the image
     reaches it only through `containers`, whose findings the score needs).
     """
-    assert _mykronos_passed("pin-check").get("pipelines") == ["set-pipeline"]
+    pin = _mykronos_passed("pin-check")
+    assert pin.get("pipelines") == ["set-pipeline"]
+    assert pin.get("source") == ["set-pipeline"], "the source-side edge closes the race"
+    assert "source" in _mykronos_passed("set-pipeline"), "set-pipeline must get source"
     gate = _mykronos_passed("oracle-gate")["source"]
     assert "build" not in gate
     assert "containers" in gate
