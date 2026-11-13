@@ -652,7 +652,8 @@ def _verdict_report(log_lines: list[str], exit_code: str | None) -> str:
         if exit_code is not None:
             (hub_log / "exit_code").write_text(exit_code + "\n", encoding="utf-8")
         script = Path(work) / "step.sh"
-        script.write_text(verdict["config"]["run"]["args"][-1] + "\n", encoding="utf-8", newline="\n")
+        body = verdict["config"]["run"]["args"][-1]
+        script.write_text(body + "\n", encoding="utf-8", newline="\n")
         subprocess.run([bash, "step.sh"], cwd=work, check=True, capture_output=True)
         text = (hub_log / "output.log").read_text(encoding="utf-8")
     # hub_report: `tail -n 60 hub_log/output.log`
