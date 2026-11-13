@@ -1355,3 +1355,51 @@ def build(
         item.playbook = f"{item.kind}@{playbook_version}"
     queue.items = sorted(items, key=_sort_key)
     return queue
+
+
+#: The Dependabot autopilot's listing on the queue (TheHub #61615).
+DEPENDABOT_AUTOPILOT_WAITING = "dependabot_autopilot"
+
+
+def add_dependabot_autopilot(
+    queue: WorkQueue, run: Any, *, mode: str, repo: str | None = None
+) -> None:
+    """The autopilot's last run as `waiting` entries, one per Dependabot pull
+    request, each with what the job did or would do and why.
+
+    Waiting, not work: the job acts on its own and a skipped bump is a person's
+    ordinary review. `run` is `jobs.AutopilotRun`, or None when the job has not
+    run since the backend started (the listing is in memory); that is one
+    row saying so, never an empty listing that reads as "nothing open".
+    """
+    if mode == "off":
+        return
+    if run is None:
+        queue.waiting.append(
+            Waiting(
+                kind=DEPENDABOT_AUTOPILOT_WAITING,
+                ref="dependabot-autopilot",
+                repo_full_name="",
+                detail=(
+                    f"[{mode}] The Dependabot autopilot has not run since the backend "
+                    "started; its first run is within ninety seconds of a start."
+                ),
+            )
+        )
+        return
+    for name, why in run.unreadable:
+        if repo is None or name == repo:
+            queue.unknown.append(
+                Unknown(DEPENDABOT_AUTOPILOT_WAITING, f"{name}: pull requests unreadable: {why}")
+            )
+    for item in run.items:
+        if repo is not None and item.repo_full_name != repo:
+            continue
+        queue.waiting.append(
+            Waiting(
+                kind=DEPENDABOT_AUTOPILOT_WAITING,
+                ref=f"{item.repo_full_name}#{item.number}@{item.head_sha[:12]}",
+                repo_full_name=item.repo_full_name,
+                detail=f"[{run.mode}] {item.outcome}: {item.reason} ({item.title})",
+            )
+        )

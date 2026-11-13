@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -27,11 +29,27 @@ from typing import TYPE_CHECKING, Any
 import httpx2
 from sqlalchemy import select
 
-from mykronos import ci_stall, dormant_lanes, gate_liveness, red_main, timeout_audit
+from mykronos import (
+    ci_stall,
+    dependabot_merge,
+    dormant_lanes,
+    gate_liveness,
+    red_main,
+    timeout_audit,
+)
+from mykronos.adminauth import ActorKind, Principal, Role
+from mykronos.approvals import pull_requests as approval_pull_requests
+from mykronos.approvals.engine import ApprovalError
 from mykronos.auth import TokenRegistry
 from mykronos.ci import ConcourseClient, jobs_for_capability, pipeline_name_for
 from mykronos.db import Database
-from mykronos.db.models import GatingLaneState, JobRun, RepoOnboarding, capability_config_for
+from mykronos.db.models import (
+    ApprovalRequest,
+    GatingLaneState,
+    JobRun,
+    RepoOnboarding,
+    capability_config_for,
+)
 from mykronos.github.client import GitHubClient, GitHubError
 from mykronos.github.factory import GitHubClientFactory
 from mykronos.github.secrets import (
@@ -2053,3 +2071,493 @@ RECORDED_INTERVAL_SECONDS: dict[str, int] = {
     BRIEFING_DM_JOB: 86_400,
     SIGNAL_FILING_JOB: 86_400,
 }
+
+
+# -- The Dependabot autopilot (TheHub #61615) -----------------------------------
+#
+# Dependency bumps waited for the same human train as features. Operator
+# decision 2026-11-13: an open Dependabot pull request in a minor/patch group,
+# green on its current head, is requested for approval without anyone asking,
+# and once the platform reviewer approves it the App merges exactly that head.
+# The safety rules are unchanged: green on the current head, approval by
+# someone other than the author (the tier's own independence rules decide who),
+# and batches. `dependabot_autopilot_mode` starts at `dry-run`, which lists
+# what the job would do on the work queue and asks for nothing.
+
+DEPENDABOT_AUTOPILOT_JOB = "dependabot-autopilot"
+
+AUTOPILOT_MODES = ("off", "dry-run", "live")
+
+AUTOPILOT_REQUESTER = Principal(
+    actor=f"job:{DEPENDABOT_AUTOPILOT_JOB}", role=Role.VIEWER, kind=ActorKind.AUTOMATION
+)
+
+#: The allowlist's own check (`mykronos.library_check.CHECK_NAME`). Required
+#: green on top of the branch's required checks: `neutral`, which it reports
+#: for a library it only reports on, is not green here.
+LIBRARY_ALLOWLIST_CHECK = "library-allowlist"
+
+#: The estate's batch limit (operator decision 2026-11-03): at most this many
+#: merges per run, and the rest wait one interval.
+AUTOPILOT_MAX_MERGES = 5
+
+
+@dataclass(frozen=True)
+class AutopilotGroup:
+    """A `.github/dependabot.yml` group the autopilot works, and the files a
+    pull request from it may change. Anything else is a change outside the
+    group and is skipped."""
+
+    name: str
+    directory: str
+    #: Full-match patterns for a file's name inside `directory`.
+    files: tuple[str, ...]
+
+    def owns(self, path: str) -> bool:
+        directory, _, name = path.rpartition("/")
+        return directory == self.directory and any(re.fullmatch(p, name) for p in self.files)
+
+
+#: The minor/patch groups in `.github/dependabot.yml`. `actions-minor-patch`
+#: is deliberately absent: an action bump is a 40-character SHA a reviewer
+#: cannot judge, and its files are workflow files (governance tier).
+AUTOPILOT_GROUPS: tuple[AutopilotGroup, ...] = (
+    AutopilotGroup(
+        "pip-minor-patch",
+        "backend",
+        (r"pyproject\.toml", r"requirements(-[A-Za-z0-9_-]+)?\.txt", r"uv\.lock"),
+    ),
+    AutopilotGroup("npm-minor-patch", "frontend", (r"package\.json", r"package-lock\.json")),
+)
+
+#: Outcomes, in the words the work queue shows.
+WOULD_REQUEST = "would_request"
+REQUESTED = "requested"
+ALREADY_REQUESTED = "already_requested"
+AWAITING_APPROVAL = "awaiting_approval"
+WOULD_MERGE = "would_merge"
+MERGED = "merged"
+MERGE_FAILED = "merge_failed"
+SKIPPED = "skipped"
+
+
+@dataclass
+class AutopilotItem:
+    repo_full_name: str
+    number: int
+    head_sha: str
+    title: str
+    outcome: str
+    reason: str
+    group: str = ""
+    request_id: str = ""
+
+
+@dataclass
+class AutopilotRun:
+    mode: str
+    ran_at: datetime
+    items: list[AutopilotItem] = field(default_factory=list)
+    #: (repo, why) for a repository whose pull requests could not be read.
+    unreadable: list[tuple[str, str]] = field(default_factory=list)
+
+    def summary(self) -> str:
+        counts: dict[str, int] = {}
+        for item in self.items:
+            counts[item.outcome] = counts.get(item.outcome, 0) + 1
+        shown = ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "nothing open"
+        return f"{self.mode}: {shown}; unreadable {len(self.unreadable)}"
+
+
+#: The last run, for the work queue. In memory on purpose, like
+#: `pull_requests._first_seen`: the job runs within ninety seconds of a start,
+#: and until then the queue says it has not run rather than showing nothing.
+LAST_AUTOPILOT_RUN: AutopilotRun | None = None
+
+
+def autopilot_group(title: str, branch: str) -> AutopilotGroup | None:
+    """The group a Dependabot pull request belongs to, from its title
+    ("Bump the pip-minor-patch group in /backend ...") or its branch
+    (`dependabot/pip/backend/pip-minor-patch-<hash>`)."""
+    lowered = title.lower()
+    for group in AUTOPILOT_GROUPS:
+        if f"the {group.name} group" in lowered or f"/{group.name}-" in branch:
+            return group
+    return None
+
+
+_TABLE_ROW = re.compile(
+    r"^\|\s*\[?([^\]|]+?)\]?(?:\([^)]*\))?\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|"
+)
+_UPDATES = re.compile(
+    r"(?:Updates|Bumps) \[?`?([^`\]\s]+)`?\]?(?:\([^)]*\))? from (\S+) to (\S+?)\.?(?:\s|$)"
+)
+
+
+def version_changes(body: str) -> list[tuple[str, str, str]]:
+    """(package, from, to) for every bump the description lists."""
+    seen: dict[str, tuple[str, str, str]] = {}
+    for line in body.splitlines():
+        line = line.strip()
+        match = _TABLE_ROW.match(line) or _UPDATES.search(line)
+        if match:
+            name, old, new = (g.strip() for g in match.groups())
+            if name.lower() in {"package", "---"} or old.startswith("-"):
+                continue
+            seen.setdefault(name, (name, old, new))
+    return list(seen.values())
+
+
+def _numbers(version: str) -> list[int] | None:
+    parts = re.findall(r"\d+", version.lstrip("^~=v<>"))
+    return [int(p) for p in parts[:2]] if parts else None
+
+
+def is_major(old: str, new: str) -> bool:
+    """A major bump, counting a `0.x` minor as one: under semver a 0.y bump
+    may break (fastapi's 0.156 -> 0.162 carried "Breaking Changes"). A version
+    that cannot be read is treated as major."""
+    a, b = _numbers(old), _numbers(new)
+    if not a or not b:
+        return True
+    if a[0] != b[0]:
+        return True
+    return a[0] == 0 and (a[1:2] or [0]) != (b[1:2] or [0])
+
+
+#: An advisory's own identifier. Matched anywhere, URLs included: in
+#: Dependabot's quoted release notes the GHSA ids are only in the links
+#: (`.../security/advisories/GHSA-mfr8-8qww-v76h`), and no badge or docs URL
+#: carries one.
+_ADVISORY_ID = re.compile(r"\bGHSA(?:-[0-9a-z]{4}){3}\b|\bCVE-\d{4}-\d{4,}\b", re.I)
+#: Words that say "advisory", matched only with every URL removed: the
+#: compatibility badge in every Dependabot body links to
+#: `.../managing-security-vulnerabilities/...`, which is not an advisory.
+_ADVISORY_WORDS = re.compile(
+    r"\bsecurity (?:fix(?:es)?|advisor(?:y|ies)|update|release)\b", re.I
+)
+_SEVERITIES = "critical|high|moderate|medium|low"
+#: How a severity is written. Dependabot quotes the upstream release notes, and
+#: next.js's put each severity in its own heading above its advisories:
+#: `<p>This release contains security fixes ...</p><h2>Moderate</h2><ul>...`.
+_SEVERITY = re.compile(
+    rf"<h[1-6]>\s*({_SEVERITIES})\s*</h[1-6]>"
+    rf"|^\s*#{{1,6}}\s*({_SEVERITIES})\s*$"
+    rf"|\b({_SEVERITIES})[ -]severity\b"
+    rf"|\bseverity\W{{0,3}}({_SEVERITIES})\b",
+    re.I | re.M,
+)
+_URL = re.compile(r"""href=(["'])[^"']*\1|\]\([^)]*\)|https?://[^\s)"'<>]+""", re.I)
+
+
+def advisory_reason(title: str, body: str, labels: tuple[str, ...]) -> str | None:
+    """Why a security-advisory bump is skipped, or None when it may go.
+
+    Above moderate is skipped; so is an advisory whose severity the
+    description does not state, which is not assumed to be low. Words are
+    read with the URLs taken out, so a link's path never makes a bump an
+    advisory; advisory ids count wherever they are."""
+    raw = f"{title}\n{body}"
+    text = _URL.sub(" ", raw)
+    if not (
+        _ADVISORY_ID.search(raw)
+        or _ADVISORY_WORDS.search(text)
+        or any("security" in label.lower() for label in labels)
+    ):
+        return None
+    severities = {next(g for g in m if g).lower() for m in _SEVERITY.findall(text)}
+    above = severities & {"critical", "high"}
+    if above:
+        return (
+            f"a security advisory above moderate ({', '.join(sorted(above))}); "
+            "a person decides it"
+        )
+    if not severities:
+        return (
+            "a security advisory whose severity the description does not state; "
+            "not assumed moderate"
+        )
+    return None
+
+
+def autopilot_required_checks(protection: dict[str, Any]) -> set[str]:
+    """The branch's required checks, without `independent-review` (the
+    approval this job asks for), plus `library-allowlist`."""
+    checks = protection.get("required_status_checks") or {}
+    names = {str(c.get("context")) for c in checks.get("checks") or [] if c.get("context")}
+    names |= {str(c) for c in checks.get("contexts") or []}
+    names.discard(approval_pull_requests.CHECK_NAME)
+    names.add(LIBRARY_ALLOWLIST_CHECK)
+    return names
+
+
+def checks_reason(by_name: dict[str, str], required: set[str]) -> str | None:
+    """Why the head is not green, or None when every required check is."""
+    def green(name: str) -> set[str]:
+        # GitHub's protection passes neutral and skipped; the allowlist does not.
+        return {"success"} if name == LIBRARY_ALLOWLIST_CHECK else {"success", "neutral", "skipped"}
+
+    pending = sorted(n for n in required if by_name.get(n, "pending") == "pending")
+    red = sorted(
+        n
+        for n in required
+        if by_name.get(n, "pending") != "pending" and by_name[n] not in green(n)
+    )
+    if red:
+        return "red on the current head: " + ", ".join(f"{n} ({by_name[n]})" for n in red)
+    if pending:
+        return "pending or not reported on the current head: " + ", ".join(pending)
+    return None
+
+
+def _requests_by_pull_request(db: Database) -> dict[tuple[str, int], list[tuple[str, str, str]]]:
+    """(repo, number) -> [(head sha, state, request id)] for every live request."""
+    out: dict[tuple[str, int], list[tuple[str, str, str]]] = {}
+    with db.session() as session:
+        for row in session.execute(
+            select(ApprovalRequest).where(
+                ApprovalRequest.duty == approval_pull_requests.DUTY,
+                ApprovalRequest.state.in_(("pending", "approved", "rejected")),
+            )
+        ).scalars():
+            ref = str(row.subject_ref)
+            head, _, sha = ref.partition("@")
+            repo, _, number = head.rpartition("#")
+            if repo and number.isdigit() and sha:
+                out.setdefault((repo, int(number)), []).append((sha, str(row.state), str(row.id)))
+    return out
+
+
+async def dependabot_autopilot(
+    db: Database,
+    policy: Any,
+    github_factory: GitHubClientFactory,
+    *,
+    mode: str,
+    merger_for: Callable[[GitHubClient], dependabot_merge.Merger] = dependabot_merge.merger_for,
+    now: datetime | None = None,
+) -> AutopilotRun:
+    """Walk open Dependabot pull requests; list, request and merge (TheHub #61615).
+
+    For each open pull request by `dependabot[bot]` on an onboarded repository:
+    it must be in a minor/patch group, change only that group's manifests and
+    lockfiles, carry no major bump and no advisory above moderate, and have
+    every required check plus `library-allowlist` green on its current head.
+    Then, in `live` mode only, its head is requested for `pull_request_merge`
+    approval through `approvals.pull_requests.propose` (the code path of
+    POST /api/approvals/pull-requests; an existing request is "already
+    requested"), and an approved head is squash-merged by the App at exactly
+    that sha. `dry-run` lists what it would do and changes nothing; `off`
+    returns an empty run. Every pull request it looks at is in the run with
+    its outcome and reason, which the work queue shows.
+    """
+    global LAST_AUTOPILOT_RUN
+    if mode not in AUTOPILOT_MODES:
+        raise ValueError(
+            f"dependabot_autopilot_mode must be one of {AUTOPILOT_MODES}, not {mode!r}"
+        )
+    run = AutopilotRun(mode=mode, ran_at=now or utcnow())
+    if mode == "off":
+        LAST_AUTOPILOT_RUN = run
+        return run
+    with db.session() as session:
+        repos = [
+            (r.github_repo_full_name, r.github_installation_id)
+            for r in session.execute(
+                select(RepoOnboarding).where(RepoOnboarding.status != "removed")
+            ).scalars()
+        ]
+    requests = _requests_by_pull_request(db)
+    merges = 0
+    for repo, installation in repos:
+        if not installation:
+            continue
+        github = github_factory.for_installation(installation)
+        try:
+            branch = str((await github.get_repo(repo)).get("default_branch") or "main")
+            protection = await github.get_branch_protection(repo, branch)
+            pulls = await github.list_open_pull_requests(repo)
+        except Exception as exc:  # noqa: BLE001 - one repository never stops the rest
+            run.unreadable.append((repo, scrub(str(exc), max_length=300) or type(exc).__name__))
+            continue
+        for pr in pulls:
+            if pr.author != dependabot_merge.DEPENDABOT_LOGIN or not pr.head_sha:
+                continue
+            item = AutopilotItem(repo, pr.number, pr.head_sha, pr.title, SKIPPED, "")
+            run.items.append(item)
+            try:
+                merges += await _autopilot_one(
+                    db, policy, github, item, pr, branch, protection,
+                    requests.get((repo, pr.number), []),
+                    mode=mode, merger_for=merger_for, merges_left=AUTOPILOT_MAX_MERGES - merges,
+                )
+            except Exception as exc:  # noqa: BLE001 - one pull request never stops the rest
+                item.outcome, item.reason = SKIPPED, (
+                    f"could not be read: {scrub(str(exc), max_length=300) or type(exc).__name__}"
+                )
+    LAST_AUTOPILOT_RUN = run
+    return run
+
+
+async def _autopilot_one(
+    db: Database,
+    policy: Any,
+    github: GitHubClient,
+    item: AutopilotItem,
+    pr: Any,
+    default_branch: str,
+    protection: dict[str, Any] | None,
+    requests: list[tuple[str, str, str]],
+    *,
+    mode: str,
+    merger_for: Callable[[GitHubClient], dependabot_merge.Merger],
+    merges_left: int,
+) -> int:
+    """Decide one pull request into `item`. Returns 1 when it merged it."""
+    here = [r for r in requests if r[0] == pr.head_sha]
+    older = [r for r in requests if r[0] != pr.head_sha and r[1] in ("pending", "approved")]
+    # An approval is of one commit. A request on an earlier head is never
+    # merged and never carried over: the new head is judged from scratch, and
+    # every reason says the head moved so nobody reads the old approval as live.
+    moved = (
+        f"head moved since request {older[-1][2]} ({older[-1][1]}) on {older[-1][0][:12]}; "
+        if older
+        else ""
+    )
+
+    def skip(reason: str) -> int:
+        item.outcome, item.reason = SKIPPED, moved + reason
+        return 0
+
+    if pr.draft:
+        return skip("a draft")
+    if (pr.base_branch or default_branch) != default_branch:
+        return skip(f"targets {pr.base_branch}, not {default_branch}")
+    group = autopilot_group(pr.title, pr.head_branch)
+    if group is None:
+        return skip(
+            "a lockfile or single-dependency change outside the minor/patch groups "
+            f"({', '.join(g.name for g in AUTOPILOT_GROUPS)}); a person decides it"
+        )
+    item.group = group.name
+    advisory = advisory_reason(pr.title, pr.body, pr.labels)
+    if advisory:
+        return skip(advisory)
+    changes = version_changes(pr.body)
+    if not changes:
+        return skip("no version change could be read from the description")
+    majors = [f"{n} {a} -> {b}" for n, a, b in changes if is_major(a, b)]
+    if majors:
+        return skip("a major (0.x minor counts as major): " + ", ".join(majors[:5]))
+    comparison = await github.compare(item.repo_full_name, default_branch, pr.head_sha)
+    if comparison.truncated:
+        return skip("the change lists too many files to read")
+    outside = sorted(f.filename for f in comparison.files if not group.owns(f.filename))
+    if outside or not comparison.files:
+        return skip(
+            f"changes files outside the {group.name} group: " + ", ".join(outside[:5])
+            if outside
+            else "GitHub listed no changed files"
+        )
+    if protection is None:
+        return skip(f"{default_branch} is unprotected, so no required checks gate a merge")
+    summary = await github.get_checks_summary(item.repo_full_name, pr.head_sha)
+    not_green = checks_reason(summary.by_name, autopilot_required_checks(protection))
+    if not_green:
+        return skip(not_green)
+
+    rejected =[r for r in here if r[1] == "rejected"]
+    approved = [r for r in here if r[1] == "approved"]
+    pending = [r for r in here if r[1] == "pending"]
+    if approved:
+        request_id = approved[-1][2]
+        item.request_id = request_id
+        review = summary.by_name.get(approval_pull_requests.CHECK_NAME, "pending")
+        if review != "success":
+            item.outcome, item.reason = AWAITING_APPROVAL, (
+                f"approved as {request_id}; {approval_pull_requests.CHECK_NAME} is {review} "
+                "on the head, waiting for the stamp"
+            )
+            return 0
+        if mode != "live":
+            item.outcome, item.reason = WOULD_MERGE, (
+                f"approved as {request_id}; would squash-merge at {pr.head_sha[:12]}"
+            )
+            return 0
+        if merges_left <= 0:
+            item.outcome, item.reason = WOULD_MERGE, (
+                f"approved as {request_id}; the batch of {AUTOPILOT_MAX_MERGES} is full, next run"
+            )
+            return 0
+        message = (
+            f"Merged by the Dependabot autopilot (TheHub #61615) at {pr.head_sha}.\n\n"
+            f"Approval-Request: {request_id}"
+        )
+        try:
+            merger = merger_for(github)
+            result = await merger.squash_at_head(
+                item.repo_full_name, item.number, head_sha=pr.head_sha, message=message
+            )
+        except (dependabot_merge.MergeRefusedError, GitHubError) as exc:
+            item.outcome, item.reason = MERGE_FAILED, scrub(str(exc), max_length=400)
+            _audit_autopilot(db, "dependabot_autopilot.merge_failed", item)
+            return 0
+        item.outcome, item.reason = MERGED, (
+            f"squash-merged at {pr.head_sha[:12]} as {result.merge_commit_sha[:12]} "
+            f"under approval {request_id}"
+        )
+        _audit_autopilot(
+            db, "dependabot_autopilot.merged", item, merge_commit=result.merge_commit_sha
+        )
+        return 1
+    if pending:
+        item.request_id = pending[-1][2]
+        item.outcome, item.reason = AWAITING_APPROVAL, f"requested as {item.request_id}"
+        return 0
+    if rejected:
+        item.request_id = rejected[-1][2]
+        return skip(f"rejected as {item.request_id}; a new head needs a new request")
+    if mode != "live":
+        item.outcome, item.reason = WOULD_REQUEST, (
+            moved + f"green; would request {approval_pull_requests.DUTY} approval"
+        )
+        return 0
+    try:
+        request = await approval_pull_requests.propose(
+            db,
+            policy,
+            github,
+            requested_by=AUTOPILOT_REQUESTER,
+            repo=item.repo_full_name,
+            number=item.number,
+            statement=(
+                f"Opened by the Dependabot autopilot (TheHub #61615): a {group.name} bump by "
+                f"{dependabot_merge.DEPENDABOT_LOGIN}, no major and no advisory above "
+                "moderate, every required check and library-allowlist green on this head."
+            ),
+        )
+    except ApprovalError as exc:
+        if "already has approval request" in str(exc):
+            item.outcome, item.reason = ALREADY_REQUESTED, str(exc)
+            return 0
+        return skip(f"the request was refused: {exc}")
+    item.request_id = str(request.id)
+    item.outcome, item.reason = REQUESTED, moved + f"requested as {request.id}"
+    _audit_autopilot(db, "dependabot_autopilot.requested", item)
+    return 0
+
+
+def _audit_autopilot(db: Database, action: str, item: AutopilotItem, **detail: Any) -> None:
+    with db.session() as session:
+        db.audit(
+            session,
+            actor=AUTOPILOT_REQUESTER.actor,
+            action=action,
+            entity_type="approval_request",
+            entity_id=item.request_id,
+            target=approval_pull_requests.subject_ref(
+                item.repo_full_name, item.number, item.head_sha
+            ),
+            reason=item.reason,
+            **detail,
+        )

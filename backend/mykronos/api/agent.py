@@ -447,6 +447,15 @@ async def work(
         playbook_version=playbook_version,
         repo_ids=repo_ids,
     )
+    # TheHub #61615: each Dependabot pull request and what the autopilot did.
+    from mykronos import jobs
+
+    agent_work.add_dependabot_autopilot(
+        queue,
+        jobs.LAST_AUTOPILOT_RUN,
+        mode=str(settings.dependabot_autopilot_mode),
+        repo=repo,
+    )
     return WorkQueueOut.model_validate(dataclasses.asdict(queue))
 
 

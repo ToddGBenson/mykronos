@@ -304,6 +304,12 @@ class PullRequest:
     mergeable_state: str = ""
     #: The description, for the story ids and "stacks on #N" it names.
     body: str = ""
+    #: Who opened it (`user.login`), e.g. `dependabot[bot]`. Empty when not
+    #: read; the Dependabot autopilot reads empty as "not Dependabot"
+    #: (TheHub #61615).
+    author: str = ""
+    #: Its labels' names, as GitHub lists them on the pull request.
+    labels: tuple[str, ...] = ()
 
 
 @dataclass
@@ -404,6 +410,14 @@ class IssueInfo:
     closed_at: datetime | None = None
 
 
+def _label_names(item: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        str(label.get("name") or "")
+        for label in item.get("labels") or []
+        if isinstance(label, dict) and label.get("name")
+    )
+
+
 def _parse_time(value: object) -> datetime | None:
     """GitHub's ISO-8601 with a `Z`, which `fromisoformat` rejects before 3.11
     and which is worth not crashing a whole page over regardless."""
@@ -428,6 +442,17 @@ class ChecksSummary:
     passed: int = 0
     failed: int = 0
     pending: int = 0
+    #: Each check run by name -> its conclusion (`success`, `neutral`,
+    #: `failure`, ...) or `pending` while it runs, for a caller that must know
+    #: *which* checks are green and how (the Dependabot autopilot reads the
+    #: branch's required checks by name, and `library-allowlist` reports
+    #: `neutral` when it only reports, TheHub #61615). The latest run of a
+    #: name is the one kept, which is what GitHub's check-runs listing
+    #: returns by default (`filter=latest`).
+    by_name: dict[str, str] = field(default_factory=dict)
+
+    def record(self, name: str, conclusion: str | None, *, completed: bool = True) -> None:
+        self.by_name[name] = str(conclusion) if completed and conclusion else "pending"
 
 
 #: Paths per GraphQL query in `get_files`. A hundred keeps each response a
@@ -1127,6 +1152,7 @@ class FakeGitHubClient:
                 summary.pending += 1
             else:
                 summary.failed += 1
+            summary.record(str(run.get("name", "")), conclusion)
         return summary
 
     async def close_pull_request(
@@ -1885,6 +1911,8 @@ class RestGitHubClient:
             ),
             mergeable_state=str(item.get("mergeable_state") or ""),
             body=str(item.get("body") or ""),
+            author=str((item.get("user") or {}).get("login") or ""),
+            labels=_label_names(item),
         )
 
     async def list_open_pull_requests(
@@ -1929,6 +1957,8 @@ class RestGitHubClient:
                 head_sha=str((item.get("head") or {}).get("sha", "")),
                 base_branch=str((item.get("base") or {}).get("ref", "")),
                 body=str(item.get("body") or ""),
+                author=str((item.get("user") or {}).get("login") or ""),
+                labels=_label_names(item),
             )
             for item in items[:limit]
         ]
@@ -2040,6 +2070,11 @@ class RestGitHubClient:
                 summary.passed += 1
             else:
                 summary.failed += 1
+            summary.record(
+                str(run.get("name", "")),
+                run.get("conclusion"),
+                completed=run.get("status") == "completed",
+            )
         return summary
 
     async def close_pull_request(

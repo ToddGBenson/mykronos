@@ -1,0 +1,25 @@
+Bumps the pip-minor-patch group in /backend with 14 updates:
+
+| Package | From | To |
+| --- | --- | --- |
+| [fastapi](https://github.com/fastapi/fastapi) | `0.156.8` | `0.162.0` |
+| [pydantic](https://github.com/pydantic/pydantic) | `2.14.2` | `2.14.3` |
+| [sqlalchemy](https://github.com/sqlalchemy/sqlalchemy) | `2.1.6` | `2.1.8` |
+| [httpx2](https://github.com/pydantic/httpx2) | `2.15.1` | `2.16.0` |
+| [ruff](https://github.com/astral-sh/ruff) | `0.17.3` | `0.17.4` |
+| [httpcore2](https://github.com/pydantic/httpx2) | `2.15.1` | `2.16.0` |
+| [jiter](https://github.com/pydantic/jiter) | `0.17.0` | `0.18.0` |
+| [pycparser](https://github.com/eliben/pycparser) | `3.11` | `3.12` |
+| [pydantic-core](https://github.com/pydantic/pydantic) | `2.50.2` | `2.50.4` |
+| [starlette](https://github.com/Kludex/starlette) | `1.9.0` | `1.10.0` |
+| [typing-inspection](https://github.com/pydantic/typing-inspection) | `0.4.4` | `0.4.5` |
+| [coverage](https://github.com/coveragepy/coveragepy) | `7.16.2` | `7.17.0` |
+| [python-multipart](https://github.com/Kludex/python-multipart) | `0.0.32` | `0.0.33` |
+| [sse-starlette](https://github.com/sysid/sse-starlette) | `3.5.1` | `3.6.0` |
+
+Updates `fastapi` from 0.156.8 to 0.162.0
+<details>
+<summary>Release notes</summary>
+<p><em>Sourced from <a href="https://github.com/fastapi/fastapi/releases">fastapi's releases</a>.</em></p>
+<blockquote>
+<h2>0.162.0</h2>

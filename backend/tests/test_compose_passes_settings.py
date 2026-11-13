@@ -41,6 +41,9 @@ MUST_BE_PASSABLE = (
     "MYKRONOS_REVIEWER_MODE",
     "MYKRONOS_REVIEWER_MODEL",
     "MYKRONOS_REVIEWER_API_KEY",
+    # TheHub #61615: the operator flips the Dependabot autopilot to `live`
+    # with one line in backend/.env; unlisted, it would read `dry-run` for ever.
+    "MYKRONOS_DEPENDABOT_AUTOPILOT_MODE",
     # #60754: OPERATOR-TASKS.md tells the operator to set the first in
     # backend/.env, and none of these reached the container - the digest could
     # not be switched on under Docker at all.

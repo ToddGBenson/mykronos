@@ -101,6 +101,7 @@ from mykronos.jobs import (
     BRIEFING_FLASH_JOB,
     CI_STALL_JOB,
     CREDENTIAL_EXPIRY_INCIDENTS_JOB,
+    DEPENDABOT_AUTOPILOT_JOB,
     DORMANT_LANES_JOB,
     RECORDED_INTERVAL_SECONDS,
     RED_MAIN_JOB,
@@ -112,6 +113,7 @@ from mykronos.jobs import (
     audit_pipeline_timeouts,
     check_gate_liveness,
     close_superseded_fixes,
+    dependabot_autopilot,
     junit_totals_lookup,
     notify_ci_stall,
     notify_dormant_lanes,
@@ -682,6 +684,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.db, policy, app.state.github_factory
             )
 
+        async def _dependabot_autopilot() -> None:
+            # Green minor/patch Dependabot groups: listed in dry-run, requested
+            # and merged at the approved head in live (TheHub #61615).
+            try:
+                policy = cached_approval_policy(settings.approval_policy_path)
+            except ApprovalPolicyError:
+                return
+            result = await dependabot_autopilot(
+                app.state.db,
+                policy,
+                app.state.github_factory,
+                mode=settings.dependabot_autopilot_mode,
+            )
+            logger.info("Dependabot autopilot: %s", result.summary())
+
         async def _library_checks() -> None:
             # The library-allowlist check on every open pull request head that
             # has none yet (TheHub #60898). Reports unless a person switched
@@ -1048,6 +1065,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 else []
             ),
             ("pull-request-stamps", 120, _pull_request_stamps),
+            # Off is a setting, not an absence: unscheduled, platform health
+            # reads it as disabled.
+            *(
+                [
+                    (
+                        DEPENDABOT_AUTOPILOT_JOB,
+                        settings.dependabot_autopilot_interval_seconds,
+                        _dependabot_autopilot,
+                    )
+                ]
+                if settings.dependabot_autopilot_mode != "off"
+                else []
+            ),
             # Against a real GitHub and the real registries only, for the
             # reason `installations` is: the demo's placeholders answer nothing.
             *(
