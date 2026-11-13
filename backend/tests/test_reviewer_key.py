@@ -9,6 +9,7 @@ that the stored row carries no part of the key.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,7 +148,11 @@ class TestWhatTheProbeRecords:
         health = platform_health.assess_reviewer_key(row)
         assert SECRET not in health.detail and SECRET[:6] not in health.detail
 
-    async def test_it_needs_a_key_and_a_reviewer(self, db: Database) -> None:
+    async def test_it_needs_a_key_and_a_reviewer(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No key in the environment, so this can never reach the real API.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(JobSkipped):
             await reviewer_key.probe_reviewer_key(
                 db,
@@ -155,6 +160,7 @@ class TestWhatTheProbeRecords:
                 notifier=Recorder(),
                 client=None,
             )
+        assert reviewer_key.current(db).state == "off"
         with pytest.raises(JobSkipped):
             await reviewer_key.probe_reviewer_key(
                 db,
@@ -242,13 +248,21 @@ class TestOneAlertPerState:
 
 
 class TestApprovalsSurface:
-    def _record(self, client: TestClient, state: str, status: int | None) -> None:
+    def _record(
+        self,
+        client: TestClient,
+        state: str,
+        status: int | None,
+        as_of: datetime | None = None,
+    ) -> None:
+        # Fresh by default: a row older than two probe intervals is ignored.
+        as_of = as_of or datetime.now(UTC).replace(tzinfo=None)
         with client.app.state.db.session() as session:
             session.add(
                 ReviewerKeyProbe(
                     id=1,
                     state=state,
-                    as_of=datetime(2026, 11, 13, 4, 0),
+                    as_of=as_of,
                     since=datetime(2026, 11, 13, 3, 48),
                     model="claude-opus-5-5",
                     http_status=status,
@@ -278,6 +292,61 @@ class TestApprovalsSurface:
         items = client.get("/api/approvals?state=pending", headers=admin_auth).json()
         assert items[0]["reviewer_available"] is True
         assert items[0]["reviewer_unavailable_since"] is None
+
+    def test_a_skipped_probe_replaces_a_stale_refusal_with_off(
+        self, client, admin_auth, tiered  # noqa: F811
+    ) -> None:
+        author = _mint(client, admin_auth)
+        _request(client, {"Authorization": f"Bearer {author['token']}"})
+        self._record(client, "refused", 401)
+        db = client.app.state.db
+        assert client.get("/api/approvals?state=pending", headers=admin_auth).json()[0][
+            "reviewer_available"
+        ] is False
+
+        with pytest.raises(JobSkipped):
+            asyncio.run(
+                reviewer_key.probe_reviewer_key(
+                    db,
+                    SimpleNamespace(
+                        reviewer_api_key=SECRET, reviewer_mode="off", reviewer_model=""
+                    ),
+                    notifier=Recorder(),
+                )
+            )
+
+        assert reviewer_key.current(db).state == "off"
+        items = client.get("/api/approvals?state=pending", headers=admin_auth).json()
+        assert items[0]["reviewer_available"] is None
+        assert items[0]["reviewer_unavailable_since"] is None
+        queue = client.get(
+            "/api/dashboard/product-owner/review-queue", headers=admin_auth
+        ).json()
+        assert queue["reviewer"]["unavailable_since"] is None
+        health = client.get("/api/dashboard/platform-health", headers=admin_auth).json()
+        row = next(d for d in health["dependencies"] if d["name"] == "platform reviewer key")
+        assert row["detail"].startswith("off")
+
+    def test_a_row_older_than_two_intervals_is_ignored(
+        self, client, admin_auth, tiered, model  # noqa: F811
+    ) -> None:
+        _delegate(client)
+        model(error=_status_error(401))
+        author = _mint(client, admin_auth)
+        request = _request(client, {"Authorization": f"Bearer {author['token']}"})
+        stale = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=2 * 3600 + 60)
+        self._record(client, "refused", 401, as_of=stale)
+
+        items = client.get("/api/approvals?state=pending", headers=admin_auth).json()
+        assert items[0]["reviewer_available"] is True
+        assert items[0]["reviewer_unavailable_since"] is None
+        queue = client.get(
+            "/api/dashboard/product-owner/review-queue", headers=admin_auth
+        ).json()
+        assert queue["reviewer"]["unavailable_since"] is None
+        response = _review(client, {"Authorization": f"Bearer {author['token']}"}, request)
+        assert response.status_code == 503
+        assert "hourly probe" not in response.text
 
     def test_the_review_queue_carries_the_banner_time(
         self, client, admin_auth, tiered  # noqa: F811
@@ -319,3 +388,24 @@ class TestApprovalsSurface:
 def test_the_job_is_scheduled_hourly(settings: Settings) -> None:
     assert settings.reviewer_key_probe_interval_seconds == 3600
     assert Path(reviewer_key.__file__).exists()
+
+
+def test_main_registers_the_probe_job(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    import mykronos.main as main
+
+    names: list[str] = []
+
+    def record(name: str, interval: int, run: Any, db: Any = None) -> Any:
+        names.append(name)
+
+        async def _idle() -> None:
+            return None
+
+        return _idle()
+
+    monkeypatch.setattr(main, "_every", record)
+    with TestClient(main.create_app(settings.model_copy(update={"run_jobs_in_background": True}))):
+        pass
+    assert reviewer_key.REVIEWER_KEY_JOB in names

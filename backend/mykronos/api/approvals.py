@@ -247,9 +247,12 @@ async def list_requests(
             stmt = stmt.where(ApprovalRequest.duty == duty)
         items = [_request_out(session, r) for r in session.execute(stmt).scalars()]
     if state == "pending":
-        since = await asyncio.to_thread(reviewer_key.unavailable_since, request.app.state.db)
+        db, settings = request.app.state.db, request.app.state.settings
+        since = await asyncio.to_thread(reviewer_key.unavailable_since, db, settings)
+        disabled = await asyncio.to_thread(reviewer_key.probing_disabled, db, settings)
         for item in items:
-            item.reviewer_available = since is None
+            # None is "unknown": probing is switched off, so nothing is claimed.
+            item.reviewer_available = None if disabled else since is None
             item.reviewer_unavailable_since = since
     return items
 

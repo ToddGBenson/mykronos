@@ -160,6 +160,16 @@ def assess_reviewer_key(probe: Any | None) -> DependencyHealth:
             configured=False,
             detail="not probed yet: the hourly probe has not run",
         )
+    if probe.state == "off":
+        return DependencyHealth(
+            name=name,
+            reachable=True,
+            configured=False,
+            detail=(
+                "off: probing is disabled (no key or reviewer off) as of "
+                f"{probe.as_of:%Y-%m-%d %H:%MZ}"
+            ),
+        )
     stamp = probe.as_of.strftime("%Y-%m-%d %H:%MZ")
     status = f" (HTTP {probe.http_status})" if probe.http_status else ""
     return DependencyHealth(

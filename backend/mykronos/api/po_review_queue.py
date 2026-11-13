@@ -515,10 +515,10 @@ async def _ready_to_merge(request: Request, policy: Any) -> list[PoMergeRowOut]:
     return [row for row in found if row is not None]
 
 
-def _unavailable_since(db: Any) -> str | None:
+def _unavailable_since(db: Any, settings: Any) -> str | None:
     from mykronos import reviewer_key
 
-    since = reviewer_key.unavailable_since(db)
+    since = reviewer_key.unavailable_since(db, settings)
     return since.strftime("%Y-%m-%d %H:%MZ") if since else None
 
 
@@ -582,11 +582,14 @@ async def review_queue(request: Request, principal: PrincipalDep) -> PoReviewQue
 
     report = await asyncio.to_thread(reviewer.shadow_report, request.app.state.db, policy)
     merge = await _ready_to_merge(request, policy)
+    unavailable_since = await asyncio.to_thread(
+        _unavailable_since, request.app.state.db, request.app.state.settings
+    )
     return PoReviewQueueOut(
         reviewer=PoReviewerStateOut(
             mode=reviewer.mode(request.app.state.settings),
             agreement=report.get("agreement"),
-            unavailable_since=_unavailable_since(request.app.state.db),
+            unavailable_since=unavailable_since,
         ),
         counts=PoQueueCountsOut(
             pending=len(pending),

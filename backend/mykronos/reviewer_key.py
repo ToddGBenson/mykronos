@@ -32,7 +32,7 @@ from mykronos.notify import Notification, Notifier
 
 logger = logging.getLogger(__name__)
 
-ReviewerKeyState = Literal["ok", "refused", "unreachable"]
+ReviewerKeyState = Literal["ok", "refused", "unreachable", "off"]
 
 #: The scheduled job's name and its `job_runs` row.
 REVIEWER_KEY_JOB = "reviewer-key-probe"
@@ -41,6 +41,12 @@ REVIEWER_KEY_JOB = "reviewer-key-probe"
 ROW_NAME = "platform reviewer key"
 
 PROBE_TIMEOUT_SECONDS = 10.0
+
+
+#: A row older than this many probe intervals is stale and no reader trusts it.
+STALE_AFTER_INTERVALS = 2
+
+DEFAULT_INTERVAL_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -85,13 +91,45 @@ def current(db: Database) -> ReviewerKeyProbe | None:
         return row
 
 
-def unavailable_since(db: Database) -> datetime | None:
-    """When the reviewer became unavailable, or None when the last probe was ok
-    (or none has run: an unprobed reviewer is not reported unavailable)."""
+def _interval(settings: Any) -> int:
+    configured = getattr(settings, "reviewer_key_probe_interval_seconds", 0)
+    return int(configured or DEFAULT_INTERVAL_SECONDS)
+
+
+def fresh(
+    db: Database, settings: Any, *, now: datetime | None = None
+) -> ReviewerKeyProbe | None:
+    """The recorded probe, or None before the first or when it is stale.
+
+    A row not refreshed within two probe intervals says nothing about the key
+    now (the job stopped, or was never rescheduled), so readers ignore it.
+    """
     row = current(db)
-    if row is None or row.state == "ok":
+    if row is None:
+        return None
+    moment = now or datetime.now(UTC)
+    age = (moment - _utc(row.as_of)).total_seconds()
+    if age > STALE_AFTER_INTERVALS * _interval(settings):
+        return None
+    return row
+
+
+def unavailable_since(
+    db: Database, settings: Any, *, now: datetime | None = None
+) -> datetime | None:
+    """When the reviewer became unavailable, or None when the last probe was ok,
+    off or stale (or none has run: an unprobed reviewer is not reported
+    unavailable)."""
+    row = fresh(db, settings, now=now)
+    if row is None or row.state in ("ok", "off"):
         return None
     return _utc(row.since)
+
+
+def probing_disabled(db: Database, settings: Any, *, now: datetime | None = None) -> bool:
+    """True when the freshest probe row says probing is switched off."""
+    row = fresh(db, settings, now=now)
+    return row is not None and row.state == "off"
 
 
 def _utc(value: datetime) -> datetime:
@@ -112,9 +150,10 @@ def _record(db: Database, result: ProbeResult, model: str, now: datetime) -> Rev
             row.state = result.state
         elif row.state != result.state:
             row.since = now
-            # A new bad state is announced afresh; a return to ok keeps the
+            # A new bad state is announced afresh; a return to ok (or a pause
+            # to off) keeps the
             # flag, which is what tells the recovery note it is owed.
-            if result.state != "ok":
+            if result.state in ("refused", "unreachable"):
                 row.alerted = False
         row.state = result.state
         row.as_of = now
@@ -150,13 +189,17 @@ async def probe_reviewer_key(
     from mykronos.approvals import reviewer
     from mykronos.jobs import JobSkipped
 
+    moment = now or datetime.now(UTC)
+    model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5-5")
     if reviewer.mode(settings) == "off":
+        # Write the skip down, so a refusal recorded before it is not read as
+        # current (TheHub #61628).
+        await asyncio.to_thread(_record, db, ProbeResult("off", None), model, moment)
         raise JobSkipped("the independent reviewer is switched off (reviewer_mode: off)")
     key = reviewer.api_key(settings)
     if key is None and client is None:
+        await asyncio.to_thread(_record, db, ProbeResult("off", None), model, moment)
         raise JobSkipped("the reviewer has no API key configured, so there is nothing to probe")
-    moment = now or datetime.now(UTC)
-    model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5-5")
     result = await asyncio.to_thread(probe_key, key or "", client=client)
     row = await asyncio.to_thread(_record, db, result, model, moment)
 
