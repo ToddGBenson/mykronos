@@ -3693,14 +3693,21 @@ class BlockedLaneOut(CiLaneOut):
 
 
 class TokenDeliveryOut(BaseModel):
-    """An ingestion token the rotation sweep deferred to a person (#263)."""
+    """An ingestion token the rotation sweep deferred to a person (#263).
+
+    `dependabot_unsynced` (TheHub #60855) is the token delivered to Actions
+    secrets and refused by the repository's Dependabot secrets; `reason` says
+    why, and the remedy is a permission on the App rather than a rotation.
+    """
 
     repo_full_name: str
-    #: "due" | "unverified"
+    #: "due" | "unverified" | "dependabot_unsynced"
     state: str
     issued_at: datetime
     rotate_after: datetime
     scanned_by: str = ""
+    #: Why the Dependabot copy is missing; empty for the other states.
+    reason: str = ""
 
 
 class UnhealthyJobOut(BaseModel):
@@ -8051,7 +8058,9 @@ class CredentialOut(BaseModel):
     kind: str
     repo_full_name: str | None = None
     actor: str | None = None
-    #: "due" | "unverified" | "expiring". Only `due` is a reason to rotate.
+    #: "due" | "unverified" | "dependabot_unsynced" | "expiring". Only `due` is
+    #: a reason to rotate; `dependabot_unsynced` asks for a permission on the
+    #: App (TheHub #60855).
     state: str
     rotate_after: datetime | None = None
     expires_at: datetime | None = None

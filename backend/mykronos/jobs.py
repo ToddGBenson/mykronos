@@ -263,6 +263,28 @@ def deliveries_awaiting_operator(db: Database) -> list[TokenDelivery]:
                     scanned_by=scanned_by,
                 )
             )
+
+        # A Dependabot copy the sweep tried to write and could not (TheHub
+        # #60855). Only a *recorded* refusal is a person's work: a token
+        # nothing has tried to deliver yet is the sweep's next run, and a
+        # repository the sweep does not drive never records one. Any scanner,
+        # because the remedy is a permission on the App, not a hand rotation.
+        for repo in sorted(registry.dependabot_unsynced_repos()):
+            if repo not in scanners:
+                continue
+            token = registry.active_token_for(repo)
+            if token is None or not token.dependabot_sync_blocker:
+                continue
+            waiting.append(
+                TokenDelivery(
+                    repo_full_name=repo,
+                    state="dependabot_unsynced",
+                    issued_at=token.issued_at,
+                    rotate_after=token.rotate_after,
+                    scanned_by=scanners[repo],
+                    reason=token.dependabot_sync_blocker,
+                )
+            )
         return waiting
 
 

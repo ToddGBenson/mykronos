@@ -13,24 +13,24 @@ Three claims, each tested against a fake GitHub:
   rotation job's rotate/resync), the same plaintext is sealed into the
   Dependabot store under the Dependabot public key;
 - when the App lacks the Dependabot-secrets permission, the Actions write
-  still lands and the gap is *recorded* on the token with its reason;
-- once the permission is granted, the sweep delivers without anyone pasting,
-  and never rotates on evidence short of that.
-
-Where a person sees the recorded gap (work queue, briefing, platform health)
-is the follow-up pull request, with its own tests.
+  still lands and the gap is *recorded* on the token with its reason, then
+  shown in the work queue, the briefing and the platform-health page;
+- once the permission is granted, the sweep delivers without anyone pasting.
 """
 
 from __future__ import annotations
 
 import base64
 from collections.abc import Iterator
+from datetime import timedelta
 
 import pytest
 from nacl import encoding, public
 from sqlalchemy.orm import Session
 
+from mykronos import platform_health
 from mykronos.auth import TokenRegistry
+from mykronos.briefing import TokenDelivery
 from mykronos.config import get_settings
 from mykronos.db import Database
 from mykronos.db.models import IngestionToken, Organization, RepoOnboarding
@@ -44,7 +44,9 @@ from mykronos.github.client import (
 from mykronos.github.factory import FakeGitHubClientFactory
 from mykronos.github.secrets import dependabot_gap_reason
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary, WorkflowInstaller
-from mykronos.jobs import rotate_ingestion_tokens
+from mykronos.jobs import deliveries_awaiting_operator, rotate_ingestion_tokens
+from mykronos.schemas import utcnow
+from tests.test_agent_work import _briefing, _build
 from tests.test_jobs import INSTALLATION, age_token, onboard
 
 REPO = "example-org/payments-api"
@@ -408,3 +410,102 @@ class TestTheRotationJobSealsBothStores:
         reason = dependabot_gap_reason(403, "GET ... -> 403: secondary rate limit")
         assert "Read and write" in reason
         assert "secondary rate limit" in reason
+
+
+# ---------------------------------------------------------------------------
+# Where a person sees it
+
+
+class TestAPersonCanSeeTheGap:
+    def test_a_recorded_gap_is_put_in_front_of_a_person(self, db: Database) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "403 from the endpoint")
+
+        waiting = deliveries_awaiting_operator(db)
+
+        assert [(t.repo_full_name, t.state) for t in waiting] == [(REPO, "dependabot_unsynced")]
+        assert waiting[0].reason == "403 from the endpoint"
+        assert waiting[0].scanned_by == "github_actions"
+
+    def test_a_copy_not_yet_attempted_is_not_yet_a_persons_work(self, db: Database) -> None:
+        """Every token issued before this change has no Dependabot copy. The
+        sweep attempts each on its next run; only a recorded refusal is work
+        for a person."""
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+
+        assert deliveries_awaiting_operator(db) == []
+
+    def test_a_delivered_copy_leaves_the_page(self, db: Database) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "403")
+        assert deliveries_awaiting_operator(db)
+
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_synced(REPO)
+
+        assert deliveries_awaiting_operator(db) == []
+
+    def test_the_work_queue_item_names_the_grant_and_not_a_rotation(self) -> None:
+        now = utcnow()
+        token = TokenDelivery(
+            repo_full_name=REPO,
+            state="dependabot_unsynced",
+            issued_at=now - timedelta(days=5),
+            rotate_after=now + timedelta(days=85),
+            scanned_by="github_actions",
+            reason="GitHub answered 403 on the Dependabot secrets endpoint.",
+        )
+
+        [item] = _build(_briefing(tokens=[token])).items
+
+        assert item.kind == "token_delivery"
+        assert "dependabot" in item.item_id
+        assert "Dependabot" in item.title
+        assert token.reason in item.summary
+        assert "Dependabot secrets" in item.done_when
+        assert "do_not_rotate" not in {c.code for c in item.caveats}
+
+    def test_the_rendered_briefing_does_not_call_it_unconfirmed_delivery(self) -> None:
+        from mykronos import briefing as briefing_report
+
+        now = utcnow()
+        report = briefing_report.Briefing(
+            generated_at=now,
+            total_open=0,
+            tokens=[
+                TokenDelivery(
+                    repo_full_name=REPO,
+                    state="dependabot_unsynced",
+                    issued_at=now,
+                    rotate_after=now + timedelta(days=88),
+                    scanned_by="github_actions",
+                    reason="GitHub answered 403 on the Dependabot secrets endpoint.",
+                )
+            ],
+        )
+
+        text = briefing_report.render(report)
+
+        assert "NOT IN DEPENDABOT SECRETS" in text
+        assert "Read and write" in text
+        assert "DELIVERY NEVER CONFIRMED" not in text
+
+    def test_platform_health_passes_the_state_through(self, db: Database) -> None:
+        """Not folded into `unverified`: that state's action is "do not
+        rotate", and this one's is a permission grant."""
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "403")
+
+        rows = platform_health.credentials_needing_attention(db, now=utcnow())
+
+        [row] = [r for r in rows if r.kind == "ingestion_token"]
+        assert row.state == "dependabot_unsynced"
+        assert "Dependabot secrets" in row.action
+        assert "rotate" not in row.action.lower()
