@@ -858,6 +858,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    reviewer_key_probe_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        description=(
+            "How often the reviewer-key-probe job asks the model API's list-models "
+            "endpoint whether the platform reviewer's key is still accepted "
+            "(mykronos.reviewer_key, TheHub #61614). A refusal alerts once."
+        ),
+    )
+
     ci_stall_interval_seconds: int = Field(
         default=600,
         ge=60,

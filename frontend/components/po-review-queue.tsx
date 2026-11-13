@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { EmptyState, ErrorPanel, Pill, Section, StatTile } from "@/components/primitives";
 import { getReviewQueue, type MergeRow, type ReviewQueueItem } from "@/lib/po-console";
-import { mergeReadiness, reviewerStanding } from "@/lib/review-queue";
+import { mergeReadiness, reviewerBanner, reviewerStanding } from "@/lib/review-queue";
 
 /**
  * The operator's review queue (D-163): what is waiting on a person, estate-wide.
@@ -113,6 +113,14 @@ export async function ReviewQueueTab() {
           refuses it whatever this page shows.
         </p>
       </div>
+      {reviewerBanner(reviewer) ? (
+        <p
+          role="alert"
+          className="border border-rule-soft px-3 py-2 text-[12px] font-bold text-critical"
+        >
+          {reviewerBanner(reviewer)}
+        </p>
+      ) : null}
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
         <StatTile label="Pending decisions" value={counts.pending} sub="oldest expiry first" />
         <StatTile

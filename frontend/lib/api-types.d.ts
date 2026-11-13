@@ -10971,6 +10971,8 @@ export interface components {
             mode: string;
             /** Agreement */
             agreement: number | null;
+            /** Unavailable Since */
+            unavailable_since?: string | null;
         };
         /** PoRolesOut */
         PoRolesOut: {
@@ -12426,6 +12428,10 @@ export interface components {
             decided_at: string | null;
             /** Decisions */
             decisions?: components["schemas"]["DecisionOut"][];
+            /** Reviewer Available */
+            reviewer_available?: boolean | null;
+            /** Reviewer Unavailable Since */
+            reviewer_unavailable_since?: string | null;
         };
         /**
          * RescoreStepFactOut
