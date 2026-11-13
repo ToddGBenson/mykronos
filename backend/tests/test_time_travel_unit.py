@@ -113,7 +113,13 @@ class TestTheJob:
         assert faketime == ['under_faketime() { faketime -m -f "$TIME_TRAVEL_OFFSET" "$@"; }']
         for line in lines:
             if "-m pytest" in line:
-                assert "under_faketime python -m pytest" in line, line
+                # The suite goes through the memory wrapper (#61606), itself under
+                # the faketime function, so the re-run keeps the shifted clock.
+                assert (
+                    "under_faketime python -m pytest" in line
+                    or "under_faketime python ../scripts/memory_kill.py run -- python -m pytest"
+                    in line
+                ), line
 
     def test_a_canary_proves_the_clock_moved_before_the_suite_runs(self, pipeline) -> None:
         # Finding 1 of the #1056 review: without this, an unshifted clock is a

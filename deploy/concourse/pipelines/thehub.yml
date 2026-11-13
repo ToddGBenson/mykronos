@@ -582,9 +582,14 @@ anchors:
         except (OSError, AttributeError):
             pass
 
-    child = subprocess.Popen(cmd, start_new_session=True)
+    live = []
+    stopped = []
 
     def forward(signum, _frame):
+        stopped.append(signum)
+        if not live or live[-1].poll() is not None:
+            return
+        child = live[-1]
         try:
             os.killpg(child.pid, signum)
         except (OSError, AttributeError):
@@ -593,27 +598,96 @@ anchors:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, forward)
 
-    peak_kib, over_kib, measured = 0, 0, False
-    while child.poll() is None:
-        pids = members(child.pid)
-        if pids is not None:
-            measured = True
-            kib = sum(kib_of(p) for p in pids)
-            peak_kib = max(peak_kib, kib)
-            if budget_mb and kib > budget_mb * 1024:
-                over_kib = kib
-                kill_session(child.pid, pids)
-                break
-        time.sleep(interval)
-    rc = child.wait()
-    if rc < 0:
-        rc = 128 - rc
+    def attempt():
+        child = subprocess.Popen(cmd, start_new_session=True)
+        live.append(child)
+        peak_kib, over_kib, measured = 0, 0, False
+        while child.poll() is None:
+            pids = members(child.pid)
+            if pids is not None:
+                measured = True
+                kib = sum(kib_of(p) for p in pids)
+                peak_kib = max(peak_kib, kib)
+                if budget_mb and kib > budget_mb * 1024:
+                    over_kib = kib
+                    kill_session(child.pid, pids)
+                    break
+            time.sleep(interval)
+        rc = child.wait()
+        if rc < 0:
+            rc = 128 - rc
+        peak = f"{peak_kib // 1024} MiB" if measured else "unmeasured (no /proc here)"
+        print(f"memory-guard: {label} exited {rc}; peak {peak} of a {budget_mb} MiB budget.", flush=True)
+        return rc, over_kib, peak
 
-    peak = f"{peak_kib // 1024} MiB" if measured else "unmeasured (no /proc here)"
-    print(f"memory-guard: {label} exited {rc}; peak {peak} of a {budget_mb} MiB budget.", flush=True)
+    def mem_available_mb():
+        try:
+            with open("/proc/meminfo", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) // 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    started = time.monotonic()
+    rc, over_kib, peak = attempt()
+    reran = ""
+    if rc == 137 and not over_kib:
+        # TheHub #61606: an exit of 137 the guard did not cause (the worker's
+        # cgroup or the kernel OOM killer) is not a verdict, and nothing
+        # re-runs the job without a new commit, so wait for memory and run the
+        # command once more. A real failure (1, 2, 5) never gets here, and the
+        # guard's OWN budget kill is not retried: memory is free the moment it
+        # ends, so the same suite would only be killed at the same point.
+        #
+        # The callers measure their own elapsed time around this guard and
+        # turn a run past their soft timeout into a PARTIAL (unit: 4200s), so
+        # the wait and a second run must fit in what is left of it:
+        # MEMORY_GUARD_SOFT_TIMEOUT_S is that timeout, and a caller that does
+        # not set it (or has a hard cap with no room) is never re-run.
+        first_s = time.monotonic() - started
+        wait_s = float(os.environ.get("MEMORY_GUARD_RETRY_WAIT_S") or "300")
+        soft_s = float(os.environ.get("MEMORY_GUARD_SOFT_TIMEOUT_S") or "0")
+        remaining = soft_s - first_s
+        # The second run is sized by the tier's normal full run length when the
+        # caller says it (MEMORY_GUARD_EXPECTED_S): a kill early in a long run
+        # says nothing about how long the re-run takes. Unset, the first run's
+        # own time is the estimate.
+        expected_s = float(os.environ.get("MEMORY_GUARD_EXPECTED_S") or "0")
+        run_s = max(first_s, expected_s)
+        if stopped:
+            decision = "no: the build was told to stop"
+        elif not soft_s:
+            decision = "no: this task has no soft timeout to fit a re-run in"
+        elif remaining <= run_s + wait_s:
+            decision = (f"no: {remaining:.0f}s of the {soft_s:.0f}s soft timeout are left and a "
+                        f"wait of up to {wait_s:.0f}s plus a second run of {run_s:.0f}s needs "
+                        f"more than {run_s + wait_s:.0f}s")
+        else:
+            decision = f"yes (second run sized at {run_s:.0f}s)"
+        print(f"memory-guard: {label} was killed (137) after {first_s:.0f}s; re-run: {decision}.",
+              flush=True)
+        if decision.startswith("yes"):
+            print(f"memory-guard: waiting up to {wait_s:.0f}s for MemAvailable over "
+                  f"{budget_mb} MiB, then re-running once.", flush=True)
+            deadline = time.monotonic() + wait_s
+            while not stopped:
+                free = mem_available_mb()
+                if free is None or free > budget_mb or time.monotonic() >= deadline:
+                    break
+                time.sleep(min(5.0, interval))
+            if stopped:
+                print("memory-guard: stopped while waiting; not re-running.", flush=True)
+            else:
+                rc, over_kib, peak = attempt()
+                reran = "re-ran once and was killed again; "
+                if rc != 137 and not over_kib:
+                    print(f"memory-guard: re-ran once after the kill; the re-run exited {rc}.",
+                          flush=True)
 
     reason = ""
-    tail = "Nothing was judged; re-run once the host has memory (TheHub #61106)."
+    tail = f"Nothing was judged; {reran}re-run once the host has memory (TheHub #61106)."
     if over_kib:
         rc = 137
         reason = (f"INFRASTRUCTURE, NOT A VERDICT: killed: out of memory - {label} reached "
@@ -1919,6 +1993,8 @@ jobs:
                     export CONFIG_DIR="$HUB_CONFIG_DIR"
                     export MEMORY_GUARD_DIR="${1%.log}.oom"
                     export MEMORY_GUARD_LABEL="pytest --collect-only tests/unit tests/integration tests/security"
+                    export MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S"
+                    export MEMORY_GUARD_EXPECTED_S=300
                     # [TheHub #61321] COLLECT, do not re-run. `unit` and
                     # `container-tiers` run the suite on every develop commit,
                     # and develop is linear (squash merges), so the tip is
@@ -2707,6 +2783,9 @@ jobs:
           # live beside pytest in the same worker.
           MEMORY_GUARD: *memory_guard
           MEMORY_BUDGET_MB: "2304"
+          # [#61606] MEMORY_GUARD_SOFT_TIMEOUT_S is deliberately not set, so the
+          # guard never re-runs a kill here: this task has a 9m hard cap and a
+          # 300s soft cap, and a wait plus a second run fits in neither.
         config:
           platform: linux
           # `insecure`: the registry is plain HTTP on the LAN (spec 15 section
@@ -3375,6 +3454,7 @@ jobs:
                 started=$(date +%s)
                 if command -v timeout >/dev/null 2>&1; then
                   MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
+                    MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S" MEMORY_GUARD_EXPECTED_S=2760 \
                     python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
                     python -m pytest tests/unit -q -p no:cacheprovider \
                     --junitxml=/tmp/results/unit.xml || rc=$?
@@ -3459,6 +3539,8 @@ jobs:
                     # unit #360 was killed HERE: "Killed ... pytest tests/security".
                     export MEMORY_GUARD_DIR="$MEMGUARD/security"
                     export MEMORY_GUARD_LABEL="pytest tests/security"
+                    export MEMORY_GUARD_SOFT_TIMEOUT_S="$SEC_SOFT_TIMEOUT_S"
+                    export MEMORY_GUARD_EXPECTED_S=600
                     if command -v timeout >/dev/null 2>&1; then
                       python -c "$MEMORY_GUARD" timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
                         python -m pytest tests/security -q -p no:cacheprovider -ra \
@@ -4906,6 +4988,9 @@ jobs:
           # (~250 MiB) live beside it in the same 3g worker.
           MEMORY_GUARD: *memory_guard
           MEMORY_BUDGET_MB: "2304"
+          # [#61606] No MEMORY_GUARD_SOFT_TIMEOUT_S: TheHub's tier runner
+          # forces its own 124 at TIER_SOFT_TIMEOUT_S and cannot see a wait, so
+          # the guard does not re-run a kill here; it reports it as before.
         config:
           platform: linux
           # The commit's own image, the one `build` pushed and `containers`
