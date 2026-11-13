@@ -94,7 +94,7 @@
 # that claimed otherwise, and it is retired (#59990/#59999/#60063).
 groups:
   - name: quality
-    jobs: [unit, container-tiers, qa, prompt-evals, post-merge, pr-gates]
+    jobs: [unit, container-tiers, qa, prompt-evals, post-merge, pr-gates, gate-smoke]
   - name: security
     jobs: [secrets, sast, dependencies, iac, containers, ai-models, cloud-posture, dast-staging]
   - name: build
@@ -296,6 +296,16 @@ resources:
     source:
       location: ((scan-timezone))
       interval: 10m
+
+  # [TheHub #61613] `gate-smoke`'s clock: 03:00 America/Phoenix, an hour's
+  # window like `daily`, so the job runs once a night.
+  - name: nightly-gate-smoke
+    type: time
+    icon: clock-outline
+    source:
+      location: ((scan-timezone))
+      start: "3:00 AM"
+      stop: "4:00 AM"
 
   # Where the memo goes. The same MinIO the SBOMs use, deliberately: a bucket
   # that does not exist yet is an operator action this change does not need,
@@ -2560,7 +2570,8 @@ jobs:
                   git -C pr archive "$BASE_SHA" | tar -x -C pr/.git/judge
                   # -- process-gate inputs, end
                 fi
-      - task: gates
+      - &pr_gates_task
+        task: gates
         container_limits: {cpu: 512}
         image: python313
         # pip-audit resolves the whole requirements set into a scratch venv:
@@ -2841,6 +2852,135 @@ jobs:
       - <<: *check_run
         input_mapping: { source: pr }
         params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: success, NO_COMMIT_OK: "1" }
+
+  # -- `gate-smoke`: pr-gates' own gates, on develop's head, nightly (TheHub #61613) --
+  #
+  # Between 2026-11-05 and 11-12 a gate required a file only #678 added, 55
+  # pull requests sat red, and nobody could tell a broken gate from broken pull
+  # requests: the gate is only ever exercised by real ones. This job runs
+  # `pr-gates`' `gates` task (the SAME step, by anchor: `&pr_gates_task`) every
+  # night against the branch head with base == head, so a broken gate is found
+  # the next morning on a head nobody is editing.
+  #
+  # It is never a pull request and does not pretend to be one. `smoke-inputs`
+  # lays the head out the way `pick` lays a pull request out (`pr/`, the
+  # process-gate inputs, the judge tree), with an empty range because base ==
+  # head, and `pr/.git/pr-number` says `smoke`. The gates task is not edited.
+  #
+  # Two different reds, told apart in the report's first lines (`smoke-verdict`):
+  #   * GATE SMOKE: the gate itself failed. It crashed, could not read its
+  #     inputs, lost a file it needs, or failed closed. Fix the gate.
+  #   * GATE SMOKE: a finding on the head. The gate ran and judged, and the
+  #     head has a real finding (a vulnerable dependency, a shape-test
+  #     failure). Fix the head; the gate is fine.
+  # Anything not recognised as a gate fault is reported as a finding, which is
+  # what the gate would have said of a pull request. The reporter is the one
+  # `pr-gates` uses (`hub_report`); a green night reports nothing and is read
+  # from the build history. No integration task: that tier needs a cached
+  # image and is not what broke.
+  - name: gate-smoke
+    public: true
+    # `pr-gates`' own lane, for pip-audit's scratch install.
+    serial_groups: [dast]
+    on_failure:
+      do:
+        - task: smoke-verdict
+          container_limits: {cpu: 512}
+          timeout: 5m
+          config:
+            platform: linux
+            image_resource:
+              type: registry-image
+              source: { repository: python, tag: "3.14-slim" }
+            inputs: [{ name: hub_log, optional: true }]
+            outputs: [{ name: hub_log }]
+            run:
+              path: bash
+              args:
+                - -c
+                - |
+                  set -uo pipefail
+                  mkdir -p hub_log
+                  LOG=hub_log/output.log
+                  # HEURISTIC. The gates task exits 1 for a finding and for a
+                  # crash alike, so the two are told apart from its exit code
+                  # when it left one (anything but 0 or 1 is a crash: 126/127
+                  # not runnable, 137 killed) and otherwise from what it
+                  # printed. The markers are the gate's own failure texts and
+                  # the gate scripts' paths, not general words.
+                  RC=$(tr -dc '0-9' < hub_log/exit_code 2>/dev/null || true)
+                  if [ ! -s "$LOG" ]; then
+                    KIND=gate; WHY="it produced no output"
+                  elif [ -n "$RC" ] && [ "$RC" != "0" ] && [ "$RC" != "1" ]; then
+                    KIND=gate; WHY="exit code $RC"
+                  elif grep -qE 'Traceback \(most recent call last\)|failing closed|inputs are missing|no longer reads the way|predates --audit-as|has no scripts/pr_deploy_gates.sh|is not a regular file|memory-guard: .*(exited 137|SIGKILL)|(pr_deploy_gates\.sh|devb_gate\.py|deploy\.sh|harden_findings_report\.py): (No such file|command not found|Permission denied)' "$LOG"; then
+                    KIND=gate; WHY="its output names a gate fault"
+                  else
+                    KIND=finding; WHY="no gate fault was recognised"
+                  fi
+                  if [ "$KIND" = gate ]; then
+                    VERDICT="GATE SMOKE (heuristic: $WHY): THE GATE ITSELF FAILED. Fix the gate; this is not a finding on the head."
+                  else
+                    VERDICT="GATE SMOKE (heuristic: $WHY): a real finding on the branch head. The gate ran and judged; fix the head. This is not gate breakage."
+                  fi
+                  # First AND last: hub_report sends only `tail -n 60`, and a
+                  # real gates run is longer than that, so the verdict has to
+                  # be the final line to reach the Hub row.
+                  { echo "$VERDICT"; echo "(a nightly run of pr-gates' gates task on the branch head, not a pull request)"; cat "$LOG" 2>/dev/null; echo "$VERDICT"; } > hub_log/output.new
+                  mv hub_log/output.new "$LOG"
+                  echo "$VERDICT"
+        - <<: *hub_report
+          params: { <<: *hub_params, JOB: gate-smoke, STAGE: pr_gates, STATUS: failed, TARGET_ENV: pull-request }
+    on_error:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, JOB: gate-smoke, STAGE: pr_gates, STATUS: errored, TARGET_ENV: pull-request }
+    plan:
+      - get: nightly-gate-smoke
+        trigger: true
+        attempts: *retry_fetch
+      - get: live-pipeline
+        resource: pipelines
+        attempts: *retry_fetch
+      - get: source
+        attempts: *retry_fetch
+      - get: python313
+        attempts: *retry_fetch
+      - *preflight
+      - task: smoke-inputs
+        container_limits: {cpu: 512}
+        image: python313
+        timeout: 10m
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          outputs: [{ name: pr }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -euo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                git config --global --add safe.directory "$PWD/source"
+                HEAD_SHA=$(git -C source rev-parse HEAD)
+                cp -a source/. pr/
+                git config --global --add safe.directory "$PWD/pr"
+                echo smoke > pr/.git/pr-number
+                # Base == head: the same layout `pick` makes, with an empty range.
+                pg=pr/.git/process-gates
+                mkdir -p "$pg" pr/.git/judge
+                git -C pr show "$HEAD_SHA:scripts/lib/devb_gate.py" > "$pg/devb_gate.py"
+                git -C pr show "$HEAD_SHA:scripts/deploy.sh" > "$pg/deploy.sh"
+                : > "$pg/changed"; : > "$pg/added"; : > "$pg/bodies"
+                printf '%s %s %s\n' "$HEAD_SHA" "$HEAD_SHA" "$HEAD_SHA" > "$pg/range"
+                git -C pr archive "$HEAD_SHA" | tar -x -C pr/.git/judge
+                echo "GATE SMOKE inputs: branch head $HEAD_SHA, base == head (not a pull request)"
+      - *pr_gates_task
 
   - name: unit
     public: true

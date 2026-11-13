@@ -2386,6 +2386,13 @@ _UNMAPPED_DECLARATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "pr-gates",
         "judges pull request heads with the deploy's own gates, reports a check, not findings",
     ),
+    # [TheHub #61613] The nightly smoke of the gates above, on the branch head.
+    # Uploads nothing: it reports a verdict (GATE SMOKE) through the Hub reporter.
+    (
+        (THEHUB,),
+        "gate-smoke",
+        "runs pr-gates' gates task nightly on the branch head, reports a verdict, not findings",
+    ),
     # thehub's `deploy-demo` was removed under #59100 and is BACK, because the
     # premise that removed it expired before the change landed.
     #

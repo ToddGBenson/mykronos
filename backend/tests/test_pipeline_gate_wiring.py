@@ -213,6 +213,11 @@ EXPLAINED_DIVERGENCE = {
         "this file. TheHub's read-only mirror gains it on the next export "
         "after set-pipeline"
     ),
+    "gate-smoke": (
+        "ours only, added for TheHub #61613: pr-gates' gates task nightly on "
+        "the branch head, gating nothing in this file. TheHub's read-only "
+        "mirror gains it on the next export after set-pipeline"
+    ),
     "functional-dast": (
         "retired by #468 and deliberately left retired by #491 -- its only "
         "image resource (`playwright`) went with it and nothing else in the "
@@ -600,3 +605,70 @@ class TestFetchReadsLargeFiles:
 
         assert gates_check.fetch("o/r", "p.yml", "develop") is None
 
+
+
+def test_gate_smoke_runs_the_pr_gates_task_nightly_on_a_clock() -> None:
+    """TheHub #61613: the gate is exercised nightly, not only by real pull requests."""
+    document = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+    jobs = {j["name"]: j for j in document["jobs"]}
+    smoke = jobs["gate-smoke"]
+
+    clock = next(
+        s for s in smoke["plan"] if isinstance(s, dict) and s.get("get") == "nightly-gate-smoke"
+    )
+    assert clock["trigger"] is True
+    resource = next(r for r in document["resources"] if r["name"] == "nightly-gate-smoke")
+    assert resource["type"] == "time"
+    assert resource["source"]["location"] == "((scan-timezone))"
+    assert resource["source"]["start"] == "3:00 AM"
+
+    def gates(job: dict) -> dict:
+        return next(s for s in job["plan"] if isinstance(s, dict) and s.get("task") == "gates")
+
+    assert gates(smoke) == gates(jobs["pr-gates"]), "the smoke must run the SAME gates task"
+    reporters = [s for s in smoke["on_failure"]["do"] if s.get("task") == "report-to-hub"]
+    assert reporters, "a red smoke must reach the Hub through the shared reporter"
+    verdict = next(s for s in smoke["on_failure"]["do"] if s.get("task") == "smoke-verdict")
+    script = verdict["config"]["run"]["args"][-1]
+    assert "GATE SMOKE" in script
+
+
+def _verdict_report(log_lines: list[str], exit_code: str | None) -> str:
+    """Run the real smoke-verdict script and return what hub_report would send."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is needed to run the verdict script")
+    document = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+    smoke = next(j for j in document["jobs"] if j["name"] == "gate-smoke")
+    verdict = next(s for s in smoke["on_failure"]["do"] if s.get("task") == "smoke-verdict")
+    with tempfile.TemporaryDirectory() as work:
+        hub_log = Path(work) / "hub_log"
+        hub_log.mkdir()
+        (hub_log / "output.log").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+        if exit_code is not None:
+            (hub_log / "exit_code").write_text(exit_code + "\n", encoding="utf-8")
+        script = Path(work) / "step.sh"
+        body = verdict["config"]["run"]["args"][-1]
+        script.write_text(body + "\n", encoding="utf-8", newline="\n")
+        subprocess.run([bash, "step.sh"], cwd=work, check=True, capture_output=True)
+        text = (hub_log / "output.log").read_text(encoding="utf-8")
+    # hub_report: `tail -n 60 hub_log/output.log`
+    return "\n".join(text.splitlines()[-60:])
+
+
+def test_the_gate_smoke_verdict_survives_hub_reports_sixty_line_tail() -> None:
+    noise = [f"gates output line {n}" for n in range(200)]
+    gate = _verdict_report(noise + ["Traceback (most recent call last):"], "1")
+    assert "GATE SMOKE" in gate and "THE GATE ITSELF FAILED" in gate
+    assert gate.splitlines()[-1].startswith("GATE SMOKE")
+
+    finding = _verdict_report(noise + ["::error::pip-audit: a vulnerable dependency"], "1")
+    assert "a real finding on the branch head" in finding.splitlines()[-1]
+    assert "heuristic:" in finding.splitlines()[-1]
+
+    crashed = _verdict_report(noise, "127")
+    assert "THE GATE ITSELF FAILED" in crashed.splitlines()[-1]
