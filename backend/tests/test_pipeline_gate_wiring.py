@@ -213,6 +213,11 @@ EXPLAINED_DIVERGENCE = {
         "this file. TheHub's read-only mirror gains it on the next export "
         "after set-pipeline"
     ),
+    "gate-smoke": (
+        "ours only, added for TheHub #61613: pr-gates' gates task nightly on "
+        "the branch head, gating nothing in this file. TheHub's read-only "
+        "mirror gains it on the next export after set-pipeline"
+    ),
     "functional-dast": (
         "retired by #468 and deliberately left retired by #491 -- its only "
         "image resource (`playwright`) went with it and nothing else in the "
@@ -600,3 +605,29 @@ class TestFetchReadsLargeFiles:
 
         assert gates_check.fetch("o/r", "p.yml", "develop") is None
 
+
+
+def test_gate_smoke_runs_the_pr_gates_task_nightly_on_a_clock() -> None:
+    """TheHub #61613: the gate is exercised nightly, not only by real pull requests."""
+    document = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+    jobs = {j["name"]: j for j in document["jobs"]}
+    smoke = jobs["gate-smoke"]
+
+    clock = next(
+        s for s in smoke["plan"] if isinstance(s, dict) and s.get("get") == "nightly-gate-smoke"
+    )
+    assert clock["trigger"] is True
+    resource = next(r for r in document["resources"] if r["name"] == "nightly-gate-smoke")
+    assert resource["type"] == "time"
+    assert resource["source"]["location"] == "((scan-timezone))"
+    assert resource["source"]["start"] == "3:00 AM"
+
+    def gates(job: dict) -> dict:
+        return next(s for s in job["plan"] if isinstance(s, dict) and s.get("task") == "gates")
+
+    assert gates(smoke) == gates(jobs["pr-gates"]), "the smoke must run the SAME gates task"
+    reporters = [s for s in smoke["on_failure"]["do"] if s.get("task") == "report-to-hub"]
+    assert reporters, "a red smoke must reach the Hub through the shared reporter"
+    verdict = next(s for s in smoke["on_failure"]["do"] if s.get("task") == "smoke-verdict")
+    script = verdict["config"]["run"]["args"][-1]
+    assert "GATE SMOKE" in script
