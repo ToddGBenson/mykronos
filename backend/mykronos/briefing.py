@@ -2567,7 +2567,7 @@ def render(briefing: Briefing) -> str:
                 f"on {token.repo_full_name} fails closed without it."
             )
             lines.append(f"      {token.reason}")
-            remedy = remedy_for(token.reason)
+            remedy = remedy_for(token.reason, token.rotate_after)
             # Owner and as-of, because a gap recorded a month ago and one
             # recorded a minute ago read the same without them. A reason that
             # is none of the three recorded causes is printed alone: no remedy

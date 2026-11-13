@@ -894,7 +894,7 @@ def _token_items(briefing: Briefing) -> list[WorkItem]:
             # can also be `due` or `unverified`, and its own wording, because
             # the remedy is a permission on the App rather than anything done
             # to the token.
-            remedy = remedy_for(token.reason)
+            remedy = remedy_for(token.reason, token.rotate_after)
             # Owner and as-of travel in the summary: the reason alone does not
             # say who acts or how old the refusal is.
             facts = []

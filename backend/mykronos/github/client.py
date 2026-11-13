@@ -1490,7 +1490,7 @@ class RestGitHubClient:
             raise GitHubError("Could not reach GitHub to mint an installation token.")
         if response.status_code >= 400:
             raise GitHubError(
-                f"Could not mint an installation token: {response.text}",
+                f"Could not mint an installation token: {response.text[:400]}",
                 status=response.status_code,
             )
         payload = response.json()

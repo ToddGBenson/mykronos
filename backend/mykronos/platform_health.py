@@ -320,7 +320,7 @@ class CredentialAttention:
             from mykronos.dependabot_remedy import remedy_for
 
             # An unrecognised reason is shown alone: no remedy is invented.
-            return remedy_for(self.reason).action
+            return remedy_for(self.reason, self.rotate_after).action
         return CREDENTIAL_ACTIONS[self.state]
 
     @property

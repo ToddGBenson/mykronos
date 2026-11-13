@@ -39,6 +39,16 @@ ALLOWED_FIELDS = {
     "expires_at",
     "days_until_due",
     "action",
+    # TheHub #60855. The recorded reason a Dependabot copy is missing, when it
+    # was recorded, and who acts. The reason holds: the repository name (already
+    # on the row), the secret name, a repo-relative script path
+    # (repair-ingestion-token.ps1) and GitHub's error body cut to 400
+    # characters. It holds no installation id, no plaintext (the request
+    # carried ciphertext and GitHub does not echo it) and no key path. Viewers
+    # and the gate-off demo see it, and none of it is secret.
+    "reason",
+    "recorded_at",
+    "owner",
 }
 
 

@@ -34,6 +34,7 @@ from mykronos.briefing import TokenDelivery
 from mykronos.config import get_settings
 from mykronos.db import Database
 from mykronos.db.models import IngestionToken, Organization, RepoOnboarding
+from mykronos.dependabot_remedy import remedy_for
 from mykronos.github import FakeGitHubClient
 from mykronos.github.client import (
     OPTIONAL_PERMISSIONS,
@@ -42,7 +43,11 @@ from mykronos.github.client import (
     RepoPublicKey,
 )
 from mykronos.github.factory import FakeGitHubClientFactory
-from mykronos.github.secrets import dependabot_gap_reason, permission_not_held_reason
+from mykronos.github.secrets import (
+    dependabot_gap_reason,
+    permission_not_held_reason,
+    write_failed_under_grant,
+)
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary, WorkflowInstaller
 from mykronos.jobs import deliveries_awaiting_operator, rotate_ingestion_tokens
 from mykronos.schemas import utcnow
@@ -529,7 +534,7 @@ PERMISSION_REASON = permission_not_held_reason(None)
 REASON_PATHS = [
     (PERMISSION_REASON, "operator", "Dependabot secrets: Read and write", "repair-ingestion"),
     (CONCOURSE_REASON, "hubops", "Rotate by hand: repair-ingestion-token.ps1", "grant the App"),
-    (WRITE_FAILED_REASON, "hubops", "re-run the sweep", "grant the App"),
+    (WRITE_FAILED_REASON, "hubops", "retried at the next due rotation", "grant the App"),
 ]
 
 
@@ -619,3 +624,43 @@ class TestTheRemedyFollowsTheRecordedReason:
         with db.session() as session:
             TokenRegistry(session).mark_dependabot_synced(REPO)
         assert deliveries_awaiting_operator(db) == []
+
+
+class TestWriteFailedUnderGrantTellsTheTruth:
+    """The remedy for a write that failed under a held grant must agree with
+    what the sweep does: it skips the repository until its next due rotation,
+    so "re-run the sweep" would promise a retry that never happens."""
+
+    async def test_the_remedy_and_the_sweep_agree(self, db: Database) -> None:
+        class RefusesTheWrite(FakeGitHubClient):
+            async def put_dependabot_secret(
+                self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+            ) -> None:
+                raise GitHubError("PUT .../dependabot/secrets/x -> 500: boom", status=500)
+
+        refusing = RefusesTheWrite()
+        refusing.add_repo(REPO)
+        refusing.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        await rotate_ingestion_tokens(db, FakeGitHubClientFactory(refusing))
+        recorded = _active_token(db).dependabot_sync_blocker
+        assert write_failed_under_grant(recorded)
+
+        # A re-run against a GitHub that would now accept the write.
+        accepting = FakeGitHubClient()
+        accepting.add_repo(REPO)
+        accepting.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+        rerun = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(accepting))
+
+        assert [repo for repo, _ in rerun.dependabot_blocked] == [REPO]
+        assert not [c for c in accepting.calls if c[0] == "put_dependabot_secret"]
+        assert _active_token(db).dependabot_sync_blocker == recorded
+
+        [waiting] = deliveries_awaiting_operator(db)
+        remedy = remedy_for(waiting.reason, waiting.rotate_after)
+        assert f"{waiting.rotate_after:%Y-%m-%d}" in remedy.action
+        assert "next due rotation" in remedy.action
+        assert "re-running the sweep skips" in remedy.action
+        assert "re-run the sweep" not in remedy.action.replace("re-running the sweep", "")
+        assert f"{waiting.rotate_after:%Y-%m-%d}" in remedy.done_when

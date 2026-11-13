@@ -10,6 +10,7 @@ matches none of the three is shown on its own with no remedy invented for it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from mykronos.github.secrets import DEPENDABOT_PERMISSION, write_failed_under_grant
 
@@ -26,9 +27,10 @@ ACTIONS: dict[str, str] = {
         "installation; the next sweep writes the secret"
     ),
     CONCOURSE_BLOCKER: "Rotate by hand: repair-ingestion-token.ps1",
-    WRITE_FAILED: (
-        "the grant is held and the write failed: read the sweep log, then re-run the sweep"
-    ),
+    # Not "re-run the sweep": `jobs.rotate_ingestion_tokens` skips a repository
+    # whose blocker is WRITE_FAILED until its next due rotation, so a re-run
+    # retries nothing. See `remedy_for`, which adds the date.
+    WRITE_FAILED: "the grant is held and the write failed",
     UNKNOWN: "",
 }
 
@@ -54,9 +56,8 @@ DONE_WHEN: dict[str, str] = {
         "risk-decision records a decision."
     ),
     WRITE_FAILED: (
-        "The sweep log's cause for the failed write is fixed, a re-run of the sweep "
-        "reports the Dependabot secret written, and a Dependabot pull request's "
-        "risk-decision records a decision."
+        "The next due rotation writes the Dependabot secret and the sweep reports it "
+        "written, and a Dependabot pull request's risk-decision records a decision."
     ),
     UNKNOWN: (
         "The sweep reports the Dependabot secret written and a Dependabot pull "
@@ -88,6 +89,25 @@ def classify(reason: str) -> str:
     return UNKNOWN
 
 
-def remedy_for(reason: str) -> Remedy:
+def remedy_for(reason: str, rotate_after: datetime | None = None) -> Remedy:
+    """The remedy for a recorded `reason`.
+
+    `rotate_after` is the active token's next due date, which is when the sweep
+    retries a copy that failed under a held grant.
+    """
     kind = classify(reason)
-    return Remedy(kind=kind, action=ACTIONS[kind], owner=OWNERS[kind], done_when=DONE_WHEN[kind])
+    action = ACTIONS[kind]
+    done_when = DONE_WHEN[kind]
+    if kind == WRITE_FAILED:
+        when = f" on {rotate_after:%Y-%m-%d}" if rotate_after is not None else ""
+        action = (
+            f"{action}; the copy is retried at the next due rotation{when}. Nothing "
+            "clears the blocker sooner: no command or route exists for it, and "
+            "re-running the sweep skips this repository until then. Read the sweep log "
+            "for the cause meanwhile"
+        )
+        if rotate_after is not None:
+            done_when = done_when.replace(
+                "The next due rotation", f"The next due rotation ({rotate_after:%Y-%m-%d})"
+            )
+    return Remedy(kind=kind, action=action, owner=OWNERS[kind], done_when=done_when)
