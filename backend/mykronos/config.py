@@ -606,7 +606,7 @@ class Settings(BaseSettings):
     mykronos_package_spec: str = Field(
         default=(
             "mykronos @ git+https://github.com/ToddGBenson/mykronos"
-            "@603e0f0febeee576fcc33ee69732c85f404ac9c1"  # v17
+            "@d5f792ad025c025bc6b23640b2d05e40ef435a1a"  # v18
             "#subdirectory=backend"
         ),
         description=(
@@ -979,7 +979,7 @@ class Settings(BaseSettings):
     upload_action_ref: str = Field(
         default=(
             "ToddGBenson/mykronos/actions/upload-results@"
-            "603e0f0febeee576fcc33ee69732c85f404ac9c1"  # v17
+            "d5f792ad025c025bc6b23640b2d05e40ef435a1a"  # v18
         ),
         description=(
             "Commit-pinned reference to the shared upload composite action "
