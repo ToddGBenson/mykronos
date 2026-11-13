@@ -57,10 +57,11 @@ regexTarget = "match"
 regexes = ['''^run_key": "netassess-2026\.10\.18\.zip"$''']
 
 # ---------------------------------------------------------------------------
-# The fake GitHub client's Dependabot public key in github/client.py.
+# The fake GitHub client's two public keys in github/client.py: the Actions
+# key and the Dependabot key (one regex each below).
 #
-# The in-process fake client answers "get the Dependabot public key" with a
-# made-up libsodium PUBLIC key, so the sealing code can be exercised in tests
+# The in-process fake client answers "get the Actions / Dependabot public key"
+# with a made-up libsodium PUBLIC key, so the sealing code can be exercised in tests
 # without GitHub. A public key encrypts and cannot decrypt; this one was never
 # issued by GitHub and authenticates nothing. `generic-api-key` fires on the
 # key name `key_base64` followed by the long base64 value.
@@ -77,5 +78,5 @@ paths = ['''(^|/)backend/mykronos/github/client\.py$''']
 regexTarget = "match"
 regexes = [
     '''^key_base64="0aKsZv7SGBqQRRkhyp9WTXiJpls9d/aF2SdiHUHu7RA="$''',
-    '''^key_base64="2Sg8iYjAxxmI2LvUXpJjkYrMxURPc8r+dB7TJyvvcCU="$''',
+    '''^key_base64="2Sg8iYjAxxmI2LvUXpJjkYrMxURPc8r\+dB7TJyvvcCU="$''',
 ]
