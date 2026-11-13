@@ -2875,13 +2875,23 @@ jobs:
   #     failure). Fix the head; the gate is fine.
   # Anything not recognised as a gate fault is reported as a finding, which is
   # what the gate would have said of a pull request. The reporter is the one
-  # `pr-gates` uses (`hub_report`); a green night reports nothing and is read
-  # from the build history. No integration task: that tier needs a cached
+  # `pr-gates` uses (`hub_report`); a green night reports `success`. No integration task: that tier needs a cached
   # image and is not what broke.
   - name: gate-smoke
     public: true
     # `pr-gates`' own lane, for pip-audit's scratch install.
     serial_groups: [dast]
+    # All four terminal states are reported, as for every other job (the
+    # four-terminal-states shape test, TheHub #61639): a green night is a
+    # `success` row and an abort an `aborted` one.
+    on_success:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: pr_gates, STATUS: success, TARGET_ENV: pull-request }
+    on_abort:
+      do:
+        - <<: *hub_report
+          params: { <<: *hub_params, STAGE: pr_gates, STATUS: aborted, TARGET_ENV: pull-request }
     on_failure:
       do:
         - task: smoke-verdict

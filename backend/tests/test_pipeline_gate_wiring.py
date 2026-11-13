@@ -672,3 +672,27 @@ def test_the_gate_smoke_verdict_survives_hub_reports_sixty_line_tail() -> None:
 
     crashed = _verdict_report(noise, "127")
     assert "THE GATE ITSELF FAILED" in crashed.splitlines()[-1]
+
+
+def test_gate_smoke_reports_its_stage_on_all_four_terminal_states() -> None:
+    """TheHub's shape rule (#61639): every stage a job reports reaches
+    success, failed, errored and aborted, with the stage name the other jobs
+    use. `gate-smoke` first shipped with failure and error only."""
+    document = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
+    smoke = next(j for j in document["jobs"] if j["name"] == "gate-smoke")
+
+    def pairs(node, out):
+        if isinstance(node, dict):
+            if isinstance(node.get("STATUS"), str) and isinstance(node.get("STAGE"), str):
+                out.append((node["STAGE"], node["STATUS"]))
+            for v in node.values():
+                pairs(v, out)
+        elif isinstance(node, list):
+            for v in node:
+                pairs(v, out)
+        return out
+
+    seen: dict[str, set[str]] = {}
+    for stage, status in pairs(smoke, []):
+        seen.setdefault(stage, set()).add(status)
+    assert seen == {"pr_gates": {"success", "failed", "errored", "aborted"}}
