@@ -71,8 +71,11 @@ regexes = ['''^run_key": "netassess-2026\.10\.18\.zip"$''']
 # still reported.
 # ---------------------------------------------------------------------------
 [[rules.allowlists]]
-description = "github/client.py: the fake client's made-up Dependabot public key (a public key, test-only)"
+description = "github/client.py: the fake client's made-up Dependabot and Actions public keys (public keys, test-only)"
 condition = "AND"
 paths = ['''(^|/)backend/mykronos/github/client\.py$''']
 regexTarget = "match"
-regexes = ['''^key_base64="0aKsZv7SGBqQRRkhyp9WTXiJpls9d/aF2SdiHUHu7RA="$''']
+regexes = [
+    '''^key_base64="0aKsZv7SGBqQRRkhyp9WTXiJpls9d/aF2SdiHUHu7RA="$''',
+    '''^key_base64="2Sg8iYjAxxmI2LvUXpJjkYrMxURPc8r+dB7TJyvvcCU="$''',
+]
