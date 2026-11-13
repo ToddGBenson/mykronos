@@ -887,36 +887,6 @@ def _premise_failed_item(record: dict[str, Any]) -> WorkItem | None:
 def _token_items(briefing: Briefing) -> list[WorkItem]:
     items = []
     for token in briefing.tokens:
-        if token.state == "dependabot_unsynced":
-            # Actions delivery is fine; the Dependabot copy was refused
-            # (TheHub #60855). Its own item id, because the same repository
-            # can also be `due` or `unverified`, and its own wording, because
-            # the remedy is a permission on the App rather than anything done
-            # to the token.
-            items.append(
-                WorkItem(
-                    item_id=f"token_delivery:dependabot:{token.repo_full_name}",
-                    kind="token_delivery",
-                    band=BAND_TOKEN,
-                    repo_full_name=token.repo_full_name,
-                    title=(
-                        f"Ingestion token for {token.repo_full_name} is not in its "
-                        "Dependabot secrets"
-                    ),
-                    summary=(
-                        "Every Dependabot-triggered run on this repository fails closed "
-                        f"without it. {token.reason}"
-                    ),
-                    done_when=(
-                        "The App holds 'Dependabot secrets: Read and write', the next "
-                        "rotation sweep reports the secret written, and a Dependabot pull "
-                        "request's risk-decision records a decision."
-                    ),
-                    evidence=[Evidence(source="ingestion_tokens", ref=token.repo_full_name)],
-                    caveats=[],
-                )
-            )
-            continue
         caveats = []
         if token.state == "unverified":
             caveats.append(

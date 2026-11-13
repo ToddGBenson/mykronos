@@ -878,24 +878,16 @@ class TokenDelivery:
       This is **not** a reason to rotate. It is a reason to check that scans
       are arriving; rotating a token whose Vault copy works is how the
       repository goes dark (D-097).
-    - ``dependabot_unsynced`` — the active token reached the repository's
-      Actions secrets and the sweep could not write its Dependabot copy
-      (TheHub #60855); `reason` says why. Neither a rotation nor a check:
-      the remedy is usually a permission grant on the App, after which the
-      sweep delivers on its own.
     """
 
     repo_full_name: str
-    #: "due" | "unverified" | "dependabot_unsynced"
+    #: "due" | "unverified"
     state: str
     issued_at: datetime
     rotate_after: datetime
     #: Which scanner reads this repo's token, and therefore why the rotation
     #: job cannot deliver to it. Printed rather than inferred.
     scanned_by: str = ""
-    #: Why the Dependabot copy is missing, verbatim from the token record.
-    #: Empty for the other two states.
-    reason: str = ""
 
     @property
     def days_until_due(self) -> float:
@@ -2523,8 +2515,7 @@ def render(briefing: Briefing) -> str:
             "",
         ]
         due = [t for t in briefing.tokens if t.state == "due"]
-        unverified = [t for t in briefing.tokens if t.state == "unverified"]
-        no_dependabot = [t for t in briefing.tokens if t.state == "dependabot_unsynced"]
+        unverified = [t for t in briefing.tokens if t.state != "due"]
         for token in sorted(due, key=lambda t: t.rotate_after):
             overdue = -token.days_until_due
             lines.append(f"  {token.repo_full_name}  — DUE")
@@ -2553,20 +2544,6 @@ def render(briefing: Briefing) -> str:
             lines.append(
                 "        rotating a token whose Vault copy works is what breaks "
                 "the pipeline."
-            )
-        for token in sorted(no_dependabot, key=lambda t: t.repo_full_name):
-            # A third state with a third remedy (TheHub #60855): not a
-            # rotation and not a check, a permission on the App. The reason
-            # is printed verbatim because it names the grant.
-            lines.append(f"  {token.repo_full_name}  — NOT IN DEPENDABOT SECRETS")
-            lines.append(
-                f"      Actions secret delivered; every Dependabot-triggered run "
-                f"on {token.repo_full_name} fails closed without it."
-            )
-            lines.append(f"      {token.reason}")
-            lines.append(
-                "      → grant the App 'Dependabot secrets: Read and write', accept "
-                "it on the installation; the next sweep writes the secret."
             )
         lines.append("")
     elif briefing.tokens_unknown:
