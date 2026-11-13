@@ -171,16 +171,25 @@ def _guard() -> str:
     return str(doc["anchors"]["memory_guard"])
 
 
-def _run_guard(tmp_path: Path, child: str) -> subprocess.CompletedProcess[str]:
+def _run_guard(
+    tmp_path: Path,
+    child: str,
+    soft: str | None = "1000",
+    budget: str = "0",
+    wait: str = "0",
+) -> subprocess.CompletedProcess[str]:
+    """Budget 0 means no budget kill: a real one would race the scripted exit on Linux."""
     env = {
         **os.environ,
-        "MEMORY_BUDGET_MB": "1",
+        "MEMORY_BUDGET_MB": budget,
         "MEMORY_GUARD_DIR": str(tmp_path / "oom"),
         "MEMORY_GUARD_LABEL": "pytest tests/unit",
         "MEMORY_GUARD_INTERVAL_S": "0.05",
-        "MEMORY_GUARD_RETRY_WAIT_S": "0",
+        "MEMORY_GUARD_RETRY_WAIT_S": wait,
     }
-    # `child` counts its runs in a file: the first run gets 137 from `first`.
+    env.pop("MEMORY_GUARD_SOFT_TIMEOUT_S", None)
+    if soft is not None:
+        env["MEMORY_GUARD_SOFT_TIMEOUT_S"] = soft
     return subprocess.run(
         [sys.executable, "-c", _guard(), sys.executable, "-c", child],
         env=env,
@@ -223,6 +232,130 @@ def test_thehub_guard_a_real_failure_never_retries(tmp_path: Path, rc: int) -> N
     assert r.returncode == rc
     assert (tmp_path / "runs").read_text() == "1"
     assert not (tmp_path / "oom").exists()
+
+
+def test_thehub_guard_without_a_soft_timeout_never_re_runs(tmp_path: Path) -> None:
+    """pr-gates/integration and the container tiers set none: a kill reports as today."""
+    r = _run_guard(tmp_path, _counting(137, 0), soft=None)
+    assert r.returncode == 137
+    assert (tmp_path / "runs").read_text() == "1"
+    assert "re-run: no: this task has no soft timeout" in r.stdout
+    assert "re-ran once" not in (tmp_path / "oom" / "reason").read_text(encoding="utf-8")
+
+
+def test_thehub_guard_no_time_left_means_no_re_run(tmp_path: Path) -> None:
+    """The first run used the soft timeout up; a wait and a second run cannot fit."""
+    child = "import sys, time\nopen('runs', 'a').write('x')\ntime.sleep(1.2)\nsys.exit(137)\n"
+    r = _run_guard(tmp_path, child, soft="2")
+    assert r.returncode == 137
+    assert (tmp_path / "runs").read_text() == "x", "one run only"
+    assert "re-run: no:" in r.stdout and "soft timeout are left" in r.stdout
+    assert "re-ran once" not in (tmp_path / "oom" / "reason").read_text(encoding="utf-8")
+
+
+def test_thehub_guard_time_left_means_a_re_run(tmp_path: Path) -> None:
+    r = _run_guard(tmp_path, _counting(137, 0), soft="1000")
+    assert "re-run: yes." in r.stdout
+    assert r.returncode == 0
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="measured from /proc")
+def test_thehub_guard_does_not_retry_its_own_budget_kill(tmp_path: Path) -> None:
+    holder = (
+        "import time\nopen('runs', 'a').write('x')\n"
+        "b = bytearray(200 * 1024 * 1024); b[::4096] = b'x' * len(b[::4096]); time.sleep(120)\n"
+    )
+    r = _run_guard(tmp_path, holder, budget="50", soft="1000")
+    assert r.returncode == 137, r.stdout + r.stderr
+    assert (tmp_path / "runs").read_text() == "x", "it would be killed at the same point"
+    reason = (tmp_path / "oom" / "reason").read_text(encoding="utf-8")
+    assert "memory-guard stopped it" in reason and "re-ran once" not in reason
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="POSIX signals")
+def test_thehub_guard_stops_waiting_on_sigterm(tmp_path: Path) -> None:
+    import signal
+    import time
+
+    env = {
+        **os.environ,
+        "MEMORY_BUDGET_MB": "999999999",  # MemAvailable never passes it: the wait runs its length
+        "MEMORY_GUARD_DIR": str(tmp_path / "oom"),
+        "MEMORY_GUARD_INTERVAL_S": "0.05",
+        "MEMORY_GUARD_RETRY_WAIT_S": "120",
+        "MEMORY_GUARD_SOFT_TIMEOUT_S": "100000",
+    }
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _guard(), sys.executable, "-c", "import sys; sys.exit(137)"],
+        env=env,
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    time.sleep(2.0)  # the child is long dead; the guard is in its wait
+    proc.send_signal(signal.SIGTERM)
+    out, _ = proc.communicate(timeout=20)
+    assert proc.returncode == 137
+    assert "not re-running" in out
+
+
+# -- the xdist worker death (exit 1, only crashed workers) -----------------------
+
+
+def _crash_report(path: Path, *, real_failure: bool = False) -> None:
+    msg = "worker 'gw3' crashed while running 'tests/test_x.py::test_a'"
+    extra = '<testcase classname="t" name="b"><failure message="assert 1">x</failure></testcase>'
+    path.write_text(
+        '<testsuites><testsuite><testcase classname="t" name="a">'
+        f'<failure message="{msg}">node down</failure></testcase>'
+        f'{extra if real_failure else ""}</testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+
+def _retry_cmd(fake: _Fake, cmd: list[str], **kw: Any) -> int:
+    return int(
+        mk.run_with_retry(
+            cmd, call=fake.call, available=lambda: 9999, sleep=fake.sleep, clock=fake.clock, **kw
+        )
+    )
+
+
+def test_exit_1_with_only_crashed_workers_re_runs_once(tmp_path: Path) -> None:
+    junit = tmp_path / "unit.xml"
+    _crash_report(junit)
+    fake = _Fake(1, 0)
+    assert _retry_cmd(fake, ["python", "-m", "pytest", f"--junitxml={junit}"]) == 0
+    assert fake.runs == 2
+
+
+def test_exit_1_with_a_real_failure_beside_a_crash_never_retries(tmp_path: Path) -> None:
+    junit = tmp_path / "unit.xml"
+    _crash_report(junit, real_failure=True)
+    fake = _Fake(1)
+    assert _retry_cmd(fake, ["pytest", f"--junitxml={junit}"]) == 1
+    assert fake.runs == 1
+
+
+def test_exit_1_without_a_report_never_retries(tmp_path: Path) -> None:
+    fake = _Fake(1)
+    assert _retry_cmd(fake, ["pytest", f"--junitxml={tmp_path / 'none.xml'}"]) == 1
+    assert fake.runs == 1
+
+
+def test_the_wrapper_does_not_re_run_when_the_time_does_not_fit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Slow(_Fake):
+        def call(self, cmd: Any) -> int:
+            self.now += 2000  # the first run took 2000s
+            return super().call(cmd)
+
+    fake = Slow(137, 0)
+    assert _retry_cmd(fake, ["pytest"], max_s=3600, wait_s=300) == 137
+    assert fake.runs == 1
+    assert "no re-run" in capsys.readouterr().out
 
 
 # -- every heavy task goes through the wrapper --------------------------------
