@@ -279,6 +279,9 @@ CredentialState = Literal["due", "unverified", "dependabot_unsynced", "expiring"
 CREDENTIAL_ACTIONS: dict[str, str] = {
     "due": "rotate by hand (Concourse-scanned repos cannot receive a rotated token, D-086)",
     "unverified": "check that scans are arriving - do not rotate (D-097)",
+    # The default; a row carrying a recorded reason takes its remedy from
+    # `dependabot_remedy`, because two of the three recorded causes are not a
+    # missing permission (TheHub #60855).
     "dependabot_unsynced": (
         "grant the App 'Dependabot secrets: Read and write' and accept it on the "
         "installation; the next sweep writes the secret (TheHub #60855)"
@@ -305,10 +308,28 @@ class CredentialAttention:
     actor: str | None = None
     rotate_after: datetime | None = None
     expires_at: datetime | None = None
+    #: Why a `dependabot_unsynced` token is missing its copy, verbatim from the
+    #: token record; empty for every other row.
+    reason: str = ""
+    #: When that reason was first recorded.
+    recorded_at: datetime | None = None
 
     @property
     def action(self) -> str:
+        if self.state == "dependabot_unsynced" and self.reason:
+            from mykronos.dependabot_remedy import remedy_for
+
+            # An unrecognised reason is shown alone: no remedy is invented.
+            return remedy_for(self.reason).action
         return CREDENTIAL_ACTIONS[self.state]
+
+    @property
+    def owner(self) -> str:
+        if self.state == "dependabot_unsynced" and self.reason:
+            from mykronos.dependabot_remedy import remedy_for
+
+            return remedy_for(self.reason).owner
+        return ""
 
 
 def _days_between(now: datetime, then: datetime) -> float:
@@ -357,6 +378,8 @@ def credentials_needing_attention(db: Any, *, now: datetime) -> list[CredentialA
                 days_until_due=_days_between(now, token.rotate_after),
                 repo_full_name=token.repo_full_name,
                 rotate_after=token.rotate_after,
+                reason=token.reason,
+                recorded_at=token.recorded_at,
             )
         )
 

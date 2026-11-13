@@ -446,10 +446,13 @@ already exists.
    request at the top.
 
 4. Let the next rotation sweep run, or force one with `mykronos rotate-due`.
-   For each repository whose Actions secret is delivered it asks GitHub for
-   the Dependabot key first, and only once that read succeeds does it rotate
-   the token once and write both stores. Until then the sweep rotates nothing
-   and prints `NO DEPENDABOT SECRET <repo>: <reason>` per repository.
+   For each repository whose Actions secret is delivered it reads the
+   installation's grant and requires `dependabot_secrets: write`; only then
+   does it rotate the token once and write both stores (it does not ask for
+   the Dependabot public key first: a Read-only grant can read that key). Until
+   the grant is held the sweep rotates nothing and prints
+   `NO DEPENDABOT SECRET <repo>: <reason>` per repository, with the owner and
+   the next step for that reason.
 
 5. Verify, per repository:
 

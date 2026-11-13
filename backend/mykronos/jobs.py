@@ -283,6 +283,7 @@ def deliveries_awaiting_operator(db: Database) -> list[TokenDelivery]:
                     rotate_after=token.rotate_after,
                     scanned_by=scanners[repo],
                     reason=token.dependabot_sync_blocker,
+                    recorded_at=token.dependabot_sync_blocker_at,
                 )
             )
         return waiting

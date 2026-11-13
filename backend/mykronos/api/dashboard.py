@@ -8067,6 +8067,13 @@ class CredentialOut(BaseModel):
     #: Negative once the date has passed.
     days_until_due: float
     action: str
+    #: Why a `dependabot_unsynced` token is missing its Dependabot copy, as the
+    #: sweep recorded it (TheHub #60855). Empty for every other row.
+    reason: str = ""
+    #: When that reason was first recorded.
+    recorded_at: datetime | None = None
+    #: Who acts on it ("operator" or "hubops"); empty when not known.
+    owner: str = ""
 
 
 class PlatformHealthOut(BaseModel):
@@ -8229,6 +8236,9 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
                 expires_at=c.expires_at,
                 days_until_due=c.days_until_due,
                 action=c.action,
+                reason=c.reason,
+                recorded_at=c.recorded_at,
+                owner=c.owner,
             )
             for c in credentials
         ],

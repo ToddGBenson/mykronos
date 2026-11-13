@@ -7050,6 +7050,18 @@ export interface components {
             days_until_due: number;
             /** Action */
             action: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Recorded At */
+            recorded_at?: string | null;
+            /**
+             * Owner
+             * @default
+             */
+            owner: string;
         };
         /** DailyBriefingOut */
         DailyBriefingOut: {

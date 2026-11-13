@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar
 
 from mykronos import guidance
+from mykronos.dependabot_remedy import remedy_for
 from mykronos.lake.catalog import Catalog
 
 #: How many recent runs to read per (repo, capability) when deciding whether a
@@ -896,6 +897,8 @@ class TokenDelivery:
     #: Why the Dependabot copy is missing, verbatim from the token record.
     #: Empty for the other two states.
     reason: str = ""
+    #: When that reason was first recorded (UTC); None for the other states.
+    recorded_at: datetime | None = None
 
     @property
     def days_until_due(self) -> float:
@@ -2564,10 +2567,20 @@ def render(briefing: Briefing) -> str:
                 f"on {token.repo_full_name} fails closed without it."
             )
             lines.append(f"      {token.reason}")
-            lines.append(
-                "      → grant the App 'Dependabot secrets: Read and write', accept "
-                "it on the installation; the next sweep writes the secret."
-            )
+            remedy = remedy_for(token.reason)
+            # Owner and as-of, because a gap recorded a month ago and one
+            # recorded a minute ago read the same without them. A reason that
+            # is none of the three recorded causes is printed alone: no remedy
+            # is invented for it.
+            who = []
+            if remedy.owner:
+                who.append(f"owner: {remedy.owner}")
+            if token.recorded_at is not None:
+                who.append(f"recorded {token.recorded_at:%Y-%m-%d %H:%M} UTC")
+            if who:
+                lines.append(f"      ({'; '.join(who)})")
+            if remedy.action:
+                lines.append(f"      → {remedy.action}.")
         lines.append("")
     elif briefing.tokens_unknown:
         lines += [

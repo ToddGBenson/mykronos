@@ -38,6 +38,7 @@ from typing import Any
 from mykronos import finding_disposition
 from mykronos.adminauth import Principal
 from mykronos.briefing import Briefing
+from mykronos.dependabot_remedy import remedy_for
 from mykronos.risk_acceptance import LIVE
 
 #: Bands, in the order an agent works them (spec 36 §2.2).
@@ -893,6 +894,16 @@ def _token_items(briefing: Briefing) -> list[WorkItem]:
             # can also be `due` or `unverified`, and its own wording, because
             # the remedy is a permission on the App rather than anything done
             # to the token.
+            remedy = remedy_for(token.reason)
+            # Owner and as-of travel in the summary: the reason alone does not
+            # say who acts or how old the refusal is.
+            facts = []
+            if remedy.owner:
+                facts.append(f"Owner: {remedy.owner}.")
+            if token.recorded_at is not None:
+                facts.append(f"Refusal recorded {token.recorded_at:%Y-%m-%d %H:%M} UTC.")
+            if remedy.action:
+                facts.append(f"Remedy: {remedy.action}.")
             items.append(
                 WorkItem(
                     item_id=f"token_delivery:dependabot:{token.repo_full_name}",
@@ -905,13 +916,9 @@ def _token_items(briefing: Briefing) -> list[WorkItem]:
                     ),
                     summary=(
                         "Every Dependabot-triggered run on this repository fails closed "
-                        f"without it. {token.reason}"
+                        f"without it. {token.reason} {' '.join(facts)}".rstrip()
                     ),
-                    done_when=(
-                        "The App holds 'Dependabot secrets: Read and write', the next "
-                        "rotation sweep reports the secret written, and a Dependabot pull "
-                        "request's risk-decision records a decision."
-                    ),
+                    done_when=remedy.done_when,
                     evidence=[Evidence(source="ingestion_tokens", ref=token.repo_full_name)],
                     caveats=[],
                 )

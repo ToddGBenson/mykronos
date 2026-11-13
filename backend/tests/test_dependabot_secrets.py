@@ -42,7 +42,7 @@ from mykronos.github.client import (
     RepoPublicKey,
 )
 from mykronos.github.factory import FakeGitHubClientFactory
-from mykronos.github.secrets import dependabot_gap_reason
+from mykronos.github.secrets import dependabot_gap_reason, permission_not_held_reason
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary, WorkflowInstaller
 from mykronos.jobs import deliveries_awaiting_operator, rotate_ingestion_tokens
 from mykronos.schemas import utcnow
@@ -442,7 +442,7 @@ class TestAPersonCanSeeTheGap:
         onboard(db)
         _issue_actions_synced(db, dependabot_synced=False)
         with db.session() as session:
-            TokenRegistry(session).mark_dependabot_unsynced(REPO, "403")
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, PERMISSION_REASON)
         assert deliveries_awaiting_operator(db)
 
         with db.session() as session:
@@ -458,7 +458,7 @@ class TestAPersonCanSeeTheGap:
             issued_at=now - timedelta(days=5),
             rotate_after=now + timedelta(days=85),
             scanned_by="github_actions",
-            reason="GitHub answered 403 on the Dependabot secrets endpoint.",
+            reason=PERMISSION_REASON,
         )
 
         [item] = _build(_briefing(tokens=[token])).items
@@ -484,7 +484,7 @@ class TestAPersonCanSeeTheGap:
                     issued_at=now,
                     rotate_after=now + timedelta(days=88),
                     scanned_by="github_actions",
-                    reason="GitHub answered 403 on the Dependabot secrets endpoint.",
+                    reason=PERMISSION_REASON,
                 )
             ],
         )
@@ -501,7 +501,7 @@ class TestAPersonCanSeeTheGap:
         onboard(db)
         _issue_actions_synced(db, dependabot_synced=False)
         with db.session() as session:
-            TokenRegistry(session).mark_dependabot_unsynced(REPO, "403")
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, PERMISSION_REASON)
 
         rows = platform_health.credentials_needing_attention(db, now=utcnow())
 
@@ -509,3 +509,113 @@ class TestAPersonCanSeeTheGap:
         assert row.state == "dependabot_unsynced"
         assert "Dependabot secrets" in row.action
         assert "rotate" not in row.action.lower()
+
+
+# ---------------------------------------------------------------------------
+# One remedy per recorded reason (independent review of PR B)
+
+CONCOURSE_REASON = (
+    f"The Dependabot secret is not written: {REPO} is scanned by concourse, which this "
+    "job cannot deliver to, so this job will not rotate to deliver it. Rotate by hand: "
+    "repair-ingestion-token.ps1."
+)
+WRITE_FAILED_REASON = (
+    "The Dependabot secret write failed although the installation holds "
+    "'dependabot_secrets: write': GitHub answered 500: boom. Not retried by rotation."
+)
+PERMISSION_REASON = permission_not_held_reason(None)
+
+# (reason, owner, text the remedy must contain, text it must not contain)
+REASON_PATHS = [
+    (PERMISSION_REASON, "operator", "Dependabot secrets: Read and write", "repair-ingestion"),
+    (CONCOURSE_REASON, "hubops", "Rotate by hand: repair-ingestion-token.ps1", "grant the App"),
+    (WRITE_FAILED_REASON, "hubops", "re-run the sweep", "grant the App"),
+]
+
+
+def _delivery(reason: str) -> TokenDelivery:
+    now = utcnow()
+    return TokenDelivery(
+        repo_full_name=REPO,
+        state="dependabot_unsynced",
+        issued_at=now - timedelta(days=5),
+        rotate_after=now + timedelta(days=85),
+        scanned_by="github_actions",
+        reason=reason,
+        recorded_at=now - timedelta(hours=3),
+    )
+
+
+def _render(reason: str) -> str:
+    from mykronos import briefing as briefing_report
+
+    return briefing_report.render(
+        briefing_report.Briefing(generated_at=utcnow(), total_open=0, tokens=[_delivery(reason)])
+    )
+
+
+class TestTheRemedyFollowsTheRecordedReason:
+    @pytest.mark.parametrize(("reason", "owner", "must", "must_not"), REASON_PATHS)
+    def test_work_queue_item(self, reason: str, owner: str, must: str, must_not: str) -> None:
+        [item] = _build(_briefing(tokens=[_delivery(reason)])).items
+
+        assert f"Owner: {owner}." in item.summary
+        assert "Refusal recorded" in item.summary
+        assert must in item.summary + item.done_when
+        # The recorded reason may itself name a remedy; the item's own lines may not.
+        assert must_not not in item.summary.replace(reason, "") + item.done_when
+
+    @pytest.mark.parametrize(("reason", "owner", "must", "must_not"), REASON_PATHS)
+    def test_briefing_line(self, reason: str, owner: str, must: str, must_not: str) -> None:
+        text = _render(reason)
+        arrow = [ln for ln in text.splitlines() if "→" in ln]
+
+        assert f"owner: {owner}" in text
+        assert "recorded " in text
+        assert any(must in ln for ln in arrow)
+        assert not any(must_not in ln for ln in arrow)
+
+    @pytest.mark.parametrize(("reason", "owner", "must", "must_not"), REASON_PATHS)
+    def test_platform_health_action(
+        self, db: Database, reason: str, owner: str, must: str, must_not: str
+    ) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, reason)
+
+        [row] = [
+            r
+            for r in platform_health.credentials_needing_attention(db, now=utcnow())
+            if r.kind == "ingestion_token"
+        ]
+
+        assert row.reason == reason
+        assert row.owner == owner
+        assert must in row.action
+        assert must_not not in row.action
+        assert row.recorded_at is not None
+
+    def test_an_unrecognised_reason_is_printed_alone(self) -> None:
+        text = _render("Something else broke.")
+
+        assert "Something else broke." in text
+        assert "→ grant" not in text
+        assert "Rotate by hand" not in text
+        assert "owner:" not in text
+
+    def test_the_as_of_survives_a_repeated_record_and_resets_on_a_new_reason(
+        self, db: Database
+    ) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "first")
+        first = deliveries_awaiting_operator(db)[0].recorded_at
+        assert first is not None
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "first")
+        assert deliveries_awaiting_operator(db)[0].recorded_at == first
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_synced(REPO)
+        assert deliveries_awaiting_operator(db) == []
