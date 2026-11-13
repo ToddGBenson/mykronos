@@ -3694,14 +3694,23 @@ class BlockedLaneOut(CiLaneOut):
 
 
 class TokenDeliveryOut(BaseModel):
-    """An ingestion token the rotation sweep deferred to a person (#263)."""
+    """An ingestion token the rotation sweep deferred to a person (#263).
+
+    `dependabot_unsynced` (TheHub #60855) is the token delivered to Actions
+    secrets and refused by the repository's Dependabot secrets; `reason` says
+    why, and the remedy is a permission on the App rather than a rotation.
+    """
 
     repo_full_name: str
-    #: "due" | "unverified"
+    #: "due" | "unverified" | "dependabot_unsynced"
     state: str
     issued_at: datetime
     rotate_after: datetime
     scanned_by: str = ""
+    #: Why the Dependabot copy is missing; empty for the other states.
+    reason: str = ""
+    #: When that reason was first recorded (the as-of); None for the other states.
+    recorded_at: datetime | None = None
 
 
 class UnhealthyJobOut(BaseModel):
@@ -8052,13 +8061,22 @@ class CredentialOut(BaseModel):
     kind: str
     repo_full_name: str | None = None
     actor: str | None = None
-    #: "due" | "unverified" | "expiring". Only `due` is a reason to rotate.
+    #: "due" | "unverified" | "dependabot_unsynced" | "expiring". Only `due` is
+    #: a reason to rotate; `dependabot_unsynced` asks for a permission on the
+    #: App (TheHub #60855).
     state: str
     rotate_after: datetime | None = None
     expires_at: datetime | None = None
     #: Negative once the date has passed.
     days_until_due: float
     action: str
+    #: Why a `dependabot_unsynced` token is missing its Dependabot copy, as the
+    #: sweep recorded it (TheHub #60855). Empty for every other row.
+    reason: str = ""
+    #: When that reason was first recorded.
+    recorded_at: datetime | None = None
+    #: Who acts on it ("operator" or "hubops"); empty when not known.
+    owner: str = ""
 
 
 class PlatformHealthOut(BaseModel):
@@ -8224,6 +8242,9 @@ async def platform_health_page(request: Request, principal: PrincipalDep) -> Pla
                 expires_at=c.expires_at,
                 days_until_due=c.days_until_due,
                 action=c.action,
+                reason=c.reason,
+                recorded_at=c.recorded_at,
+                owner=c.owner,
             )
             for c in credentials
         ],

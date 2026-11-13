@@ -1,6 +1,10 @@
 import { ErrorPanel, Label, Pill, Section } from "@/components/primitives";
 import { RaiseToHub } from "@/components/raise-to-hub";
 import type { components } from "@/lib/api-types";
+import {
+  credentialDateLine,
+  credentialMeaning,
+} from "@/lib/credential-row";
 import { raisedLookup, type RaisedLink } from "@/lib/raise-to-hub";
 import { getRaised } from "@/lib/raise-to-hub-server";
 import { getPlatformHealth } from "@/lib/server";
@@ -186,57 +190,16 @@ function CiStallRow({ stall }: { stall: CiStall }) {
   );
 }
 
-/**
- * What each credential state asks of the operator (TheHub #60974).
- *
- * Owned by the page, not taken from the response: the one sentence this
- * section must never print is "rotate" against an unverified token, because
- * rotating a token whose stored copy works is how a repository goes dark
- * (D-097). Only `due` is a reason to rotate.
- */
-const CREDENTIAL: Record<
-  string,
-  { tone: "critical" | "warn" | "muted"; word: string; action: string }
-> = {
-  due: {
-    tone: "critical",
-    word: "Due",
-    action:
-      "rotate by hand (Concourse-scanned repos cannot receive a rotated token, D-086)",
-  },
-  unverified: {
-    tone: "warn",
-    word: "Unverified",
-    action: "check that scans are arriving - do not rotate (D-097)",
-  },
-  expiring: {
-    tone: "muted",
-    word: "Expiring",
-    action: "expires on its own; mint a new credential for the next run if one is needed",
-  },
-};
-
-function whenDue(days: number): string {
-  // An agent credential is listed only inside 24 hours (TheHub #61052), where a
-  // whole-day count reads "in 0 days" or "in 1 day"; give it in hours.
-  if (days > 0 && days < 1) {
-    const hours = Math.max(1, Math.round(days * 24));
-    return `in ${hours} ${hours === 1 ? "hour" : "hours"}`;
-  }
-  const whole = Math.round(Math.abs(days));
-  const unit = whole === 1 ? "day" : "days";
-  return days < 0 ? `${whole} ${unit} overdue` : `in ${whole} ${unit}`;
-}
-
 function CredentialRow({ credential }: { credential: Credential }) {
-  const meaning = CREDENTIAL[credential.state] ?? {
-    tone: "muted" as const,
-    word: credential.state,
-    action: "",
-  };
-  const date = credential.rotate_after ?? credential.expires_at ?? null;
+  // The meaning and the date line live in lib/credential-row.ts, where they
+  // are tested; this is the markup.
+  const meaning = credentialMeaning(credential);
   // State and dates only: who the credential belongs to, never the credential.
   const subject = credential.repo_full_name ?? credential.actor ?? "";
+  // The recorded reason is the sweep's own sentence (TheHub #60855); it is
+  // shown for a Dependabot row so the remedy line has something to stand on,
+  // and an unrecognised reason is shown with no remedy at all.
+  const reason = credential.state === "dependabot_unsynced" ? credential.reason : "";
 
   return (
     <li
@@ -245,25 +208,19 @@ function CredentialRow({ credential }: { credential: Credential }) {
     >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="font-mono text-[13px] font-bold text-ink">{subject}</span>
-        <span className="text-[12px] text-ink-3">
-          {/* An unverified row carries no date at all: "due <date> (N days
-              overdue)" reads as a prompt to rotate, which is the one thing
-              D-097 forbids for a token whose delivery is unconfirmed. */}
-          {credential.state === "unverified" ? (
-            "awaiting delivery confirmation"
-          ) : (
-            <>
-              {credential.rotate_after ? "due" : "expires"}{" "}
-              {date ? date.slice(0, 10) : "unknown"} ({whenDue(credential.days_until_due)})
-            </>
-          )}
-        </span>
+        <span className="text-[12px] text-ink-3">{credentialDateLine(credential)}</span>
         <span className="ml-auto">
           <Pill tone={meaning.tone}>{meaning.word}</Pill>
         </span>
       </div>
+      {reason ? (
+        <p className="mt-1 max-w-prose text-[12px] text-ink-3">{reason}</p>
+      ) : null}
       {meaning.action ? (
-        <p className="mt-1 max-w-prose text-[12px] text-ink-2">{meaning.action}</p>
+        <p className="mt-1 max-w-prose text-[12px] text-ink-2">
+          {credential.owner ? `${credential.owner}: ` : ""}
+          {meaning.action}
+        </p>
       ) : null}
     </li>
   );

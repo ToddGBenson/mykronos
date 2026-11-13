@@ -1,6 +1,6 @@
 # Operator tasks
 
-Seven things this platform cannot do for itself. Each needs a credential this
+Eight things this platform cannot do for itself. Each needs a credential this
 repository must not hold, or a decision only the operator can make.
 
 They are not defects and not unfinished work. Every one of them is a built
@@ -412,6 +412,73 @@ There is no in-app warning yet when host or LAN observations stop arriving. A
 lapsed lowering shows only as `stale: last observed N days ago` on the
 environmental view. A briefing line for "no `host` observation in 3 days" is
 the follow-up.
+
+---
+
+## 8 · TheHub #60855 — grant `Dependabot secrets: Read and write`
+
+**Effort:** ~5 minutes. **Unblocks:** every Dependabot pull request's lanes.
+
+A Dependabot-triggered Actions run reads a repository's *Dependabot* secrets,
+a store separate from the Actions secrets the platform has always written. So
+`MYKRONOS_INGESTION_TOKEN` was delivered to one store and not the other, and
+every Dependabot pull request's upload and risk-decision steps failed closed
+with a blank token. Nobody could paste the value by hand: only its SHA-256 is
+stored.
+
+The platform now seals the token into both stores wherever it seals one. The
+Dependabot write needs a permission the App did not hold, so until it is
+granted each repository records the refusal on its token and the work queue,
+the briefing and the platform-health page show it as `dependabot_unsynced`
+with the reason. Like `administration: read`, it is *optional* on purpose:
+requiring it would fail the spec 02 §8 smoke test for every installation that
+already exists.
+
+### Steps
+
+1. Open the App's permissions page (the same page as task 1).
+
+2. Under **Repository permissions**, set **Dependabot secrets** to
+   **Read and write**. Save.
+
+3. Accept the permission update on the installation: **Configure** on the
+   Mykronos install at <https://github.com/settings/installations>, then the
+   request at the top.
+
+4. Let the next rotation sweep run, or force one with `mykronos rotate-due`.
+   For each repository whose Actions secret is delivered it reads the
+   installation's grant and requires `dependabot_secrets: write`; only then
+   does it rotate the token once and write both stores (it does not ask for
+   the Dependabot public key first: a Read-only grant can read that key). Until
+   the grant is held the sweep rotates nothing and prints
+   `NO DEPENDABOT SECRET <repo>: <reason>` per repository, with the owner and
+   the next step for that reason.
+
+   If the reason says the write *failed under a held grant*, the sweep skips
+   that repository until its next due rotation, so a plain re-run retries
+   nothing. Fix the cause (the repository's Dependabot settings, or the GitHub-side
+   refusal named in the recorded reason), then either wait for the next due
+   rotation, or retry now with `mykronos rotate-token <owner/repo>` followed
+   by `mykronos rotate-due`. The token `rotate-token` prints is discarded: it
+   only makes a fresh token with no recorded blocker, and the sweep then
+   issues and delivers its own to both stores, so do not paste the printed
+   value. The cost is one extra rotation (two tokens burned).
+
+5. Verify, per repository:
+
+       gh secret list --app dependabot -R <owner>/<repo>
+
+   Expect `MYKRONOS_INGESTION_TOKEN` listed. Then re-run `risk-decision` on an
+   open Dependabot pull request: it records a decision instead of exiting with
+   "No ingestion token".
+
+### Expected, and not a bug
+
+A repository scanned by Concourse records nothing here: the sweep writes no
+secret to a repository it does not drive (D-086), Dependabot included. A
+repository with both an Actions lane and a Concourse pipeline records the
+refusal with a hand-rotation instruction, because rotating it from here is
+what D-097 forbids.
 
 ---
 

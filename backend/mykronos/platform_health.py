@@ -292,15 +292,24 @@ def _ago(delta: timedelta) -> str:
 #: it was issued; 24 hours lists only the ones about to stop working.
 AGENT_EXPIRY_WINDOW = timedelta(hours=24)
 
-CredentialState = Literal["due", "unverified", "expiring"]
+CredentialState = Literal["due", "unverified", "dependabot_unsynced", "expiring"]
 
-#: What each state asks of a person. Two ingestion-token states, kept apart as
-#: `briefing.TokenDelivery` requires: only `due` is a reason to rotate. An
+#: What each state asks of a person. Three ingestion-token states, kept apart
+#: as `briefing.TokenDelivery` requires: only `due` is a reason to rotate. An
 #: `unverified` token is a reason to check that scans arrive, and rotating one
-#: whose stored copy works is how a repository goes dark (D-097).
+#: whose stored copy works is how a repository goes dark (D-097). A
+#: `dependabot_unsynced` token is delivered to Actions and refused by the
+#: Dependabot store (TheHub #60855); the remedy is a permission on the App.
 CREDENTIAL_ACTIONS: dict[str, str] = {
     "due": "rotate by hand (Concourse-scanned repos cannot receive a rotated token, D-086)",
     "unverified": "check that scans are arriving - do not rotate (D-097)",
+    # The default; a row carrying a recorded reason takes its remedy from
+    # `dependabot_remedy`, because two of the three recorded causes are not a
+    # missing permission (TheHub #60855).
+    "dependabot_unsynced": (
+        "grant the App 'Dependabot secrets: Read and write' and accept it on the "
+        "installation; the next sweep writes the secret (TheHub #60855)"
+    ),
     "expiring": "expires on its own; mint a new credential for the next run if one is needed",
 }
 
@@ -323,10 +332,28 @@ class CredentialAttention:
     actor: str | None = None
     rotate_after: datetime | None = None
     expires_at: datetime | None = None
+    #: Why a `dependabot_unsynced` token is missing its copy, verbatim from the
+    #: token record; empty for every other row.
+    reason: str = ""
+    #: When that reason was first recorded.
+    recorded_at: datetime | None = None
 
     @property
     def action(self) -> str:
+        if self.state == "dependabot_unsynced" and self.reason:
+            from mykronos.dependabot_remedy import remedy_for
+
+            # An unrecognised reason is shown alone: no remedy is invented.
+            return remedy_for(self.reason, self.rotate_after).action
         return CREDENTIAL_ACTIONS[self.state]
+
+    @property
+    def owner(self) -> str:
+        if self.state == "dependabot_unsynced" and self.reason:
+            from mykronos.dependabot_remedy import remedy_for
+
+            return remedy_for(self.reason).owner
+        return ""
 
 
 def _days_between(now: datetime, then: datetime) -> float:
@@ -358,13 +385,25 @@ def credentials_needing_attention(db: Any, *, now: datetime) -> list[CredentialA
     tokens = deliveries_awaiting_operator(db)
     # `due` first: an expired token stops working on a date.
     for token in sorted(tokens, key=lambda t: (t.state != "due", t.repo_full_name)):
+        # The sweep's state, passed through rather than folded: each has its
+        # own action, and folding `dependabot_unsynced` into `unverified`
+        # would tell a person not to rotate when the answer is a permission.
+        state: CredentialState = (
+            "due"
+            if token.state == "due"
+            else "dependabot_unsynced"
+            if token.state == "dependabot_unsynced"
+            else "unverified"
+        )
         rows.append(
             CredentialAttention(
                 kind="ingestion_token",
-                state="due" if token.state == "due" else "unverified",
+                state=state,
                 days_until_due=_days_between(now, token.rotate_after),
                 repo_full_name=token.repo_full_name,
                 rotate_after=token.rotate_after,
+                reason=token.reason,
+                recorded_at=token.recorded_at,
             )
         )
 

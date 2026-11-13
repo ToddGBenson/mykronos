@@ -782,8 +782,35 @@ playbooks:
       The rotation sweep deferred an ingestion token to a person, because this
       platform cannot deliver to everything that reads it. `unverified` means
       check that scans arrive, never rotate. `due` means a person rotates it
-      and delivers to every reader at once.
+      and delivers to every reader at once. `dependabot_unsynced` is a
+      different thing again: the Actions copy is delivered and the Dependabot
+      copy was refused, so scans arriving on Actions says nothing about it. The
+      recorded reason says which remedy applies and who owns it.
     steps:
+      - id: check-the-dependabot-copy
+        do: >-
+          For an item whose id is token_delivery:dependabot:<repo>, read the
+          recorded reason and act on its cause only. Permission not held: the
+          operator grants the App 'Dependabot secrets: Read and write'. The
+          scanner cannot receive a rotated token: HubOps rotates by hand with
+          repair-ingestion-token.ps1. Write failed under a held grant: HubOps
+          reads the sweep log, then: fix the cause (the repository's
+          Dependabot settings, or the GitHub-side refusal named in the
+          recorded reason), then either wait for the next due rotation, or
+          retry now with `mykronos rotate-token <repo>` followed by `mykronos
+          rotate-due`. The token rotate-token prints is discarded: the sweep
+          issues and delivers its own (one extra rotation, two tokens burned).
+          A plain re-run of the sweep skips the repository. Scans
+          arriving on Actions never closes this item.
+        check: >-
+          The next rotation sweep reports the Dependabot secret written and a
+          Dependabot pull request's risk-decision records a decision.
+        routes:
+          - "GET /api/dashboard/platform-health"
+        if_found: >-
+          The item is done only when the sweep has written the secret. Name the
+          owner and the as-of in the evidence and stop; do not rotate, except the write-failed retry above.
+        then: stop
       - id: check-scans-arrive
         do: >-
           Check that scans from the repository still arrive. That is the
@@ -809,11 +836,13 @@ playbooks:
           - "GET /api/dashboard/repos/{repo_id}/scan-health"
     stop_when:
       - "A scan confirms the token arrives (unverified)."
+      - "The sweep wrote the Dependabot secret (dependabot_unsynced); a scan on Actions does not count."
       - "Rotated by hand and a scan confirms the new token arrives (due)."
     escalate:
       when:
         - "The token is due."
         - "Scans from the repository have stopped."
+        - "A Dependabot copy is refused and the reason names an owner."
       evidence:
         - "The repository, the token state and days until due."
         - "Which system scans it, and its newest successful run per lane."

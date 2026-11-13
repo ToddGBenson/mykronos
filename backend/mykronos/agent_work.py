@@ -38,6 +38,7 @@ from typing import Any
 from mykronos import finding_disposition
 from mykronos.adminauth import Principal
 from mykronos.briefing import Briefing
+from mykronos.dependabot_remedy import remedy_for
 from mykronos.read_coverage import ReadCoverage
 from mykronos.risk_acceptance import LIVE
 
@@ -893,6 +894,42 @@ def _premise_failed_item(record: dict[str, Any]) -> WorkItem | None:
 def _token_items(briefing: Briefing) -> list[WorkItem]:
     items = []
     for token in briefing.tokens:
+        if token.state == "dependabot_unsynced":
+            # Actions delivery is fine; the Dependabot copy was refused
+            # (TheHub #60855). Its own item id, because the same repository
+            # can also be `due` or `unverified`, and its own wording, because
+            # the remedy is a permission on the App rather than anything done
+            # to the token.
+            remedy = remedy_for(token.reason, token.rotate_after)
+            # Owner and as-of travel in the summary: the reason alone does not
+            # say who acts or how old the refusal is.
+            facts = []
+            if remedy.owner:
+                facts.append(f"Owner: {remedy.owner}.")
+            if token.recorded_at is not None:
+                facts.append(f"Refusal recorded {token.recorded_at:%Y-%m-%d %H:%M} UTC.")
+            if remedy.action:
+                facts.append(f"Remedy: {remedy.action}.")
+            items.append(
+                WorkItem(
+                    item_id=f"token_delivery:dependabot:{token.repo_full_name}",
+                    kind="token_delivery",
+                    band=BAND_TOKEN,
+                    repo_full_name=token.repo_full_name,
+                    title=(
+                        f"Ingestion token for {token.repo_full_name} is not in its "
+                        "Dependabot secrets"
+                    ),
+                    summary=(
+                        "Every Dependabot-triggered run on this repository fails closed "
+                        f"without it. {token.reason} {' '.join(facts)}".rstrip()
+                    ),
+                    done_when=remedy.done_when,
+                    evidence=[Evidence(source="ingestion_tokens", ref=token.repo_full_name)],
+                    caveats=[],
+                )
+            )
+            continue
         caveats = []
         if token.state == "unverified":
             caveats.append(

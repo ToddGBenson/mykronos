@@ -43,6 +43,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar
 
 from mykronos import guidance
+from mykronos.dependabot_remedy import remedy_for
 from mykronos.lake.catalog import Catalog
 
 #: How many recent runs to read per (repo, capability) when deciding whether a
@@ -878,16 +879,26 @@ class TokenDelivery:
       This is **not** a reason to rotate. It is a reason to check that scans
       are arriving; rotating a token whose Vault copy works is how the
       repository goes dark (D-097).
+    - ``dependabot_unsynced`` — the active token reached the repository's
+      Actions secrets and the sweep could not write its Dependabot copy
+      (TheHub #60855); `reason` says why. Neither a rotation nor a check:
+      the remedy is usually a permission grant on the App, after which the
+      sweep delivers on its own.
     """
 
     repo_full_name: str
-    #: "due" | "unverified"
+    #: "due" | "unverified" | "dependabot_unsynced"
     state: str
     issued_at: datetime
     rotate_after: datetime
     #: Which scanner reads this repo's token, and therefore why the rotation
     #: job cannot deliver to it. Printed rather than inferred.
     scanned_by: str = ""
+    #: Why the Dependabot copy is missing, verbatim from the token record.
+    #: Empty for the other two states.
+    reason: str = ""
+    #: When that reason was first recorded (UTC); None for the other states.
+    recorded_at: datetime | None = None
 
     @property
     def days_until_due(self) -> float:
@@ -2515,7 +2526,8 @@ def render(briefing: Briefing) -> str:
             "",
         ]
         due = [t for t in briefing.tokens if t.state == "due"]
-        unverified = [t for t in briefing.tokens if t.state != "due"]
+        unverified = [t for t in briefing.tokens if t.state == "unverified"]
+        no_dependabot = [t for t in briefing.tokens if t.state == "dependabot_unsynced"]
         for token in sorted(due, key=lambda t: t.rotate_after):
             overdue = -token.days_until_due
             lines.append(f"  {token.repo_full_name}  — DUE")
@@ -2545,6 +2557,30 @@ def render(briefing: Briefing) -> str:
                 "        rotating a token whose Vault copy works is what breaks "
                 "the pipeline."
             )
+        for token in sorted(no_dependabot, key=lambda t: t.repo_full_name):
+            # A third state with a third remedy (TheHub #60855): not a
+            # rotation and not a check, a permission on the App. The reason
+            # is printed verbatim because it names the grant.
+            lines.append(f"  {token.repo_full_name}  — NOT IN DEPENDABOT SECRETS")
+            lines.append(
+                f"      Actions secret delivered; every Dependabot-triggered run "
+                f"on {token.repo_full_name} fails closed without it."
+            )
+            lines.append(f"      {token.reason}")
+            remedy = remedy_for(token.reason, token.rotate_after)
+            # Owner and as-of, because a gap recorded a month ago and one
+            # recorded a minute ago read the same without them. A reason that
+            # is none of the three recorded causes is printed alone: no remedy
+            # is invented for it.
+            who = []
+            if remedy.owner:
+                who.append(f"owner: {remedy.owner}")
+            if token.recorded_at is not None:
+                who.append(f"recorded {token.recorded_at:%Y-%m-%d %H:%M} UTC")
+            if who:
+                lines.append(f"      ({'; '.join(who)})")
+            if remedy.action:
+                lines.append(f"      → {remedy.action}.")
         lines.append("")
     elif briefing.tokens_unknown:
         lines += [

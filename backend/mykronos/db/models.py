@@ -412,6 +412,11 @@ class IngestionToken(Base):
     #: refusal is never a silent skip.
     dependabot_sync_blocker: Mapped[str] = mapped_column(String(1024), default="")
 
+    #: When that reason was first recorded (UTC). Kept while the reason is
+    #: unchanged, so a sweep that records the same refusal every run does not
+    #: make a month-old gap look new. Null when no blocker is recorded.
+    dependabot_sync_blocker_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
     label: Mapped[str] = mapped_column(String(255), default="")
 
 

@@ -7050,6 +7050,18 @@ export interface components {
             days_until_due: number;
             /** Action */
             action: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Recorded At */
+            recorded_at?: string | null;
+            /**
+             * Owner
+             * @default
+             */
+            owner: string;
         };
         /** DailyBriefingOut */
         DailyBriefingOut: {
@@ -14283,6 +14295,10 @@ export interface components {
         /**
          * TokenDeliveryOut
          * @description An ingestion token the rotation sweep deferred to a person (#263).
+         *
+         *     `dependabot_unsynced` (TheHub #60855) is the token delivered to Actions
+         *     secrets and refused by the repository's Dependabot secrets; `reason` says
+         *     why, and the remedy is a permission on the App rather than a rotation.
          */
         TokenDeliveryOut: {
             /** Repo Full Name */
@@ -14304,6 +14320,13 @@ export interface components {
              * @default
              */
             scanned_by: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Recorded At */
+            recorded_at?: string | null;
         };
         /** ToxicCombinationMemberOut */
         ToxicCombinationMemberOut: {

@@ -213,6 +213,7 @@ class TokenRegistry:
         if token is not None:
             token.dependabot_secret_synced = True
             token.dependabot_sync_blocker = ""
+            token.dependabot_sync_blocker_at = None
 
     def mark_dependabot_unsynced(self, repo_full_name: str, reason: str) -> None:
         """Record that the Dependabot write was attempted and refused, and why.
@@ -223,6 +224,9 @@ class TokenRegistry:
         token = self._active_token(repo_full_name)
         if token is not None:
             token.dependabot_secret_synced = False
+            # As-of: kept while the same reason is re-recorded each sweep.
+            if token.dependabot_sync_blocker != reason or token.dependabot_sync_blocker_at is None:
+                token.dependabot_sync_blocker_at = utcnow()
             token.dependabot_sync_blocker = reason
 
     def confirm_delivery(self, token_sha256: str) -> bool:

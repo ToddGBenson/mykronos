@@ -13,27 +13,28 @@ Three claims, each tested against a fake GitHub:
   rotation job's rotate/resync), the same plaintext is sealed into the
   Dependabot store under the Dependabot public key;
 - when the App lacks the Dependabot-secrets permission, the Actions write
-  still lands and the gap is *recorded* on the token with its reason;
-- once the permission is granted, the sweep delivers without anyone pasting,
-  and never rotates on evidence short of that.
-
-Where a person sees the recorded gap (work queue, briefing, platform health)
-is the follow-up pull request, with its own tests.
+  still lands and the gap is *recorded* on the token with its reason, then
+  shown in the work queue, the briefing and the platform-health page;
+- once the permission is granted, the sweep delivers without anyone pasting.
 """
 
 from __future__ import annotations
 
 import base64
 from collections.abc import Iterator
+from datetime import timedelta
 
 import pytest
 from nacl import encoding, public
 from sqlalchemy.orm import Session
 
+from mykronos import platform_health
 from mykronos.auth import TokenRegistry
+from mykronos.briefing import TokenDelivery
 from mykronos.config import get_settings
 from mykronos.db import Database
 from mykronos.db.models import IngestionToken, Organization, RepoOnboarding
+from mykronos.dependabot_remedy import WRITE_FAILED_RETRY, remedy_for
 from mykronos.github import FakeGitHubClient
 from mykronos.github.client import (
     OPTIONAL_PERMISSIONS,
@@ -42,9 +43,15 @@ from mykronos.github.client import (
     RepoPublicKey,
 )
 from mykronos.github.factory import FakeGitHubClientFactory
-from mykronos.github.secrets import dependabot_gap_reason
+from mykronos.github.secrets import (
+    dependabot_gap_reason,
+    permission_not_held_reason,
+    write_failed_under_grant,
+)
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary, WorkflowInstaller
-from mykronos.jobs import rotate_ingestion_tokens
+from mykronos.jobs import deliveries_awaiting_operator, rotate_ingestion_tokens
+from mykronos.schemas import utcnow
+from tests.test_agent_work import _briefing, _build
 from tests.test_jobs import INSTALLATION, age_token, onboard
 
 REPO = "example-org/payments-api"
@@ -408,3 +415,282 @@ class TestTheRotationJobSealsBothStores:
         reason = dependabot_gap_reason(403, "GET ... -> 403: secondary rate limit")
         assert "Read and write" in reason
         assert "secondary rate limit" in reason
+
+
+# ---------------------------------------------------------------------------
+# Where a person sees it
+
+
+class TestAPersonCanSeeTheGap:
+    def test_a_recorded_gap_is_put_in_front_of_a_person(self, db: Database) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "403 from the endpoint")
+
+        waiting = deliveries_awaiting_operator(db)
+
+        assert [(t.repo_full_name, t.state) for t in waiting] == [(REPO, "dependabot_unsynced")]
+        assert waiting[0].reason == "403 from the endpoint"
+        assert waiting[0].scanned_by == "github_actions"
+
+    def test_a_copy_not_yet_attempted_is_not_yet_a_persons_work(self, db: Database) -> None:
+        """Every token issued before this change has no Dependabot copy. The
+        sweep attempts each on its next run; only a recorded refusal is work
+        for a person."""
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+
+        assert deliveries_awaiting_operator(db) == []
+
+    def test_a_delivered_copy_leaves_the_page(self, db: Database) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, PERMISSION_REASON)
+        assert deliveries_awaiting_operator(db)
+
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_synced(REPO)
+
+        assert deliveries_awaiting_operator(db) == []
+
+    def test_the_work_queue_item_names_the_grant_and_not_a_rotation(self) -> None:
+        now = utcnow()
+        token = TokenDelivery(
+            repo_full_name=REPO,
+            state="dependabot_unsynced",
+            issued_at=now - timedelta(days=5),
+            rotate_after=now + timedelta(days=85),
+            scanned_by="github_actions",
+            reason=PERMISSION_REASON,
+        )
+
+        [item] = _build(_briefing(tokens=[token])).items
+
+        assert item.kind == "token_delivery"
+        assert "dependabot" in item.item_id
+        assert "Dependabot" in item.title
+        assert token.reason in item.summary
+        assert "Dependabot secrets" in item.done_when
+        assert "do_not_rotate" not in {c.code for c in item.caveats}
+
+    def test_the_rendered_briefing_does_not_call_it_unconfirmed_delivery(self) -> None:
+        from mykronos import briefing as briefing_report
+
+        now = utcnow()
+        report = briefing_report.Briefing(
+            generated_at=now,
+            total_open=0,
+            tokens=[
+                TokenDelivery(
+                    repo_full_name=REPO,
+                    state="dependabot_unsynced",
+                    issued_at=now,
+                    rotate_after=now + timedelta(days=88),
+                    scanned_by="github_actions",
+                    reason=PERMISSION_REASON,
+                )
+            ],
+        )
+
+        text = briefing_report.render(report)
+
+        assert "NOT IN DEPENDABOT SECRETS" in text
+        assert "Read and write" in text
+        assert "DELIVERY NEVER CONFIRMED" not in text
+
+    def test_platform_health_passes_the_state_through(self, db: Database) -> None:
+        """Not folded into `unverified`: that state's action is "do not
+        rotate", and this one's is a permission grant."""
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, PERMISSION_REASON)
+
+        rows = platform_health.credentials_needing_attention(db, now=utcnow())
+
+        [row] = [r for r in rows if r.kind == "ingestion_token"]
+        assert row.state == "dependabot_unsynced"
+        assert "Dependabot secrets" in row.action
+        assert "rotate" not in row.action.lower()
+
+
+# ---------------------------------------------------------------------------
+# One remedy per recorded reason (independent review of PR B)
+
+CONCOURSE_REASON = (
+    f"The Dependabot secret is not written: {REPO} is scanned by concourse, which this "
+    "job cannot deliver to, so this job will not rotate to deliver it. Rotate by hand: "
+    "repair-ingestion-token.ps1."
+)
+WRITE_FAILED_REASON = (
+    "The Dependabot secret write failed although the installation holds "
+    "'dependabot_secrets: write': GitHub answered 500: boom. Not retried by rotation."
+)
+PERMISSION_REASON = permission_not_held_reason(None)
+
+# (reason, owner, text the remedy must contain, text it must not contain)
+REASON_PATHS = [
+    (PERMISSION_REASON, "operator", "Dependabot secrets: Read and write", "repair-ingestion"),
+    (CONCOURSE_REASON, "hubops", "Rotate by hand: repair-ingestion-token.ps1", "grant the App"),
+    (WRITE_FAILED_REASON, "hubops", "mykronos rotate-token <repo>", "grant the App"),
+]
+
+
+def _delivery(reason: str) -> TokenDelivery:
+    now = utcnow()
+    return TokenDelivery(
+        repo_full_name=REPO,
+        state="dependabot_unsynced",
+        issued_at=now - timedelta(days=5),
+        rotate_after=now + timedelta(days=85),
+        scanned_by="github_actions",
+        reason=reason,
+        recorded_at=now - timedelta(hours=3),
+    )
+
+
+def _render(reason: str) -> str:
+    from mykronos import briefing as briefing_report
+
+    return briefing_report.render(
+        briefing_report.Briefing(generated_at=utcnow(), total_open=0, tokens=[_delivery(reason)])
+    )
+
+
+class TestTheRemedyFollowsTheRecordedReason:
+    @pytest.mark.parametrize(("reason", "owner", "must", "must_not"), REASON_PATHS)
+    def test_work_queue_item(self, reason: str, owner: str, must: str, must_not: str) -> None:
+        [item] = _build(_briefing(tokens=[_delivery(reason)])).items
+
+        assert f"Owner: {owner}." in item.summary
+        assert "Refusal recorded" in item.summary
+        assert must in item.summary + item.done_when
+        # The recorded reason may itself name a remedy; the item's own lines may not.
+        assert must_not not in item.summary.replace(reason, "") + item.done_when
+
+    @pytest.mark.parametrize(("reason", "owner", "must", "must_not"), REASON_PATHS)
+    def test_briefing_line(self, reason: str, owner: str, must: str, must_not: str) -> None:
+        text = _render(reason)
+        arrow = [ln for ln in text.splitlines() if "→" in ln]
+
+        assert f"owner: {owner}" in text
+        assert "recorded " in text
+        assert any(must in ln for ln in arrow)
+        assert not any(must_not in ln for ln in arrow)
+
+    @pytest.mark.parametrize(("reason", "owner", "must", "must_not"), REASON_PATHS)
+    def test_platform_health_action(
+        self, db: Database, reason: str, owner: str, must: str, must_not: str
+    ) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, reason)
+
+        [row] = [
+            r
+            for r in platform_health.credentials_needing_attention(db, now=utcnow())
+            if r.kind == "ingestion_token"
+        ]
+
+        assert row.reason == reason
+        assert row.owner == owner
+        assert must in row.action
+        assert must_not not in row.action
+        assert row.recorded_at is not None
+
+    def test_an_unrecognised_reason_is_printed_alone(self) -> None:
+        text = _render("Something else broke.")
+
+        assert "Something else broke." in text
+        assert "→ grant" not in text
+        assert "Rotate by hand" not in text
+        assert "owner:" not in text
+
+    def test_the_as_of_survives_a_repeated_record_and_resets_on_a_new_reason(
+        self, db: Database
+    ) -> None:
+        onboard(db)
+        _issue_actions_synced(db, dependabot_synced=False)
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "first")
+        first = deliveries_awaiting_operator(db)[0].recorded_at
+        assert first is not None
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_unsynced(REPO, "first")
+        assert deliveries_awaiting_operator(db)[0].recorded_at == first
+        with db.session() as session:
+            TokenRegistry(session).mark_dependabot_synced(REPO)
+        assert deliveries_awaiting_operator(db) == []
+
+
+class RefusesTheWrite(FakeGitHubClient):
+    async def put_dependabot_secret(
+        self, repo_full_name: str, name: str, encrypted_value: str, key_id: str
+    ) -> None:
+        raise GitHubError("PUT .../dependabot/secrets/x -> 500: boom", status=500)
+
+
+async def _record_a_write_failure(db: Database) -> str:
+    refusing = RefusesTheWrite()
+    refusing.add_repo(REPO)
+    refusing.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+    onboard(db)
+    _issue_actions_synced(db, dependabot_synced=False)
+    await rotate_ingestion_tokens(db, FakeGitHubClientFactory(refusing))
+    recorded = _active_token(db).dependabot_sync_blocker
+    assert write_failed_under_grant(recorded)
+    return recorded
+
+
+class TestWriteFailedUnderGrantTellsTheTruth:
+    """The remedy for a write that failed under a held grant must agree with
+    what the sweep does: it skips the repository until its next due rotation,
+    so a bare "re-run the sweep" retries nothing, and `mykronos rotate-token`
+    followed by a sweep does."""
+
+    async def test_the_remedy_and_the_sweep_agree(self, db: Database) -> None:
+        recorded = await _record_a_write_failure(db)
+
+        # A re-run against a GitHub that would now accept the write.
+        accepting = FakeGitHubClient()
+        accepting.add_repo(REPO)
+        accepting.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+        rerun = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(accepting))
+
+        assert [repo for repo, _ in rerun.dependabot_blocked] == [REPO]
+        assert not [c for c in accepting.calls if c[0] == "put_dependabot_secret"]
+        assert _active_token(db).dependabot_sync_blocker == recorded
+
+        [waiting] = deliveries_awaiting_operator(db)
+        remedy = remedy_for(waiting.reason, waiting.rotate_after)
+        assert f"{waiting.rotate_after:%Y-%m-%d}" in remedy.action
+        assert "a plain re-run of the sweep skips this repository" in remedy.action
+        assert WRITE_FAILED_RETRY in remedy.action
+        assert "no command or route exists" not in remedy.action
+        assert "mykronos rotate-token <repo>" in remedy.done_when
+        assert f"{waiting.rotate_after:%Y-%m-%d}" in remedy.done_when
+
+    async def test_rotate_token_then_the_sweep_clears_the_blocker(self, db: Database) -> None:
+        """The route the remedy names: `mykronos rotate-token <repo>` (which is
+        `TokenRegistry.rotate`) issues a token with no blocker, and the next
+        sweep writes both stores."""
+        await _record_a_write_failure(db)
+
+        with db.session() as session:
+            TokenRegistry(session).rotate(REPO)
+        assert _active_token(db).dependabot_sync_blocker == ""
+
+        accepting = FakeGitHubClient()
+        accepting.add_repo(REPO)
+        accepting.installations[INSTALLATION] = {"id": INSTALLATION, "suspended_at": None}
+        result = await rotate_ingestion_tokens(db, FakeGitHubClientFactory(accepting))
+
+        assert result.dependabot_blocked == []
+        assert result.resynced == [REPO]
+        puts = [c for c in accepting.calls if c[0] == "put_dependabot_secret"]
+        assert len(puts) == 1
+        assert _active_token(db).dependabot_sync_blocker == ""
+        assert deliveries_awaiting_operator(db) == []

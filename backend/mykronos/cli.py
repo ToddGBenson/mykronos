@@ -66,6 +66,7 @@ from mykronos.config import Settings, get_settings
 from mykronos.dashboard import DashboardQueries
 from mykronos.db import Database
 from mykronos.db.models import CapabilityGrant, RepoOnboarding, capability_config_for
+from mykronos.dependabot_remedy import remedy_for
 from mykronos.installer import DEFAULT_SECRET_NAME, TemplateLibrary
 from mykronos.installer.resync import resync_templates
 from mykronos.jobs import (
@@ -993,6 +994,14 @@ def main(argv: list[str] | None = None) -> int:
                         "scans are arriving before touching the credential — "
                         "rotating one whose Vault copy works is what breaks it."
                     )
+                # A third sentence for a third remedy (TheHub #60855): the
+                # Actions secret is fine and the Dependabot copy was refused,
+                # usually for a permission the App does not hold yet.
+                for repo, reason in rotation.dependabot_blocked:
+                    print(f"  NO DEPENDABOT SECRET {repo}: {reason}")
+                    next_step = remedy_for(reason)
+                    if next_step.action:
+                        print(f"      -> {next_step.owner}: {next_step.action}")
             else:
                 sync = asyncio.run(reconcile_installations(db, factory))
                 print(
