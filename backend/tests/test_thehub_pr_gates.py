@@ -470,7 +470,7 @@ SBOM_TEST = "backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requir
 
 def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int = 0,
                      changed: str = "backend/requirements.txt\n",
-                     req_differs: bool = True,
+                     req_differs: bool = True, message: str = "", ensurepip_rc: int = 0,
                      ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """The integration script with a stub python3 that logs every call."""
     bash = shutil.which("bash")
@@ -492,7 +492,8 @@ def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int =
     (app / "requirements.txt").write_text("soupsieve>=2.7\n" if req_differs else "soupsieve>=2.8\n")
     log = tmp_path / "calls"
     (pr / "scripts" / "ci" / "container-tiers.sh").write_text(
-        f'echo "container-tiers $*" >> "{log.as_posix()}"\nexit {tiers_rc}\n')
+        f'echo "container-tiers $*" >> "{log.as_posix()}"\n'
+        f'echo "{message}" >&2\nexit {tiers_rc}\n')
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     py = stubs / "python3"
@@ -501,6 +502,7 @@ def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int =
         f'echo "python3 $*" >> "{log.as_posix()}"\n'
         'case "$*" in\n'
         f'  "-m pip --version") exit {0 if pip else 1} ;;\n'
+        f'  *ensurepip*) exit {ensurepip_rc} ;;\n'
         f'  *pytest*) exit {sbom_rc} ;;\n'
         "esac\nexit 0\n")
     py.chmod(0o755)
@@ -576,3 +578,43 @@ def test_a_stale_sbom_fails_the_pull_request(tmp_path) -> None:
 def test_a_pull_request_without_requirements_skips_the_sbom_test(tmp_path) -> None:
     _, calls = _requirements_pr(tmp_path, 0, pip=True, changed="README.md\n", req_differs=False)
     assert not any("pytest" in c for c in calls), calls
+
+
+# -- review of #1158: what is the pull request's fault, and what is not ------
+
+PIP_FAIL = "::error:: could not install the checkout's requirements.txt into the cached image"
+
+
+def test_a_failed_requirements_install_is_a_failure_not_an_outage(tmp_path) -> None:
+    """A pin nothing satisfies is the pull request's own fault: failure."""
+    r, _ = _requirements_pr(tmp_path, 2, pip=True, message=PIP_FAIL)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "could not be installed" in r.stdout
+    assert not (tmp_path / "memory-infra").exists()
+
+
+def test_a_failed_pip_bootstrap_is_an_outage(tmp_path) -> None:
+    r, _ = _requirements_pr(tmp_path, 2, pip=False, ensurepip_rc=1, message=PIP_FAIL)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert (tmp_path / "memory-infra" / "reason").exists()
+
+
+def test_an_apt_failure_is_an_outage(tmp_path) -> None:
+    r, _ = _requirements_pr(tmp_path, 2, pip=True,
+                            message="::error:: apt could not install postgresql-16")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert (tmp_path / "memory-infra" / "reason").exists()
+
+
+def test_a_head_cancelled_twice_is_not_asked_again(tmp_path, mykronos) -> None:
+    """A NO VERDICT that recurs must not run the same head every tick."""
+    url, server = mykronos
+    server.answers = {OPEN_HEAD: _unchanged("completed", "cancelled")}
+    pick, _ = _pick(tmp_path, url)
+    assert pick == f"12 {OPEN_HEAD}\n", "one cancelled run: asked again"
+    pick, out = _pick(tmp_path, url)
+    assert pick == f"10 {OLDER_HEAD}\n", "second cancelled: remembered, the next head is judged"
+    assert "cancelled 2 times" in out
+    server.posted.clear()
+    _pick(tmp_path, url)
+    assert OPEN_HEAD not in [p["commit_sha"] for p in server.posted]

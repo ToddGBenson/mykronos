@@ -2465,6 +2465,18 @@ jobs:
                 judged = set()
                 if os.path.exists(memo):
                     judged = set(open(memo, encoding="utf-8").read().split())
+                # [TheHub #61636] A head whose run keeps ending `cancelled` (a
+                # NO VERDICT that recurs: an unsatisfiable environment) is asked
+                # again once, then remembered like any other judged head, so it
+                # cannot occupy the memory group every tick. Pushing a new head
+                # re-judges it. Counts: "<sha> <times seen cancelled>".
+                cancelled_memo = "memo/cancelled"
+                cancelled = {}
+                if os.path.exists(cancelled_memo):
+                    for line in open(cancelled_memo, encoding="utf-8").read().splitlines():
+                        parts = line.split()
+                        if len(parts) == 2 and parts[1].isdigit():
+                            cancelled[parts[0]] = int(parts[1])
 
                 def start(sha):
                     body = json.dumps({
@@ -2496,6 +2508,12 @@ jobs:
                     if sha in judged:
                         continue
                     answer = start(sha)
+                    if answer.get("status") == "completed" and answer.get("conclusion") == "cancelled":
+                        cancelled[sha] = cancelled.get(sha, 0) + 1
+                        if cancelled[sha] >= 2:
+                            print(f"#{n} ({br}) {sha[:12]}: cancelled {cancelled[sha]} times, not asked again")
+                            judged.add(sha)
+                            continue
                     if (answer.get("outcome") == "unchanged" and answer.get("status") == "completed"
                             and answer.get("conclusion") != "cancelled"):
                         print(f"#{n} ({br}) {sha[:12]}: already judged, {answer.get('conclusion')}")
@@ -2505,6 +2523,8 @@ jobs:
                     break
 
                 open_shas = {sha for _, sha, _ in heads}
+                with open(cancelled_memo, "w", encoding="utf-8") as fh:
+                    fh.write("".join(f"{k} {v}\n" for k, v in sorted(cancelled.items()) if k in open_shas))
                 with open(memo, "w", encoding="utf-8") as fh:
                     fh.write("\n".join(sorted(judged & open_shas)) + "\n")
                 with open(os.environ.get("PR_PICK", "/tmp/pick"), "w", encoding="utf-8") as fh:
@@ -2841,15 +2861,26 @@ jobs:
                 # below says unjudged, not failed.
                 PY="$(command -v python3 || command -v python || true)"
                 REQ_CHANGED=0
+                BOOTSTRAP_FAILED=0
                 if [ -f pr/backend/requirements.txt ] && ! cmp -s pr/backend/requirements.txt "${APP_DIR:-/app}/requirements.txt"; then
                   REQ_CHANGED=1
                 fi
                 if [ "$REQ_CHANGED" -eq 1 ] && [ -n "$PY" ] && ! "$PY" -m pip --version >/dev/null 2>&1; then
                   echo "pr-gates: the cached image has no pip; bootstrapping it with ensurepip"
-                  "$PY" -m ensurepip --upgrade || echo "::warning::ensurepip failed; the requirements install will say so"
+                  "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
                 fi
-                bash pr/scripts/ci/container-tiers.sh pr subset
-                RC=$?
+                bash pr/scripts/ci/container-tiers.sh pr subset 2>&1 | tee /tmp/container-tiers.log
+                RC=${PIPESTATUS[0]}
+                # [TheHub #61636] A failed `pip install -r` of the checkout's own
+                # requirements.txt is usually the pull request's fault (a pin
+                # nothing satisfies), so it is a verdict: failure, with pip's
+                # error (container-tiers tails pip.log above). Only when the pip
+                # bootstrap itself failed is it the environment's fault.
+                if [ "$RC" -eq 2 ] && [ "$BOOTSTRAP_FAILED" -eq 0 ] \
+                   && grep -q "could not install the checkout's requirements.txt" /tmp/container-tiers.log; then
+                  echo "::error::this pull request's backend/requirements.txt could not be installed (pip's error is above): a real failure, not an outage"
+                  RC=1
+                fi
                 if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
                   mkdir -p memory-infra
                   cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
