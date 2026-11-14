@@ -2596,12 +2596,7 @@ jobs:
                 fi
       - &pr_gates_task
         task: gates
-        # [TheHub #61659, D-181] On the remote `linux` workers: compute only.
-        # Its inputs are `pr` (laid out by `pick`, on the host) and the
-        # mykronos checkout; its network is PyPI and the advisory databases;
-        # it takes no params and so no credential; its only output is
-        # `hub_log`, read by the reporting hooks, which stay on the host.
-        tags: [linux]
+        tags: [thehub]
         container_limits: {cpu: 512}
         image: python313
         # pip-audit resolves the whole requirements set into a scratch venv:
@@ -4419,10 +4414,6 @@ jobs:
         # finding. Reporting, not gating. PLpgSQL is still unread.
         ensure:
           task: psscriptanalyzer
-          # [TheHub #61659, D-181] Compute only, on the remote `linux`
-          # workers: reads `source`, installs from PSGallery, writes
-          # `results`; no params. `upload-psscriptanalyzer` stays on the host.
-          tags: [linux]
           container_limits: {cpu: 512}
           timeout: 10m
           image: pwsh
@@ -6510,10 +6501,6 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: scan-iac
-        # [TheHub #61659, D-181] Compute only, on the remote `linux` workers:
-        # checkov reads `source` and writes `results`; no params. `upload`
-        # (its ensure) stays on the host.
-        tags: [linux]
         container_limits: {cpu: 512}
         timeout: 20m
         image: checkov
@@ -8022,9 +8009,16 @@ jobs:
         # `--destination` name on the registry, and `--no-push` never dials
         # it); the images leave as tarballs in `images`. `scan` reads the
         # registry and `publish` pushes to it, so both stay on the host.
+        #
+        # Only non-gating lanes go to `linux`: a tagged step never falls back
+        # to an untagged worker, so with the remote host off it waits until
+        # this timeout, holding `dast`. Measured on the host worker over the
+        # last 14 green runs (builds 20-33): 72-237s. 20m is 5x the slowest plus
+        # the streaming of `source`, the kaniko image and the tarballs; it was
+        # 90m, which held `dast` for an hour and a half on an offline host.
         tags: [linux]
         container_limits: {cpu: 512}
-        timeout: 90m
+        timeout: 20m
         image: kaniko
         config:
           platform: linux

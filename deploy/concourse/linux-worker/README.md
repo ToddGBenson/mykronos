@@ -77,12 +77,23 @@ the worker.
 
 The tasks routed here are listed in `REMOTE_COMPUTE` in
 `backend/tests/test_concourse_worker_tags.py` (TheHub #61659), which also
-checks each one is compute only: no params, no host address, a public image,
-not privileged. Today they are thehub's `pr-gates`/`gate-smoke` `gates`,
-`sast`'s `psscriptanalyzer`, `iac`'s `scan-iac` and `image-refresh`'s
-`build`. While no `linux` worker is running those steps cannot be placed,
-so a remote host that is off or asleep holds up `pr-gates`; `fly workers`
-shows whether one is registered.
+checks each one is compute only: no params, no pipeline var, no host
+address, no registry read or push, a public image, not privileged. Today
+that is thehub's `image-refresh` `build` alone.
+
+**Only non-gating lanes may carry `linux`.** Concourse has no fallback from
+a tagged step to an untagged worker: while no `linux` worker is registered,
+a tagged step waits until its timeout, then the job fails. On a lane that
+gates a merge or a delivery (`pr-gates`, or a job in another's `passed:`
+list) that is a false red, or a stopped delivery, every time the remote host
+is off or asleep. Moving a gating lane needs an always-on remote host or a
+second worker on this host carrying the same tag. `fly workers` shows
+whether a `linux` worker is registered.
+
+The follow-up is the heavy lanes, `unit`'s pytest, `sast`'s semgrep,
+`dependencies`' osv-scanner, `secrets`' gitleaks and `prompt-evals`. Each
+runs its scan and its MyKronos upload in one task, so each first needs a
+compute task writing to an output and a separate upload task on this host.
 
 ## Where things are on the Linux box
 

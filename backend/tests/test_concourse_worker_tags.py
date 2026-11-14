@@ -60,15 +60,29 @@ REMOTE_TAG = "linux"
 INSTALLER = CONCOURSE / "linux-worker" / "install-concourse-worker.sh"
 
 # (pipeline, job, task) that run on the remote workers (TheHub #61659). Each
-# is a whole task whose result leaves in an output for a host step to read.
+# is a whole task whose result leaves in an output for a host step to read,
+# and each is NON-GATING: a tagged step never falls back to an untagged
+# worker, so with the remote host off it waits out its timeout. A lane that
+# gates a merge or a delivery (`pr-gates`, or anything in a `passed:` chain)
+# stays on this host until a remote host is always on or a second tagged
+# worker runs here (review of mykronos #1169).
 REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
     {
-        ("thehub", "pr-gates", "gates"),
-        ("thehub", "gate-smoke", "gates"),
-        ("thehub", "sast", "psscriptanalyzer"),
-        ("thehub", "iac", "scan-iac"),
         ("thehub", "image-refresh", "build"),
     }
+)
+
+# Any pipeline var. Workers never resolve vars; the web node puts the value in
+# the step, so a var on a remote step is a value on the remote host. `((.:x))`
+# is a local var (`load_var`), set inside the build, and is allowed.
+PIPELINE_VAR = re.compile(r"\(\((?!\.:)[^)]*\)\)")
+
+# Reading or writing an image registry from inside a task: the registry the
+# pipelines use is on this host, and its address can arrive as data (plan.tsv)
+# rather than as a var, as image-refresh/scan's `trivy image --insecure` does.
+REGISTRY_IO = re.compile(
+    r"--insecure|trivy image (?!--input)|\bcrane\b|\bskopeo\b|docker (pull|push)|--push\b",
+    re.IGNORECASE,
 )
 
 # Anything that names a service on this host. Garden task containers reach the
@@ -200,10 +214,9 @@ def _remote_tagged(pipeline: str) -> set[tuple[str, str, str]]:
 def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[str]:
     """Why `step` could not run on a host that reaches only the internet.
 
-    The step's own hooks are other steps (an `ensure: upload` stays on the
-    host), so they are judged as themselves, not as part of this one.
+    Judged with its hooks, run.args and step-level `vars:` included: whatever
+    the step carries reaches the remote host's build plan.
     """
-    step = {k: v for k, v in step.items() if k not in _HOOKS}
     faults = []
     if frozenset(step.get("tags") or []) != {REMOTE_TAG}:
         faults.append(f"tags {sorted(step.get('tags') or [])}, not exactly [{REMOTE_TAG}]")
@@ -213,9 +226,18 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
         faults.append("privileged")
     if "file" in step:
         faults.append("a task file: its config is not reviewable here")
-    named = HOST_ONLY.search(yaml.safe_dump(step))
+    text = yaml.safe_dump(step)
+    named = HOST_ONLY.search(text)
     if named:
         faults.append(f"names a host service: {named.group(0)}")
+    var = PIPELINE_VAR.search(text)
+    if var:
+        faults.append(f"carries a pipeline var: {var.group(0)}")
+    registry = REGISTRY_IO.search(text)
+    if registry:
+        faults.append(f"reads or writes a registry: {registry.group(0)}")
+    if "/kaniko/executor" in text and "--no-push" not in text:
+        faults.append("kaniko without --no-push pushes to the registry")
     config = step.get("config") or {}
     if "image_resource" in config:
         faults.append("an image_resource: the image is not one of the pipeline's public gets")
@@ -250,6 +272,8 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     """Both ways: a declared task that lost its tag, and any step that gained
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
+    # Pinned literally as well: widening the list is a reviewed change here.
+    assert {("thehub", "image-refresh", "build")} == REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
         "declared, not tagged": sorted(REMOTE_COMPUTE - tagged),
@@ -285,7 +309,16 @@ def test_the_compute_only_check_can_fail() -> None:
         {**ok, "config": {"image_resource": {"source": {"repository": "curlimages/curl"}}}},
         {**ok, "config": {"run": {"path": "curl", "args": ["http://192.168.65.254:8100/api"]}}},
         {**ok, "config": {"run": {"path": "curl", "args": ["http://host.docker.internal:8000"]}}},
+        # A var anywhere: run.args, step-level vars, a hook.
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "echo ((thehub-token))"]}}},
+        {**ok, "vars": {"token": "((hub-deploy-token))"}},
+        {**ok, "ensure": {"task": "upload", "params": {"T": "((thehub-ingestion-token))"}}},
+        # A registry read whose address is data, not a var (image-refresh/scan).
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", 'trivy image --insecure "$c"']}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "/kaniko/executor -d x"]}}},
     ]
+    local = {**ok, "config": {"run": {"path": "sh", "args": ["-c", "echo ((.:sha))"]}}}
+    assert _remote_task_faults(local, images) == [], "a local var is set inside the build"
     for step in bad:
         assert _remote_task_faults(step, images), step
 
