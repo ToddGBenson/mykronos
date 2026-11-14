@@ -102,12 +102,20 @@ foreach ($name in @("tsa_host_key", "worker_key", "worker2_key")) {
     }
 }
 
-# The web node authorises workers by public key, so this file is the two
-# worker .pubs concatenated. Rewritten every run rather than only when absent:
-# adding a third worker means adding its key here, and a stale file rejects it
+# The web node authorises workers by public key, so this file is every
+# worker .pub concatenated. Rewritten every run rather than only when absent:
+# adding a worker means adding its key here, and a stale file rejects it
 # with an error about the worker rather than about this list.
+#
+# Every `*_key.pub` but the TSA host key, not the two names above: a worker
+# on another host (Add-LinuxWorker.ps1, TheHub #61659) adds `<name>_key.pub`
+# beside them, and this line used to drop it on the next run - the worker
+# would then be refused at the handshake with nothing here saying why.
 $authorized = Join-Path $keyDir "authorized_worker_keys"
-Get-Content (Join-Path $keyDir "worker_key.pub"), (Join-Path $keyDir "worker2_key.pub") |
+Get-ChildItem -Path $keyDir -Filter "*_key.pub" |
+    Where-Object { $_.Name -ne "tsa_host_key.pub" } |
+    Sort-Object Name |
+    ForEach-Object { Get-Content $_.FullName } |
     Set-Content -Path $authorized -Encoding ascii
 
 if ($NoStart) { return }

@@ -45,6 +45,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-174 — Concourse workers yield to production; task limits are CPU shares only](decisions/D-174-concourse-workers-yield-to-production-not-their-tasks.md)
 - [D-175 — Triage, correlation and remediation upgrade deterministically first; a model only proposes, in shadow, after the corpus can grade it](decisions/D-175-triage-correlation-and-remediation-upgrade-deterministically-first.md)
 - [D-176 — An unmeasured fact is reported and scored as unknown, never as its comfortable answer](decisions/D-176-an-unmeasured-fact-is-reported-and-scored-as-unknown.md)
+- [D-178 — A worker on another host registers over the TSA on the LAN address and runs compute steps only](decisions/D-178-a-worker-on-another-host-registers-over-the-tsa-and-runs-compute-steps-only.md)
 
 <!-- decisions-index:end -->
 

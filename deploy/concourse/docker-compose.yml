@@ -532,6 +532,17 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
+      # The TSA, for a worker on another host (TheHub #61659, D-178). The two
+      # workers below reach it as `concourse:2222` on the compose network and
+      # never through this publish. It stays on loopback - where nothing
+      # dials it - until .env names this host's LAN address in
+      # CONCOURSE_TSA_BIND_IP, which Add-LinuxWorker.ps1 writes together
+      # with a firewall rule that denies every LAN address but the worker's.
+      # Measured 2026-11-13: Docker Desktop honours a LAN-address bind (a
+      # throwaway publish on 192.168.0.14 answered there and refused on
+      # 127.0.0.1), so this is a real scope, not a label. Behind it the TSA
+      # is an SSH server that admits only the keys in authorized_worker_keys.
+      - "${CONCOURSE_TSA_BIND_IP:-127.0.0.1}:2222:2222"
     environment:
       CONCOURSE_POSTGRES_HOST: concourse-db
       CONCOURSE_POSTGRES_USER: concourse
