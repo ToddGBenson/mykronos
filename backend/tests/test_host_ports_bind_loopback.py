@@ -58,7 +58,10 @@ def test_the_port_is_published_on_loopback_only(compose: Path, service: str, por
     published = [p for p in _ports(compose, service) if p.rsplit(":", 1)[-1] == str(port)]
     assert published, f"{service} no longer publishes {port}; its consumers would lose it"
     for binding in published:
-        assert binding.startswith("127.0.0.1:"), (
+        # D-178 / D-180: a host may choose the bind through `${NAME_BIND:-...}`,
+        # but the committed default must still be loopback.
+        default = re.sub(r"^\$\{\w+_BIND:-([^}]*)\}", r"\1", binding)
+        assert default.startswith("127.0.0.1:"), (
             f"{service} publishes {binding!r} beyond loopback (TheHub #60841)"
         )
 

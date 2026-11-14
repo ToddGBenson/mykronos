@@ -47,6 +47,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-176 — An unmeasured fact is reported and scored as unknown, never as its comfortable answer](decisions/D-176-an-unmeasured-fact-is-reported-and-scored-as-unknown.md)
 - [D-177 — The Product Owner console is frozen read-only; MyKronos holds DevSecOps facts, the Hub holds operations](decisions/D-177-the-product-owner-console-is-frozen-read-only.md)
 - [D-178 — The estate APIs stay loopback-bound by default; the firewall rule, not the binding, is the LAN lock](decisions/D-178-the-estate-apis-bind-loopback-by-default-the-firewall-is-the-lan-lock.md)
+- [D-180 — Pipelines address the registry through a worker-visible variable; a remote worker joins by tag and public key; Vault-reading jobs stay on local workers](decisions/D-180-pipelines-address-the-registry-through-a-worker-visible-variable.md)
 
 <!-- decisions-index:end -->
 

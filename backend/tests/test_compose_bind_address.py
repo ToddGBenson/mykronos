@@ -21,6 +21,8 @@ CONCOURSE = ROOT / "deploy" / "concourse" / "docker-compose.yml"
 CASES = (
     (MYKRONOS, "backend", "8100", "MYKRONOS_BIND"),
     (CONCOURSE, "concourse", "8080", "CONCOURSE_BIND"),
+    # D-180 (TheHub #61659): the registry a remote worker pulls and pushes.
+    (CONCOURSE, "registry", "5000", "REGISTRY_BIND"),
 )
 
 
@@ -66,6 +68,11 @@ def test_the_variables_are_documented() -> None:
     )
     assert re.search(
         r"^CONCOURSE_BIND=127\.0\.0\.1\s*$",
+        (ROOT / "deploy" / "concourse" / ".env.example").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^REGISTRY_BIND=127\.0\.0\.1\s*$",
         (ROOT / "deploy" / "concourse" / ".env.example").read_text(encoding="utf-8"),
         re.MULTILINE,
     )
