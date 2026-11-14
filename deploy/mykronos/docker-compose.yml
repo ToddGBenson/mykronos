@@ -219,7 +219,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${MYKRONOS_BIND:-127.0.0.1}:3100:3100"
+      - "127.0.0.1:3100:3100"
     environment:
       # Service name, not a host IP: these two share a compose network and
       # Docker's resolver works between them. The garden-container DNS problem

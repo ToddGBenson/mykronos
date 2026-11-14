@@ -20,7 +20,6 @@ CONCOURSE = ROOT / "deploy" / "concourse" / "docker-compose.yml"
 #: (compose file, service, published port, variable)
 CASES = (
     (MYKRONOS, "backend", "8100", "MYKRONOS_BIND"),
-    (MYKRONOS, "frontend", "3100", "MYKRONOS_BIND"),
     (CONCOURSE, "concourse", "8080", "CONCOURSE_BIND"),
 )
 
@@ -70,3 +69,8 @@ def test_the_variables_are_documented() -> None:
         (ROOT / "deploy" / "concourse" / ".env.example").read_text(encoding="utf-8"),
         re.MULTILINE,
     )
+
+
+def test_the_dashboard_stays_loopback_even_when_the_bind_is_opened() -> None:
+    entry = _port_entry(MYKRONOS, "frontend", "3100")
+    assert _resolve(entry, {"MYKRONOS_BIND": "0.0.0.0"}) == "127.0.0.1:3100:3100"

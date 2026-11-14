@@ -8,10 +8,10 @@ default. A host may bind them to all interfaces only when its firewall admits a
 single named runner host. The firewall rule, not the binding, is the LAN lock.
 
 **What changes.** The published ports in `deploy/mykronos/docker-compose.yml`
-(backend 8100, frontend 3100) and the Concourse web port 8080 in
+(backend 8100) and the Concourse web port 8080 in
 `deploy/concourse/docker-compose.yml` take their bind address from
 `${MYKRONOS_BIND:-127.0.0.1}` and `${CONCOURSE_BIND:-127.0.0.1}`. The committed
-default is unchanged. The TSA, workers, database and every other service are
+default is unchanged. The dashboard on 3100 stays loopback; proxy.ts's gate is its only lock. The TSA, workers, database and every other service are
 untouched, and 2222 is not published.
 
 **Why.** A Linux runner host is being added to run CI workers and builders, and
