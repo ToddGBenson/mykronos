@@ -15,6 +15,9 @@
     (#60753). With -Rotate it mints a fresh one, since the new .env has none.
     -Rotate also rewrites .env without CONCOURSE_BIND, which falls back to
     loopback (fails safe); re-add it if the host serves a named runner (D-178).
+    The same goes for CONCOURSE_TSA_BIND_IP (the TSA, 2222, for a worker on
+    another host): -Rotate drops it and 2222 falls back to loopback; re-run
+    Add-LinuxWorker.ps1 to put it back behind its firewall rule (D-181).
 
 .NOTES
     ASCII only. Windows PowerShell 5.1 reads a BOM-less file as CP1252, so a
@@ -104,12 +107,24 @@ foreach ($name in @("tsa_host_key", "worker_key", "worker2_key")) {
     }
 }
 
-# The web node authorises workers by public key, so this file is the two
-# worker .pubs concatenated. Rewritten every run rather than only when absent:
-# adding a third worker means adding its key here, and a stale file rejects it
+# The web node authorises workers by public key, so this file is every
+# worker .pub concatenated. Rewritten every run rather than only when absent:
+# adding a worker means adding its key here, and a stale file rejects it
 # with an error about the worker rather than about this list.
+#
+# Every `*_key.pub` but the TSA host key and the session signing key, not
+# the two names above: a worker on another host (Add-LinuxWorker.ps1, TheHub
+# #61659) adds `<name>_key.pub` beside them, and this line used to drop it on
+# the next run - the worker would then be refused at the handshake with
+# nothing here saying why. Neither excluded key is a worker's: the TSA host
+# key is the web node's own, and a session_signing_key.pub (generate-key
+# -t rsa writes none today, but a hand-made one would) signs browser cookies.
 $authorized = Join-Path $keyDir "authorized_worker_keys"
-Get-Content (Join-Path $keyDir "worker_key.pub"), (Join-Path $keyDir "worker2_key.pub") |
+$notWorkerKeys = @("tsa_host_key.pub", "session_signing_key.pub")
+Get-ChildItem -Path $keyDir -Filter "*_key.pub" |
+    Where-Object { $notWorkerKeys -notcontains $_.Name } |
+    Sort-Object Name |
+    ForEach-Object { Get-Content $_.FullName } |
     Set-Content -Path $authorized -Encoding ascii
 
 if ($NoStart) { return }

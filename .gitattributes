@@ -13,3 +13,6 @@ docs/DECISIONS.md merge=union
 
 # Semgrep fixture output: byte offsets and columns assume LF (TheHub #60746).
 backend/tests/fixtures/semgrep_fix/** -text
+
+# A worker install script that the operator runs with bash on Linux (TheHub #61659).
+deploy/concourse/linux-worker/*.sh text eol=lf
