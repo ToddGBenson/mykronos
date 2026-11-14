@@ -9,6 +9,8 @@ All calls go to the backend on `127.0.0.1:8100` with the perimeter header
 `X-Hub-Token` and a bearer credential. A person uses the admin token; an agent
 uses its own `mka_` credential (`POST /api/agents/credentials`).
 
+The published ports bind to loopback by default. A host that serves a single named runner host (a Linux box for CI workers and builders) may set `MYKRONOS_BIND` (backend 8100 and frontend 3100, in `backend/.env`) or `CONCOURSE_BIND` (Concourse web 8080, in `deploy/concourse/.env`) to `0.0.0.0`, but only when its firewall admits that one runner host on those ports; the firewall rule is the LAN lock, not the binding (D-178). The change takes effect when the containers are next recreated.
+
 ## Who can approve what
 
 `approval-policy-v1.yaml` is the only source. In short:

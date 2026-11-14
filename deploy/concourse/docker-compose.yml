@@ -531,7 +531,7 @@ services:
       concourse-db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${CONCOURSE_BIND:-127.0.0.1}:8080:8080"
     environment:
       CONCOURSE_POSTGRES_HOST: concourse-db
       CONCOURSE_POSTGRES_USER: concourse

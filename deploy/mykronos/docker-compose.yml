@@ -42,7 +42,7 @@ services:
       # answers there and refuses on the LAN address. Nothing on the LAN
       # reached this anyway: the host firewall has denied 192.168.0.0/24 on
       # this port since F-15.
-      - "127.0.0.1:8100:8100"
+      - "${MYKRONOS_BIND:-127.0.0.1}:8100:8100"
     environment:
       # Secrets come from --env-file, never from this file. The gate token,
       # the admin token and the webhook secret are all in backend/.env, which
@@ -219,7 +219,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "127.0.0.1:3100:3100"
+      - "${MYKRONOS_BIND:-127.0.0.1}:3100:3100"
     environment:
       # Service name, not a host IP: these two share a compose network and
       # Docker's resolver works between them. The garden-container DNS problem
