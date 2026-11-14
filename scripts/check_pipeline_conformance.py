@@ -326,8 +326,12 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
         wrapped: set[int] = set()
 
         def wrap(node: dict[str, Any], sink: set[int] = wrapped) -> None:
-            if "timeout" in node and ("do" in node or "try" in node):
-                _walk(node, lambda inner: sink.add(id(inner)))
+            # Only the `do:`/`try:` body: the wrapper's own hooks (`ensure`,
+            # `on_*`) run outside its deadline, so they are not timed by it.
+            # A null or empty timeout is no timeout.
+            if node.get("timeout") and ("do" in node or "try" in node):
+                for body in (node.get("do"), node.get("try")):
+                    _walk(body, lambda inner: sink.add(id(inner)))
 
         _walk(plan, wrap)
 
@@ -338,7 +342,7 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
             if (
                 isinstance(task, str)
                 and task not in HOOK_TASKS
-                and "timeout" not in node
+                and not node.get("timeout")
                 and id(node) not in covered
             ):
                 sink.append(task)

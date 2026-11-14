@@ -78,18 +78,23 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
 # Any pipeline var. Workers never resolve vars; the web node puts the value in
 # the step, so a var on a remote step is a value on the remote host. `((.:x))`
 # is a local var (`load_var`), set inside the build, and is allowed.
-# `$((n + 1))` is shell arithmetic, not a var.
-PIPELINE_VAR = re.compile(r"(?<!\$)\(\((?!\.:)[^)]*\)\)")
+# Matched by content: a var name has no spaces or operators, so shell
+# arithmetic `$((attempt + 1))` is not one. A `$` in front changes nothing:
+# Concourse interpolates `$((token))` all the same.
+PIPELINE_VAR = re.compile(r"\(\((?!\.:)[-/.:@\"\w]+\)\)")
 
 # Reading or writing an image registry from inside a task: the registry the
 # pipelines use is on this host, and its address can arrive as data (plan.tsv)
 # rather than as a var, as image-refresh/scan's `trivy image --insecure` does.
 # `trivy image` is allowed only with `--input` (a tarball) in the same command.
 REGISTRY_IO = re.compile(
-    r"--insecure|\btrivy image\b(?![^\n]*--input)|\bcrane\b|\bskopeo\b"
-    r"|\bdocker (pull|push)\b|--push\b",
+    r"--insecure|\bcrane\b|\bskopeo\b|\bdocker (pull|push)\b|--push\b",
     re.IGNORECASE,
 )
+# `trivy ... image` (global flags may come first) reads a registry unless the
+# same simple command, not just the same line, names `--input` (a tarball).
+SIMPLE_COMMAND_BREAK = re.compile(r"\n|;|&&|\|\||\|")
+TRIVY_IMAGE = re.compile(r"\btrivy\b(\s+-\S+)*\s+image\b")
 
 # Anything that names a service on this host. Garden task containers reach the
 # host only through Docker Desktop's gateway, by a pipeline var or a literal.
@@ -224,7 +229,7 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
     the step carries reaches the remote host's build plan.
     """
     faults = []
-    if "timeout" in step:
+    if step.get("timeout"):
         faults.append(
             "a task-level timeout starts after a worker is chosen, so it does not bound "
             "the wait for one: put the timeout on a wrapping do/try"
@@ -249,6 +254,9 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
     registry = REGISTRY_IO.search(text)
     if registry:
         faults.append(f"reads or writes a registry: {registry.group(0)}")
+    for command in SIMPLE_COMMAND_BREAK.split(text):
+        if TRIVY_IMAGE.search(command) and "--input" not in command:
+            faults.append(f"reads a registry: {command.strip()[:60]}")
     if "/kaniko/executor" in text and "--no-push" not in text:
         faults.append("kaniko without --no-push pushes to the registry")
     config = step.get("config") or {}
@@ -289,19 +297,22 @@ def _timeout_wrapped(steps: Any, task_name: str, wrapped: bool = False) -> bool 
             continue
         if step.get("task") == task_name:
             return wrapped
-        here = wrapped or ("timeout" in step and ("do" in step or "try" in step))
-        children: list[Any] = []
+        # Only the body is timed: a wrapper's hooks run outside its deadline,
+        # so they inherit `wrapped`, not `here`. A null timeout is none.
+        here = wrapped or bool(step.get("timeout") and ("do" in step or "try" in step))
+        children: list[tuple[Any, bool]] = []
         for key in ("do", "aggregate", "in_parallel"):
             if key in step:
                 inner = step[key]
-                children.append(inner.get("steps", []) if isinstance(inner, dict) else inner)
+                body = inner.get("steps", []) if isinstance(inner, dict) else inner
+                children.append((body, here))
         if "try" in step:
-            children.append([step["try"]])
+            children.append(([step["try"]], here))
         for hook in _HOOKS:
             if hook in step:
-                children.append([step[hook]])
-        for child in children:
-            found = _timeout_wrapped(child, task_name, here)
+                children.append(([step[hook]], wrapped))
+        for child, timed in children:
+            found = _timeout_wrapped(child, task_name, timed)
             if found is not None:
                 return found
     return None
@@ -365,6 +376,13 @@ def test_the_wrapping_timeout_check_can_fail() -> None:
     assert _timeout_wrapped([{**task, "timeout": "20m"}], "t") is False
     assert _timeout_wrapped([{"do": [task]}], "t") is False
     assert _timeout_wrapped([{"do": [task], "timeout": "20m"}], "other") is None
+    # A wrapper's hooks run outside its deadline.
+    other = {"task": "x"}
+    assert _timeout_wrapped([{"do": [other], "timeout": "20m", "ensure": task}], "t") is False
+    assert _timeout_wrapped([{"do": [other], "timeout": "20m", "on_failure": task}], "t") is False
+    # A null or empty timeout is none.
+    assert _timeout_wrapped([{"do": [task], "timeout": None}], "t") is False
+    assert _timeout_wrapped([{"do": [task], "timeout": ""}], "t") is False
 
 
 def test_the_compute_only_check_can_fail() -> None:
@@ -387,12 +405,16 @@ def test_the_compute_only_check_can_fail() -> None:
         {**ok, "config": {"run": {"path": "curl", "args": ["http://host.docker.internal:8000"]}}},
         # A var anywhere: run.args, step-level vars, a hook.
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "echo ((thehub-token))"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "echo $((thehub-token))"]}}},
         {**ok, "vars": {"token": "((hub-deploy-token))"}},
         {**ok, "ensure": {"task": "upload", "params": {"T": "((thehub-ingestion-token))"}}},
         # A registry read whose address is data, not a var (image-refresh/scan).
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", 'trivy image --insecure "$c"']}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "/kaniko/executor -d x"]}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "trivy image --quiet img:1"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "trivy -q image reg/x"]}}},
+        # --input in the same line but another simple command
+        {**ok, "config": {"run": {"args": ["-c", 'trivy image "$c" || echo --input']}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "crane copy a b"]}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "skopeo inspect docker://a"]}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "docker pull a"]}}},

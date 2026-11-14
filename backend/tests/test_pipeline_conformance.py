@@ -487,6 +487,11 @@ def test_a_timed_wrapper_times_the_tasks_inside_it(tmp_path: Path) -> None:
     assert problems_for(others + [{"do": tasks, "timeout": "20m"}]) == []
     assert problems_for(others + [{"try": {"do": tasks}, "timeout": "20m"}]) == []
     assert problems_for(others + [{"do": tasks}]), "an untimed do times nothing"
+    assert problems_for(others + [{"do": tasks, "timeout": None}]), "a null timeout is none"
+    # The wrapper's hooks run outside its deadline, so they are not timed by it.
+    hook = {"task": "untimed-upload", "config": {"platform": "linux"}}
+    found = problems_for(others + [{"do": tasks[:1], "timeout": "20m", "ensure": hook}])
+    assert found and "untimed-upload" in found[0], found
 
 
 THEHUB_SCANNERS = ("secrets", "sast", "dependencies", "iac", "prompt-evals", "ai-models")
