@@ -154,6 +154,7 @@ async def daily_briefing_route(
             inputs,
             now=now,
             delivery=delivery,
+            settings=state.settings,
         )
     else:
         report = await asyncio.to_thread(
