@@ -464,6 +464,31 @@ def test_the_checker_can_actually_fail(tmp_path: Path) -> None:
     assert any("PS-7" in problem and "sast" in problem for problem in problems), problems
 
 
+def test_a_timed_wrapper_times_the_tasks_inside_it(tmp_path: Path) -> None:
+    """PS-7 accepts a `do:`/`try:` carrying `timeout:` for the tasks in it
+    (TheHub #61659: on a tagged task only the wrapper bounds the worker wait),
+    and still refuses a task with neither."""
+    source = checker.PIPELINE_DIR / "mykronos.yml"
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    job = next(j for j in document["jobs"] if j["name"] == "sast")
+    tasks = [s for s in job["plan"] if "task" in s and s.get("task") != "preflight"]
+    assert tasks, "sast has no task to wrap"
+    for step in tasks:
+        step.pop("timeout", None)
+
+    def problems_for(plan: list) -> list[str]:
+        job["plan"] = plan
+        path = tmp_path / "mykronos.yml"
+        path.write_text(yaml.safe_dump(document), encoding="utf-8")
+        found, _ = checker.check_pipeline(path)
+        return [p for p in found if " PS-7 " in p and ":sast " in p]
+
+    others = [s for s in job["plan"] if s not in tasks]
+    assert problems_for(others + [{"do": tasks, "timeout": "20m"}]) == []
+    assert problems_for(others + [{"try": {"do": tasks}, "timeout": "20m"}]) == []
+    assert problems_for(others + [{"do": tasks}]), "an untimed do times nothing"
+
+
 THEHUB_SCANNERS = ("secrets", "sast", "dependencies", "iac", "prompt-evals", "ai-models")
 
 

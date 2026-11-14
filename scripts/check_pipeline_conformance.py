@@ -319,10 +319,28 @@ def check_pipeline(path: Path) -> tuple[list[str], list[tuple[str, ...]]]:
         _walk(plan, unguarded)
 
         untimed: list[str] = []
+        # [TheHub #61659] A `do:` or `try:` carrying `timeout:` times every
+        # task inside it, and on a tagged task it is the only timeout that
+        # also bounds the wait for a worker (Concourse 8.3.3 starts a task's
+        # own timeout after the worker is chosen).
+        wrapped: set[int] = set()
 
-        def visit(node: dict[str, Any], sink: list[str] = untimed) -> None:
+        def wrap(node: dict[str, Any], sink: set[int] = wrapped) -> None:
+            if "timeout" in node and ("do" in node or "try" in node):
+                _walk(node, lambda inner: sink.add(id(inner)))
+
+        _walk(plan, wrap)
+
+        def visit(
+            node: dict[str, Any], sink: list[str] = untimed, covered: set[int] = wrapped
+        ) -> None:
             task = node.get("task")
-            if isinstance(task, str) and task not in HOOK_TASKS and "timeout" not in node:
+            if (
+                isinstance(task, str)
+                and task not in HOOK_TASKS
+                and "timeout" not in node
+                and id(node) not in covered
+            ):
                 sink.append(task)
 
         _walk(plan, visit)

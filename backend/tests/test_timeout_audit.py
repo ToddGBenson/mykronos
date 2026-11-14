@@ -324,3 +324,14 @@ class TestTheAuditActuallyRuns:
         assert result.returncode == 2, result.stdout[-4000:]
         assert "could not audit" in result.stdout
         assert "every cap clears" not in result.stdout
+
+
+def test_a_timed_wrapper_caps_the_tasks_inside_it() -> None:
+    """[TheHub #61659] A remote task's timeout is on its `do:` (only that one
+    also bounds the wait for a worker), and the audit counts it as the cap."""
+    from mykronos.timeout_audit import task_caps
+
+    wrapped = {"name": "j", "plan": [{"do": [{"task": "build"}], "timeout": "20m"}]}
+    assert task_caps(wrapped) == [("build", 20)]
+    plain = {"name": "j", "plan": [{"task": "scan", "timeout": "90m"}, {"do": [{"task": "b"}]}]}
+    assert task_caps(plain) == [("scan", 90)], "an untimed do caps nothing"

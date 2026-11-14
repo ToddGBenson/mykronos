@@ -281,7 +281,10 @@ def test_the_kaniko_build_loop_keeps_its_own_shell_tools() -> None:
 
     config = yaml.safe_load(THEHUB_PIPELINE.read_text(encoding="utf-8"))
     job = next(j for j in config["jobs"] if j["name"] == "image-refresh")
-    build = next(s for s in job["plan"] if s.get("task") == "build")
+    # [TheHub #61659] `build` sits in a timed `do:` so its timeout bounds the
+    # wait for a remote worker; look one level in as well.
+    steps = [s for step in job["plan"] for s in [step, *(step.get("do") or [])]]
+    build = next(s for s in steps if s.get("task") == "build")
     script = build["config"]["run"]["args"][-1]
     assert "--cleanup" in script
     assert "--ignore-path=/busybox" in script

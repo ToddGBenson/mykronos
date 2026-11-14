@@ -278,9 +278,13 @@ def audit(
     return report
 
 
-def _audit_job(pipeline: str, job: dict[str, Any], history: _History,
-               report: TimeoutAuditReport, emit: Callable[[str], None]) -> None:
-    name = job["name"]
+def task_caps(job: dict[str, Any]) -> list[tuple[str, int]]:
+    """Every timeout that caps a task in `job`, as (task, minutes).
+
+    [TheHub #61659] A timed `do:`/`try:` is the cap of the tasks inside it: a
+    task on a remote worker carries its timeout there, because only the
+    wrapper's timeout also bounds the wait for a worker.
+    """
     caps: list[tuple[str, int]] = []
 
     def visit(node: dict[str, Any]) -> None:
@@ -289,8 +293,26 @@ def _audit_job(pipeline: str, job: dict[str, Any], history: _History,
             minutes = to_minutes(node["timeout"])
             if minutes is not None:
                 caps.append((task, minutes))
+        elif task is None and node.get("timeout") and ("do" in node or "try" in node):
+            minutes = to_minutes(node["timeout"])
+            inner: list[str] = []
+
+            def collect(n: dict[str, Any]) -> None:
+                if isinstance(n.get("task"), str) and n["task"] not in HOOKS:
+                    inner.append(n["task"])
+
+            walk([node.get("do") or node.get("try")], collect)
+            if minutes is not None and inner:
+                caps.append(("+".join(inner), minutes))
 
     walk(job.get("plan") or [], visit)
+    return caps
+
+
+def _audit_job(pipeline: str, job: dict[str, Any], history: _History,
+               report: TimeoutAuditReport, emit: Callable[[str], None]) -> None:
+    name = job["name"]
+    caps = task_caps(job)
     if not caps:
         return
     report.capped_jobs += 1
