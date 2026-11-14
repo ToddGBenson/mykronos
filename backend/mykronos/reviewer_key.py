@@ -181,6 +181,19 @@ def _record(db: Database, result: ProbeResult, model: str, now: datetime) -> Rev
         return row
 
 
+def record_refusal(
+    db: Database, http_status: int, model: str, *, now: datetime | None = None
+) -> ReviewerKeyProbe:
+    """A real review was refused (401/403): the same fact the probe records.
+
+    The review path is the first to see a key go bad, often by most of an
+    hour, so it writes the `refused` row itself (TheHub #61596). The health
+    row, the pending list and the daily briefing then read it at once, and
+    the next probe tick sends the alert, de-duplicated on this row as usual.
+    """
+    return _record(db, ProbeResult("refused", http_status), model, now or datetime.now(UTC))
+
+
 def _mark_alerted(db: Database, alerted: bool) -> None:
     with db.session() as session:
         row = session.get(ReviewerKeyProbe, 1)

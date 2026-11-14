@@ -359,6 +359,112 @@ class TestTheIndependentReviewer:
         assert "model `claude-opus-5-5`" in latest["summary"]
 
 
+class TestARefusedKeyConcludesTheCheck:
+    """A refused reviewer key fails the check with the reason, instead of
+    leaving it in progress with nothing to say why (TheHub #61596)."""
+
+    def _refusing(self, client, monkeypatch, status: int = 401) -> None:
+        import anthropic
+        import httpx2
+
+        response = httpx2.Response(
+            status, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        )
+        error = anthropic.AuthenticationError(
+            "authentication_error: invalid x-api-key", response=response, body=None
+        )
+
+        def create(**kwargs: Any) -> Any:
+            raise error
+
+        fake = SimpleNamespace(messages=SimpleNamespace(create=create))
+        monkeypatch.setattr(client.app.state.settings, "reviewer_api_key", "test-key")
+        monkeypatch.setattr(reviewer.anthropic, "Anthropic", lambda api_key: fake)
+
+    def test_a_refused_review_fails_the_check_with_the_reason(
+        self, client, admin_auth, github, onboarded, monkeypatch
+    ) -> None:
+        self._refusing(client, monkeypatch)
+        agent = _agent(client, admin_auth)
+        _open_pr(github, ["docs/a.md"])
+        body = _request(client, agent).json()
+        assert _checks(github)[-1]["conclusion"] is None
+
+        response = client.post(f"/api/approvals/{body['id']}/independent-review", headers=agent)
+
+        assert response.status_code == 503
+        latest = _checks(github)[-1]
+        assert latest["conclusion"] == "failure"
+        assert "model key is refused" in latest["title"]
+        assert "The model API refused the review (401)" in latest["summary"]
+        assert "MYKRONOS_REVIEWER_API_KEY" in latest["summary"]
+        assert "test-key" not in latest["summary"]
+        # The request itself stays pending for a person, and the job leaves the
+        # failed check alone rather than flipping it back to in progress.
+        assert client.get(f"/api/approvals/{body['id']}", headers=agent).json()["state"] == (
+            "pending"
+        )
+        policy = cached_policy(client.app.state.settings.approval_policy_path)
+        asyncio.run(
+            pull_requests.publish_due(client.app.state.db, policy, client.app.state.github_factory)
+        )
+        assert _checks(github)[-1]["conclusion"] == "failure"
+
+    def test_a_second_refusal_does_not_post_again(
+        self, client, admin_auth, github, onboarded, monkeypatch
+    ) -> None:
+        self._refusing(client, monkeypatch)
+        agent = _agent(client, admin_auth)
+        _open_pr(github, ["docs/a.md"])
+        body = _request(client, agent).json()
+        for _ in range(2):
+            client.post(f"/api/approvals/{body['id']}/independent-review", headers=agent)
+        assert [c["conclusion"] for c in _checks(github)] == [None, "failure"]
+
+    def test_a_person_can_still_approve_and_it_goes_green(
+        self, client, admin_auth, github, onboarded, monkeypatch
+    ) -> None:
+        self._refusing(client, monkeypatch)
+        agent = _agent(client, admin_auth)
+        _open_pr(github, ["docs/a.md"])
+        body = _request(client, agent).json()
+        client.post(f"/api/approvals/{body['id']}/independent-review", headers=agent)
+
+        _decide(client, admin_auth, body)
+
+        assert _checks(github)[-1]["conclusion"] == "success"
+
+    def test_a_review_that_runs_after_the_key_is_replaced_reopens_the_check(
+        self, client, admin_auth, github, onboarded, monkeypatch
+    ) -> None:
+        self._refusing(client, monkeypatch)
+        agent = _agent(client, admin_auth)
+        _open_pr(github, ["docs/a.md"])
+        body = _request(client, agent).json()
+        client.post(f"/api/approvals/{body['id']}/independent-review", headers=agent)
+        assert _checks(github)[-1]["conclusion"] == "failure"
+
+        answer = {"verdict": "approve", "rationale": "Docs only.", "checks": []}
+
+        def create(**kwargs: Any) -> Any:
+            response = SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text=json.dumps(answer))],
+                model=kwargs["model"],
+            )
+            response._request_id = "req_ok"
+            return response
+
+        fake = SimpleNamespace(messages=SimpleNamespace(create=create))
+        monkeypatch.setattr(reviewer.anthropic, "Anthropic", lambda api_key: fake)
+        # Shadow (the default): the verdict is recorded, the request stays pending.
+        response = client.post(f"/api/approvals/{body['id']}/independent-review", headers=agent)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["state"] == "pending"
+        assert _checks(github)[-1]["conclusion"] is None
+
+
 class TestRequestsNobodyMade:
     """The job opens a request for a head nobody asked about, after a grace
     period in which an agent author can ask under its own name."""

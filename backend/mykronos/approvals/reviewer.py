@@ -140,7 +140,22 @@ REVIEW_SCHEMA: dict[str, Any] = {
 
 
 class ReviewerUnavailableError(ApprovalError):
-    """The reviewer cannot run: no API key, or the model could not be reached."""
+    """The reviewer cannot run: no API key, or the model could not be reached.
+
+    `refused_status` is set when the model API refused the key itself (401 or
+    403): a credential to replace, not a request to retry (TheHub #61596).
+    """
+
+    def __init__(self, message: str, *, refused_status: int | None = None) -> None:
+        super().__init__(message)
+        self.refused_status = refused_status
+
+
+#: HTTP statuses from the model API that mean the key is refused.
+KEY_REFUSED_STATUSES = (401, 403)
+
+#: The setting an operator replaces when the key is refused.
+KEY_SETTING = "MYKRONOS_REVIEWER_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -172,6 +187,17 @@ def _probe_note(db: Any, settings: Any) -> str:
     if row is None or row.state != "refused":
         return ""
     return f"; the hourly probe has reported refused since {row.since:%Y-%m-%d %H:%MZ}"
+
+
+def _record_refusal(db: Any, status: int, model: str) -> None:
+    """Write the refusal down as the key's state (TheHub #61596). A failure to
+    write it is logged, never raised over the 503 the caller is owed."""
+    from mykronos import reviewer_key
+
+    try:
+        reviewer_key.record_refusal(db, status, model)
+    except Exception:  # noqa: BLE001 - the refusal is still reported to the caller
+        logger.exception("Could not record the reviewer key refusal")
 
 
 def api_key(settings: Any) -> str | None:
@@ -408,9 +434,15 @@ def run_review(
                 f"The reviewer could not reach the model: {exc}"
             ) from exc
         except anthropic.APIStatusError as exc:
+            # The note reads the probe as it stood before this refusal.
+            note = _probe_note(db, settings)
+            status = int(exc.status_code)
+            refused = status in KEY_REFUSED_STATUSES
+            if refused:
+                _record_refusal(db, status, model)
             raise ReviewerUnavailableError(
-                f"The model API refused the review ({exc.status_code}): {exc.message}"
-                + _probe_note(db, settings)
+                f"The model API refused the review ({exc.status_code}): {exc.message}" + note,
+                refused_status=status if refused else None,
             ) from exc
 
         api_request_id = getattr(response, "_request_id", None)

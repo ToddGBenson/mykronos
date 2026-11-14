@@ -1385,6 +1385,51 @@ def needs_you_section(delivery: Any, *, now: datetime) -> Section:
     )
 
 
+REVIEWER_KEY_SOURCE = "MyKronos reviewer key probe (hourly, and every refused review)"
+
+
+def reviewer_key_lines(db: Any, settings: Any, *, now: datetime) -> tuple[list[Line], str]:
+    """The platform reviewer's key, when the model API refuses it (TheHub #61596).
+
+    Read live from the probe row, which the hourly probe and every refused
+    review write, so a refusal is on the page within the hour. A stale row is
+    not read as current. Returns (lines, why it could not be read).
+    """
+    from mykronos import reviewer_key
+
+    try:
+        moment = now if now.tzinfo else now.replace(tzinfo=UTC)
+        row = reviewer_key.fresh(db, settings, now=moment)
+    except Exception as exc:  # noqa: BLE001 - reported as the section's reason
+        return [], f"The reviewer key probe could not be read: {_error(exc)}"
+    if row is None or row.state != "refused":
+        return [], ""
+    since = row.since if row.since.tzinfo else row.since.replace(tzinfo=UTC)
+    status = f" (HTTP {row.http_status})" if row.http_status else ""
+    return [
+        Line(
+            what=f"The platform reviewer's key is refused{status} since "
+            f"{since:%Y-%m-%d %H:%MZ}; replace MYKRONOS_REVIEWER_API_KEY.",
+            so_what="No agent review can run: approvals stay pending, and nothing merges "
+            "where independent-review is required, until the key is replaced.",
+            work=STORY,
+            ref="/api/approvals?state=pending",
+        )
+    ], ""
+
+
+def _with_credentials(section: Section, lines: list[Line], why: str) -> Section:
+    """Put credential lines first in "Needs you today", whatever else it could read."""
+    section.lines[:0] = lines
+    if lines:
+        section.data["reviewer_key_refused"] = True
+    if why:
+        section.reason = " ".join(r for r in (section.reason, why) if r)
+        if section.status == OK:
+            section.status = PARTIAL
+    return section
+
+
 def sprint_health_section(delivery: Any, *, now: datetime) -> Section:
     """Sprint stories by gate, the stuck ones, the ones with no change open,
     and what reached `deployed` in the window."""
@@ -1951,6 +1996,7 @@ def build_overall(
     now: datetime,
     threshold: int | None = None,
     delivery: Any = None,
+    settings: Any = None,
 ) -> DailyBriefing:
     """Every overall section, in the order the prototype reads them.
 
@@ -1974,7 +2020,9 @@ def build_overall(
     trust = trust_section(report, risk, as_of=as_of, lake_error=lake_error)
     delta = risk_delta_section(risk, risk_error)
     acceptances = acceptances_section(db, now=now)
-    needs_you = needs_you_section(delivery, now=now)
+    needs_you = _with_credentials(
+        needs_you_section(delivery, now=now), *reviewer_key_lines(db, settings, now=now)
+    )
     sprint = sprint_health_section(delivery, now=now)
     next_sprint = next_sprint_section(
         catalog,
