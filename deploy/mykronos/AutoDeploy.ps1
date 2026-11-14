@@ -34,9 +34,8 @@
       already_attempted     this sha was attempted before: one attempt per
                             sha. Only a run that moved the stack (or died
                             after it started) counts; a deploy.ps1 that
-                            stopped before changing anything (the risk gate
-                            refused or never answered, a pull failed, the
-                            lock was taken: result `not_attempted`) does not
+                            refused before changing anything (result
+                            `not_attempted`, see below) does not
       lock_held             a MyKronos deploy holds the lock
       thehub_deploy_running TheHub's deploy holds its lock (one deploy on the
                             host at a time; they share the memory)
@@ -49,8 +48,44 @@
       windows_memory_low    below the Windows floor (1536 MB)
       quiet_hours           22:00-07:00 America/Phoenix (UTC-7 all year)
 
+    PRE-MOVE REFUSAL VS ATTEMPT (TheHub #61644). deploy.ps1 has two kinds
+    of failure and the one-attempt-per-sha memo must not confuse them:
+
+      a PRE-MOVE REFUSAL  deploy.ps1 stopped before it pulled or changed
+                          anything: the risk gate refused the sha or never
+                          scored it, the deploy lock was held, a pull failed
+                          (both images are pulled before either is tagged),
+                          an override could not be recorded, backend/.env is
+                          missing. It prints ONE machine-readable line,
+                            DEPLOY-PRE-MOVE-REFUSAL kind=<kind>
+                          and then throws as it always has (exit 1; 75 for
+                          the lock, the code TheHub's deploy.sh uses).
+                          Get-PreMoveRefusal reads it. The
+                          memo records `attempted: false, reason: <kind>`
+                          and the sha is retried on a later tick once the
+                          blocker clears (capped: retry_cap).
+      an ATTEMPT          anything else: deploy.ps1 got past those checks,
+                          so images were pulled and compose was brought up.
+                          A failure after that (unhealthy, a mismatch, a
+                          rollback) spends the sha's one attempt, even when
+                          the old stack happens to still be healthy.
+
+    The line and a failing exit are both required: a run that printed the
+    line and exited 0 (or is still running, 124) is not a refusal, and a
+    failure with no line is an attempt. The watcher's own pre-checks (lock,
+    Vault, both memory floors) skip with a reason before deploy.ps1 is ever
+    called, so the refusals above are the ones only deploy.ps1 can see.
+
+    The forward deploy is always passed the decision's FULL 40-character
+    lowercase sha (Get-DeployScriptArgumentList -RequireFullSha): a short
+    tag can name two commits, and TheHub's deploy script refuses one.
+
     ASCII only.
 #>
+
+# The contract with deploy.ps1 for a refusal before anything moved (61644).
+$script:PreMoveRefusalMarker = 'DEPLOY-PRE-MOVE-REFUSAL'
+$script:DeployLockExitCode = 75
 
 # ---------------------------------------------------------------------------
 # Pure helpers
@@ -87,14 +122,15 @@ function Test-QuietHour {
 
 function Test-AutoDeployAttempted {
     # PURE. True when the memo holds an entry for Sha that counts as the one
-    # attempt: anything but 'not_attempted'. A bare string is a sha that
-    # counts.
+    # attempt: anything but 'not_attempted' or `attempted: false`. A bare
+    # string is a sha that counts.
     param([AllowNull()][object[]]$Attempts, [string]$Sha)
     foreach ($a in @($Attempts)) {
         if ($null -eq $a) { continue }
         if ($a -is [string]) { $aSha = $a; $aResult = 'started' }
         else { $aSha = [string]$a.sha; $aResult = [string]$a.result }
         if ($aResult -eq 'not_attempted') { continue }
+        if ($a -isnot [string] -and $a.PSObject.Properties['attempted'] -and $a.attempted -eq $false) { continue }
         if (Test-ShaMatch $Sha $aSha) { return $true }
     }
     return $false
@@ -174,11 +210,58 @@ function Get-NotAttemptedTally {
     }
 }
 
+function Get-DeployScriptArgumentList {
+    <#
+        PURE. The child pwsh's arguments for deploy.ps1. -RequireFullSha (the
+        forward deploy) refuses anything but the full 40-character lowercase
+        sha the decision chose: a 12-character tag was refused by a deploy
+        script on 2026-11-13, and a prefix can name two commits. A rollback
+        passes the tag the running images carry, which a hand deploy may
+        have made shorter, so it needs only 7 to 40 hex.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [AllowEmptyString()][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$Registry,
+        [string[]]$Extra = @(),
+        [switch]$RequireFullSha
+    )
+    if ($RequireFullSha -and $Tag -cnotmatch '^[0-9a-f]{40}$') {
+        throw "deploy.ps1 needs the full 40-character lowercase commit sha, got '$Tag'"
+    }
+    if ($Tag -cnotmatch '^[0-9a-f]{7,40}$') { throw "not a commit sha: '$Tag'" }
+    return @('-NoProfile', '-NonInteractive', '-File', ('"{0}"' -f $ScriptPath),
+        '-Tag', $Tag, '-Registry', $Registry) + @($Extra)
+}
+
+function Get-PreMoveRefusal {
+    <#
+        PURE. The kind of a deploy.ps1 refusal that came before anything
+        moved, or $null when the run got past those checks (an attempt).
+        Needs BOTH a failing exit (not 0, not 124 = still running) and the
+        line `DEPLOY-PRE-MOVE-REFUSAL kind=<kind>` in its output. 75 is
+        deploy.ps1's documented "another deploy holds the lock, nothing
+        pulled", so it is lock_held even without the line.
+    #>
+    param([int]$Code, [AllowNull()][AllowEmptyCollection()][string[]]$Lines = @())
+    if ($Code -eq 0 -or $Code -eq 124) { return $null }
+    $kind = $null
+    $pattern = '^\s*' + [regex]::Escape($script:PreMoveRefusalMarker) + '\s+kind=([a-z_]+)\b'
+    foreach ($line in @($Lines)) {
+        if ($line -and $line -match $pattern) { $kind = $Matches[1] }
+    }
+    if ($kind) { return $kind }
+    if ($Code -eq $script:DeployLockExitCode) { return 'lock_held' }
+    return $null
+}
+
 function Get-AutoDeployOutcome {
     <#
         PURE. What a finished deploy.ps1 run amounts to, from what the
         watcher saw afterwards:
           Code              deploy.ps1's exit code (124 = still running)
+          PreMoveRefusal    Get-PreMoveRefusal's kind, or $null: deploy.ps1
+                            refused before anything moved
           HealthyOnNew      both containers healthy and the backend on H
           HealthyOnPrevious both healthy and the backend still on the sha
                             that ran before
@@ -186,20 +269,31 @@ function Get-AutoDeployOutcome {
           Simulate          -SimulateFailedHealth: treat the new stack as
                             failed whatever it reports
         Returns Result, Counted (does this spend the sha's one attempt),
-        Rollback (should the watcher roll back) and Why.
+        Rollback (should the watcher roll back), Reason (the refusal kind,
+        $null for an attempt) and Why.
     #>
     param(
         [int]$Code,
+        [AllowNull()][AllowEmptyString()][string]$PreMoveRefusal = $null,
         [bool]$HealthyOnNew,
         [bool]$HealthyOnPrevious,
         [bool]$PreviousKnown,
         [bool]$Simulate = $false
     )
-    function Format-Outcome([string]$Result, [bool]$Counted, [bool]$Rollback, [string]$Why) {
-        return [pscustomobject]@{ Result = $Result; Counted = $Counted; Rollback = $Rollback; Why = $Why }
+    function Format-Outcome([string]$Result, [bool]$Counted, [bool]$Rollback, [string]$Why, [string]$Reason = $null) {
+        return [pscustomobject]@{ Result = $Result; Counted = $Counted; Rollback = $Rollback; Why = $Why
+            Reason = $(if ($Reason) { $Reason } else { $null }) }
     }
     if ($Code -eq 124) {
         return (Format-Outcome 'timeout' $true $false 'deploy.ps1 still running; left running, lock held')
+    }
+    if ($PreMoveRefusal) {
+        # deploy.ps1 said, with its exit code and its marker line, that it
+        # stopped before it pulled or changed anything. Nothing moved, so
+        # the sha's one attempt is not spent and there is nothing to roll
+        # back, whatever state the stack was already in.
+        return (Format-Outcome 'not_attempted' $false $false (
+                "deploy.ps1 refused before anything moved ($PreMoveRefusal, exit $Code); production is unchanged") $PreMoveRefusal)
     }
     if ($HealthyOnNew -and -not $Simulate) {
         if ($Code -eq 0) { return (Format-Outcome 'success' $true $false 'healthy on the new sha') }
@@ -209,10 +303,11 @@ function Get-AutoDeployOutcome {
         return (Format-Outcome 'success_with_warning' $true $false "deploy.ps1 exited $Code but both containers are healthy on the new sha")
     }
     if ($HealthyOnPrevious -and -not $Simulate) {
-        # deploy.ps1 stopped before it changed the stack: the risk gate
-        # refused or never answered, a pull failed, the lock was taken (75).
-        # Nothing moved, so the sha's one attempt is not spent.
-        return (Format-Outcome 'not_attempted' $false $false "deploy.ps1 exited $Code before changing the stack; production is unchanged and healthy")
+        # No refusal marker: deploy.ps1 got past its pre-move checks, pulled
+        # and ran compose, and still the old stack is what answers (compose
+        # up failed before recreating, say). That IS the attempt; it is not
+        # retried. There is nothing to roll back to that is not running.
+        return (Format-Outcome 'failed' $true $false "deploy.ps1 exited $Code after its pre-move checks; production is still healthy on the previous sha, so nothing is rolled back")
     }
     if (-not $PreviousKnown) {
         return (Format-Outcome 'failed' $true $false 'no previous sha was recorded; rollback impossible')
@@ -349,7 +444,7 @@ function Get-AutoDeployDecision {
     }
     if ($cap -and $cap.Capped) {
         Add-Reason 'retry_cap' ("$(Get-Short $promoted) stopped before changing anything $($cap.Count) times since " +
-            "$($cap.First) (the gate refused or never answered, a pull failed, the lock was taken); " +
+            "$($cap.First) (a pre-move refusal: the gate refused or never answered, a pull failed, the lock was taken); " +
             "no more tries until $($cap.Until) or a new promoted head")
     } elseif ($cap) {
         $checks.Add('under_retry_cap')
@@ -446,8 +541,14 @@ function Save-AutoDeployAttempt {
     $all0 = @(Read-AutoDeployAttemptList -Path $Path)
     $prior = $all0 | Where-Object { $_.sha -eq $Sha } | Select-Object -Last 1
     $existing = @($all0 | Where-Object { $_.sha -ne $Sha })
-    $entry = [ordered]@{ sha = $Sha; result = $Result; at = $now.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    # `attempted` says in so many words whether this entry spends the sha's
+    # one attempt (61644): false only for a refusal before anything moved,
+    # whose kind is `reason`. 'started' is true: a watcher that dies
+    # mid-deploy has spent it.
+    $entry = [ordered]@{ sha = $Sha; result = $Result; attempted = ($Result -ne 'not_attempted')
+        reason = $null; at = $now.ToString('yyyy-MM-ddTHH:mm:ssZ') }
     foreach ($k in $Extra.Keys) { $entry[$k] = $Extra[$k] }
+    if ($Result -ne 'not_attempted') { $entry['attempted'] = $true }
     # The retry tally survives the 'started' that precedes every run, and
     # grows on each not_attempted (Get-AutoDeployRetryCap reads it).
     if ($Result -eq 'not_attempted') {
