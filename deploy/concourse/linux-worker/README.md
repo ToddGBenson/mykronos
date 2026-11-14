@@ -75,6 +75,15 @@ directory for an untagged step to upload. Routing steps to the worker is a
 pipeline change with its own review (see D-181); this directory only adds
 the worker.
 
+The tasks routed here are listed in `REMOTE_COMPUTE` in
+`backend/tests/test_concourse_worker_tags.py` (TheHub #61659), which also
+checks each one is compute only: no params, no host address, a public image,
+not privileged. Today they are thehub's `pr-gates`/`gate-smoke` `gates`,
+`sast`'s `psscriptanalyzer`, `iac`'s `scan-iac` and `image-refresh`'s
+`build`. While no `linux` worker is running those steps cannot be placed,
+so a remote host that is off or asleep holds up `pr-gates`; `fly workers`
+shows whether one is registered.
+
 ## Where things are on the Linux box
 
 | What | Where |

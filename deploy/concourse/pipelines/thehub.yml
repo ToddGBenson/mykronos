@@ -2596,7 +2596,12 @@ jobs:
                 fi
       - &pr_gates_task
         task: gates
-        tags: [thehub]
+        # [TheHub #61659, D-181] On the remote `linux` workers: compute only.
+        # Its inputs are `pr` (laid out by `pick`, on the host) and the
+        # mykronos checkout; its network is PyPI and the advisory databases;
+        # it takes no params and so no credential; its only output is
+        # `hub_log`, read by the reporting hooks, which stay on the host.
+        tags: [linux]
         container_limits: {cpu: 512}
         image: python313
         # pip-audit resolves the whole requirements set into a scratch venv:
@@ -4414,6 +4419,10 @@ jobs:
         # finding. Reporting, not gating. PLpgSQL is still unread.
         ensure:
           task: psscriptanalyzer
+          # [TheHub #61659, D-181] Compute only, on the remote `linux`
+          # workers: reads `source`, installs from PSGallery, writes
+          # `results`; no params. `upload-psscriptanalyzer` stays on the host.
+          tags: [linux]
           container_limits: {cpu: 512}
           timeout: 10m
           image: pwsh
@@ -6501,6 +6510,10 @@ jobs:
         attempts: *retry_fetch
       - *preflight
       - task: scan-iac
+        # [TheHub #61659, D-181] Compute only, on the remote `linux` workers:
+        # checkov reads `source` and writes `results`; no params. `upload`
+        # (its ensure) stays on the host.
+        tags: [linux]
         container_limits: {cpu: 512}
         timeout: 20m
         image: checkov
@@ -8004,6 +8017,12 @@ jobs:
                 test -s refresh/plan.tsv || { echo "::error::no x-thehub-build recipes found"; exit 1; }
 
       - task: build
+        # [TheHub #61659, D-181] Compute only, on the remote `linux` workers:
+        # the recipes' bases are public vendor images (`plan` puts only the
+        # `--destination` name on the registry, and `--no-push` never dials
+        # it); the images leave as tarballs in `images`. `scan` reads the
+        # registry and `publish` pushes to it, so both stay on the host.
+        tags: [linux]
         container_limits: {cpu: 512}
         timeout: 90m
         image: kaniko
