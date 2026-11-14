@@ -631,13 +631,25 @@ The failed sha is **not retried**. A new promoted main head re-arms the
 watcher. To retry the same sha after fixing the cause, remove its entry from
 `%LOCALAPPDATA%\mykronos\auto-deploy\attempts.json`.
 
-**The carve-out: a deploy that changed nothing is not an attempt.** When
-`deploy.ps1` stops before it touches the stack (the risk gate refused it or
-never answered within its wait, a pull failed, another deploy held the lock
-and it exited 75), production is still healthy on the previous sha. The memo
-then records `result: not_attempted` with the reason, the decision ignores
-that entry, and the next tick that passes every rule tries the same head
-again. No hand edit is needed. The incident still opens, once per sha while
+**Pre-move refusal vs attempt: a deploy that changed nothing is not an
+attempt.** `deploy.ps1` says so itself (TheHub #61644). Every stop before it
+changes the host (the risk gate refused the sha or never scored it within its
+wait, another deploy held the lock, a pull failed, an override could not be
+recorded, `backend/.env` is missing) prints one line,
+`DEPLOY-PRE-MOVE-REFUSAL kind=<kind>`, then fails as before (exit 1; 75 for
+the lock). Both images are pulled before either is retagged, so a failed pull
+moves nothing either. The watcher needs the failing exit and the line
+together; the memo then
+records `result: not_attempted`, `attempted: false` and `reason: <kind>`
+(`risk_refused`, `risk_not_judged`, `lock_held`, `pull_failed`,
+`override_unrecorded`, `env_missing`, `usage`), the Hub run summary carries
+`attempted` and `reason`, the decision ignores that entry, and the next tick
+that passes every rule tries the same head again. No hand edit is needed.
+Anything else is an attempt: once `deploy.ps1` is past those checks, a
+failure spends the sha's one attempt even if the old containers still answer.
+The watcher's own checks (lock, Vault, both memory floors) skip before
+`deploy.ps1` is called at all, and the forward deploy is always passed the
+full 40-character sha. The incident still opens, once per sha while
 it stays open. The retries are capped: after 3 `not_attempted` runs of one sha
 within 24 hours of the first, the watcher skips it with `retry_cap` (a blocking
 reason, so the stuck alert fires once) until that window ends or a new head is

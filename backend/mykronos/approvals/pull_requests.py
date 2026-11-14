@@ -334,39 +334,128 @@ def _expire_overdue(db: Any) -> None:
             _append_event(session, request.id, "expired", "job:pull-request-stamps", {})
 
 
+#: The conclusion a pending request's check takes when the reviewer cannot run
+#: because its key is refused (TheHub #61596). `failure`, not `neutral`: a
+#: required check counts `neutral` as passing, which would let the merge through.
+UNAVAILABLE_CONCLUSION = "failure"
+
+
+def _last_stamp(session: Any, request_id: str) -> ApprovalStamp | None:
+    """The newest stamp GitHub accepted for this request."""
+    stamp: ApprovalStamp | None = (
+        session.execute(
+            select(ApprovalStamp)
+            .where(ApprovalStamp.request_id == request_id, ApprovalStamp.error.is_(None))
+            .order_by(ApprovalStamp.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+    return stamp
+
+
+def _unavailable_shown(stamp: ApprovalStamp | None) -> bool:
+    """True when the check shows a pending request whose reviewer cannot run."""
+    return (
+        stamp is not None
+        and stamp.state == "pending"
+        and stamp.conclusion == UNAVAILABLE_CONCLUSION
+    )
+
+
 async def publish(
-    db: Any, policy: ApprovalPolicy, github_factory: GitHubClientFactory, request_id: str
+    db: Any,
+    policy: ApprovalPolicy,
+    github_factory: GitHubClientFactory,
+    request_id: str,
+    *,
+    reopen: bool = False,
 ) -> ApprovalStamp | None:
     """Post the check run for a request's current state, if it is not posted yet.
 
     A failed post is recorded with its error and retried by the job: the
     decision stands whether or not GitHub heard about it.
+
+    `reopen` is for a review that ran and left the request pending: a check
+    that said the reviewer could not run goes back to in progress. The job
+    never passes it, so it does not undo that check on its own.
     """
     with db.session() as session:
         request = session.get(ApprovalRequest, request_id)
         if request is None or request.duty != DUTY or request.state not in CONCLUSIONS:
             return None
-        last = (
-            session.execute(
-                select(ApprovalStamp)
-                .where(ApprovalStamp.request_id == request_id, ApprovalStamp.error.is_(None))
-                .order_by(ApprovalStamp.created_at.desc())
-            )
-            .scalars()
-            .first()
-        )
-        if last is not None and last.state == request.state:
+        last = _last_stamp(session, request_id)
+        unchanged = last is not None and last.state == request.state
+        if unchanged and not (reopen and _unavailable_shown(last)):
             return None
         state = request.state
         repo = str(request.evidence.get("repo", ""))
         sha = str(request.evidence.get("head_sha", ""))
         title, summary = _summary(session, policy, request)
 
+    return await _post(
+        db, github_factory, request_id, repo, sha, state, CONCLUSIONS[state], title, summary
+    )
+
+
+async def publish_unavailable(
+    db: Any,
+    policy: ApprovalPolicy,
+    github_factory: GitHubClientFactory,
+    request_id: str,
+    reason: str,
+) -> ApprovalStamp | None:
+    """Conclude a pending request's check as failed because the reviewer's key
+    is refused, with the reason, instead of leaving it in progress (TheHub #61596).
+
+    The request stays pending: a person may still decide it, and that decision
+    posts its own conclusion over this one. Posted once per refusal, not once
+    per attempt.
+    """
+    with db.session() as session:
+        request = session.get(ApprovalRequest, request_id)
+        if request is None or request.duty != DUTY or request.state != "pending":
+            return None
+        if _unavailable_shown(_last_stamp(session, request_id)):
+            return None
+        repo = str(request.evidence.get("repo", ""))
+        sha = str(request.evidence.get("head_sha", ""))
+        _, body = _summary(session, policy, request)
+    title = "The independent reviewer could not run: its model key is refused"
+    summary = "\n".join(
+        [
+            f"**Why**: {reason}",
+            "",
+            "The platform reviewer's key must be replaced (MYKRONOS_REVIEWER_API_KEY) "
+            "before an agent review can run. The request stays pending: a person can "
+            "still approve it, and starting a review again after the key is replaced "
+            "puts this check back in progress.",
+            "",
+            body,
+        ]
+    )
+    return await _post(
+        db, github_factory, request_id, repo, sha, "pending", UNAVAILABLE_CONCLUSION, title,
+        summary,
+    )
+
+
+async def _post(
+    db: Any,
+    github_factory: GitHubClientFactory,
+    request_id: str,
+    repo: str,
+    sha: str,
+    state: str,
+    conclusion: str | None,
+    title: str,
+    summary: str,
+) -> ApprovalStamp:
     stamp = ApprovalStamp(
         request_id=request_id,
         target=f"github_check:{repo}@{sha}",
         state=state,
-        conclusion=CONCLUSIONS[state] or "in_progress",
+        conclusion=conclusion or "in_progress",
         created_at=utcnow(),
     )
     github = client_for(db, github_factory, repo)
@@ -378,7 +467,7 @@ async def publish(
                 repo,
                 name=CHECK_NAME,
                 head_sha=sha,
-                conclusion=CONCLUSIONS[state],
+                conclusion=conclusion,
                 title=title,
                 summary=summary,
             )

@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dashboard", tags=["product-owner"])
 
+FROZEN_NOTICE = "Frozen read-only since 2026-11-13: stories and sprints live in the Hub"
+
+# The Product Owner console's story and sprint writes answer 410 (D-177). The
+# switch exists so the write paths stay testable; nothing sets it at runtime.
+WRITES_FROZEN = True
+
+
+def _refuse_frozen() -> None:
+    if WRITES_FROZEN:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=FROZEN_NOTICE)
+
 
 # --------------------------------------------------------------------------
 # Response shapes
@@ -974,6 +985,7 @@ async def pull_into_sprint(
     autonomy armed. TheHub's refusal is shown verbatim and never retried.
     """
     _require_writer(principal, "Pulling a story into the sprint")
+    _refuse_frozen()
     await _refuse_read_only_source(request, principal, repo_id, story_id, "po.sprint_pull")
     hub = _require_hub(request)
     repo_full_name = await _require_member(request, hub, repo_id, story_id)
@@ -1031,6 +1043,7 @@ async def return_to_backlog(
     backlog story is not dispatched, and switching it back on is a decision
     this tab does not make."""
     _require_writer(principal, "Returning a story to the backlog")
+    _refuse_frozen()
     await _refuse_read_only_source(request, principal, repo_id, story_id, "po.return_to_backlog")
     hub = _require_hub(request)
     repo_full_name = await _require_member(request, hub, repo_id, story_id)
@@ -1080,6 +1093,7 @@ async def rank_story(
     the one stored.
     """
     _require_writer(principal, "Ranking the backlog")
+    _refuse_frozen()
     await _refuse_read_only_source(request, principal, repo_id, body.story_id, "po.rank")
     repo_full_name, branch, installation = _onboarding(request, repo_id)
     hub = _require_hub(request)
@@ -1157,6 +1171,7 @@ async def open_template_pr(
     may well exist. Every attempt is audit-logged, including the refusals.
     """
     _require_writer(principal, "Opening a template pull request")
+    _refuse_frozen()
     repo_full_name, branch, installation = _onboarding(request, repo_id)
     database = request.app.state.db
 

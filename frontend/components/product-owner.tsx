@@ -1,15 +1,10 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import {
-  BackToBacklog,
-  PullIntoSprint,
-  RankControls,
-} from "@/components/product-owner-actions";
 import { BacklogOrder } from "@/components/product-owner-backlog-order";
-import { TemplatePicker } from "@/components/product-owner-template";
 import { EmptyState, Label, Pill, Section, StatTile } from "@/components/primitives";
 import type { PoStory, ProductOwnerView } from "@/lib/api";
+import { PO_FROZEN_NOTICE } from "@/lib/po-frozen";
 
 /**
  * The Product Owner console (spec 35, D-135): one tab, four sub-views.
@@ -126,24 +121,18 @@ export function ProductOwnerTab({
             {entry.label}
           </Link>
         ))}
-        {data.writes_refused ? (
-          <span className="ml-auto self-center font-mono text-[11px] text-ink-3">
-            read-only: GitHub Issues
-          </span>
-        ) : !data.can_write ? (
-          <span className="ml-auto self-center font-mono text-[11px] text-ink-3">
-            read-only: writes need the admin role
-          </span>
-        ) : null}
+        <span className="ml-auto self-center font-mono text-[11px] text-ink-3">
+          {PO_FROZEN_NOTICE}
+        </span>
       </nav>
       {children ? (
         children
       ) : view === "backlog" ? (
-        <Backlog repoId={repoId} data={data} />
+        <Backlog data={data} />
       ) : view === "sprint" ? (
-        <Sprint repoId={repoId} data={data} />
+        <Sprint data={data} />
       ) : view === "process" ? (
-        <Process repoId={repoId} data={data} />
+        <Process data={data} />
       ) : (
         <Overview data={data} />
       )}
@@ -371,7 +360,7 @@ function StoryRow({ story, children }: { story: PoStory; children?: ReactNode })
   );
 }
 
-function Backlog({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
+function Backlog({ data }: { data: ProductOwnerView }) {
   if (!data.hub.connected) return null;
   if (data.backlog.length === 0) {
     return (
@@ -381,10 +370,9 @@ function Backlog({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
       />
     );
   }
-  const last = data.backlog.length - 1;
   const manualRows: Record<string, ReactNode> = {};
   const riskRows: Record<string, ReactNode> = {};
-  data.backlog.forEach((story, index) => {
+  data.backlog.forEach((story) => {
     const rank =
       story.rank === null ? (
         <span className="font-mono text-[11px] text-ink-3">unranked</span>
@@ -395,24 +383,12 @@ function Backlog({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
       <StoryRow story={story}>
         {rank}
         <RiskLabel story={story} />
-        {data.can_write ? (
-          <>
-            <RankControls
-              repoId={repoId}
-              storyId={story.id}
-              first={index === 0}
-              last={index === last}
-            />
-            <PullIntoSprint repoId={repoId} storyId={story.id} />
-          </>
-        ) : null}
       </StoryRow>
     );
     riskRows[String(story.id)] = (
       <StoryRow story={story}>
         {rank}
         <RiskLabel story={story} />
-        {data.can_write ? <PullIntoSprint repoId={repoId} storyId={story.id} /> : null}
       </StoryRow>
     );
   });
@@ -454,7 +430,7 @@ function RiskLabel({ story }: { story: PoStory }) {
   );
 }
 
-function Sprint({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
+function Sprint({ data }: { data: ProductOwnerView }) {
   if (!data.hub.connected) return null;
   if (data.sprint.length === 0) {
     return (
@@ -472,9 +448,7 @@ function Sprint({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
         return (
           <Section key={step} title={SPINE_LABEL[step] ?? step} detail={`${stories.length}`}>
             {stories.map((story) => (
-              <StoryRow key={story.id} story={story}>
-                {data.can_write ? <BackToBacklog repoId={repoId} storyId={story.id} /> : null}
-              </StoryRow>
+              <StoryRow key={story.id} story={story} />
             ))}
           </Section>
         );
@@ -483,7 +457,7 @@ function Sprint({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
   );
 }
 
-function Process({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
+function Process({ data }: { data: ProductOwnerView }) {
   const manifest = data.manifest.manifest as Manifest | null;
   if (!manifest) {
     return (
@@ -496,20 +470,9 @@ function Process({ repoId, data }: { repoId: string; data: ProductOwnerView }) {
           {data.spine.map((step) => SPINE_LABEL[step] ?? step).join(" · ")}.
         </p>
         {data.templates.length > 0 ? (
-          data.can_write ? (
-            <>
-              <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-2">
-                Start from a template. Each opens a draft pull request adding{" "}
-                <span className="font-mono">{data.manifest.path}</span>; nothing is committed to{" "}
-                <span className="font-mono">{data.default_branch}</span>.
-              </p>
-              <TemplatePicker repoId={repoId} templates={data.templates} />
-            </>
-          ) : (
-            <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-3">
-              An admin can open a template pull request from here.
-            </p>
-          )
+          <p className="border-t border-rule-soft px-3 py-2 text-[12px] text-ink-3">
+            Starter-template pull requests are no longer opened from here.
+          </p>
         ) : null}
       </Section>
     );

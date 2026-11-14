@@ -201,6 +201,160 @@ Describe 'one attempt per sha, counting only runs that moved the stack (61644)' 
     }
 }
 
+Describe 'a pre-move refusal is not an attempt; a post-move failure is (61644)' {
+    BeforeAll {
+        $script:DeployPs1 = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\deploy.ps1') -Raw
+        $script:WatchPs1 = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\Watch-AutoDeploy.ps1') -Raw
+        function Get-RefusalLog([string]$Kind) {
+            return @('Risk gate: asked.',
+                "DEPLOY-PRE-MOVE-REFUSAL kind=$Kind (nothing was pulled or changed)",
+                'The risk gate refused it. Nothing has been pulled.')
+        }
+    }
+
+    It 'reads the refusal kind from deploy.ps1''s failing exit and marker line' {
+        Get-PreMoveRefusal -Code 1 -Lines (Get-RefusalLog 'risk_refused') | Should -Be 'risk_refused'
+        Get-PreMoveRefusal -Code 1 -Lines (Get-RefusalLog 'risk_not_judged') | Should -Be 'risk_not_judged'
+        Get-PreMoveRefusal -Code 75 -Lines (Get-RefusalLog 'lock_held') | Should -Be 'lock_held'
+    }
+    It 'treats exit 75 as the lock even without the line (deploy.ps1''s documented code)' {
+        Get-PreMoveRefusal -Code 75 -Lines @('Another MyKronos deploy holds the lock.') | Should -Be 'lock_held'
+    }
+    It 'needs both: a marker with exit 0 or 124, or a failure without a marker, is not a refusal' {
+        Get-PreMoveRefusal -Code 0 -Lines (Get-RefusalLog 'pull_failed') | Should -BeNullOrEmpty
+        Get-PreMoveRefusal -Code 124 -Lines (Get-RefusalLog 'risk_refused') | Should -BeNullOrEmpty
+        Get-PreMoveRefusal -Code 1 -Lines @('Backend did not become healthy') | Should -BeNullOrEmpty
+        Get-PreMoveRefusal -Code 1 -Lines @() | Should -BeNullOrEmpty
+        Get-PreMoveRefusal -Code 1 -Lines @('  see DEPLOY-PRE-MOVE-REFUSAL kind=x in the docs') | Should -BeNullOrEmpty
+    }
+
+    It 'every kind deploy.ps1 emits is read back by the watcher' {
+        $kinds = @([regex]::Matches($script:DeployPs1, 'Stop-BeforeMove -Kind "([a-z_]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        $kinds | Should -Contain 'risk_refused'
+        $kinds | Should -Contain 'risk_not_judged'
+        $kinds | Should -Contain 'lock_held'
+        $kinds | Should -Contain 'pull_failed'
+        foreach ($k in $kinds) {
+            $code = $(if ($k -eq 'lock_held') { 75 } else { 1 })
+            Get-PreMoveRefusal -Code $code -Lines (Get-RefusalLog $k) | Should -Be $k -Because $k
+        }
+        $script:DeployPs1 | Should -Match 'Write-Host "DEPLOY-PRE-MOVE-REFUSAL kind=\$Kind \(nothing'
+        $script:DeployPs1 | Should -Match 'Stop-BeforeMove -Kind "lock_held" -ExitCode 75'
+    }
+    It 'deploy.ps1 run as a child prints the marker and fails on a missing backend/.env' {
+        $tree = Join-Path $TestDrive 'tree61644'
+        New-Item -ItemType Directory -Path (Join-Path $tree 'deploy\mykronos') -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\deploy.ps1') -Destination (Join-Path $tree 'deploy\mykronos\deploy.ps1')
+        $log = Join-Path $TestDrive 'child61644.log'
+        $pw = (Get-Process -Id $PID).Path
+        & $pw -NoProfile -NonInteractive -File (Join-Path $tree 'deploy\mykronos\deploy.ps1') -Tag $script:H *> $log
+        $code = $LASTEXITCODE
+        $code | Should -Not -Be 0
+        Get-PreMoveRefusal -Code $code -Lines @(Get-Content -LiteralPath $log) | Should -Be 'env_missing'
+    }
+    It 'deploy.ps1 refuses only before compose up, and pulls both images before retagging either' {
+        $up = $script:DeployPs1.IndexOf('docker compose --env-file $backendEnv up -d')
+        $up | Should -BeGreaterThan 0
+        $last = $script:DeployPs1.LastIndexOf('Stop-BeforeMove -Kind')
+        $last | Should -BeLessThan $up
+        $script:DeployPs1.IndexOf('Stop-BeforeMove -Kind "pull_failed"') |
+            Should -BeLessThan $script:DeployPs1.IndexOf('docker tag "$Registry/$name`:$Tag"')
+        # The risk gate refusals go through the marker, not a bare throw.
+        $script:DeployPs1 | Should -Not -Match 'Out-Null\s+throw \(\$lines'
+    }
+
+    It 'a pre-move refusal is not attempted even when the stack it left was not healthy' {
+        $o = Get-AutoDeployOutcome -Code 1 -PreMoveRefusal 'risk_refused' -HealthyOnNew $false `
+            -HealthyOnPrevious $false -PreviousKnown $true
+        $o.Result | Should -Be 'not_attempted'
+        $o.Counted | Should -BeFalse
+        $o.Rollback | Should -BeFalse -Because 'nothing moved, so there is nothing to roll back'
+        $o.Reason | Should -Be 'risk_refused'
+    }
+    It 'a post-move failure is one attempt even when the old stack still answers' {
+        $o = Get-AutoDeployOutcome -Code 1 -HealthyOnNew $false -HealthyOnPrevious $true -PreviousKnown $true
+        $o.Result | Should -Be 'failed'
+        $o.Counted | Should -BeTrue
+        $o.Rollback | Should -BeFalse
+        $o.Reason | Should -BeNullOrEmpty
+        $o = Get-AutoDeployOutcome -Code 1 -HealthyOnNew $false -HealthyOnPrevious $false -PreviousKnown $true
+        $o.Counted | Should -BeTrue; $o.Rollback | Should -BeTrue
+    }
+
+    It 'records attempted: false with the reason, and the next tick retries the same sha' {
+        $p = Join-Path $TestDrive 'attempts-premove.json'
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'started'
+        $o = Get-AutoDeployOutcome -Code 1 -PreMoveRefusal (Get-PreMoveRefusal -Code 1 -Lines (Get-RefusalLog 'risk_refused')) `
+            -HealthyOnNew $false -HealthyOnPrevious $true -PreviousKnown $true
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result $o.Result -Extra @{ attempted = $o.Counted; reason = $o.Reason }
+        $e = @(Read-AutoDeployAttemptList -Path $p)[0]
+        $e.attempted | Should -BeFalse
+        $e.reason | Should -Be 'risk_refused'
+        $e.result | Should -Be 'not_attempted'
+        $in = Get-GreenInput; $in.Attempts = @(Read-AutoDeployAttemptList -Path $p)
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Deploy'
+        $d.Sha | Should -Be $script:H
+    }
+    It 'records a post-move failure as attempted, and the next tick skips the sha' {
+        $p = Join-Path $TestDrive 'attempts-postmove.json'
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'started'
+        (@(Read-AutoDeployAttemptList -Path $p)[0]).attempted | Should -BeTrue
+        $o = Get-AutoDeployOutcome -Code 1 -PreMoveRefusal (Get-PreMoveRefusal -Code 1 -Lines @('Backend did not become healthy')) `
+            -HealthyOnNew $false -HealthyOnPrevious $false -PreviousKnown $true
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'rolled_back' -Extra @{ attempted = $o.Counted; reason = $o.Reason }
+        $e = @(Read-AutoDeployAttemptList -Path $p)[0]
+        $e.attempted | Should -BeTrue
+        $e.reason | Should -BeNullOrEmpty
+        $in = Get-GreenInput; $in.Attempts = @(Read-AutoDeployAttemptList -Path $p)
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'already_attempted'
+    }
+    It 'cannot be talked out of an attempt by an attempted: false on a result that moved' {
+        $p = Join-Path $TestDrive 'attempts-lie.json'
+        Save-AutoDeployAttempt -Path $p -Sha $script:H -Result 'failed' -Extra @{ attempted = $false }
+        (@(Read-AutoDeployAttemptList -Path $p)[0]).attempted | Should -BeTrue
+    }
+
+    It 'the watcher carries attempted and the reason into the memo, the Hub run and the JSONL' {
+        $script:WatchPs1 | Should -Match '\$preMove = Get-PreMoveRefusal -Code \$code -Lines \$deployLines'
+        $script:WatchPs1 | Should -Match 'Get-AutoDeployOutcome -Code \$code -PreMoveRefusal \$preMove'
+        $script:WatchPs1 | Should -Match 'attempted = \$outcome\.Counted; reason = \$outcome\.Reason'
+        ([regex]::Matches($script:WatchPs1, 'reason = \$outcome\.Reason')).Count | Should -BeGreaterOrEqual 3
+    }
+}
+
+Describe 'the watcher passes the decision''s full sha (61644)' {
+    It 'decides on a 40-character lowercase sha, whatever case Concourse gave' {
+        $in = Get-GreenInput; $in.PromotedSha = $script:H.ToUpperInvariant(); $in.MainHead = $script:H
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Deploy'
+        $d.Sha | Should -MatchExactly '^[0-9a-f]{40}$'
+    }
+    It 'hands deploy.ps1 exactly that sha as -Tag' {
+        $g = Get-GreenInput; $d = Get-AutoDeployDecision @g
+        $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $d.Sha -Registry 'localhost:5000' -RequireFullSha
+        $i = [array]::IndexOf($a, '-Tag')
+        $a[$i + 1] | Should -MatchExactly '^[0-9a-f]{40}$'
+        $a[$i + 1] | Should -BeExactly $script:H
+        $a | Should -Contain '-NonInteractive'
+    }
+    It 'refuses a 12-character or uppercase sha for the forward deploy' {
+        { Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:H.Substring(0, 12) -Registry 'r' -RequireFullSha } |
+            Should -Throw '*full 40-character lowercase*'
+        { Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:H.ToUpperInvariant() -Registry 'r' -RequireFullSha } |
+            Should -Throw
+    }
+    It 'lets a rollback pass the running images'' shorter tag' {
+        $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev.Substring(0, 12) -Registry 'r' -Extra @('-GateWaitMinutes', '0')
+        $a[-2] | Should -Be '-GateWaitMinutes'
+    }
+    It 'the watcher''s forward deploy asks for the full sha' {
+        $w = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\Watch-AutoDeploy.ps1') -Raw
+        $w | Should -Match 'Invoke-DeployScript -Tag \$sha -LogPath \$deployLog -RequireFullSha'
+        $w | Should -Match 'Get-DeployScriptArgumentList -ScriptPath \$deployScript'
+    }
+}
+
 Describe 'the retry cap on not_attempted' {
     BeforeAll {
         function Get-NaEntry([int]$Count, [string]$First) {
@@ -279,10 +433,11 @@ Describe 'Get-AutoDeployOutcome' {
         $o = Get-AutoDeployOutcome -Code 1 -HealthyOnNew $true -HealthyOnPrevious $false -PreviousKnown $true
         $o.Result | Should -Be 'success_with_warning'; $o.Rollback | Should -BeFalse; $o.Counted | Should -BeTrue
     }
-    It 'gives the attempt back when deploy.ps1 stopped before changing the stack (gate, pull, lock)' {
-        foreach ($c in @(1, 75)) {
-            $o = Get-AutoDeployOutcome -Code $c -HealthyOnNew $false -HealthyOnPrevious $true -PreviousKnown $true
+    It 'gives the attempt back when deploy.ps1 refused before anything moved (gate, pull, lock)' {
+        foreach ($c in @(@(1, 'risk_refused'), @(1, 'pull_failed'), @(75, 'lock_held'))) {
+            $o = Get-AutoDeployOutcome -Code $c[0] -PreMoveRefusal $c[1] -HealthyOnNew $false -HealthyOnPrevious $true -PreviousKnown $true
             $o.Result | Should -Be 'not_attempted'; $o.Counted | Should -BeFalse; $o.Rollback | Should -BeFalse
+            $o.Reason | Should -Be $c[1]
         }
     }
     It 'rolls back a changed, unhealthy stack' {

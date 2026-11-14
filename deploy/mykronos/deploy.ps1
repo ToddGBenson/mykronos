@@ -181,8 +181,32 @@ param(
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
+
+# [TheHub #61644] A PRE-MOVE REFUSAL IS NOT AN ATTEMPT. Every stop before the
+# first change to the host (the risk gate refused or never scored the sha, the
+# lock is held, a pull failed, an override could not be recorded, the env file
+# is missing) ends here: ONE machine-readable line,
+#   DEPLOY-PRE-MOVE-REFUSAL kind=<kind>
+# then the same throw as before (a non-zero exit; 75 for the lock, as
+# before). Watch-AutoDeploy.ps1 reads the line with the non-zero exit and
+# records the sha as NOT attempted, so it retries once the blocker clears;
+# anything that fails after this point prints no such line, is an attempt
+# and is not retried. Keep the kinds in step with Get-PreMoveRefusal
+# (AutoDeploy.ps1).
+function Stop-BeforeMove {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [string]$Message,
+        # Set only for the lock: an exit with this code instead of a throw.
+        [int]$ExitCode = 0
+    )
+    Write-Host "DEPLOY-PRE-MOVE-REFUSAL kind=$Kind (nothing was pulled or changed)"
+    if ($ExitCode -ne 0) { exit $ExitCode }
+    throw $Message
+}
+
 $backendEnv = Join-Path $here "..\..\backend\.env"
-if (-not (Test-Path $backendEnv)) { throw "Missing $backendEnv" }
+if (-not (Test-Path $backendEnv)) { Stop-BeforeMove -Kind "env_missing" -Message "Missing $backendEnv" }
 
 function Read-EnvValue {
     param([string]$Path, [string]$Key)
@@ -437,10 +461,10 @@ function Format-NearestScored {
 }
 
 if ($Force -and -not $ForceReason) {
-    throw "-Force needs -ForceReason. Overriding a refusal without recording why is the thing #60487 exists to prevent."
+    Stop-BeforeMove -Kind "usage" -Message "-Force needs -ForceReason. Overriding a refusal without recording why is the thing #60487 exists to prevent."
 }
 if ($ForceReason -and $ForceReason.Trim().Length -lt 10) {
-    throw "-ForceReason is too short to be a reason. Write the sentence someone reading the ledger in six months needs."
+    Stop-BeforeMove -Kind "usage" -Message "-ForceReason is too short to be a reason. Write the sentence someone reading the ledger in six months needs."
 }
 if ($ForceReason -and -not $Force) {
     Write-Host "-ForceReason was given without -Force; it will only be recorded if the gate actually refuses." -ForegroundColor DarkGray
@@ -570,7 +594,7 @@ switch ($verdict.State) {
             Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "unjudged";
                 waited_minutes = $GateWaitMinutes;
                 nearest_scored = $nearestSha; nearest_verdict = $nearestVerdict } | Out-Null
-            throw ($lines -join [Environment]::NewLine)
+            Stop-BeforeMove -Kind "risk_not_judged" -Message ($lines -join [Environment]::NewLine)
         }
 
         Write-RiskBanner -Color Red `
@@ -587,7 +611,7 @@ switch ($verdict.State) {
             nearest_scored = $nearestSha; nearest_verdict = $nearestVerdict;
             reason = $ForceReason }
         if (-not $recorded) {
-            throw "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
+            Stop-BeforeMove -Kind "override_unrecorded" -Message "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
         }
         Write-Host "Override recorded in $riskLedger (there is no decision to record it against on the platform)." -ForegroundColor Yellow
         $riskSummary = "Risk gate: OVERRIDDEN - nothing has ever scored $Tag and it shipped with -Force. Reason: $ForceReason $nearestLine"
@@ -644,7 +668,7 @@ switch ($verdict.State) {
                 effective = $decision.effective_recommendation;
                 decision_id = $decision.decision_id; score = $decision.overall_risk_score;
                 repo = $decision.repo_full_name; floor = [bool]$verdict.Floor } | Out-Null
-            throw ($lines -join [Environment]::NewLine)
+            Stop-BeforeMove -Kind "risk_refused" -Message ($lines -join [Environment]::NewLine)
         }
 
         Write-RiskBanner -Color Red `
@@ -663,7 +687,7 @@ switch ($verdict.State) {
             decision_id = $decision.decision_id; score = $decision.overall_risk_score;
             repo = $decision.repo_full_name; floor = [bool]$verdict.Floor; reason = $ForceReason }
         if (-not $recorded) {
-            throw "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
+            Stop-BeforeMove -Kind "override_unrecorded" -Message "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
         }
         Write-Host "Override recorded in $riskLedger" -ForegroundColor Yellow
 
@@ -725,13 +749,15 @@ if (-not $deployLock.Acquired) {
     Write-Host ("Another MyKronos deploy holds $($deployLock.Path) (" +
         (Format-MykronosDeployLockOwner $deployLock.Owner) + "). Nothing has been pulled.") -ForegroundColor Red
     Write-Host "If nothing is running, remove that directory and re-run." -ForegroundColor Red
-    exit 75
+    Stop-BeforeMove -Kind "lock_held" -ExitCode 75
 }
 # The rest of the script runs inside this try, unindented to keep the diff
 # readable; the matching finally is the last line of the file.
 try {
 
 Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
+# [TheHub #61644] Both are pulled before either is retagged, so a failed pull
+# leaves even the local `:latest` pointers where they were: a pre-move refusal.
 foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
     docker pull "$Registry/$name`:$Tag"
     if ($LASTEXITCODE -ne 0) {
@@ -753,8 +779,10 @@ foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
             "    with a token carrying read:packages.",
             "  * Still on the old registry? Pass -Registry localhost:5000."
         )
-        throw ($lines -join [Environment]::NewLine)
+        Stop-BeforeMove -Kind "pull_failed" -Message ($lines -join [Environment]::NewLine)
     }
+}
+foreach ($name in @("mykronos-backend", "mykronos-frontend")) {
     # Retagged to `:latest` locally because compose defaults to
     # `mykronos-backend:latest` and takes no tag of its own. The local tag is
     # the deploy's own pointer, not the registry's -- which is the whole reason

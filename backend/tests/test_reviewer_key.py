@@ -26,6 +26,7 @@ from mykronos.db import Database
 from mykronos.db.models import ReviewerKeyProbe
 from mykronos.jobs import JobSkipped
 from mykronos.notify import Notification
+from tests.test_daily_briefing import _get, _section, gathered  # noqa: F401 - fixture
 from tests.test_reviewer import (  # noqa: F401 - fixtures and helpers
     FakeAnthropic,
     _delegate,
@@ -441,3 +442,74 @@ def test_the_staleness_boundary_is_two_intervals(db: Database, configured: Any) 
         "stale: last probe refused (HTTP 401) at 2026-11-13 04:00Z, 2h ago; "
         "the hourly probe has stopped"
     )
+
+
+class TestARefusedReviewIsACredentialFact:
+    """A 401/403 from a real review writes the refused row itself (TheHub #61596).
+
+    On 2026-11-13 reviews were refused while nothing recorded it: the review
+    path is the first to see a bad key, so it must not wait for the probe.
+    """
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refused_review_records_refused(
+        self, client, admin_auth, tiered, model, status: int  # noqa: F811
+    ) -> None:
+        _delegate(client)
+        model(error=_status_error(status))
+        author = _mint(client, admin_auth)
+        request = _request(client, {"Authorization": f"Bearer {author['token']}"})
+
+        response = _review(client, {"Authorization": f"Bearer {author['token']}"}, request)
+
+        assert response.status_code == 503
+        row = reviewer_key.current(client.app.state.db)
+        assert row is not None
+        assert (row.state, row.http_status, row.model) == ("refused", status, "claude-opus-5-5")
+        assert row.alerted is False  # the next probe tick sends the alert
+        stored = " ".join(str(getattr(row, c.name)) for c in ReviewerKeyProbe.__table__.columns)
+        assert "test-key" not in stored
+        items = client.get("/api/approvals?state=pending", headers=admin_auth).json()
+        assert items[0]["reviewer_available"] is False
+
+    def test_a_server_error_is_not_a_refused_key(
+        self, client, admin_auth, tiered, model  # noqa: F811
+    ) -> None:
+        _delegate(client)
+        model(error=_status_error(500))
+        author = _mint(client, admin_auth)
+        request = _request(client, {"Authorization": f"Bearer {author['token']}"})
+
+        response = _review(client, {"Authorization": f"Bearer {author['token']}"}, request)
+
+        assert response.status_code == 503
+        assert reviewer_key.current(client.app.state.db) is None
+
+    def test_the_daily_briefing_names_the_refused_key(
+        self, client, admin_auth, tiered, model, gathered  # noqa: F811
+    ) -> None:
+        _delegate(client)
+        model(error=_status_error(401))
+        author = _mint(client, admin_auth)
+        request = _request(client, {"Authorization": f"Bearer {author['token']}"})
+        before = _section(_get(client, admin_auth), "needs_you_today")
+        assert not any("reviewer" in line["what"] for line in before["lines"])
+
+        _review(client, {"Authorization": f"Bearer {author['token']}"}, request)
+
+        section = _section(_get(client, admin_auth), "needs_you_today")
+        first = section["lines"][0]
+        assert first["what"].startswith("The platform reviewer's key is refused (HTTP 401) since ")
+        assert "replace MYKRONOS_REVIEWER_API_KEY" in first["what"]
+        assert section["data"]["reviewer_key_refused"] is True
+
+    def test_the_briefing_is_silent_when_the_key_is_ok_or_the_row_is_stale(
+        self, client, admin_auth, gathered  # noqa: F811
+    ) -> None:
+        db = client.app.state.db
+        reviewer_key.record_refusal(
+            db, 401, "claude-opus-5-5", now=datetime.now(UTC) - timedelta(hours=3)
+        )
+        section = _section(_get(client, admin_auth), "needs_you_today")
+        assert not any("reviewer" in line["what"] for line in section["lines"])
+        assert "reviewer_key_refused" not in section["data"]

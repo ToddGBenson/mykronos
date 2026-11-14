@@ -531,7 +531,7 @@ services:
       concourse-db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${CONCOURSE_BIND:-127.0.0.1}:8080:8080"
       # The TSA, for a worker on another host (TheHub #61659, D-178). The two
       # workers below reach it as `concourse:2222` on the compose network and
       # never through this publish. It stays on loopback - where nothing

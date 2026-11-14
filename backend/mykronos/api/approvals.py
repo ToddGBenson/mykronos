@@ -455,12 +455,28 @@ async def independent_review(
             started_by=principal,
         )
     except reviewer.ReviewerUnavailableError as exc:
+        if exc.refused_status is not None:
+            # A refused key fails the check with the reason, rather than leaving
+            # it in progress with nothing on the pull request to say why.
+            await pull_requests.publish_unavailable(
+                request.app.state.db,
+                _policy(request),
+                request.app.state.github_factory,
+                request_id,
+                str(exc),
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
     except ApprovalError as exc:
         raise _refused(exc) from exc
-    await _stamp(request, request_id)
+    await pull_requests.publish(
+        request.app.state.db,
+        _policy(request),
+        request.app.state.github_factory,
+        request_id,
+        reopen=True,
+    )
     return dataclasses.asdict(outcome)
 
 
