@@ -48,6 +48,38 @@ PIPELINE_ADDRESS_SOURCES = [
 ]
 
 
+_SUBST = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}")
+
+
+def _resolve_defaults(binding: str) -> str:
+    """Render a compose port string with no environment set.
+
+    `${NAME:-default}` and `${NAME-default}` become their default. A bare
+    `${NAME}` has no safe default, so it is left in place and fails the
+    loopback assertion.
+    """
+
+    def _sub(match: re.Match[str]) -> str:
+        default = match.group(2)
+        return match.group(0) if default is None else default
+
+    return _SUBST.sub(_sub, binding)
+
+
+@pytest.mark.parametrize(
+    ("raw", "loopback"),
+    [
+        ("${MYKRONOS_BIND:-127.0.0.1}:8100:8100", True),
+        ("${MYKRONOS_BIND-127.0.0.1}:8100:8100", True),
+        ("${MYKRONOS_BIND}:8100:8100", False),
+        ("${MYKRONOS_BIND:-0.0.0.0}:8100:8100", False),
+        ("127.0.0.1:8100:8100", True),
+    ],
+)
+def test_default_substitutions_resolve_before_the_loopback_check(raw: str, loopback: bool) -> None:
+    assert _resolve_defaults(raw).startswith("127.0.0.1:") is loopback
+
+
 def _ports(compose: Path, service: str) -> list[str]:
     services = yaml.safe_load(compose.read_text(encoding="utf-8"))["services"]
     return [str(p) for p in services[service].get("ports", [])]
@@ -58,7 +90,7 @@ def test_the_port_is_published_on_loopback_only(compose: Path, service: str, por
     published = [p for p in _ports(compose, service) if p.rsplit(":", 1)[-1] == str(port)]
     assert published, f"{service} no longer publishes {port}; its consumers would lose it"
     for binding in published:
-        assert binding.startswith("127.0.0.1:"), (
+        assert _resolve_defaults(binding).startswith("127.0.0.1:"), (
             f"{service} publishes {binding!r} beyond loopback (TheHub #60841)"
         )
 
