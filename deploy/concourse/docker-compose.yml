@@ -378,7 +378,12 @@ services:
     ports:
       # Consumers: Concourse tasks (192.168.65.254:5000), the host's
       # registry-pull deploy and every stack that runs localhost:5000/*.
-      - "127.0.0.1:5000:5000"
+      # A remote worker (TheHub #61659, D-180) has no Docker Desktop gateway,
+      # so it can reach this only on the host's LAN address, which needs
+      # REGISTRY_BIND=0.0.0.0. Loopback by default; the firewall rule that
+      # admits only the named runner host is the LAN lock (D-178, D-109). The
+      # registry has no `auth:` block, so never open it without that rule.
+      - "${REGISTRY_BIND:-127.0.0.1}:5000:5000"
     volumes:
       - registry-data:/var/lib/registry
     networks: [concourse]
@@ -531,7 +536,7 @@ services:
       concourse-db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${CONCOURSE_BIND:-127.0.0.1}:8080:8080"
     environment:
       CONCOURSE_POSTGRES_HOST: concourse-db
       CONCOURSE_POSTGRES_USER: concourse

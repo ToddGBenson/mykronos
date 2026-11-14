@@ -13,6 +13,8 @@
     CONCOURSE_VAULT_TOKEN is not generated here: it comes out of Vault, so
     vault-init.ps1 initialises Vault and writes it before the stack starts
     (#60753). With -Rotate it mints a fresh one, since the new .env has none.
+    -Rotate also rewrites .env without CONCOURSE_BIND, which falls back to
+    loopback (fails safe); re-add it if the host serves a named runner (D-178).
 
 .NOTES
     ASCII only. Windows PowerShell 5.1 reads a BOM-less file as CP1252, so a
