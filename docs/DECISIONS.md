@@ -45,6 +45,7 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-174 — Concourse workers yield to production; task limits are CPU shares only](decisions/D-174-concourse-workers-yield-to-production-not-their-tasks.md)
 - [D-175 — Triage, correlation and remediation upgrade deterministically first; a model only proposes, in shadow, after the corpus can grade it](decisions/D-175-triage-correlation-and-remediation-upgrade-deterministically-first.md)
 - [D-176 — An unmeasured fact is reported and scored as unknown, never as its comfortable answer](decisions/D-176-an-unmeasured-fact-is-reported-and-scored-as-unknown.md)
+- [D-177 — The Product Owner console is frozen read-only; MyKronos holds DevSecOps facts, the Hub holds operations](decisions/D-177-the-product-owner-console-is-frozen-read-only.md)
 
 <!-- decisions-index:end -->
 
