@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install a Concourse worker on a Linux host and register it to the MyKronos
-# web node on the Windows host (TheHub #61659, D-178).
+# web node on the Windows host (TheHub #61659, D-181).
 #
 # One script, run once as root on the Linux box, from the bundle that
 # deploy/concourse/Add-LinuxWorker.ps1 wrote on the Windows side:
@@ -39,12 +39,17 @@
 #   --tarball PATH         an already-downloaded release tarball (still verified)
 #   --runtime NAME         containerd (Concourse 8's default) or guardian
 #   --memory-max SIZE      systemd MemoryMax for the whole worker, e.g. 6G
+#   --dns A,B              resolvers handed to task containers (default
+#                          1.1.1.1,8.8.8.8, or what /etc/concourse/worker.env
+#                          already names on a re-run)
 #   --no-systemd           install everything but the unit; print the
 #                          foreground command instead
 #   --foreground           --no-systemd, then run the worker in this shell
 #                          (how the script is tested in a container)
-#   --uninstall            stop and remove the unit, the install, the config
-#                          and the work dir
+#   --uninstall            stop and remove the unit, the install and the
+#                          config; the work dir is kept
+#   --remove-work-dir      with --uninstall, also delete the work dir (and
+#                          every build cache and volume in it)
 set -euo pipefail
 
 CONCOURSE_VERSION="8.3.3"
@@ -54,6 +59,10 @@ CONCOURSE_VERSION="8.3.3"
 SHA256_amd64="6b7699a3d3d1066b15011833dfb2712af5ca94b1f49090d035596f1c5fa82ba8"
 SHA256_arm64="fa459cf89446559cdb12e9b4f7bd191f5138ce50dbc25b349e48c7f7077258c5"
 RELEASES="https://github.com/concourse/concourse/releases/download"
+# Task containers get these resolvers, as the compose workers do: on a host
+# running systemd-resolved they would otherwise inherit 127.0.0.53, which is
+# unreachable from inside a container.
+DEFAULT_DNS="1.1.1.1,8.8.8.8"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_DIR="/etc/concourse"
@@ -70,8 +79,10 @@ KEYS_DIR="$SCRIPT_DIR"
 TARBALL=""
 RUNTIME="containerd"
 MEMORY_MAX=""
+DNS_SERVERS=""
 MODE="systemd"
 UNINSTALL="no"
+REMOVE_WORK_DIR="no"
 
 say()  { printf '\n==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -91,6 +102,7 @@ read_conf() {
             WORK_DIR)    WORK_DIR="$value" ;;
             RUNTIME)     RUNTIME="$value" ;;
             MEMORY_MAX)  MEMORY_MAX="$value" ;;
+            DNS_SERVERS) DNS_SERVERS="$value" ;;
             *) fail "worker.conf: unknown key '$key'" ;;
         esac
     done < "$conf"
@@ -107,10 +119,12 @@ while [ $# -gt 0 ]; do
         --tarball)    TARBALL="$2"; shift 2 ;;
         --runtime)    RUNTIME="$2"; shift 2 ;;
         --memory-max) MEMORY_MAX="$2"; shift 2 ;;
+        --dns)        DNS_SERVERS="$2"; shift 2 ;;
         --no-systemd) MODE="none"; shift ;;
         --foreground) MODE="foreground"; shift ;;
         --uninstall)  UNINSTALL="yes"; shift ;;
-        -h|--help)    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --remove-work-dir) REMOVE_WORK_DIR="yes"; shift ;;
+        -h|--help)    sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) fail "unknown argument '$1' (see --help)" ;;
     esac
 done
@@ -125,8 +139,13 @@ if [ "$UNINSTALL" = "yes" ]; then
         systemctl disable --now concourse-worker.service || true
         rm -f "$UNIT"; systemctl daemon-reload
     fi
-    rm -rf /usr/local/concourse "/usr/local/concourse-$CONCOURSE_VERSION" "$CONF_DIR" "$WORK_DIR"
-    echo "removed the unit, /usr/local/concourse*, $CONF_DIR and $WORK_DIR; $CACHE_DIR kept"
+    rm -rf /usr/local/concourse "/usr/local/concourse-$CONCOURSE_VERSION" "$CONF_DIR"
+    if [ "$REMOVE_WORK_DIR" = "yes" ]; then
+        rm -rf "$WORK_DIR"
+        echo "removed the unit, /usr/local/concourse*, $CONF_DIR and $WORK_DIR; $CACHE_DIR kept"
+    else
+        echo "removed the unit, /usr/local/concourse* and $CONF_DIR; $WORK_DIR and $CACHE_DIR kept (--remove-work-dir deletes the work dir)"
+    fi
     exit 0
 fi
 
@@ -157,7 +176,15 @@ fi
 [[ "$WORKER_NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "worker name '$WORKER_NAME' must be lowercase letters, digits and hyphens"
 [[ "$TAG" =~ ^[a-z0-9][a-z0-9,-]*$ ]] || fail "tag '$TAG' must be lowercase letters, digits, hyphens (comma-separated for several)"
 case "$RUNTIME" in containerd|guardian) ;; *) fail "runtime must be containerd or guardian" ;; esac
-[ -f "$KEYS_DIR/worker_key" ] || fail "$KEYS_DIR/worker_key missing: copy the whole bundle Add-LinuxWorker.ps1 wrote"
+if [ -z "$DNS_SERVERS" ] && [ -f "$CONF_DIR/worker.env" ]; then
+    # A re-run keeps resolvers the operator set by hand in worker.env.
+    DNS_SERVERS="$(sed -n 's/^CONCOURSE_\(CONTAINERD\|GARDEN\)_DNS_SERVER=//p' "$CONF_DIR/worker.env" | head -1)"
+fi
+DNS_SERVERS="${DNS_SERVERS:-$DEFAULT_DNS}"
+[[ "$DNS_SERVERS" =~ ^[0-9a-fA-F.:]+(,[0-9a-fA-F.:]+)*$ ]] || fail "--dns '$DNS_SERVERS' must be comma-separated IP addresses"
+# A bundle copied again after the Windows side deleted its private key (as
+# the README says to) has no worker_key; the one already installed is reused.
+[ -f "$KEYS_DIR/worker_key" ] || [ -f "$CONF_DIR/worker_key" ] || fail "$KEYS_DIR/worker_key missing: copy the whole bundle Add-LinuxWorker.ps1 wrote"
 [ -f "$KEYS_DIR/tsa_host_key.pub" ] || fail "$KEYS_DIR/tsa_host_key.pub missing: copy the whole bundle Add-LinuxWorker.ps1 wrote"
 echo "arch $ARCH, ${OS_NAME:-linux}, kernel $(uname -r); worker '$WORKER_NAME' tag '$TAG' -> TSA $TSA_HOST"
 
@@ -207,7 +234,11 @@ ln -sfn "$INSTALL_DIR" /usr/local/concourse
 # ── 5. configuration ──────────────────────────────────────────────────────
 say "Writing $CONF_DIR"
 install -d -m 0700 "$CONF_DIR"
-install -m 0600 "$KEYS_DIR/worker_key" "$CONF_DIR/worker_key"
+if [ -f "$KEYS_DIR/worker_key" ]; then
+    install -m 0600 "$KEYS_DIR/worker_key" "$CONF_DIR/worker_key"
+else
+    echo "no worker_key in the bundle; keeping the installed $CONF_DIR/worker_key"
+fi
 install -m 0644 "$KEYS_DIR/tsa_host_key.pub" "$CONF_DIR/tsa_host_key.pub"
 mkdir -p "$WORK_DIR"
 # The overlay volume driver below needs a real filesystem under the work dir.
@@ -219,9 +250,9 @@ case "$WORK_FS" in
         fail "$WORK_DIR is on $WORK_FS; Concourse's overlay volumes need ext4 or xfs there - pass --work-dir <a directory on a local disk>" ;;
 esac
 # The same shape as the two workers in deploy/concourse/docker-compose.yml:
-# explicit public resolvers for task containers (a host on systemd-resolved
-# hands them 127.0.0.53, which they cannot reach), overlay volumes, a modest
-# sweeper, and the healthcheck on loopback rather than every interface.
+# explicit resolvers for task containers ($DNS_SERVERS, see DEFAULT_DNS),
+# overlay volumes, a modest sweeper, and the healthcheck on loopback rather
+# than every interface.
 {
     echo "CONCOURSE_NAME=$WORKER_NAME"
     echo "CONCOURSE_TAG=$TAG"
@@ -231,9 +262,9 @@ esac
     echo "CONCOURSE_TSA_WORKER_PRIVATE_KEY=$CONF_DIR/worker_key"
     echo "CONCOURSE_RUNTIME=$RUNTIME"
     if [ "$RUNTIME" = "containerd" ]; then
-        echo "CONCOURSE_CONTAINERD_DNS_SERVER=1.1.1.1,8.8.8.8"
+        echo "CONCOURSE_CONTAINERD_DNS_SERVER=$DNS_SERVERS"
     else
-        echo "CONCOURSE_GARDEN_DNS_SERVER=1.1.1.1,8.8.8.8"
+        echo "CONCOURSE_GARDEN_DNS_SERVER=$DNS_SERVERS"
     fi
     echo "CONCOURSE_BAGGAGECLAIM_DRIVER=overlay"
     echo "CONCOURSE_BAGGAGECLAIM_VOLUME_SWEEPER_MAX_IN_FLIGHT=5"
@@ -277,6 +308,10 @@ command -v systemctl >/dev/null 2>&1 || fail "no systemctl; re-run with --no-sys
     echo "# SIGUSR2 retires the worker: it finishes nothing new, tells the web node"
     echo "# to forget it, and exits - so a stop or a reboot leaves no stalled entry."
     echo "KillSignal=SIGUSR2"
+    echo "# mixed: SIGUSR2 goes to the worker process alone. The default"
+    echo "# (control-group) would send it to containerd and every task process"
+    echo "# too, whose default action on SIGUSR2 is to terminate."
+    echo "KillMode=mixed"
     echo "TimeoutStopSec=300"
     echo "Restart=on-failure"
     echo "RestartSec=10"

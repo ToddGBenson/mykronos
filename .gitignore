@@ -68,6 +68,8 @@ deploy/concourse/.env
 deploy/concourse/.env.bak-*
 deploy/concourse/bin/
 deploy/concourse/keys/
+# Add-LinuxWorker.ps1 install bundles: they hold a worker's private key.
+deploy/concourse/bundles/
 
 # Vault unseal key and root token. Committing these makes the credential
 # manager worthless; losing them makes every secret in it unrecoverable, so

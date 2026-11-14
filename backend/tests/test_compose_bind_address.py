@@ -51,11 +51,20 @@ def test_host_can_choose_the_bind_address(path, service, port, var) -> None:
     assert _resolve(entry, {var: "0.0.0.0"}) == f"0.0.0.0:{port}:{port}"
 
 
-def test_the_tsa_port_is_not_published() -> None:
+def test_the_tsa_port_is_not_published_beyond_loopback_by_default() -> None:
+    """2222 is published only as the TSA bind variable, loopback by default
+    (D-181): a worker on another host needs it, and Add-LinuxWorker.ps1 sets
+    the variable only once a block rule scopes the port."""
     services = yaml.safe_load(CONCOURSE.read_text(encoding="utf-8"))["services"]
-    for name, svc in services.items():
-        for p in svc.get("ports", []):
-            assert not str(p).endswith(":2222"), (name, p)
+    tsa = [
+        (name, str(p))
+        for name, svc in services.items()
+        for p in svc.get("ports", [])
+        if str(p).endswith(":2222")
+    ]
+    assert tsa == [("concourse", "${CONCOURSE_TSA_BIND_IP:-127.0.0.1}:2222:2222")], tsa
+    for _, entry in tsa:
+        assert _resolve(entry, {}) == "127.0.0.1:2222:2222"
 
 
 def test_the_variables_are_documented() -> None:
