@@ -62,10 +62,13 @@ INSTALLER = CONCOURSE / "linux-worker" / "install-concourse-worker.sh"
 # (pipeline, job, task) that run on the remote workers (TheHub #61659). Each
 # is a whole task whose result leaves in an output for a host step to read,
 # and each is NON-GATING: a tagged step never falls back to an untagged
-# worker, so with the remote host off it waits out its timeout. A lane that
-# gates a merge or a delivery (`pr-gates`, or anything in a `passed:` chain)
-# stays on this host until a remote host is always on or a second tagged
-# worker runs here (review of mykronos #1169).
+# worker, and in Concourse 8.3.3 a task waits for a worker indefinitely,
+# before its own `timeout:` starts. So each sits in a `do:` or `try:` that
+# carries the timeout: the wrapper bounds the wait for a worker too, and with
+# the remote host offline the run fails after that timeout. A lane that gates
+# a merge or a delivery (`pr-gates`, or anything in a `passed:` chain) stays
+# on this host until a remote host is always on or a second tagged worker
+# runs here (review of mykronos #1169).
 REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("thehub", "image-refresh", "build"),
@@ -75,13 +78,16 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
 # Any pipeline var. Workers never resolve vars; the web node puts the value in
 # the step, so a var on a remote step is a value on the remote host. `((.:x))`
 # is a local var (`load_var`), set inside the build, and is allowed.
-PIPELINE_VAR = re.compile(r"\(\((?!\.:)[^)]*\)\)")
+# `$((n + 1))` is shell arithmetic, not a var.
+PIPELINE_VAR = re.compile(r"(?<!\$)\(\((?!\.:)[^)]*\)\)")
 
 # Reading or writing an image registry from inside a task: the registry the
 # pipelines use is on this host, and its address can arrive as data (plan.tsv)
 # rather than as a var, as image-refresh/scan's `trivy image --insecure` does.
+# `trivy image` is allowed only with `--input` (a tarball) in the same command.
 REGISTRY_IO = re.compile(
-    r"--insecure|trivy image (?!--input)|\bcrane\b|\bskopeo\b|docker (pull|push)|--push\b",
+    r"--insecure|\btrivy image\b(?![^\n]*--input)|\bcrane\b|\bskopeo\b"
+    r"|\bdocker (pull|push)\b|--push\b",
     re.IGNORECASE,
 )
 
@@ -218,6 +224,11 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
     the step carries reaches the remote host's build plan.
     """
     faults = []
+    if "timeout" in step:
+        faults.append(
+            "a task-level timeout starts after a worker is chosen, so it does not bound "
+            "the wait for one: put the timeout on a wrapping do/try"
+        )
     if frozenset(step.get("tags") or []) != {REMOTE_TAG}:
         faults.append(f"tags {sorted(step.get('tags') or [])}, not exactly [{REMOTE_TAG}]")
     if step.get("params"):
@@ -226,7 +237,9 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
         faults.append("privileged")
     if "file" in step:
         faults.append("a task file: its config is not reviewable here")
-    text = yaml.safe_dump(step)
+    # Every string the step carries, with shell line continuations joined so
+    # one command reads as one line.
+    text = "\n".join(_strings(step)).replace("\\\n", " ")
     named = HOST_ONLY.search(text)
     if named:
         faults.append(f"names a host service: {named.group(0)}")
@@ -251,6 +264,47 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
         if "((" in repository or ":" in first or HOST_ONLY.search(repository):
             faults.append(f"image {image!r} is {repository!r}, not a public registry")
     return faults
+
+
+def _strings(node: Any) -> Iterator[str]:
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+    elif node is not None:
+        yield str(node)
+
+
+def _timeout_wrapped(steps: Any, task_name: str, wrapped: bool = False) -> bool | None:
+    """Whether `task_name` sits inside a `do:` or `try:` carrying `timeout`.
+
+    None when the task is not found under `steps`.
+    """
+    if isinstance(steps, dict):
+        steps = [steps]
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("task") == task_name:
+            return wrapped
+        here = wrapped or ("timeout" in step and ("do" in step or "try" in step))
+        children: list[Any] = []
+        for key in ("do", "aggregate", "in_parallel"):
+            if key in step:
+                inner = step[key]
+                children.append(inner.get("steps", []) if isinstance(inner, dict) else inner)
+        if "try" in step:
+            children.append([step["try"]])
+        for hook in _HOOKS:
+            if hook in step:
+                children.append([step[hook]])
+        for child in children:
+            found = _timeout_wrapped(child, task_name, here)
+            if found is not None:
+                return found
+    return None
 
 
 def _registry_images(doc: dict[str, Any]) -> dict[str, str]:
@@ -291,6 +345,28 @@ def test_a_remote_task_is_compute_only(where: tuple[str, str, str]) -> None:
     assert not faults, f"{job_name}/{task_name} cannot run on a remote worker: {faults}"
 
 
+@pytest.mark.parametrize("where", sorted(REMOTE_COMPUTE), ids="/".join)
+def test_a_remote_task_is_bounded_by_a_wrapping_timeout(where: tuple[str, str, str]) -> None:
+    """A task's own timeout does not cover the wait for a worker (8.3.3
+    task_step: FindOrSelectWorker before MaybeTimeout), so with the remote
+    host asleep an unwrapped task would hold its serial group forever."""
+    pipeline, job_name, task_name = where
+    doc = _load(CONCOURSE / "pipelines" / f"{pipeline}.yml")
+    job = next(j for j in doc["jobs"] if j["name"] == job_name)
+    assert _timeout_wrapped(job["plan"], task_name) is True, (
+        f"{job_name}/{task_name} must sit in a `do:` or `try:` that carries `timeout:`"
+    )
+
+
+def test_the_wrapping_timeout_check_can_fail() -> None:
+    task = {"task": "t", "tags": [REMOTE_TAG]}
+    assert _timeout_wrapped([{"do": [task], "timeout": "20m"}], "t") is True
+    assert _timeout_wrapped([{"try": task, "timeout": "20m"}], "t") is True
+    assert _timeout_wrapped([{**task, "timeout": "20m"}], "t") is False
+    assert _timeout_wrapped([{"do": [task]}], "t") is False
+    assert _timeout_wrapped([{"do": [task], "timeout": "20m"}], "other") is None
+
+
 def test_the_compute_only_check_can_fail() -> None:
     """The checker refuses each way a task can need the host."""
     images = {"python": "python", "local": "((registry))/thehub"}
@@ -316,9 +392,26 @@ def test_the_compute_only_check_can_fail() -> None:
         # A registry read whose address is data, not a var (image-refresh/scan).
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", 'trivy image --insecure "$c"']}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "/kaniko/executor -d x"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "trivy image --quiet img:1"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "crane copy a b"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "skopeo inspect docker://a"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "docker pull a"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "buildah --push a"]}}},
+        # A task-level timeout does not bound the wait for a worker.
+        {**ok, "timeout": "20m"},
     ]
-    local = {**ok, "config": {"run": {"path": "sh", "args": ["-c", "echo ((.:sha))"]}}}
-    assert _remote_task_faults(local, images) == [], "a local var is set inside the build"
+    def run(script: str) -> dict[str, Any]:
+        return {**ok, "config": {"run": {"path": "sh", "args": ["-c", script]}}}
+
+    allowed = [
+        run("echo ((.:sha))"),  # a local var is set inside the build
+        run("attempt=$((attempt + 1))"),  # shell arithmetic
+        run("trivy image --quiet --input x.tar"),  # a tarball, not a registry
+        run("trivy image \\\n  --quiet \\\n  --input x.tar"),  # one command, three lines
+        run("/kaniko/executor --destination r/x:1 --no-push --tar-path i.tar"),
+    ]
+    for step in allowed:
+        assert _remote_task_faults(step, images) == [], step
     for step in bad:
         assert _remote_task_faults(step, images), step
 

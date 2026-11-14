@@ -83,7 +83,11 @@ that is thehub's `image-refresh` `build` alone.
 
 **Only non-gating lanes may carry `linux`.** Concourse has no fallback from
 a tagged step to an untagged worker: while no `linux` worker is registered,
-a tagged step waits until its timeout, then the job fails. On a lane that
+a tagged step waits for one. A task's own `timeout:` does not cover that
+wait (in 8.3.3 it starts only once a worker is chosen), so each routed task
+sits in a `do:` whose `timeout:` bounds the wait too, and the test checks
+it: with the remote host offline the run fails after 20m instead of holding
+its serial group indefinitely. On a lane that
 gates a merge or a delivery (`pr-gates`, or a job in another's `passed:`
 list) that is a false red, or a stopped delivery, every time the remote host
 is off or asleep. Moving a gating lane needs an always-on remote host or a
