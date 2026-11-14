@@ -42,12 +42,19 @@
           success               healthy on the new sha, exit 0
           success_with_warning  healthy on the new sha, non-zero exit: no
                                 rollback of a healthy, correct stack
-          not_attempted         deploy.ps1 stopped before changing the stack
-                                (the gate refused or never answered, a pull
-                                failed, exit 75): production is unchanged,
-                                and the sha's one attempt is NOT spent
-          failed                the stack changed and is not healthy on the
-                                new sha: ROLL BACK
+          not_attempted         a PRE-MOVE REFUSAL: deploy.ps1 failed (exit 1,
+                                75 for the lock) and printed
+                                `DEPLOY-PRE-MOVE-REFUSAL kind=<kind>` (the
+                                gate refused or never scored it, a pull
+                                failed, the lock was held): nothing moved,
+                                the memo records attempted: false and the
+                                kind as reason, the Hub run carries the
+                                reason, and a later tick retries the sha
+          failed                an ATTEMPT that went wrong: deploy.ps1 got
+                                past its pre-move checks and the stack is
+                                not healthy on the new sha: ROLL BACK (no
+                                rollback when the old stack still answers).
+                                The sha's one attempt is spent either way
           timeout               still running at -DeployTimeoutMin
       - rolls back by running deploy.ps1 again with the tag of the sha that
         ran before (deploy.ps1's documented rollback: "the same command
@@ -183,9 +190,11 @@ function Open-DeployIncident {
 function Invoke-DeployScript {
     # deploy.ps1 in a child pwsh. -NonInteractive: if anything in it ever
     # prompts, the child fails instead of waiting for a keyboard nobody is at.
-    param([string]$Tag, [string]$LogPath, [string[]]$Extra = @())
-    $argList = @('-NoProfile', '-NonInteractive', '-File', ('"{0}"' -f $deployScript),
-        '-Tag', $Tag, '-Registry', $Registry) + $Extra
+    # -RequireFullSha on the forward deploy: the decision's full 40-char sha,
+    # never a prefix (61644). A rollback passes the running images' tag.
+    param([string]$Tag, [string]$LogPath, [string[]]$Extra = @(), [switch]$RequireFullSha)
+    $argList = Get-DeployScriptArgumentList -ScriptPath $deployScript -Tag $Tag -Registry $Registry `
+        -Extra $Extra -RequireFullSha:$RequireFullSha
     $errPath = [IO.Path]::ChangeExtension($LogPath, '.err.log')
     $proc = Start-Process -FilePath $pwshPath -ArgumentList $argList -WorkingDirectory $here `
         -NoNewWindow -PassThru -RedirectStandardOutput $LogPath -RedirectStandardError $errPath
@@ -312,11 +321,18 @@ try {
     & git -C $repoRoot fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' 2>$null
     if ($LASTEXITCODE -ne 0) { Write-Host "WARN git fetch origin main exit $LASTEXITCODE; deploying anyway" -ForegroundColor Yellow }
 
-    $code = Invoke-DeployScript -Tag $sha -LogPath $deployLog
+    $code = Invoke-DeployScript -Tag $sha -LogPath $deployLog -RequireFullSha
     $deployEnd = [DateTime]::UtcNow
     $after = Get-StackState
     if ($SimulateFailedHealth) { Write-Host 'SimulateFailedHealth: treating the post-deploy check as failed.' -ForegroundColor Yellow }
-    $outcome = Get-AutoDeployOutcome -Code $code -HealthyOnNew (Test-StackOn $after $sha) `
+    # A refusal before anything moved is said by deploy.ps1 itself: a failing
+    # exit and one DEPLOY-PRE-MOVE-REFUSAL line (61644).
+    $deployLines = @()
+    foreach ($p in @($deployLog, [IO.Path]::ChangeExtension($deployLog, '.err.log'))) {
+        try { if (Test-Path -LiteralPath $p) { $deployLines += @(Get-Content -LiteralPath $p) } } catch { Write-Verbose "unread: $p" }
+    }
+    $preMove = Get-PreMoveRefusal -Code $code -Lines $deployLines
+    $outcome = Get-AutoDeployOutcome -Code $code -PreMoveRefusal $preMove -HealthyOnNew (Test-StackOn $after $sha) `
         -HealthyOnPrevious ([bool]$previous -and (Test-StackOn $after $previous)) `
         -PreviousKnown ([bool]$previousTag) -Simulate ([bool]$SimulateFailedHealth)
     $result = $outcome.Result
@@ -347,10 +363,12 @@ try {
 
     # not_attempted gives the sha back: the next tick may try it again.
     Save-AutoDeployAttempt -Path $attemptsFile -Sha $sha -Result $result -Extra @{
-        previous = $previous; previous_tag = $previousTag; exit = $code; why = $outcome.Why }
+        previous = $previous; previous_tag = $previousTag; exit = $code; why = $outcome.Why
+        attempted = $outcome.Counted; reason = $outcome.Reason }
     $ok = ($result -in @('success', 'success_with_warning'))
     $hub = Send-HostJobRun -Ok $ok -ErrorText $(if (-not $ok) { "deploy $s12 $result exit ${code}: $($outcome.Why); rollback $rollback" } else { $null }) -Summary @{
         phase = 'end'; sha = $s12; previous = (Get-Short $previous); result = $result; exit = $code
+        attempted = $outcome.Counted; reason = $outcome.Reason
         rollback = $rollback; started_at = (Get-Stamp $startUtc); deploy_finished_at = (Get-Stamp $deployEnd)
         finished_at = (Get-Stamp $endUtc); simulated_failure = [bool]$SimulateFailedHealth
     } -DurationMs $durationMs
@@ -366,6 +384,7 @@ try {
         $sev = $(if ($result -eq 'success_with_warning') { 'warn' } else { 'error' })
         $title = $(if ($result -eq 'success_with_warning') {
                 "MyKronos auto-deploy of $s12 succeeded with a warning (exit $code)"
+            } elseif ($outcome.Reason) { "MyKronos auto-deploy of $s12 not attempted: $($outcome.Reason)"
             } else { "MyKronos auto-deploy of $s12 $result" })
         $incident = Open-DeployIncident -Ref "mykronos-auto-deploy:$sha" -Title $title -Severity $sev -Detail (
             "Watch-AutoDeploy.ps1 ran deploy.ps1 -Tag $sha -Registry $Registry. result=$result exit=$code ($($outcome.Why)) " +
@@ -374,7 +393,7 @@ try {
     }
     Write-AutoDeployJsonl -Path $jsonl -Entry @{
         event = 'deploy'; mode = $Mode; sha = $sha; previous = $previous; previous_tag = $previousTag; result = $result
-        exit = $code; why = $outcome.Why; counted = $outcome.Counted
+        exit = $code; why = $outcome.Why; counted = $outcome.Counted; attempted = $outcome.Counted; reason = $outcome.Reason
         backend = $after.Backend; frontend = $after.Frontend; running_after = $after.Sha
         rollback = $rollback; rollback_exit = $rollbackCode; simulated_failure = [bool]$SimulateFailedHealth
         started_at = (Get-Stamp $startUtc); finished_at = (Get-Stamp $endUtc)
