@@ -8003,42 +8003,61 @@ jobs:
                   --registry "$REGISTRY" --output refresh/plan.tsv
                 test -s refresh/plan.tsv || { echo "::error::no x-thehub-build recipes found"; exit 1; }
 
-      - task: build
-        container_limits: {cpu: 512}
-        timeout: 90m
-        image: kaniko
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: refresh }]
-          outputs: [{ name: images }]
-          run:
-            path: /busybox/sh
-            args:
-              - -ec
-              - |
-                # Built to a tarball, not pushed: see the note on the job.
-                # --cleanup between builds, because kaniko builds into its own
-                # root filesystem and the next build would start on top of it.
-                # --ignore-path=/busybox, because on Concourse that cleanup also
-                # deletes /busybox: build 2 built one image, then the loop's
-                # next `sed` was "not found" (2026-10-14).
-                TAB=$(printf '\t')
-                while IFS="$TAB" read -r current candidate context args; do
-                  [ -n "$candidate" ] || continue
-                  name=$(printf '%s' "$candidate" | sed 's/[^A-Za-z0-9._-]/_/g')
-                  echo "Building $candidate from $context"
-                  # $args is a deliberate word list of --build-arg=K=V flags.
-                  /kaniko/executor \
-                    --context "source/$context" \
-                    --dockerfile "source/$context/Dockerfile" \
-                    $args \
-                    --destination "$candidate" \
-                    --no-push \
-                    --tar-path "images/$name.tar" \
-                    --single-snapshot \
-                    --cleanup \
-                    --ignore-path=/busybox
-                done < refresh/plan.tsv
+      - do:
+          - task: build
+            # [TheHub #61659, D-181] Compute only, on the remote `linux` workers:
+            # the recipes' bases are public vendor images (`plan` puts only the
+            # `--destination` name on the registry, and `--no-push` never dials
+            # it); the images leave as tarballs in `images`. `scan` reads the
+            # registry and `publish` pushes to it, so both stay on the host.
+            #
+            # Only non-gating lanes go to `linux`: a tagged step never falls back
+            # to an untagged worker. The timeout is on this `do:`, not on the
+            # task, because a task's own `timeout:` starts only once a worker is
+            # chosen (Concourse 8.3.3 task_step: FindOrSelectWorker, which loops
+            # until a worker appears, runs before MaybeTimeout). The wrapper's
+            # timeout bounds the wait for a worker too, so with the remote host
+            # offline the run fails after 20m instead of holding `dast` (shared
+            # with pr-gates, post-merge, container-tiers and the DAST lanes)
+            # indefinitely. Measured on the host worker over the last 14 green
+            # runs (builds 20-33): 72-237s; 20m is 5x the slowest plus the
+            # streaming of `source`, the kaniko image and the tarballs.
+            tags: [linux]
+            container_limits: {cpu: 512}
+            image: kaniko
+            config:
+              platform: linux
+              inputs: [{ name: source }, { name: refresh }]
+              outputs: [{ name: images }]
+              run:
+                path: /busybox/sh
+                args:
+                  - -ec
+                  - |
+                    # Built to a tarball, not pushed: see the note on the job.
+                    # --cleanup between builds, because kaniko builds into its own
+                    # root filesystem and the next build would start on top of it.
+                    # --ignore-path=/busybox, because on Concourse that cleanup also
+                    # deletes /busybox: build 2 built one image, then the loop's
+                    # next `sed` was "not found" (2026-10-14).
+                    TAB=$(printf '\t')
+                    while IFS="$TAB" read -r current candidate context args; do
+                      [ -n "$candidate" ] || continue
+                      name=$(printf '%s' "$candidate" | sed 's/[^A-Za-z0-9._-]/_/g')
+                      echo "Building $candidate from $context"
+                      # $args is a deliberate word list of --build-arg=K=V flags.
+                      /kaniko/executor \
+                        --context "source/$context" \
+                        --dockerfile "source/$context/Dockerfile" \
+                        $args \
+                        --destination "$candidate" \
+                        --no-push \
+                        --tar-path "images/$name.tar" \
+                        --single-snapshot \
+                        --cleanup \
+                        --ignore-path=/busybox
+                    done < refresh/plan.tsv
+        timeout: 20m
 
       - task: scan
         container_limits: {cpu: 512}
