@@ -231,3 +231,13 @@ def later(minutes: int) -> str:
         .replace(tzinfo=None)
         .isoformat()
     )
+
+
+@pytest.fixture(autouse=True)
+def _po_story_writes_unfrozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Product Owner write paths are frozen in production (D-177), and the
+    older tests of how they behave when open run with the switch off.
+    `test_po_console_frozen.py` turns it back on."""
+    from mykronos.api import product_owner
+
+    monkeypatch.setattr(product_owner, "WRITES_FROZEN", False)
