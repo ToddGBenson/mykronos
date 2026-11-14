@@ -270,9 +270,14 @@ def test_a_remote_task_is_compute_only(where: tuple[str, str, str]) -> None:
 def test_the_compute_only_check_can_fail() -> None:
     """The checker refuses each way a task can need the host."""
     images = {"python": "python", "local": "((registry))/thehub"}
-    ok = {"task": "t", "tags": [REMOTE_TAG], "image": "python", "config": {"platform": "linux"}}
+    ok: dict[str, Any] = {
+        "task": "t",
+        "tags": [REMOTE_TAG],
+        "image": "python",
+        "config": {"platform": "linux"},
+    }
     assert _remote_task_faults(ok, images) == []
-    bad = [
+    bad: list[dict[str, Any]] = [
         {**ok, "params": {"MYKRONOS_URL": "((mykronos-url))"}},
         {**ok, "tags": [REMOTE_TAG, "thehub"]},
         {**ok, "privileged": True},
