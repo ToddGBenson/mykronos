@@ -29,12 +29,23 @@ JOB = "pr-gates"
 HEAD = "a" * 40
 CHECK = "report-check-run"
 HUB = "report-to-hub"
-MARGIN_S = 90
+# What Concourse's clock spends before this script's budget starts, and
+# after it: the worst integration container creation in the starved builds
+# (1341: 130s; 1333: 94s), ensurepip (13s in 1333) and the KILL grace after
+# TERM (`-k 30`).
+WORST_CREATION_S = 130
+ENSUREPIP_S = 13
+KILL_GRACE_S = 30
 
 
 def _job() -> dict[str, Any]:
     doc = yaml.safe_load(PIPELINE.read_text(encoding="utf-8"))
     return next(j for j in doc["jobs"] if j["name"] == JOB)
+
+
+def _hook_steps(hook: str) -> list[dict[str, Any]]:
+    """A hook's steps, with a `try:` unwrapped to the step it guards."""
+    return [s.get("try", s) for s in _job().get(hook, {}).get("do", [])]
 
 
 def _step(task: str) -> dict[str, Any]:
@@ -50,17 +61,33 @@ def _seconds(duration: str) -> int:
 # -- A1: container-tiers is ended inside the task, where it can say why ------
 
 
-def test_container_tiers_runs_under_a_budget_90s_inside_the_hard_timeout() -> None:
+def test_the_budget_ends_before_concourse_does_even_on_a_starved_worker() -> None:
+    """Concourse's timeout starts at worker selection; the budget starts once
+    the script runs. The margin must cover the slowest measured container
+    creation, ensurepip and the KILL grace, or Concourse kills the task first
+    and the hooks post `failure` (review of #1175, B1)."""
     task = _step("integration")
     budget = int(task["params"]["TIER_HARD_BUDGET_S"])
-    assert budget == _seconds(task["timeout"]) - MARGIN_S
+    margin = _seconds(task["timeout"]) - budget
+    assert margin >= WORST_CREATION_S + ENSUREPIP_S + KILL_GRACE_S + 60, margin
     script = task["config"]["run"]["args"][-1]
     assert '-s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset' in script
-    # The KILL after TERM still lands inside the hard timeout.
-    assert budget + 30 < _seconds(task["timeout"])
+    # Still room for the environment build and the 300s subset inside it.
+    assert budget >= int(task["params"]["TIER_SOFT_TIMEOUT_S"]) + 240
 
 
-def _integration(tmp_path: Path, tiers_body: str, budget: str) -> subprocess.CompletedProcess[str]:
+def test_the_script_stays_short_enough_to_execute_on_a_windows_host() -> None:
+    """These tests pass the script as one `bash -c` argument. Git Bash on
+    Windows truncates a command line past about 8190 characters (each `"` is
+    escaped to two), which shows up as "unexpected EOF while looking for
+    matching" in every test that executes the script. Explanations belong in
+    YAML comments beside `run:`, not inside the script."""
+    script = _step("integration")["config"]["run"]["args"][-1]
+    assert len(script) + script.count('"') < 7400, len(script) + script.count('"')
+
+
+def _integration(tmp_path: Path, tiers_body: str, budget: str,
+                 soft: str = "300") -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if not bash or not shutil.which("timeout"):
         pytest.skip("bash and timeout(1) are required")
@@ -74,7 +101,7 @@ def _integration(tmp_path: Path, tiers_body: str, budget: str) -> subprocess.Com
     (pr / "scripts" / "ci" / "container-tiers.sh").write_text(tiers_body)
     script = _step("integration")["config"]["run"]["args"][-1].replace(
         "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
-    env = {**os.environ, "TIER_HARD_BUDGET_S": budget}
+    env = {**os.environ, "TIER_HARD_BUDGET_S": budget, "TIER_SOFT_TIMEOUT_S": soft}
     return subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
                           timeout=90, env=env)
 
@@ -84,8 +111,19 @@ SLOW_ENVIRONMENT = (
     "sleep 6\n"
     "exit 0\n"
 )
-SLOW_SUBSET = (
+# The environment takes most of the budget, then the subset starts and is cut
+# off long before its own soft cap.
+LATE_SUBSET = (
+    "echo '[container-tiers] installing PostgreSQL 16 + pgvector and Redis'\n"
+    "sleep 2\n"
     "echo '[container-tiers] running the subset tier: pytest x'\n"
+    "sleep 6\n"
+    "exit 0\n"
+)
+# The subset starts at once and a test ignores the soft cap's SIGINT.
+HUNG_SUBSET = (
+    "echo '[container-tiers] running the subset tier: pytest x'\n"
+    "trap '' INT\n"
     "sleep 6\n"
     "exit 0\n"
 )
@@ -103,13 +141,26 @@ def test_an_environment_build_that_overruns_is_no_verdict(tmp_path: Path) -> Non
     assert "reported unjudged, not failed" in r.stdout
 
 
-def test_a_subset_cut_off_by_the_budget_is_no_verdict_either(tmp_path: Path) -> None:
-    """The subset's own 300s soft cap never fired, so the environment ate the
-    time: nothing about the pull request's code was concluded."""
-    r = _integration(tmp_path, SLOW_SUBSET, budget="2")
+def test_a_subset_started_late_and_cut_off_inside_its_soft_cap_is_no_verdict(
+        tmp_path: Path) -> None:
+    """The environment ate the time: the subset ran well under its soft cap
+    before the budget ended it, so nothing about the code was concluded."""
+    r = _integration(tmp_path, LATE_SUBSET, budget="3", soft="60")
     assert r.returncode == 2, r.stdout + r.stderr
     reason = (tmp_path / "memory-infra" / "reason").read_text()
-    assert "the subset had started but had not finished" in reason
+    assert "the subset started late and was cut off" in reason
+    assert "inside its 60s soft cap" in reason
+    assert "parks it" in reason, "the Hub report says what happens next"
+
+
+def test_a_subset_that_ran_past_its_soft_cap_is_a_hang_and_stays_red(tmp_path: Path) -> None:
+    """Review of #1175, B2: a test that ignores SIGINT and holds the subset
+    past its soft cap is the pull request's fault, and deploy.sh's tier would
+    hang the same way. It stays 124 (partial, red), with no outage marker."""
+    r = _integration(tmp_path, HUNG_SUBSET, budget="3", soft="1")
+    assert r.returncode == 124, r.stdout + r.stderr
+    assert not (tmp_path / "memory-infra").exists()
+    assert "past its 1s soft cap" in r.stdout and "hangs" in r.stdout
 
 
 def test_the_subsets_own_soft_timeout_is_still_partial_not_an_outage(tmp_path: Path) -> None:
@@ -146,7 +197,7 @@ def _report(tmp_path: Path, hook: str) -> dict[str, Any]:
     sh = shutil.which("sh")
     if not sh:
         pytest.skip("sh is required")
-    step = next(s for s in _job()[hook]["do"] if s.get("task") == CHECK)
+    step = next(s for s in _hook_steps(hook) if s.get("task") == CHECK)
     (tmp_path / "source" / ".git").mkdir(parents=True, exist_ok=True)
     (tmp_path / "source" / ".git" / "HEAD").write_text(HEAD + "\n")
     if (tmp_path / "memory-infra").exists():
@@ -171,6 +222,11 @@ def test_an_overrun_reaches_github_as_cancelled_not_failure(tmp_path: Path) -> N
     assert (body["commit_sha"], body["phase"], body["conclusion"]) == (HEAD, "end", "cancelled")
 
 
+def test_a_hung_subset_reaches_github_as_failure(tmp_path: Path) -> None:
+    _integration(tmp_path, HUNG_SUBSET, budget="3", soft="1")
+    assert _report(tmp_path, "on_failure")["conclusion"] == "failure"
+
+
 def test_a_real_failure_still_reaches_github_as_failure(tmp_path: Path) -> None:
     _integration(tmp_path, "exit 1\n", budget="60")
     assert _report(tmp_path, "on_failure")["conclusion"] == "failure"
@@ -186,9 +242,8 @@ def test_an_error_posts_cancelled(tmp_path: Path) -> None:
 
 
 def test_only_on_failure_can_post_failure() -> None:
-    job = _job()
     for hook in ("on_error", "on_abort", "on_success"):
-        for step in job.get(hook, {}).get("do", []):
+        for step in _hook_steps(hook):
             if step.get("task") == CHECK:
                 assert step["params"]["CONCLUSION"] != "failure", hook
 
@@ -200,8 +255,16 @@ def test_only_on_failure_can_post_failure() -> None:
 def test_the_check_run_is_posted_before_the_hub_report(hook: str) -> None:
     """A timed-out or unschedulable `report-to-hub` must not stop the check:
     the check gates the merge, the Hub report is telemetry."""
-    tasks = [s.get("task") for s in _job()[hook]["do"]]
+    tasks = [s.get("task") for s in _hook_steps(hook)]
     assert tasks == [CHECK, HUB], tasks
+
+
+@pytest.mark.parametrize("hook", ["on_failure", "on_error"])
+def test_a_refused_check_post_cannot_skip_the_hub_report(hook: str) -> None:
+    """Review of #1175, N4: the check step is first, so it is wrapped in
+    `try:`; a refused or unreachable post still lets the Hub hear the result."""
+    first = _job()[hook]["do"][0]
+    assert set(first) == {"try"} and first["try"]["task"] == CHECK
 
 
 # -- C: the caps (PS-7) -------------------------------------------------------

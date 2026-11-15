@@ -49,7 +49,8 @@ def _step(task: str) -> dict[str, Any]:
 
 def _hooks() -> list[dict[str, Any]]:
     job = _job()
-    return [s for hook in ("on_success", "on_failure", "on_error", "on_abort")
+    # A step inside `try:` is still the hook's step: unwrap it.
+    return [s.get("try", s) for hook in ("on_success", "on_failure", "on_error", "on_abort")
             for s in job.get(hook, {}).get("do", [])]
 
 
@@ -438,7 +439,8 @@ def test_a_red_subset_fails_the_job(tmp_path) -> None:
     assert r.returncode == 1, r.stdout + r.stderr
     assert "::error::" in r.stdout
     assert not (tmp_path / "memory-infra").exists(), "a real failure is a verdict, not an outage"
-    fail = [s for s in _job()["on_failure"]["do"] if s.get("task") == "report-check-run"]
+    fail = [s.get("try", s) for s in _job()["on_failure"]["do"]
+            if s.get("try", s).get("task") == "report-check-run"]
     assert fail and fail[0]["params"]["CONCLUSION"] == "failure"
 
 

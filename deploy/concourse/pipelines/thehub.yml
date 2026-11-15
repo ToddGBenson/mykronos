@@ -2353,12 +2353,15 @@ jobs:
     # `in_progress` (builds 1333-1341, 2026-11-15). This job is not upstream
     # of `oracle-gate`, so the "check last" order the gate's lanes keep (see
     # `check_params`) does not apply here: nothing else in these hooks can be
-    # stopped by a refused check except the Hub report.
+    # stopped by a refused check except the Hub report, and `try:` keeps even
+    # that from happening: a refused or unreachable post is still red in this
+    # step's log, and the Hub still hears `failed` / `errored`.
     on_failure:
       do:
-        - <<: *check_run
-          input_mapping: { source: pr }
-          params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: failure }
+        - try:
+            <<: *check_run
+            input_mapping: { source: pr }
+            params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: failure }
         - <<: *hub_report
           input_mapping: { source: pr }
           params: { <<: *hub_params, JOB: pr-gates, STAGE: pr_gates, STATUS: failed, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
@@ -2367,11 +2370,17 @@ jobs:
     # the check says `cancelled` ("could not run, nothing was judged"), not
     # `failure`. `pick` asks a cancelled head again once and then parks it,
     # so a recurring outage cannot hold the serial groups every tick.
+    #
+    # `cancelled` is passed directly, so the anchor's "fall back to failure on
+    # a 422" path (which runs only for a rewritten `failure`) does not apply:
+    # a MyKronos that refused `cancelled` would leave the check in progress.
+    # Every MyKronos since #61007 accepts it.
     on_error:
       do:
-        - <<: *check_run
-          input_mapping: { source: pr }
-          params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: cancelled }
+        - try:
+            <<: *check_run
+            input_mapping: { source: pr }
+            params: { <<: *check_params, JOB: pr-gates, PHASE: end, CONCLUSION: cancelled }
         - <<: *hub_report
           input_mapping: { source: pr }
           params: { <<: *hub_params, JOB: pr-gates, STAGE: pr_gates, STATUS: errored, TARGET_ENV: pull-request, SCANNED_BRANCH: pull-request, REQUIRE_SOURCE: "1" }
@@ -2833,11 +2842,15 @@ jobs:
         timeout: 14m
         params:
           CONTAINER_TIERS_DISPOSABLE: "1"
-          # container-tiers' own cap, 90s under the 14m above, so a slow
+          # container-tiers' own cap, 240s under the 14m above, so a slow
           # environment build ends with this script still alive to say it
           # was an outage. A Concourse timeout kills the task before it can
-          # write infra/reason, and the hooks then post `failure`.
-          TIER_HARD_BUDGET_S: "750"
+          # write infra/reason, and the hooks then post `failure`. The 14m
+          # starts at worker selection, this budget only once the script
+          # runs: the margin covers container creation (94s and 130s in the
+          # starved builds 1333 and 1341), ensurepip (13s) and the 30s KILL
+          # grace after TERM, with room to spare.
+          TIER_HARD_BUDGET_S: "600"
           # The subset's soft cap: SIGINT lets pytest write its summary, and
           # TheHub's script turns a run that hit it into "partial", never green.
           TIER_SOFT_TIMEOUT_S: "300"
@@ -2862,6 +2875,19 @@ jobs:
           # [#61106] Written only when the subset was killed for memory; the
           # failure hooks then report errored / cancelled, not a verdict.
           outputs: [{ name: infra, path: memory-infra }]
+          # The budget (2026-11-15). container-tiers runs under timeout(1) at
+          # TIER_HARD_BUDGET_S, so an overrun is ended where the outcome can
+          # still be written down, not by Concourse, which kills the task with
+          # no outputs and so reads as a red verdict. timeout(1) exits 124
+          # after TERM and 137 after the KILL that follows; container-tiers'
+          # own 124 (the subset's soft cap) returns well inside the budget, so
+          # the clock tells them apart. The output is teed through a loop that
+          # notes when the subset tier starts: an overrun is an outage only if
+          # the environment ate the time. A subset that ran its whole soft cap
+          # and did not stop on SIGINT has a hanging test, which deploy.sh's
+          # tier would hang on too, so it stays 124: a verdict. Arithmetic is
+          # `let`, never a doubled parenthesis, which Concourse reads as a
+          # credential variable. The script is kept short: it is one argv.
           run:
             path: bash
             args:
@@ -2900,11 +2926,9 @@ jobs:
                   echo "pr-gates: the cached image has no pip; bootstrapping it with ensurepip"
                   "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
                 fi
-                # Under TIER_HARD_BUDGET_S, 90s inside the task's own timeout:
-                # a run that overruns it is ended here, where the outcome can
-                # still be written down, rather than by Concourse, which kills
-                # the task with no outputs and so reads as a red verdict.
-                BUDGET="${TIER_HARD_BUDGET_S:-750}"
+                # The budget: see TIER_HARD_BUDGET_S and the note above `run:`.
+                BUDGET="${TIER_HARD_BUDGET_S:-600}"
+                SOFT="${TIER_SOFT_TIMEOUT_S:-300}"
                 TIMER=""
                 if command -v timeout >/dev/null 2>&1; then
                   TIMER=timeout
@@ -2918,28 +2942,42 @@ jobs:
                     bash pr/scripts/ci/container-tiers.sh pr subset
                   fi
                 }
-                # `let`, not shell arithmetic expansion: Concourse reads a
-                # doubled open parenthesis as a credential variable.
                 let "TIERS_DEADLINE = SECONDS + BUDGET"
-                run_tiers 2>&1 | tee /tmp/container-tiers.log
+                LOG=/tmp/container-tiers.log START=/tmp/container-tiers.subset-start
+                : > "$LOG"
+                rm -f "$START"
+                run_tiers 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+                  printf '%s\n' "$line"
+                  printf '%s\n' "$line" >> "$LOG"
+                  case "$line" in
+                    *"[container-tiers] running the subset tier"*)
+                      [ -f "$START" ] || echo "$SECONDS" > "$START" ;;
+                  esac
+                done
                 RC=${PIPESTATUS[0]}
                 OVERRAN=0
-                # timeout(1) exits 124 after TERM and 137 after the KILL that
-                # follows it; container-tiers' own 124 (the subset's soft cap)
-                # returns well inside the budget, so the clock tells them apart.
                 if [ -n "$TIMER" ] && { [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; } \
                    && [ "$SECONDS" -ge "$TIERS_DEADLINE" ]; then
-                  OVERRAN=1
-                  if grep -q '\[container-tiers\] running the subset tier' /tmp/container-tiers.log; then
-                    WHERE="the subset had started but had not finished, so its results are incomplete"
-                  else
-                    WHERE="it was still building the environment, so the subset never started"
+                  SUBSET_RAN=-1
+                  if [ -s "$START" ]; then
+                    let "SUBSET_RAN = SECONDS - $(cat "$START")"
                   fi
-                  echo "::error::container-tiers overran its ${BUDGET}s budget: ${WHERE}"
-                  mkdir -p memory-infra
-                  printf '%s\n' "NO VERDICT: the integration subset overran its ${BUDGET}s budget (${WHERE}), so this pull request's code was not judged. The environment was too slow; not a test failure." > memory-infra/reason
-                  printf '2\n' > memory-infra/exit_code
-                  RC=2
+                  if [ "$SUBSET_RAN" -ge "$SOFT" ]; then
+                    echo "::error::the integration subset ran ${SUBSET_RAN}s, past its ${SOFT}s soft cap, and did not stop: a test in it hangs"
+                    RC=124
+                  else
+                    OVERRAN=1
+                    if [ "$SUBSET_RAN" -ge 0 ]; then
+                      WHERE="the subset started late and was cut off after ${SUBSET_RAN}s, inside its ${SOFT}s soft cap"
+                    else
+                      WHERE="it was still building the environment, so the subset never started"
+                    fi
+                    echo "::error::container-tiers overran its ${BUDGET}s budget: ${WHERE}"
+                    mkdir -p memory-infra
+                    printf '%s\n' "NO VERDICT: the integration subset overran its ${BUDGET}s budget (${WHERE}), so this pull request's code was not judged. The environment was too slow; not a test failure. pick asks this head once more; a second cancelled run parks it until the branch is pushed again." > memory-infra/reason
+                    printf '2\n' > memory-infra/exit_code
+                    RC=2
+                  fi
                 fi
                 # [TheHub #61636] A failed `pip install -r` of the checkout's own
                 # requirements.txt is usually the pull request's fault (a pin
@@ -2947,7 +2985,7 @@ jobs:
                 # error (container-tiers tails pip.log above). Only when the pip
                 # bootstrap itself failed is it the environment's fault.
                 if [ "$RC" -eq 2 ] && [ "$BOOTSTRAP_FAILED" -eq 0 ] \
-                   && grep -q "could not install the checkout's requirements.txt" /tmp/container-tiers.log; then
+                   && grep -q "could not install the checkout's requirements.txt" "$LOG"; then
                   echo "::error::this pull request's backend/requirements.txt could not be installed (pip's error is above): a real failure, not an outage"
                   RC=1
                 fi
