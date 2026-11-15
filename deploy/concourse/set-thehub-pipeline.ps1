@@ -380,7 +380,7 @@ if (-not $ghToken -or -not $ghToken.StartsWith("ghs_")) {
 
 & $fly --target $Target login --concourse-url $Concourse `
     --username (Read-EnvValue $stackEnv "CONCOURSE_LOCAL_USER") `
-    --password (Read-EnvValue $stackEnv "CONCOURSE_LOCAL_PASSWORD") `
+    "--password=$(Read-EnvValue $stackEnv "CONCOURSE_LOCAL_PASSWORD")" `
     --team-name main | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "fly login failed" }
 

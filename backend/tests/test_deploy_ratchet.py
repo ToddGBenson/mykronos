@@ -1,4 +1,4 @@
-"""The deploy ratchet: a deploy may not raise a repository's risk (D-182).
+"""The deploy ratchet: a deploy may not raise a repository's risk (D-183).
 
 Two halves. `judge` is the rule as a pure function, tested branch by branch.
 The rest drive `GET /api/oracle/deploy-gate` over a real lake, because the

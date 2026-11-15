@@ -171,7 +171,7 @@ def _pool(
     """The findings detection runs over.
 
     `drop_ids` and `add_ids` describe a state that is not the lake's current
-    one: the deploy ratchet (D-182) asks which combinations a commit carried,
+    one: the deploy ratchet (D-183) asks which combinations a commit carried,
     so it drops the findings that commit did not have and adds back closed
     ones it did. An added finding is read whatever its status and counted as
     open, which is what it was at that commit.

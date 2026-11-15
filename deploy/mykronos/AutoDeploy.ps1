@@ -28,7 +28,7 @@
       running_unread        the running image's sha could not be read, so
                             there would be nothing to roll back to
       already_running       production already runs the promoted sha
-      ratchet_unread        the deploy ratchet (D-182) could not be asked
+      ratchet_unread        the deploy ratchet (D-183) could not be asked
                             about the promoted sha over the running one:
                             fail closed, a skip and never a pass
       ratchet_refused       the ratchet refused it (score raised, an
@@ -226,7 +226,7 @@ function Get-DeployScriptArgumentList {
         have made shorter, so it needs only 7 to 40 hex. -Restore (the
         rollback) adds deploy.ps1's -Restore: it ships the sha the failed
         deploy replaced without asking the ratchet, which may be down with
-        the backend that failed (D-182, operator decision 2026-11-15).
+        the backend that failed (D-183, operator decision 2026-11-15).
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
@@ -388,7 +388,7 @@ function Get-AutoDeployDecision {
         # $true when the running sha's images can be pulled back; $false or
         # $null (could not ask) is a skip: no deploy without a way back.
         [AllowNull()][object]$RollbackAvailable = $null,
-        # The deploy ratchet's answer (D-182): an object with .allow and
+        # The deploy ratchet's answer (D-183): an object with .allow and
         # .reasons, as GET /api/oracle/deploy-gate returns it, or $null when
         # it could not be asked. Only allow = true and verdict = 'allow' pass.
         [AllowNull()][object]$Ratchet = $null,
@@ -446,7 +446,7 @@ function Get-AutoDeployDecision {
                 'could not be found on this host and in the registry: a failed deploy would have no way back')
         }
     }
-    # 2b. Would the ratchet let it replace what runs (D-182). Fail closed: an
+    # 2b. Would the ratchet let it replace what runs (D-183). Fail closed: an
     #     unread ratchet is a skip of its own, never a pass.
     if ($null -eq $Ratchet -or -not ($Ratchet.PSObject.Properties.Name -contains 'allow')) {
         Add-Reason 'ratchet_unread' ('the deploy ratchet (GET /api/oracle/deploy-gate) could not be asked ' +
@@ -670,7 +670,7 @@ function Get-RunningSha {
 
 function Get-RatchetAnswer {
     # GET /api/oracle/deploy-gate for the promoted sha over the running one
-    # (D-182), or $null when it could not be asked. The token is read from
+    # (D-183), or $null when it could not be asked. The token is read from
     # backend/.env by name and never printed.
     param(
         [string]$Sha,

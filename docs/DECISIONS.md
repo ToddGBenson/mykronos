@@ -48,7 +48,8 @@ Format: `D-nnn` / status / the decision / why / spec follow-up (if any).
 - [D-177 — The Product Owner console is frozen read-only; MyKronos holds DevSecOps facts, the Hub holds operations](decisions/D-177-the-product-owner-console-is-frozen-read-only.md)
 - [D-178 — The estate APIs stay loopback-bound by default; the firewall rule, not the binding, is the LAN lock](decisions/D-178-the-estate-apis-bind-loopback-by-default-the-firewall-is-the-lan-lock.md)
 - [D-181 — A worker on another host registers over the TSA on the LAN address and runs compute steps only](decisions/D-181-a-worker-on-another-host-registers-over-the-tsa-and-runs-compute-steps-only.md)
-- [D-182 — A deploy may not raise the risk of what is running, and the gate fails closed](decisions/D-182-a-deploy-may-not-raise-the-risk-of-what-is-running-and-the-gate-fails-closed.md)
+- [D-182 — Agents log in to Concourse as a second local user holding `pipeline-operator` on main](decisions/D-182-agents-log-in-to-concourse-as-pipeline-operator.md)
+- [D-183 — A deploy may not raise the risk of what is running, and the gate fails closed](decisions/D-183-a-deploy-may-not-raise-the-risk-of-what-is-running-and-the-gate-fails-closed.md)
 
 <!-- decisions-index:end -->
 

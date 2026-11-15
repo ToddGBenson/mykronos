@@ -1,6 +1,6 @@
 """The gate job refuses only what a commit introduced (D-159, TheHub #60732).
 
-Since D-182 deploy.ps1 no longer mirrors this job: it asks the deploy ratchet
+Since D-183 deploy.ps1 no longer mirrors this job: it asks the deploy ratchet
 (`GET /api/oracle/deploy-gate`), which refuses a superset (a raised score, a
 latched No-Go, and anything it could not judge), and is tested in
 test_deploy_ratchet_ps1.py. What stays here is the gate job's own rule.

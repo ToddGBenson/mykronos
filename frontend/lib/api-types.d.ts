@@ -2934,7 +2934,7 @@ export interface paths {
         };
         /**
          * Deploy Gate Check
-         * @description May this commit be deployed over what the repository runs now? (D-182)
+         * @description May this commit be deployed over what the repository runs now? (D-183)
          *
          *     The deploy ratchet. Refuses a deploy that raises the repository's risk
          *     score beyond a 0.5 tolerance (summed across deploys) or brings an open
@@ -7492,7 +7492,7 @@ export interface components {
         DeployGateLatch: {
             /**
              * Latched
-             * @description Whether the repository's score has ever been below the No-Go threshold. Once true, a No-Go deploy is a hard refusal (D-182 (b)).
+             * @description Whether the repository's score has ever been below the No-Go threshold. Once true, a No-Go deploy is a hard refusal (D-183 (b)).
              */
             latched: boolean;
             /** Latched At */
@@ -7506,7 +7506,7 @@ export interface components {
         };
         /**
          * DeployGateOut
-         * @description The deploy ratchet's answer about one deploy (D-182).
+         * @description The deploy ratchet's answer about one deploy (D-183).
          */
         DeployGateOut: {
             /** Repo Full Name */

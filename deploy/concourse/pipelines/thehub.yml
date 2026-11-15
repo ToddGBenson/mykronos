@@ -7930,7 +7930,9 @@ jobs:
   # package) pair, in every image - does anything:
   #
   #   1. the candidates are pushed (never before: the registry has deletes
-  #      disabled, so pushing to find out would grow it every day forever);
+  #      disabled, so pushing to find out would grow it every day forever),
+  #      and only to a tag that does not exist yet: an existing tag is never
+  #      overwritten (TheHub #61698; see the `publish` task);
   #   2. demo is redeployed on them by publishing `<sha>+p<date>`, which the
   #      host poller reads as "the same commit, THEHUB_DEMO_PATCH_DATE=<date>".
   #
@@ -8139,13 +8141,80 @@ jobs:
                 fi
                 # Every candidate, improved or not: the demo's date is one
                 # variable, so every image carrying that date must exist.
+                #
+                # [TheHub #61698] A tag is never overwritten. Build 32
+                # (2026-11-13) re-pushed thehub-nginx:...-p20261113, a tag
+                # TheHub's docker-compose.yml pins by digest, and the next
+                # deploy failed on the moved tag. So each candidate's tag is
+                # looked up first:
+                #   absent            -> pushed;
+                #   same digest       -> "present, unchanged";
+                #   different digest  -> skipped, never overwritten, reported
+                #                        (::warning:: and the summary line);
+                #   lookup failed     -> not pushed: an unanswered lookup is
+                #   (not "no such        not proof of absence.
+                #   manifest")
+                # No second tag (-p<date>-<n>) is offered instead: TheHub reads
+                # these images only as -p<date> (THEHUB_DEMO_PATCH_DATE, its
+                # publish-patched-images.sh and its compose pins), so a suffixed
+                # tag would be pushed for nobody. The image already at the tag
+                # is the one TheHub published and pins for that date.
+                #
+                # Kaniko builds are not reproducible, so a same-day rerun builds
+                # new bytes for tags that already exist: every tag is found
+                # present with another digest and the task goes red here by
+                # design (nothing this run built is offered).
+                #
+                # The run fails only when the result cannot stand: a lookup or
+                # push went unanswered (the date's image may not exist for the
+                # demo), or every candidate collided, so nothing this run built
+                # and judged is offered and the demo is not redeployed on images
+                # this run did not scan. A partial collision publishes the rest
+                # and stays green, loudly.
                 TAB=$(printf '\t')
+                pushed=0; unchanged=0; collided=0; unverified=0
                 while IFS="$TAB" read -r current candidate context args; do
                   [ -n "$candidate" ] || continue
                   name=$(printf '%s' "$candidate" | sed 's/[^A-Za-z0-9._-]/_/g')
-                  /ko-app/crane push --insecure "images/$name.tar" "$candidate"
-                  echo "pushed $candidate"
+                  if ! want=$(/ko-app/crane digest --tarball "images/$name.tar" </dev/null); then
+                    echo "::error::could not read the digest of the built tarball for $candidate"
+                    exit 1
+                  fi
+                  if have=$(/ko-app/crane digest --insecure "$candidate" 2>lookup.err </dev/null); then
+                    if [ "$have" = "$want" ]; then
+                      echo "present, unchanged: $candidate@$have"
+                      unchanged=$((unchanged + 1))
+                    else
+                      echo "::warning::$candidate exists with a different digest ($have; this run built $want); not overwritten (tags are immutable)"
+                      collided=$((collided + 1))
+                    fi
+                    continue
+                  fi
+                  # crane's error lines carry the whole ref, so a bare 404 would
+                  # match a tag such as -p20260404 on any failure: match the
+                  # status text, never the digits.
+                  if ! grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|status code 404' lookup.err; then
+                    echo "::error::could not look up $candidate; not pushed: $(head -c 300 lookup.err)"
+                    unverified=$((unverified + 1))
+                    continue
+                  fi
+                  if /ko-app/crane push --insecure "images/$name.tar" "$candidate" </dev/null; then
+                    echo "pushed $candidate@$want"
+                    pushed=$((pushed + 1))
+                  else
+                    echo "::error::push of $candidate failed"
+                    unverified=$((unverified + 1))
+                  fi
                 done < verdict/plan.tsv
+                echo "publish summary: pushed=$pushed unchanged=$unchanged collided-not-overwritten=$collided failed=$unverified"
+                if [ "$unverified" -gt 0 ]; then
+                  echo "::error::$unverified candidate(s) could not be checked or pushed"
+                  exit 1
+                fi
+                if [ "$collided" -gt 0 ] && [ $((pushed + unchanged)) -eq 0 ]; then
+                  echo "::error::every candidate's tag already exists with other bytes; nothing from this run was published"
+                  exit 1
+                fi
 
       - task: deploy-demo
         container_limits: {cpu: 512}

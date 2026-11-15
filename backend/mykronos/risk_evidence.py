@@ -476,7 +476,7 @@ def toxic_combinations(
 
     `suppress=False` is what an acceptance's approver is shown: every
     combination, none dissolved by an earlier acceptance (TheHub #61013).
-    `drop_ids` / `add_ids` are the deploy ratchet's other states (D-182)."""
+    `drop_ids` / `add_ids` are the deploy ratchet's other states (D-183)."""
     from mykronos import toxic
 
     return toxic.detect(

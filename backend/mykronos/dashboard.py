@@ -2806,7 +2806,7 @@ class DashboardQueries:
         """Split first-seen rows into (introduced, newly disclosed).
 
         `_first_seen_at`'s rule, applied to rows a caller selected some other
-        way: the deploy ratchet (D-182) selects the findings first seen across
+        way: the deploy ratchet (D-183) selects the findings first seen across
         a range of commits, and must not count a CVE published against an
         image nobody changed any more than the commit gate does. Each row
         carries the keys `_first_seen_at` builds (`finding_id`, `capability`,

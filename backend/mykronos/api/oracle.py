@@ -270,7 +270,7 @@ def _note_ratchet_score(
     request: Request, repo_full_name: str, published: PublishedDecision, commit_sha: str
 ) -> None:
     """Latch the deploy ratchet when a recorded score is the repository's first
-    below No-Go (D-182 (b)). Best effort: a store that cannot be written here
+    below No-Go (D-183 (b)). Best effort: a store that cannot be written here
     leaves the latch for the next decision or the next ratchet check, and the
     gate's answer to the pipeline must not depend on it."""
     totals = (published.decision.inputs_snapshot or {}).get("totals") or {}
@@ -622,7 +622,7 @@ class DeployGateLatch(BaseModel):
     latched: bool = Field(
         description=(
             "Whether the repository's score has ever been below the No-Go threshold. "
-            "Once true, a No-Go deploy is a hard refusal (D-182 (b))."
+            "Once true, a No-Go deploy is a hard refusal (D-183 (b))."
         )
     )
     latched_at: str | None = None
@@ -632,7 +632,7 @@ class DeployGateLatch(BaseModel):
 
 
 class DeployGateOut(BaseModel):
-    """The deploy ratchet's answer about one deploy (D-182)."""
+    """The deploy ratchet's answer about one deploy (D-183)."""
 
     repo_full_name: str
     commit_sha: str = Field(description="The commit to deploy, full when the lake knows it.")
@@ -728,7 +728,7 @@ async def deploy_gate_check(
     commit: Annotated[str, Query(pattern=r"^[0-9a-fA-F]{7,40}$")],
     deployed: Annotated[str | None, Query(max_length=64)] = None,
 ) -> DeployGateOut:
-    """May this commit be deployed over what the repository runs now? (D-182)
+    """May this commit be deployed over what the repository runs now? (D-183)
 
     The deploy ratchet. Refuses a deploy that raises the repository's risk
     score beyond a 0.5 tolerance (summed across deploys) or brings an open

@@ -1,4 +1,4 @@
-"""The deploy ratchet: a deploy may not raise a repository's risk (D-182).
+"""The deploy ratchet: a deploy may not raise a repository's risk (D-183).
 
 Operator decision 2026-11-15. A deploy of commit C for repository R is judged
 against the commit R is running now (the *baseline*, D):
@@ -324,7 +324,7 @@ def judge(
             LATCHED_NO_GO,
             f"The repository has been below No-Go ({no_go:g}) before, so a No-Go deploy is "
             f"refused unless it lowers the score by more than {tolerance:g} and introduces "
-            f"no critical or high (D-182 (b), operator decision 2026-11-15). This deploy "
+            f"no critical or high (D-183 (b), operator decision 2026-11-15). This deploy "
             f"scores {candidate_score:.2f} ({delta:+.2f})"
             + (
                 "; the change itself does not raise it, so the No-Go is the backlog: "
@@ -342,14 +342,14 @@ def judge(
                 f"Still No-Go at {candidate_score:.2f} on a repository that has been below "
                 f"{no_go:g}, but this deploy lowers the score by {-delta:.2f} (more than "
                 f"{tolerance:g}) and introduces no critical or high, so it is allowed "
-                "(D-182 (b), operator decision 2026-11-15)." + pending,
+                "(D-183 (b), operator decision 2026-11-15)." + pending,
             )])
         code = LOWERED_WHILE_NO_GO if lowered else UNCHANGED_WHILE_NO_GO
         return Judgement(True, [Reason(
             code,
             f"Still No-Go at {candidate_score:.2f}, but the repository has never been below "
             f"{no_go:g}, and this deploy does not raise the score ({delta:+.2f}), so it is "
-            "allowed (D-182 (d))." + pending,
+            "allowed (D-183 (d))." + pending,
         )])
     code = LOWERED if lowered else NOT_RAISED
     return Judgement(True, [Reason(
@@ -430,7 +430,7 @@ def note_score(
         ))
     logger.warning(
         "Deploy ratchet latched for %s at %s (raw %.2f < no_go %s): a No-Go deploy is "
-        "now a hard refusal (D-182).",
+        "now a hard refusal (D-183).",
         scrub(repo_full_name), scrub(commit_sha), raw_score, policy.no_go,
     )
     return True
@@ -1244,7 +1244,7 @@ def evaluate(
             "placed (a finding first seen on a feature-branch push or on a pull request "
             "scanned before the running commit is on neither side), and its baseline is "
             "the caller's word. It covers this platform's own deploys only, and only "
-            "while the backend knows its own build (D-182).",
+            "while the backend knows its own build (D-183).",
         )]
         return gate
     try:

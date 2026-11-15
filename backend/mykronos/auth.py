@@ -128,7 +128,11 @@ class TokenRegistry:
                 token.status = "superseded"
                 token.superseded_at = now
                 token.expires_at = now if immediate else now + self.overlap
-            elif immediate and token.status == "superseded":
+            elif (
+                immediate
+                and token.status == "superseded"
+                and (token.expires_at is None or token.expires_at > now)
+            ):
                 # Every previously issued value, not just the one that happens
                 # to be active. Containment means no old secret still works,
                 # and a token superseded an hour ago is still inside its
@@ -138,8 +142,7 @@ class TokenRegistry:
                 # the leaked token had already been superseded by an earlier
                 # rotation, so a later `--immediate` expired the *replacement*
                 # and left the disclosed value working exactly as before.
-                if token.expires_at is None or token.expires_at > now:
-                    token.expires_at = now
+                token.expires_at = now
 
         plaintext = secrets.token_urlsafe(TOKEN_BYTES)
         self.session.add(

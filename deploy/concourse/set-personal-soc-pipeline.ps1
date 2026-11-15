@@ -124,7 +124,7 @@ $password = Read-EnvValue $stackEnv "CONCOURSE_LOCAL_PASSWORD"
 
 Write-Host "Logging in to $Concourse as $user..." -ForegroundColor Cyan
 & $fly --target $Target login --concourse-url $Concourse `
-    --username $user --password $password --team-name main | Out-Null
+    --username $user "--password=$password" --team-name main | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "fly login failed" }
 
 # Written to a temp file and deleted afterwards, matching the other two

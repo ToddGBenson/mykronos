@@ -1,4 +1,4 @@
-## D-182 — A deploy may not raise the risk of what is running, and the gate fails closed
+## D-183 — A deploy may not raise the risk of what is running, and the gate fails closed
 
 **2026-11-15.** **Status:** Decided (operator), implemented for MyKronos's deploy only. Every other repository, TheHub included, is refused `not_enforceable` until the platform keeps a per-branch first-sighting record and a trusted baseline for it (point 13)
 **Story:** operator decision 2026-11-15 ("ratchet") · supersedes D-126's fail-open posture and D-159 for deploys · follows D-048, #734, TheHub #61063
@@ -173,7 +173,7 @@ whenever a CVE is published.
    `allow` would otherwise ship anything with no override in the ledger.
    Every ledger line records `asked`. There is no `-Repo`: the script deploys
    MyKronos only.
-12. **A platform override no longer clears a refusal.** Before D-182 a
+12. **A platform override no longer clears a refusal.** Before D-183 a
    recorded override on the commit's decision cleared the floor
    (`test_a_recorded_override_clears_the_floor`). The ratchet reads the
    decision's `recommendation`, never an override, so an override changes

@@ -58,7 +58,7 @@ Describe 'Get-AutoDeployDecision' {
         $d.Execute | Should -BeFalse
     }
 
-    It 'skips when the ratchet could not be asked (D-182 fails closed)' {
+    It 'skips when the ratchet could not be asked (D-183 fails closed)' {
         $in = Get-GreenInput; $in.Ratchet = $null
         $d = Get-AutoDeployDecision @in
         $d.Action | Should -Be 'Skip'
@@ -259,7 +259,7 @@ Describe 'a pre-move refusal is not an attempt; a post-move failure is (61644)' 
 
     It 'every kind deploy.ps1 emits is read back by the watcher' {
         # Literal kinds, and the ones the ratchet's refusal assigns to $kind
-        # before `Stop-BeforeMove -Kind $kind` (D-182).
+        # before `Stop-BeforeMove -Kind $kind` (D-183).
         $kinds = @(@([regex]::Matches($script:DeployPs1, 'Stop-BeforeMove -Kind "([a-z_]+)"')) +
             @([regex]::Matches($script:DeployPs1, '\$kind = "([a-z_]+)"')) |
             ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
@@ -383,7 +383,7 @@ Describe 'the watcher passes the decision''s full sha (61644)' {
         $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev.Substring(0, 12) -Registry 'r' -Extra @('-GateWaitMinutes', '0')
         $a[-2] | Should -Be '-GateWaitMinutes'
     }
-    It 'a rollback is a -Restore, which does not ask the ratchet (D-182)' {
+    It 'a rollback is a -Restore, which does not ask the ratchet (D-183)' {
         $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev -Registry 'r' -Extra @('-GateWaitMinutes', '0') -Restore
         $a | Should -Contain '-Restore'
         (Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:H -Registry 'r' -RequireFullSha) | Should -Not -Contain '-Restore'
@@ -466,7 +466,7 @@ Describe 'the rollback supply' {
     }
 }
 
-Describe 'Get-RatchetAnswer asks with validated, escaped shas (D-182)' {
+Describe 'Get-RatchetAnswer asks with validated, escaped shas (D-183)' {
     BeforeAll {
         $script:EnvFile = Join-Path $TestDrive 'backend.env'
         Set-Content -LiteralPath $script:EnvFile -Value 'MYKRONOS_VIEWER_TOKEN=t'

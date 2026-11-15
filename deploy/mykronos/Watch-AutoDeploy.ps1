@@ -60,7 +60,7 @@
         that ran before, with -GateWaitMinutes 0. -Restore does not ask the
         ratchet, whose backend may be the thing that failed; deploy.ps1
         accepts it only for the sha its own ledger recorded the failed deploy
-        replacing (D-182, operator decision 2026-11-15);
+        replacing (D-183, operator decision 2026-11-15);
       - reports ONE host-job run at the end (actor Watch-AutoDeploy, kind
         deploy; no "started ok" run that could read as a success) and, on
         anything but success, one Hub incident (room devops).
@@ -245,7 +245,7 @@ $promote = Get-PromotedSha -ConcourseUrl $ConcourseUrl
 $mainHead = Get-MainHead -RepoRoot $repoRoot
 $running = Get-RunningSha
 $rollbackSupply = Get-RollbackImage -Sha $running -Registry $Registry
-# D-182: the ratchet's answer about the promoted sha over the running one.
+# D-183: the ratchet's answer about the promoted sha over the running one.
 $ratchet = Get-RatchetAnswer -Sha $promote.Sha -Deployed $running `
     -EnvPath (Join-Path $repoRoot 'backend\.env')
 $lockPath = Get-MykronosDeployLockPath

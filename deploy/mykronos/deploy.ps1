@@ -45,8 +45,8 @@
     about the sha before it pulls anything, and REFUSES a commit the gate
     refused unless -Force is passed with a reason that is recorded.
 
-    THE RATCHET, AND IT FAILS CLOSED (D-182, operator decision 2026-11-15).
-    Since D-182 the question is not "what did the gate decide about this sha"
+    THE RATCHET, AND IT FAILS CLOSED (D-183, operator decision 2026-11-15).
+    Since D-183 the question is not "what did the gate decide about this sha"
     but "may this sha replace the one running", asked of
     GET /api/oracle/deploy-gate with the running image's MYKRONOS_BUILD_SHA as
     the baseline. The platform refuses a deploy that raises the risk score
@@ -95,7 +95,7 @@
 
 .PARAMETER PlatformUrl
     Where to ask the ratchet. The local production backend, and ONLY that:
-    http://127.0.0.1:8100 is the one value accepted (D-182). Since the gate
+    http://127.0.0.1:8100 is the one value accepted (D-183). Since the gate
     fails closed, the address it asks is the gate - a listener elsewhere
     that answers {"allow": true} would otherwise ship anything with no
     -Force and no override in the ledger. The parameter stays so the value is
@@ -117,7 +117,7 @@
 
 .PARAMETER Restore
     Redeploy the sha that was running before the most recent deploy, WITHOUT
-    asking the ratchet (D-182, operator decision 2026-11-15: "Allow restore
+    asking the ratchet (D-183, operator decision 2026-11-15: "Allow restore
     of the prior sha"). It exists for the rollback after a failed deploy,
     when the backend that answers the ratchet is the thing that failed.
 
@@ -166,18 +166,18 @@ param(
     # be trusted -- and D-125 makes the practice the contract.
     #
     # Rollback is the same command with the previous sha; -Restore ships that
-    # sha without asking the ratchet (D-182), and only that sha.
+    # sha without asking the ratchet (D-183), and only that sha.
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{7,40}$')]
     [string]$Tag,
     # Where to ask what the risk gate decided about $Tag (#60487). The same
     # backend this script already deploys and checks, so the new dependency
-    # is a route, not a machine. Pinned (D-182): see .PARAMETER PlatformUrl.
+    # is a route, not a machine. Pinned (D-183): see .PARAMETER PlatformUrl.
     # A throw rather than ValidateScript's ErrorMessage, which Windows
     # PowerShell 5.1 does not parse.
     [ValidateScript({
         if ($_ -ceq 'http://127.0.0.1:8100') { $true }
-        else { throw "-PlatformUrl must be http://127.0.0.1:8100, the production backend this script deploys (D-182). The ratchet's answer is the gate; it is not asked anywhere else." }
+        else { throw "-PlatformUrl must be http://127.0.0.1:8100, the production backend this script deploys (D-183). The ratchet's answer is the gate; it is not asked anywhere else." }
     })]
     [string]$PlatformUrl = "http://127.0.0.1:8100",
     # How long to wait for the gate to answer about $Tag (#735). 0 = ask once.
@@ -196,7 +196,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
-# The repository the ratchet judges $Tag in (D-182). Not a parameter: this
+# The repository the ratchet judges $Tag in (D-183). Not a parameter: this
 # script deploys MyKronos and nothing else, and for this platform's own
 # repository the backend compares the running sha this script sends with its
 # own build stamp and refuses a disagreement.
@@ -301,7 +301,7 @@ function Invoke-DeployRecorder {
 }
 
 # ---------------------------------------------------------------------------
-# THE RISK GATE (#60487, D-182). Runs before anything is pulled, so a refusal
+# THE RISK GATE (#60487, D-183). Runs before anything is pulled, so a refusal
 # costs nothing and leaves the host exactly as it was.
 # ---------------------------------------------------------------------------
 
@@ -342,7 +342,7 @@ function Write-RiskLedger {
         $Entry["at"] = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $Entry["user"] = $env:USERNAME
         $Entry["host"] = $env:COMPUTERNAME
-        # Which platform answered (or was asked), on every line (D-182).
+        # Which platform answered (or was asked), on every line (D-183).
         $Entry["asked"] = $PlatformUrl
         Add-Content -Path $riskLedger -Value ($Entry | ConvertTo-Json -Compress -Depth 8)
         return $true
@@ -354,7 +354,7 @@ function Write-RiskLedger {
 
 function Get-LedgerMac {
     # HMAC-SHA256 of a ledger line's load-bearing fields, keyed with this
-    # host's platform token (D-182 restore). Lower-case hex.
+    # host's platform token (D-183 restore). Lower-case hex.
     param([string]$Key, [string]$Text)
     $hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($Key))
     try {
@@ -442,7 +442,7 @@ function Get-RestoreTarget {
 
 function Get-RiskVerdict {
     <#
-        Since D-182 this reads `/decisions/by-commit` only for
+        Since D-183 this reads `/decisions/by-commit` only for
         Find-NearestScored's hint; the deploy decision is Get-RatchetVerdict.
         Four outcomes, and the caller must be able to tell all four apart:
           clean    - asked, and the answer permits a deploy
@@ -529,7 +529,7 @@ function Format-Short {
 
 function Get-RatchetVerdict {
     <#
-        THE DEPLOY RATCHET (D-182). Asks GET /api/oracle/deploy-gate whether
+        THE DEPLOY RATCHET (D-183). Asks GET /api/oracle/deploy-gate whether
         $Sha may replace $Deployed, and returns one of four states:
           allow    - the platform answered allow: true, verdict "allow"
           refused  - it answered, and refused (score raised, an introduced
@@ -654,7 +654,7 @@ if (-not $riskToken) { $riskToken = Read-EnvValue $backendEnv "MYKRONOS_VIEWER_T
 $gateToken = Read-EnvValue $backendEnv "MYKRONOS_GATE_TOKEN"
 
 # [TheHub #61046] What this deploy replaces, read before anything changes, so
-# the recorder can name the range of commits it shipped - and, since D-182,
+# the recorder can name the range of commits it shipped - and, since D-183,
 # so the ratchet can judge $Tag against what is running. Null on a first
 # deploy or an image too old to carry the stamp; the recorder then reads the
 # tip commit alone, and the ratchet uses the backend's own build stamp (it
@@ -667,7 +667,7 @@ if ($previousSha -notmatch '^[0-9a-f]{7,40}$') { $previousSha = $null }
 $riskSummary = ""
 
 if ($Restore) {
-    # D-182, operator decision 2026-11-15: "Allow restore of the prior sha".
+    # D-183, operator decision 2026-11-15: "Allow restore of the prior sha".
     # The ratchet is not asked: the backend that answers it may be the thing
     # that just failed. Only the sha the ledger says the last deploy replaced.
     $target = Get-RestoreTarget -Tag $Tag -Key $riskToken -Running $previousSha
@@ -684,7 +684,7 @@ if ($Restore) {
         Stop-BeforeMove -Kind "restore_unrecorded" -Message "The restore could not be recorded, so it does not happen. Fix $riskLedger and re-run."
     }
     $riskSummary = ("Risk gate: not asked - RESTORE of $(Format-Short $target.Sha), the sha the deploy of " +
-        "$(Format-Short $target.Deploy) replaced (D-182, operator decision 2026-11-15).")
+        "$(Format-Short $target.Deploy) replaced (D-183, operator decision 2026-11-15).")
     Write-Host $riskSummary -ForegroundColor Yellow
 } else {
 
@@ -705,7 +705,7 @@ if ($verdict.State -eq "unjudged" -and $GateWaitMinutes -gt 0) {
     # 40 minutes into the wait took longer than its 10 s timeout, the loop
     # ended on it, and 9a2eec4 shipped as COULD NOT ASK while its gate was
     # minutes from deciding. A miss keeps waiting; a deadline that passes on
-    # a miss is "could not ask", which is a refusal since D-182.
+    # a miss is "could not ask", which is a refusal since D-183.
     while ($verdict.State -in @("unjudged", "unasked") -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 30
         $verdict = Get-RatchetVerdict -Sha $Tag -Deployed $previousSha -Repo $Repo -BaseUrl $PlatformUrl -Token $riskToken
@@ -747,7 +747,7 @@ if ($verdict.State -eq "allow") {
         Write-Host "-Force was passed but the ratchet did not refuse $Tag; there was nothing to override." -ForegroundColor DarkGray
     }
 } else {
-    # Everything that is not an explicit allow refuses (D-182 (c)): a refusal,
+    # Everything that is not an explicit allow refuses (D-183 (c)): a refusal,
     # a commit nothing scored, and a platform that could not be asked.
     $lines = @()
     $kind = "risk_refused"
@@ -782,14 +782,14 @@ if ($verdict.State -eq "allow") {
                 "COULD NOT ASK - the deploy ratchet did not answer for $Tag.",
                 $verdict.Reason,
                 "",
-                "No risk decision was consulted, and since D-182 that is a refusal, not a",
+                "No risk decision was consulted, and since D-183 that is a refusal, not a",
                 "pass: the gate fails closed. If the platform itself is what is broken",
                 "(Vault sealed, the backend down), fix it, or deploy the fix with",
                 "-Force and a reason; the override is recorded before anything is pulled."
             )
         }
         default {
-            $lines = @("REFUSED - the deploy ratchet refused $Tag over $(Format-Short $answer.deployed_sha) (D-182).") +
+            $lines = @("REFUSED - the deploy ratchet refused $Tag over $(Format-Short $answer.deployed_sha) (D-183).") +
                 @($answer.reasons | ForEach-Object { "  [$($_.code)] $($_.message)" }) + @(
                 "",
                 "Score $($answer.baseline_score) running -> $($answer.candidate_score) for $Tag (tolerance $($answer.tolerance) in total, already spent $($answer.accepted_creep), No-Go $($answer.no_go_threshold)), latched $($answer.latch.latched).",
@@ -888,7 +888,7 @@ if (-not $deployLock.Acquired) {
 try {
 
 # What this deploy replaces, recorded BEFORE the pull and signed, so a
-# rollback can restore exactly that sha without asking the ratchet (D-182,
+# rollback can restore exactly that sha without asking the ratchet (D-183,
 # -Restore). A restore writes none: it must never make the failed sha
 # restorable. If the line cannot be written the deploy does not happen, for
 # the same reason an override that cannot be recorded does not: an

@@ -1895,7 +1895,7 @@ class RiskGateNoticeState(Base):
 
 
 class OracleRatchetLatch(Base):
-    """When a repository's risk score first fell below the No-Go threshold (D-182).
+    """When a repository's risk score first fell below the No-Go threshold (D-183).
 
     The deploy ratchet's latch: once a repository has been out of No-Go, a
     deploy whose decision is No-Go again is refused outright. One row per
@@ -1922,7 +1922,7 @@ class OracleRatchetLatch(Base):
 
 
 class OracleRatchetCreep(Base):
-    """How far deploys within the tolerance have raised a repository's score (D-182).
+    """How far deploys within the tolerance have raised a repository's score (D-183).
 
     The tolerance absorbs one small rise, not a series of them: ten deploys at
     +0.4 are +4.0. So every rise a deploy actually shipped is added here, and a

@@ -1,4 +1,4 @@
-"""deploy.ps1 asks the ratchet and fails closed (D-182).
+"""deploy.ps1 asks the ratchet and fails closed (D-183).
 
 Supersedes the fail-open posture (D-126) and "only the floor refuses"
 (D-159): the deploy asks `GET /api/oracle/deploy-gate` with the running
@@ -246,7 +246,7 @@ class TestTheRatchetDecides:
 
 class TestItFailsClosed:
     def test_an_unreachable_platform_is_a_refusal(self, tmp_path: Path) -> None:
-        """D-126 shipped this with a banner. D-182: it stops."""
+        """D-126 shipped this with a banner. D-183: it stops."""
         code, output, ledger, _ = deploy(tmp_path, ["THROW"])
 
         assert code == 3, output
@@ -416,7 +416,7 @@ def test_the_fail_open_path_is_gone() -> None:
     assert 'State = "backlog"' not in text.split("function Get-RatchetVerdict")[1]
 
 
-# -- D-182 restore (operator decision 2026-11-15: "Allow restore of the prior sha")
+# -- D-183 restore (operator decision 2026-11-15: "Allow restore of the prior sha")
 
 FAILED = "abc1234" + "0" * 33  # the stamp of the deploy that failed health
 OTHER = "5" * 40
