@@ -2944,6 +2944,10 @@ export interface paths {
          *     critical or high; allows a fix that lowers the score while it is still
          *     No-Go.
          *
+         *     **MyKronos only, for now.** Any other repository is refused
+         *     `not_enforceable`: its baseline would be the caller's word, and its scan
+         *     history (feature-branch pushes, pull requests) cannot yet be placed.
+         *
          *     **Fails closed, and says why.** No recorded decision for the commit, an
          *     unknown or disputed baseline, or an evaluation error is `allow: false`
          *     with a named `reasons[].code`, always 200: a caller must read `allow`,
@@ -2961,6 +2965,9 @@ export interface paths {
          *     An answer is reused for a few seconds while nothing it read has changed
          *     (the lake's files, the latch, the creep ledger), so a caller polling it
          *     cannot make the backend evaluate the whole backlog on every request.
+         *     Database-side inputs (KEV matches, risk acceptances, remediation in
+         *     flight, the policy) are not in the key; the 15-second lifetime bounds
+         *     how stale they can be.
          */
         get: operations["deploy_gate_check_api_oracle_deploy_gate_get"];
         put?: never;
@@ -7623,7 +7630,7 @@ export interface components {
         DeployGateReason: {
             /**
              * Code
-             * @description Stable. Refusals: `no_decision`, `not_assessed`, `baseline_unknown`, `baseline_disagrees`, `evaluation_failed`, `introduced_blocking`, `score_raised`, `latched_no_go`. Allows: `not_raised`, `lowered`, `unchanged_while_no_go`, `lowered_while_no_go`, `lowered_while_latched`.
+             * @description Stable. Refusals: `no_decision`, `not_assessed`, `baseline_unknown`, `baseline_disagrees`, `evaluation_failed`, `introduced_blocking`, `score_raised`, `latched_no_go`, `not_enforceable`. Allows: `not_raised`, `lowered`, `unchanged_while_no_go`, `lowered_while_no_go`, `lowered_while_latched`.
              */
             code: string;
             /** Message */

@@ -20,6 +20,13 @@ against the commit R is running now (the *baseline*, D):
     evaluation that could not be completed is a refusal with a named reason;
 (d) a fix that lowers the score is allowed while R is still No-Go (unlatched).
 
+WHICH REPOSITORIES. For now only this platform's own, and only while the
+backend knows its own build (`enforceable`). Every other repository is
+refused `not_enforceable`: its baseline would be the caller's word, and a
+finding first seen on a feature-branch push, or on a pull request scanned
+only before D, cannot be placed without a per-branch first-sighting record
+(re-review of 6a448dfc). MyKronos's scans are push scans of main only.
+
 THE TWO SCORES ARE MEASURED OVER ONE SNAPSHOT. Oracle's score describes the
 whole open backlog, so two decisions recorded a day apart differ by every CVE
 published in between, whatever the commits did. On 2026-11-14 MyKronos main
@@ -57,11 +64,21 @@ overwritten by any scan, pull-request scans included. So:
   the same pull request) is on no branch, so it is the same on both sides;
 * a closed (`fixed`) finding is carried by X when it was not introduced after
   X and its last sighting is no earlier than X's last push scan of the same
-  capability (so X's own scans never missed it).
+  capability (so X's own scans never missed it);
+* the same test applies to an open finding introduced inside the range: when
+  X's own last scan of its capability no longer reports it, X fixed it, and
+  does not carry it although reconciliation has not closed it yet.
 
 Where a finding cannot be placed precisely it counts against C, because the
-gate fails closed. The one case not placed: a pull request whose every scan
-predates D and that merged after D without being scanned again.
+gate fails closed, with two exceptions, which are why only this platform's
+own repository is judged: a finding first seen on a push of another branch
+before D, and a pull request whose every scan predates D and that merged
+after D without being scanned again. Both are on neither side.
+
+Not re-scored, and held at their current value in both states: the
+`posture.*` terms (including the critical-open credit cap),
+`reachability.orphaned` and `accepted.residual`. The error mostly runs
+against C.
 
 A rollback (C scanned before D) needs nothing special: both states are
 reconstructed the same way, so C lacks what the commits after it introduced
@@ -75,16 +92,18 @@ A deploy is refused `score_raised` when that plus its own rise passes the
 tolerance. The gate learns that a deploy went through from the next question:
 an allow records its delta as pending against the candidate sha, and the next
 check that names that sha as the running baseline adds it (a lowering
-subtracts, never below zero). A forced deploy is never allowed, so it adds
-nothing; its record is deploy.ps1's ledger.
+subtracts, never below zero). A running sha that is not pending (a `-Force`
+deploy, a deploy by hand, or an entry the 50-entry cap evicted) is measured
+from the last confirmed sha over the current snapshot, and that rise is
+added, so no deploy path ships a rise the ledger does not count.
 
 THE BASELINE SOURCE. The caller names D from what is running (the deploy host
 reads the running container's build stamp). For this platform's own
 repository the backend answering is the deployment, so its `build_sha` is
-authoritative: a caller that names anything else is refused. For any other
-repository the deployment probe's last reading (#361) is reported beside the
-caller's claim and used when the caller names nothing; it is not a refusal on
-its own, because the probe runs half-hourly and lags every deploy.
+authoritative: a caller that names anything else is refused. `baseline_for`
+still reads another repository's baseline from the caller, with the
+deployment probe's last reading (#361) beside it, but `evaluate` refuses
+such a repository `not_enforceable` before using it (WHICH REPOSITORIES).
 """
 
 from __future__ import annotations
@@ -93,6 +112,7 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -152,6 +172,7 @@ EVALUATION_FAILED = "evaluation_failed"
 SCORE_RAISED = "score_raised"
 INTRODUCED_BLOCKING = "introduced_blocking"
 LATCHED_NO_GO = "latched_no_go"
+NOT_ENFORCEABLE = "not_enforceable"
 
 # Allow codes, so an allow says which rule let it through.
 NOT_RAISED = "not_raised"
@@ -162,8 +183,36 @@ LOWERED_WHILE_LATCHED = "lowered_while_latched"
 
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
 
-#: How many not-yet-confirmed candidates the creep ledger remembers.
+#: How many not-yet-confirmed candidates the creep ledger remembers. An
+#: evicted one is not lost: a running sha that is not pending is measured
+#: from the last confirmed one instead (see `settle_creep`).
 _PENDING_CAP = 50
+
+#: Repositories the tests drive the comparison for although they are not this
+#: platform's own. Never set outside the test suite.
+_TEST_ENFORCEABLE: frozenset[str] = frozenset()
+
+
+def _is_self(repo_full_name: str) -> bool:
+    return repo_full_name.split("/")[-1].lower() == SELF_REPO_NAME
+
+
+def enforceable(repo_full_name: str, self_build_sha: str) -> bool:
+    """Whether the ratchet can judge this repository at all.
+
+    Only this platform's own, and only while it knows its own build: there the
+    baseline is the backend's `build_sha`, not the caller's word, and every
+    scan is a push scan of main, so each finding's first sighting is on the
+    branch being compared. For any other repository neither holds: the caller
+    names the baseline (and so settles the creep ledger), and a high first
+    seen on a feature-branch push or on a pull request scanned only before D
+    is on neither side (re-review of 6a448dfc, N-B1). Until there is a
+    per-branch first-sighting record and a trusted baseline, those answer
+    `not_enforceable`, never allow.
+    """
+    if repo_full_name in _TEST_ENFORCEABLE:
+        return True
+    return _is_self(repo_full_name) and bool(_SHA.match((self_build_sha or "").strip().lower()))
 
 
 @dataclass(frozen=True)
@@ -386,29 +435,54 @@ def _pending(row: OracleRatchetCreep) -> dict[str, dict[str, Any]]:
     return value if isinstance(value, dict) else {}
 
 
-def settle_creep(db: Database, repo_full_name: str, deployed_sha: str) -> float:
-    """The repository's accumulated rise, after confirming any pending one.
+def settle_creep(
+    db: Database,
+    repo_full_name: str,
+    deployed_sha: str,
+    *,
+    measure: Callable[[str, str], float],
+) -> float:
+    """The repository's accumulated rise, after accounting for what now runs.
 
-    A pending delta is confirmed when the commit it was recorded for is now the
-    running baseline: the deploy it allowed went through. Confirmation clears
-    every pending entry, because they were all measured over a baseline that
-    no longer runs. Raises if the store cannot be read or written; the caller
-    refuses, because an unreadable ledger must not read as "no creep".
+    When the running sha is not the last confirmed one, something shipped:
+    * if the gate allowed it (it is pending), its recorded delta is added;
+    * otherwise (a `-Force` deploy, a deploy by hand, or a pending entry the
+      cap evicted) the change is measured, `measure(confirmed, running)` over
+      the current snapshot, and that delta is added, so no deploy path can
+      ship a rise the ledger never sees.
+    A lowering subtracts, never below zero. Either way every pending entry is
+    cleared, because they were all measured over a baseline that no longer
+    runs. The first sha ever seen is taken as the starting point. Raises if
+    the store cannot be read or written, or the change cannot be measured;
+    the caller refuses, because an unreadable ledger must not read as "no
+    creep".
     """
     deployed = (deployed_sha or "").strip().lower()
     with db.session() as session:
         row = session.get(OracleRatchetCreep, repo_full_name)
         if row is None:
+            if not deployed:
+                return 0.0
+            row = OracleRatchetCreep(
+                repo_full_name=repo_full_name, accepted_creep=0.0, confirmed_sha=deployed,
+                pending_json="{}", updated_at=utcnow(),
+            )
+            session.add(row)
             return 0.0
-        if deployed and not _same(deployed, row.confirmed_sha or ""):
+        confirmed = (row.confirmed_sha or "").strip().lower()
+        if deployed and not _same(deployed, confirmed):
             pending = _pending(row)
             match = next((sha for sha in pending if _same(sha, deployed)), None)
             if match is not None:
                 delta = float(pending[match].get("delta") or 0.0)
-                row.accepted_creep = max(0.0, float(row.accepted_creep or 0.0) + delta)
-                row.confirmed_sha = deployed
-                row.pending_json = "{}"
-                row.updated_at = utcnow()
+            elif confirmed:
+                delta = float(measure(confirmed, deployed))
+            else:
+                delta = 0.0  # the starting point: nothing earlier to measure from
+            row.accepted_creep = max(0.0, float(row.accepted_creep or 0.0) + delta)
+            row.confirmed_sha = deployed
+            row.pending_json = "{}"
+            row.updated_at = utcnow()
         return float(row.accepted_creep or 0.0)
 
 
@@ -674,6 +748,13 @@ def _carries(row: _Row, commit: _Commit) -> bool:
         return False
     last = commit.last_by_capability.get(row.capability)
     return bool(row.ls_at >= (last if last is not None else commit.first))
+
+
+def _missed(row: _Row, commit: _Commit) -> bool:
+    """Whether `commit`'s own last push scan of the finding's capability ran
+    after the finding's last sighting: that scan did not report it."""
+    last = commit.last_by_capability.get(row.capability)
+    return row.ls_at is not None and last is not None and bool(row.ls_at < last)
 
 
 # -- re-scoring a state -------------------------------------------------------
@@ -998,7 +1079,7 @@ def _stored_decision(
 
 def _fix_credit_pending(
     catalog: Any, policy: Policy, repo_full_name: str, branch: str, candidate: str
-) -> int:
+) -> set[str]:
     """Open in-scope findings whose last sighting is a push scan older than the
     candidate's last push scan of their capability: its scan no longer reports
     them, and absence reconciliation has not yet closed them."""
@@ -1011,7 +1092,7 @@ def _fix_credit_pending(
               AND coalesce(branch, '') = ?
             GROUP BY 1
         )
-        SELECT count(*) FROM findings f
+        SELECT f.finding_id FROM findings f
         JOIN scan_runs ls ON ls.scan_run_id = f.last_seen_scan_run_id
         JOIN cq ON cq.capability = f.capability
         WHERE f.asset_id = ? AND f.status IN ({statuses}) AND {_in_scope_sql(policy)}
@@ -1019,7 +1100,7 @@ def _fix_credit_pending(
         """,
         [repo_full_name, candidate, branch, repo_full_name],
     )
-    return int(rows[0][0] or 0) if rows else 0
+    return {str(r[0]) for r in rows}
 
 
 # -- the baseline -------------------------------------------------------------
@@ -1142,6 +1223,16 @@ def evaluate(
     candidate_recommendation: str | None = None
     blocking: list[str] = []
     creep = 0.0
+    if not enforceable(repo_full_name, self_build_sha):
+        gate.reasons = [Reason(
+            NOT_ENFORCEABLE,
+            f"The ratchet cannot judge {repo_full_name} yet: its scan history cannot be "
+            "placed (a finding first seen on a feature-branch push or on a pull request "
+            "scanned before the running commit is on neither side), and its baseline is "
+            "the caller's word. It covers this platform's own deploys only, and only "
+            "while the backend knows its own build (D-182).",
+        )]
+        return gate
     try:
         gate.latch = read_latch(db, repo_full_name)
         baseline = baseline_for(db, repo_full_name, deployed, self_build_sha)
@@ -1180,14 +1271,40 @@ def evaluate(
                     "environmental scoring is live for this repository, and the ratchet "
                     "does not re-score the environmental recount"
                 )
-            creep = settle_creep(db, repo_full_name, d)
-            gate.accepted_creep = round(creep, 2)
             fresh = engine.evaluate(repo_full_name, decision_type="commit_gate", commit_sha=c)
             snapshot = fresh.inputs_snapshot
             raw_value = (snapshot.get("totals") or {}).get("raw_score")
             if raw_value is None:
                 raise ValueError("the evaluation carries no totals.raw_score")
             current_raw = float(raw_value)
+
+            def measure(frm: str, to: str) -> float:
+                """The rise from the last confirmed sha to what runs now, over
+                this snapshot: a deploy the ledger was never told about."""
+                full = _resolve(catalog, repo_full_name, frm)
+                if len(full) != 1:
+                    raise ValueError(
+                        f"the creep since {frm[:12]} cannot be measured: it names "
+                        f"{len(full)} scanned commits"
+                    )
+                scratch = DeployGate(
+                    repo_full_name=repo_full_name, commit_sha=to, deployed_sha=full[0],
+                    baseline_source="creep ledger", probe_revision=None, verdict=REFUSE,
+                    allow=False, reasons=[],
+                )
+                problem = _compare(
+                    engine, queries, scratch, to, full[0], snapshot, current_raw,
+                    fresh.evaluated_at, [],
+                )
+                if problem is not None or scratch.candidate_score is None:
+                    raise ValueError(
+                        f"the creep from {frm[:12]} to {to[:12]} cannot be measured"
+                        + (f": {problem.message}" if problem is not None else "")
+                    )
+                return float(scratch.candidate_score) - float(scratch.baseline_score or 0.0)
+
+            creep = settle_creep(db, repo_full_name, d, measure=measure)
+            gate.accepted_creep = round(creep, 2)
             if fresh.recommendation not in BANDS:
                 candidate_recommendation = fresh.recommendation
             if c == d:
@@ -1201,9 +1318,10 @@ def evaluate(
             if gate.candidate_score is not None and gate.baseline_score is not None:
                 gate.score_delta = round(gate.candidate_score - gate.baseline_score, 2)
             # The backlog as it stands now is R's score: latch on it, from the
-            # fresh evaluation and its own recommendation, before judging.
-            # Judged on the latch as read above, which is the same answer:
-            # a score that latches here is below No-Go, so (b) cannot apply.
+            # fresh evaluation and its own recommendation, before judging. A
+            # latch set here is read back and judged on in this same call: the
+            # backlog now is below No-Go, but the candidate (an older commit,
+            # or a rollback) can still be No-Go, and (b) then refuses it.
             if note_score(
                 db, repo_full_name, raw_score=current_raw,
                 recommendation=fresh.recommendation, policy=policy,
@@ -1322,8 +1440,25 @@ def _compare(
 
     open_rows = [r for r in kept if r.status != "fixed"]
     fixed_rows = [r for r in kept if r.status == "fixed"]
-    c_drop = [r for r in open_rows if not _carries(r, cand)]
-    d_drop = [r for r in open_rows if not _carries(r, base)]
+    # An open finding introduced inside the range that a later commit's own
+    # last scan of its capability no longer reports was fixed in the range:
+    # that commit does not carry it, though reconciliation has not closed it
+    # yet (a hotfix is not refused as introducing what it removes).
+    in_range_missed = {
+        (r.finding_id, side.sha)
+        for r in open_rows
+        if _after(r, older)
+        for side in (cand, base)
+        if _missed(r, side)
+    }
+    c_drop = [
+        r for r in open_rows
+        if not _carries(r, cand) or (r.finding_id, cand.sha) in in_range_missed
+    ]
+    d_drop = [
+        r for r in open_rows
+        if not _carries(r, base) or (r.finding_id, base.sha) in in_range_missed
+    ]
     c_add = [r for r in fixed_rows if _carries(r, cand)]
     d_add = [r for r in fixed_rows if _carries(r, base)]
     c_gone = {r.finding_id for r in c_drop}
@@ -1344,10 +1479,13 @@ def _compare(
     base_raw, _ = scorer.score(d_drop, d_add, lenient=False)
     gate.candidate_score = round(cand_raw, 2)
     gate.baseline_score = round(base_raw, 2)
-    gate.introduced = _by_severity(brought)
-    gate.fixed = _by_severity(removed)
+    gate.introduced = _by_severity([r for r in brought if r.in_scope])
+    gate.fixed = _by_severity([r for r in removed if r.in_scope])
     if forward:
-        gate.fix_credit_pending = _fix_credit_pending(catalog, policy, repo, branch, c)
+        credited = {fid for fid, sha in in_range_missed if sha == cand.sha}
+        gate.fix_credit_pending = len(
+            _fix_credit_pending(catalog, policy, repo, branch, c) - credited
+        )
 
     chained = {
         fid
@@ -1358,9 +1496,12 @@ def _compare(
     blocking.extend(sorted(
         r.finding_id
         for r in brought
-        if r.severity in BLOCKING_SEVERITIES
+        if r.in_scope
+        and (
+            r.severity in BLOCKING_SEVERITIES
         or scorer.kev.get(r.finding_id, ("", 0.0))[0] in BLOCKING_SEVERITIES
         or r.finding_id in chained
+        )
     ))
     return None
 

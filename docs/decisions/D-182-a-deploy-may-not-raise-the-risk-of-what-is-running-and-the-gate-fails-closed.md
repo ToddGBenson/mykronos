@@ -1,6 +1,6 @@
 ## D-182 — A deploy may not raise the risk of what is running, and the gate fails closed
 
-**2026-11-15.** **Status:** Decided (operator), implemented for MyKronos's deploy; TheHub's deploy adopts the same endpoint in a TheHub follow-up
+**2026-11-15.** **Status:** Decided (operator), implemented for MyKronos's deploy only. Every other repository, TheHub included, is refused `not_enforceable` until the platform keeps a per-branch first-sighting record and a trusted baseline for it (point 13)
 **Story:** operator decision 2026-11-15 ("ratchet") · supersedes D-126's fail-open posture and D-159 for deploys · follows D-048, #734, TheHub #61063
 
 **The decision (operator, 2026-11-15), as given.**
@@ -16,6 +16,9 @@
 > (c) the gate FAILS CLOSED: no decision, an unreachable oracle, or an unknown
 > deployed baseline is a refusal with a named reason, never a pass;
 > (d) a fix deploy that lowers the score is allowed even while R is still No-Go.
+
+The decision names TheHub and MyKronos; it is implemented for MyKronos only,
+for the reasons in point 13.
 
 **Operator decisions later the same day (2026-11-15).** Two amendments, as given:
 
@@ -82,10 +85,16 @@ whenever a CVE is published.
    sides. A closed finding is carried by X when it was not introduced after X
    and its last sighting is no earlier than X's last push scan of the same
    capability, so a rescan of D (the daily image refresh) does not credit D
-   with a finding a range commit introduced and fixed. Where a finding cannot
-   be placed it counts against C. The one case not placed: a pull request
-   whose every scan predates D and that merged after D without being scanned
-   again. A branch that is empty (push scans with no branch) is no line of
+   with a finding a range commit introduced and fixed. The same test applies
+   to an open finding introduced inside the range: when X's own last scan of
+   its capability no longer reports it, X fixed it and does not carry it,
+   although reconciliation has not closed it yet, so a hotfix is not refused
+   as introducing what it removes. Where a finding cannot be placed it counts
+   against C, except in two cases, which are on neither side: a finding first
+   seen on a push of another branch before D, and a pull request whose every
+   scan predates D and that merged after D without being scanned again.
+   MyKronos is push-scanned on main only, so it meets neither; they are why
+   the gate covers MyKronos alone for now (point 13). A branch that is empty (push scans with no branch) is no line of
    history: `baseline_unknown`.
 5. **Fix credit waits for two missed scans.** A finding is credited as fixed
    only once absence reconciliation has closed it, so a fix may read as
@@ -109,8 +118,11 @@ whenever a CVE is published.
    from the next question, not from the answer: an allow records its delta as
    pending against the candidate sha, and the next check that names that sha
    as the running baseline adds it. A candidate asked about and never run adds
-   nothing; a forced deploy is never allowed, so it adds nothing either, and
-   its record is deploy.ps1's ledger. A constant for the reason the floor is
+   nothing. A running sha that is not pending (a `-Force` deploy, a deploy by
+   hand, or an entry the 50-entry pending cap evicted) is measured from the
+   last confirmed sha to the running one over the current snapshot, and that
+   rise is added, so no deploy path ships a rise the ledger does not count.
+   A change that cannot be measured is `evaluation_failed`. A constant for the reason the floor is
    one.
 8. **The latch** is `oracle_ratchet_latches`, one row per repository, written
    when a recorded decision (`/evaluate`) or a ratchet check first measures a
@@ -138,10 +150,10 @@ whenever a CVE is published.
    container's build stamp (`MYKRONOS_BUILD_SHA`; TheHub's `HUB_BUILD_SHA`).
    For this platform's own repository the backend answering is the
    deployment, so its own `build_sha` is authoritative and a caller naming
-   anything else is refused `baseline_disagrees`. For any other repository the
-   deployment probe's last reading (#361) is reported beside the caller's
-   claim and used when the caller names none; it is not a refusal on its own,
-   because the probe runs half-hourly and lags every deploy.
+   anything else is refused `baseline_disagrees`. Another repository's
+   baseline would be the caller's word (the deployment probe's half-hourly
+   reading, #361, lags every deploy), which is one reason it is refused
+   `not_enforceable` (point 13).
 11. **deploy.ps1 and the watcher use it.** `deploy.ps1` asks the ratchet and
    stops before anything is pulled on anything but an explicit allow; the
    pre-move refusal kinds are `risk_refused`, `risk_not_judged`,
@@ -162,6 +174,17 @@ whenever a CVE is published.
    the decision, with the refusal's codes in its reason, as a record of the
    human call and not as a key.
 
+13. **MyKronos only, for now** (re-review of 6a448dfc). The endpoint is
+   generic, but for any repository other than this platform's own, or for
+   this platform while its backend does not know its own build, it answers
+   `not_enforceable`, a refusal. Two things are missing for the rest. First,
+   a per-branch first-sighting record (finding, branch, first push scan): a
+   high first seen on a feature-branch push, or on a pull request scanned
+   only before D, is otherwise on neither side and ships. Second, a trusted
+   baseline: the caller names D and so settles the creep ledger. TheHub has
+   both kinds of scan, so its follow-up must wait for both, not adopt an
+   endpoint that would answer allow.
+
 **What it costs.** D-126 chose fail open on a measured case: Vault sealed four
 days in September 2026, and a fail-closed gate would have blocked the deploy
 that fixed it. That cost is now accepted, and its answer is the operator's
@@ -181,4 +204,5 @@ repair exemption.
 **Not changed.** The Concourse `oracle-gate` job still refuses only an
 introduced critical or high (D-048, D-159); it judges a commit, not a deploy.
 TheHub's `scripts/lib/risk_gate.py` is TheHub's to change; the contract it
-should call is the endpoint above.
+should call is the endpoint above, once point 13's two prerequisites exist;
+until then the endpoint refuses TheHub `not_enforceable`.

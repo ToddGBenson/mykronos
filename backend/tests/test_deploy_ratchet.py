@@ -38,6 +38,7 @@ from mykronos.oracle.deploy_gate import (
     LOWERED_WHILE_NO_GO,
     NO_DECISION,
     NOT_ASSESSED,
+    NOT_ENFORCEABLE,
     NOT_RAISED,
     SCORE_RAISED,
     TOLERANCE,
@@ -52,6 +53,13 @@ D = "d" * 40
 C1 = "c1" + "0" * 38
 C = "c" * 40
 NO_GO = 70.0
+
+
+@pytest.fixture(autouse=True)
+def _judged_here(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The comparison is driven for the test repository as if it were this
+    platform's own; `TestOnlyThisPlatformIsJudged` takes that away."""
+    monkeypatch.setattr(deploy_gate, "_TEST_ENFORCEABLE", frozenset({REPO}), raising=False)
 
 
 def _judge(**overrides: Any) -> deploy_gate.Judgement:
@@ -213,12 +221,14 @@ def _push_scan(
     commit: str,
     started_at: str,
     findings: list[dict[str, Any]],
+    branch: str | None = None,
 ) -> None:
     """A push scan on main (no pull request), the kind the range is read from."""
     auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
+    extra = {"branch": branch} if branch is not None else {}
     response = post_scan(
         client, auth, scan_run_id=scan_run_id, commit_sha=commit, pr_number=None,
-        triggered_by="push", started_at=started_at,
+        triggered_by="push", started_at=started_at, **extra,
     )
     assert response.status_code in (200, 201, 202), response.text
     if findings:
@@ -857,18 +867,36 @@ class TestTheCreepLedger:
 
     def test_only_a_deploy_seen_running_adds_and_a_fall_pays_it_back(self, client) -> None:
         db = client.app.state.db
+        measured: list[tuple[str, str]] = []
+
+        def hand_deploy(frm: str, to: str) -> float:
+            measured.append((frm, to))
+            return 0.2
+
+        def settle(sha: str) -> float:
+            return deploy_gate.settle_creep(db, REPO, sha, measure=hand_deploy)
+
+        assert settle(D) == 0.0  # the starting point
         deploy_gate.record_pending(db, REPO, candidate=C1, baseline=D, delta=0.3)
-        assert deploy_gate.settle_creep(db, REPO, D) == 0.0  # never deployed
-        assert deploy_gate.settle_creep(db, REPO, C1) == pytest.approx(0.3)
-        assert deploy_gate.settle_creep(db, REPO, C1) == pytest.approx(0.3)  # added once
+        assert settle(D) == 0.0  # never deployed
+        assert settle(C1) == pytest.approx(0.3)
+        assert settle(C1) == pytest.approx(0.3)  # added once
         deploy_gate.record_pending(db, REPO, candidate=C, baseline=C1, delta=0.15)
-        assert deploy_gate.settle_creep(db, REPO, C) == pytest.approx(0.45)
+        assert settle(C) == pytest.approx(0.45)
         deploy_gate.record_pending(db, REPO, candidate=E1, baseline=C, delta=-0.1)
-        assert deploy_gate.settle_creep(db, REPO, E1) == pytest.approx(0.35)
+        assert settle(E1) == pytest.approx(0.35)
         deploy_gate.record_pending(db, REPO, candidate=E2, baseline=E1, delta=-2.0)
-        assert deploy_gate.settle_creep(db, REPO, E2) == 0.0  # never below zero
+        assert settle(E2) == 0.0  # never below zero
+        assert measured == []  # every one was pending
+        assert settle(F1) == pytest.approx(0.2)  # never asked about: measured
+        assert measured == [(E2, F1)]
+        assert settle(E2) == pytest.approx(0.4)  # and back by hand, measured again
+        assert measured[-1] == (F1, E2)
+        assert settle(E2) == pytest.approx(0.4)
+        deploy_gate.record_pending(db, REPO, candidate=E1, baseline=E2, delta=-2.0)
+        assert settle(E1) == 0.0
         with db.session() as session:
-            assert session.get(OracleRatchetCreep, REPO).confirmed_sha == E2
+            assert session.get(OracleRatchetCreep, REPO).confirmed_sha == E1
 
 
 class TestShouldFix:
@@ -955,3 +983,136 @@ class TestShouldFix:
         assert first == second
         assert third["allow"] is True
         assert len(calls) == 2
+
+
+# -- re-review of 6a448dfc (PR #1171) ------------------------------------------
+
+
+class TestOnlyThisPlatformIsJudged:
+    """N-B1: for another repository the caller names the baseline, and a
+    finding first seen off the compared branch's line of history is on
+    neither side, so an introduced high answered allow."""
+
+    @pytest.fixture(autouse=True)
+    def _not_judged_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(deploy_gate, "_TEST_ENFORCEABLE", frozenset(), raising=False)
+
+    def test_a_high_pushed_on_a_feature_branch_before_d_is_not_allowed(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _push_scan(client, run_compaction, "run-x", F1, "2026-11-13T02:00:00",
+                   [_sast("H1", "high")], branch="feat/x")
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", [])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00",
+                   [_sast("H1", "high")])
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert _codes_of(body) == [NOT_ENFORCEABLE]
+
+    def test_a_high_on_a_pull_request_scanned_only_before_d_is_not_allowed(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _pr_scan(client, run_compaction, "pr-7", F1, "2026-11-13T02:00:00", 7,
+                 [_sast("H1", "high")])
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", [])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00",
+                   [_sast("H1", "high")])
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert _codes_of(body) == [NOT_ENFORCEABLE]
+
+    def test_only_this_platform_with_its_own_build_is_enforceable(self) -> None:
+        assert deploy_gate.enforceable("someone/mykronos", "a" * 40)
+        assert not deploy_gate.enforceable("someone/mykronos", "")  # caller's word
+        assert not deploy_gate.enforceable("someone/thehub", "a" * 40)
+        assert not deploy_gate.enforceable(REPO, "a" * 40)
+
+
+class TestNoDeployPathEscapesTheLedger:
+    """Re-review non-blocking 1: the ledger counted only deploys it allowed and
+    remembered, so an evicted entry or a forced deploy shipped its rise free."""
+
+    def _lows(self, client, run_compaction, oracle_auth) -> None:
+        lows = [_sast(f"L{i}", "low") for i in range(5)]
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", lows[:3])
+        _push_scan(client, run_compaction, "run-c1", C1, "2026-11-14T03:00:00", lows[:4])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00", lows)
+        for sha in (D, C1, C):
+            _decide(client, oracle_auth, sha)
+
+    def test_an_evicted_pending_entry_is_measured_instead(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        self._lows(client, run_compaction, oracle_auth)
+        first = _gate(client, viewer_auth, C1, deployed=D)
+        db = client.app.state.db
+        for i in range(60):  # any viewer can ask about other scored commits
+            deploy_gate.record_pending(
+                db, REPO, candidate=f"{i:040x}", baseline=D, delta=0.0
+            )
+        second = _gate(client, viewer_auth, C, deployed=C1)
+
+        assert first["allow"] is True, first
+        assert second["allow"] is False, second
+        assert _codes_of(second) == [SCORE_RAISED]
+        assert second["accepted_creep"] == pytest.approx(first["score_delta"], abs=0.01)
+
+    def test_a_deploy_the_gate_never_allowed_is_counted(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        self._lows(client, run_compaction, oracle_auth)
+        start = _gate(client, viewer_auth, D, deployed=D)  # D runs; the ledger starts
+        rise = _gate(client, viewer_auth, C1, deployed=D)["score_delta"]
+        with client.app.state.db.session() as session:  # forgotten: forced or by hand
+            session.get(OracleRatchetCreep, REPO).pending_json = "{}"
+        after = _gate(client, viewer_auth, C, deployed=C1)
+
+        assert start["allow"] is True, start
+        assert after["allow"] is False, after
+        assert _codes_of(after) == [SCORE_RAISED]
+        assert after["accepted_creep"] == pytest.approx(rise, abs=0.01)
+
+
+class TestAFixInsideTheRange:
+    """Re-review non-blocking 3: a commit that removes a high introduced inside
+    the range was refused as introducing it until reconciliation closed it."""
+
+    def test_the_hotfix_is_not_refused_as_introducing_what_it_removes(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", [])
+        _push_scan(client, run_compaction, "run-c1", C1, "2026-11-14T03:00:00",
+                   [_sast("H1", "high")])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00", [])
+        status = client.app.state.catalog.query(
+            "SELECT status FROM findings WHERE rule_id = 'H1'"
+        )
+        assert status == [("open",)]  # scanned once since: not reconciled
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is True, body
+        assert body["introduced"] == {}
+        assert body["introduced_blocking_ids"] == []
+        assert body["fix_credit_pending"] == 0
+
+    def test_the_commit_that_introduced_it_still_refuses(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", [])
+        _push_scan(client, run_compaction, "run-c1", C1, "2026-11-14T03:00:00",
+                   [_sast("H1", "high")])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00", [])
+        _decide(client, oracle_auth, C1)
+
+        body = _gate(client, viewer_auth, C1)
+
+        assert body["allow"] is False, body
+        assert INTRODUCED_BLOCKING in _codes_of(body)
