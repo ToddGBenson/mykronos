@@ -1,6 +1,6 @@
 # Operator tasks
 
-Ten things this platform cannot do for itself. Each needs a credential this
+Eleven things this platform cannot do for itself. Each needs a credential this
 repository must not hold, or a decision only the operator can make.
 
 They are not defects and not unfinished work. Every one of them is a built
@@ -681,6 +681,73 @@ checks and removes the lock directory.
   Deploy by hand.
 - A hand rollback is not undone: the rolled-back-from sha was attempted, and
   the watcher waits for a newer promote.
+
+---
+
+## 11 · D-182 — give agents their own Concourse login
+
+**Effort:** ~2 minutes, once. **Unblocks:** agents re-running their own red
+builds without asking.
+
+Concourse had one local user, the operator, who owns the main team. Every fly
+token lasts 24 hours, so an agent's fly target lapsed daily and only the
+operator could log it back in. `docker-compose.yml` now defines a second local
+user, `CONCOURSE_AGENT_USER`, with the `pipeline-operator` role on main: it
+can trigger and rerun jobs, abort builds, check and pin resources and pause or
+unpause, and it cannot set a pipeline, hijack a container, run `fly execute`
+or change the team. Agents never pause; that is a standing rule, not
+something the role prevents. The operator keeps owner.
+
+Both variables are required (`:?`), like the operator's, so **every `docker
+compose` command against this stack fails until `.env` has them.** Do step 1
+before the checkout that runs the stack is moved to a main that contains this
+change; the two lines are harmless to the compose that is running now.
+
+### Steps
+
+In a real PowerShell prompt, in `deploy/concourse/` of the main checkout:
+
+1. Add the two `.env` values. This appends `CONCOURSE_AGENT_USER=mykronos-agent`
+   and a generated `CONCOURSE_AGENT_PASSWORD`, prints neither value, and leaves
+   either one alone if it is already there:
+
+   ```powershell
+   .\Connect-AgentFly.ps1 -Provision
+   ```
+
+   By hand instead: two lines, `CONCOURSE_AGENT_USER=<a name that is not
+   CONCOURSE_LOCAL_USER>` and `CONCOURSE_AGENT_PASSWORD=<a password with no
+   comma>`. `CONCOURSE_ADD_LOCAL_USER` is a comma-separated list, so a comma
+   splits the password.
+2. Update the checkout to a main that has this change, then recreate the web
+   node so it reads the new users and the team config. Only `concourse` is
+   recreated; the workers and Postgres keep running, and builds in flight
+   reconnect:
+
+   ```powershell
+   docker compose up -d --no-deps concourse
+   ```
+
+3. Log the agents' target in and confirm the role:
+
+   ```powershell
+   .\Connect-AgentFly.ps1
+   ```
+
+   It ends `pipeline-operator on main`. It fails and logs out if Concourse
+   granted anything else.
+
+### Expected, and not a bug
+
+- Your own `fly -t mykronos` login is unchanged: you are still owner. The web
+  node rewrites the main team's roles from the compose team config on every
+  start, so a user who is not in it loses the team at the next recreate -
+  which is why the owner is listed there by the same `CONCOURSE_LOCAL_USER`.
+- `fly set-team -n main` by hand is undone by the next recreate, for the same
+  reason. Change roles in `docker-compose.yml`.
+- The agents' token still lasts 24 hours. What changed is who can renew it:
+  `Connect-AgentFly.ps1` does nothing while the token is valid and logs in
+  again when it is not, so agents run it before their fly calls.
 
 ---
 

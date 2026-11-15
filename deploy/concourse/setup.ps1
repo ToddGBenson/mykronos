@@ -58,6 +58,9 @@ if ((Test-Path $EnvFile) -and -not $Rotate) {
         "",
         "CONCOURSE_LOCAL_USER=mykronos",
         "CONCOURSE_LOCAL_PASSWORD=$(New-Secret)",
+        "# The agents' login: pipeline-operator on main (Connect-AgentFly.ps1, D-182).",
+        "CONCOURSE_AGENT_USER=mykronos-agent",
+        "CONCOURSE_AGENT_PASSWORD=$(New-Secret)",
         "CONCOURSE_POSTGRES_PASSWORD=$(New-Secret)",
         "",
         "MINIO_ROOT_USER=mykronos",
@@ -160,6 +163,7 @@ try {
     Write-Host "`nConcourse is up on http://localhost:8080" -ForegroundColor Green
     Write-Host "  user: $user"
     Write-Host "  password: in $EnvFile (not printed here)"
+    Write-Host "  agents: .\Connect-AgentFly.ps1 logs fly target mykronos-agent in (pipeline-operator)"
     Write-Host "`nNext: .\set-pipeline.ps1" -ForegroundColor Cyan
 } finally {
     Pop-Location
