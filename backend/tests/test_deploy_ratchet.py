@@ -849,11 +849,11 @@ class TestTheCreepLedger:
 
         assert first["allow"] is True, first
         assert 0 < first["score_delta"] <= TOLERANCE
-        assert again["accepted_creep"] == 0.0  # asked twice, not deployed twice
         assert 0 < second["score_delta"] <= TOLERANCE
-        assert second["accepted_creep"] == pytest.approx(first["score_delta"], abs=0.01)
         assert second["allow"] is False, second
         assert _codes_of(second) == [SCORE_RAISED]
+        assert again["accepted_creep"] == 0.0  # asked twice, not deployed twice
+        assert second["accepted_creep"] == pytest.approx(first["score_delta"], abs=0.01)
 
     def test_only_a_deploy_seen_running_adds_and_a_fall_pays_it_back(self, client) -> None:
         db = client.app.state.db
