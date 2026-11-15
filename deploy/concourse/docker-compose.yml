@@ -551,8 +551,20 @@ services:
 
       CONCOURSE_EXTERNAL_URL: ${CONCOURSE_EXTERNAL_URL:-http://localhost:8080}
 
-      CONCOURSE_ADD_LOCAL_USER: ${CONCOURSE_LOCAL_USER:?set it in .env}:${CONCOURSE_LOCAL_PASSWORD:?set it in .env}
-      CONCOURSE_MAIN_TEAM_LOCAL_USER: ${CONCOURSE_LOCAL_USER}
+      # Two local users (D-182): the operator, who owns the main team, and the
+      # agents' login, which holds pipeline-operator on it and nothing more.
+      # Comma-separated USER:PASSWORD pairs, so neither password may contain
+      # a comma (setup.ps1's URL-safe base64 never does).
+      CONCOURSE_ADD_LOCAL_USER: ${CONCOURSE_LOCAL_USER:?set it in .env}:${CONCOURSE_LOCAL_PASSWORD:?set it in .env},${CONCOURSE_AGENT_USER:?set it in .env - see Connect-AgentFly.ps1}:${CONCOURSE_AGENT_PASSWORD:?set it in .env - see Connect-AgentFly.ps1}
+
+      # Who holds which role on the main team is the team config below, not
+      # CONCOURSE_MAIN_TEAM_LOCAL_USER. That variable can only grant owner, and
+      # Concourse ignores it outright once a config file is given (skycmd
+      # AuthTeamFlags.Format reads the file and nothing else), so keeping it
+      # would read as a second grant that does not exist. The web node
+      # rewrites the main team's auth from this file on every start: a user
+      # missing from it loses the team at the next recreate.
+      CONCOURSE_MAIN_TEAM_CONFIG: /concourse-config/main-team.yml
 
       # Spreads builds across the workers below rather than filling one.
       CONCOURSE_CONTAINER_PLACEMENT_STRATEGY: fewest-build-containers
@@ -603,6 +615,9 @@ services:
       # The whole directory now, read-only: the web node needs three keys from
       # it rather than one file.
       - ./keys:/keys:ro
+    configs:
+      - source: concourse-main-team
+        target: /concourse-config/main-team.yml
     networks: [concourse]
     healthcheck:
       # bash's /dev/tcp, because this image ships neither curl nor wget. The
@@ -657,6 +672,31 @@ volumes:
   concourse-worker-data:
   concourse-worker-2-data:
   minio-data:
+
+# The main team's roles (D-182), in the format `fly set-team -c` takes.
+# Inline rather than a committed file because the names come from .env, which
+# this public repository never holds; compose interpolates `content` like the
+# rest of the file and mounts the result read-only into the web node.
+#
+# owner is the operator, as it was under CONCOURSE_MAIN_TEAM_LOCAL_USER.
+# pipeline-operator is the agents' login: trigger, rerun and abort builds,
+# check resources, pin, unpin and disable versions, clear caches, pause and
+# unpause - but not set-pipeline, hijack, delete, archive, expose or set-team
+# (atc/api/accessor/roles.go, 8.3.3). Agents never pause, pin, unpin, disable
+# a version or clear a cache, and abort only their own builds; that is a
+# standing rule, not something the role stops.
+#
+# Inline `content:` needs Docker Compose 2.23.1 or later.
+configs:
+  concourse-main-team:
+    content: |
+      roles:
+      - name: owner
+        local:
+          users: ["${CONCOURSE_LOCAL_USER:?set it in .env}"]
+      - name: pipeline-operator
+        local:
+          users: ["${CONCOURSE_AGENT_USER:?set it in .env - see Connect-AgentFly.ps1}"]
 
 networks:
   concourse:

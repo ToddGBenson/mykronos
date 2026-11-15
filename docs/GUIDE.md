@@ -122,6 +122,15 @@ docker inspect mykronos-backend --format '{{range .Mounts}}{{.Source}}{{println}
 after a reboot run `deploy/concourse/vault-unseal.ps1`. Jobs that failed while
 it was sealed do not retry on their own.
 
+**Agents log in to Concourse as themselves.** The main team has two local
+users: the operator (owner) and `CONCOURSE_AGENT_USER` (`pipeline-operator`).
+Agents trigger, rerun and check; they never pause, pin, unpin or disable a
+resource version, never clear a cache, and abort only their own builds,
+though the role allows all of those. An agent refreshes its
+own 24-hour fly token with `deploy/concourse/Connect-AgentFly.ps1`, which logs
+target `mykronos-agent` in from `.env` without printing the password. The
+one-time setup is OPERATOR-TASKS.md item 11 (D-182).
+
 ## Onboarding a repository
 
 1. **Register it.** `POST /api/repos` with `github_repo_full_name`. Idempotent.
