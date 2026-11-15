@@ -67,11 +67,15 @@ NO_DECISION = ratchet(False, "no_decision", candidate_decision=None)
 def deploy(
     tmp_path: Path, answers: list[Any], *extra: str, wait_minutes: int = 0,
     running: str | None = RUNNING, env: str = "MYKRONOS_VIEWER_TOKEN=t\n",
+    ledger_unwritable: bool = False,
 ) -> tuple[int, str, list[dict], list[str]]:
     """Run deploy.ps1 -NoStart; ratchet `answers` play back in order
-    ("THROW" = timeout). Returns (exit, output, ledger, ratchet URLs asked)."""
+    ("THROW" = timeout). Returns (exit, output, ledger, ratchet URLs asked).
+    `ledger_unwritable` puts a directory where the ledger file goes."""
     tree = tmp_path / "tree"
     (tree / "deploy" / "mykronos").mkdir(parents=True)
+    if ledger_unwritable:
+        (tree / "deploy" / "mykronos" / "deploy-risk-log.jsonl").mkdir()
     (tree / "backend").mkdir()
     shutil.copy(SCRIPT, tree / "deploy" / "mykronos" / "deploy.ps1")
     shutil.copy(SCRIPT.parent / "DeployLock.ps1", tree / "deploy" / "mykronos" / "DeployLock.ps1")
@@ -122,7 +126,7 @@ try {{
     ledger_path = tree / "deploy" / "mykronos" / "deploy-risk-log.jsonl"
     ledger = (
         [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
-        if ledger_path.exists() else []
+        if ledger_path.is_file() else []
     )
     urls = asked.read_text(encoding="utf-8").splitlines() if asked.exists() else []
     return out.returncode, out.stdout + out.stderr, ledger, urls
@@ -137,6 +141,14 @@ class TestTheRatchetDecides:
         assert "Pulling images" in output
         assert "BANNER" not in output and "REFUSED" not in output
         assert [(e["event"], e["state"]) for e in ledger] == [("checked", "allow")]
+        assert ledger[0]["asked"] == "http://127.0.0.1:8100"
+        assert "Fix credit pending" not in output
+
+    def test_an_allow_says_when_fix_credit_is_pending(self, tmp_path: Path) -> None:
+        code, output, _, _ = deploy(tmp_path, [{**ALLOW, "fix_credit_pending": 3}])
+
+        assert code == 0, output
+        assert "Fix credit pending: 3 finding(s)" in output
 
     def test_it_asks_with_the_running_build_stamp_as_the_baseline(
         self, tmp_path: Path
@@ -227,6 +239,27 @@ class TestItFailsClosed:
         assert [(e["event"], e["state"]) for e in ledger] == [("refused", "unjudged")]
 
 
+class TestItAsksOnlyTheProductionBackend:
+    """B5: since the gate fails closed, the address it asks is the gate."""
+
+    def test_another_platform_url_is_rejected_before_asking(self, tmp_path: Path) -> None:
+        code, output, ledger, urls = deploy(
+            tmp_path, [ALLOW], "-PlatformUrl", "http://127.0.0.1:9999"
+        )
+
+        assert code == 3, output
+        assert "-PlatformUrl must be http://127.0.0.1:8100" in output
+        assert "Pulling images" not in output
+        assert urls == [] and ledger == []
+
+    def test_there_is_no_repo_parameter(self, tmp_path: Path) -> None:
+        code, output, _, urls = deploy(tmp_path, [ALLOW], "-Repo", "someone/else")
+
+        assert code == 3, output
+        assert "Pulling images" not in output
+        assert urls == []
+
+
 class TestItWaitsForTheGate:
     def test_it_waits_for_a_decision_and_then_follows_it(self, tmp_path: Path) -> None:
         code, output, ledger, urls = deploy(
@@ -247,6 +280,21 @@ class TestItWaitsForTheGate:
         assert "a poll went unanswered (1 so far)" in output
         assert "COULD NOT ASK" not in output
         assert ledger[-1]["codes"] == ["score_raised"]
+
+    def test_several_timeouts_still_reach_the_decision(self, tmp_path: Path) -> None:
+        """Ten misses in a row: reported at the first and the tenth, and the
+        wait still ends on the gate's answer."""
+        code, output, ledger, urls = deploy(
+            tmp_path, [NO_DECISION, *(["THROW"] * 10), NO_DECISION, ALLOW], wait_minutes=45
+        )
+
+        assert code == 0, output
+        assert "a poll went unanswered (1 so far)" in output
+        assert "a poll went unanswered (10 so far)" in output
+        assert "(2 so far)" not in output
+        assert "COULD NOT ASK" not in output
+        assert len(urls) == 13
+        assert ledger[-1]["state"] == "allow"
 
     def test_an_unreachable_platform_at_the_first_ask_does_not_wait(
         self, tmp_path: Path
@@ -281,6 +329,28 @@ class TestForceIsTheOperatorsOverride:
 
         assert code == 0, output
         assert [(e["event"], e["state"]) for e in ledger] == [("override", "unasked")]
+
+    def test_force_ships_an_unjudged_sha_with_a_reason(self, tmp_path: Path) -> None:
+        code, output, ledger, _ = deploy(
+            tmp_path, [NO_DECISION], "-Force", "-ForceReason", "the gate is down for hours"
+        )
+
+        assert code == 0, output
+        assert "OVERRIDDEN" in output and "NOT JUDGED" in output
+        assert output.index("Override recorded") < output.index("Pulling images")
+        assert [(e["event"], e["state"], e["kind"]) for e in ledger] == [
+            ("override", "unjudged", "risk_not_judged")
+        ]
+
+    def test_an_override_that_cannot_be_recorded_does_not_ship(self, tmp_path: Path) -> None:
+        code, output, _, _ = deploy(
+            tmp_path, [RAISED], "-Force", "-ForceReason", "hotfix for the sealed vault",
+            ledger_unwritable=True,
+        )
+
+        assert code == 3, output
+        assert "DEPLOY-PRE-MOVE-REFUSAL kind=override_unrecorded" in output
+        assert "Pulling images" not in output
 
     def test_force_without_a_reason_is_rejected_before_asking(self, tmp_path: Path) -> None:
         code, output, ledger, urls = deploy(tmp_path, [RAISED], "-Force")

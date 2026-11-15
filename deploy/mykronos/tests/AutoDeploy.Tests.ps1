@@ -459,6 +459,33 @@ Describe 'the rollback supply' {
     }
 }
 
+Describe 'Get-RatchetAnswer asks with validated, escaped shas (D-182)' {
+    BeforeAll {
+        $script:EnvFile = Join-Path $TestDrive 'backend.env'
+        Set-Content -LiteralPath $script:EnvFile -Value 'MYKRONOS_VIEWER_TOKEN=t'
+    }
+    BeforeEach {
+        $script:AskedUri = $null
+        Mock Invoke-RestMethod { $script:AskedUri = $Uri; [pscustomobject]@{ allow = $true; verdict = 'allow'; reasons = @() } }
+    }
+    It 'asks for two well-formed shas' {
+        $a = Get-RatchetAnswer -Sha $script:H -Deployed $script:Prev -EnvPath $script:EnvFile
+        $a.allow | Should -BeTrue
+        $script:AskedUri | Should -Be ("http://127.0.0.1:8100/api/oracle/deploy-gate?repo=ToddGBenson%2Fmykronos" +
+            "&commit=$($script:H)&deployed=$($script:Prev)")
+    }
+    It 'does not ask for a sha that is not 7-40 lower-case hex' {
+        foreach ($bad in @("$($script:H)&deployed=0000000", 'ABCDEF1', 'abc', 'zzzzzzz')) {
+            Get-RatchetAnswer -Sha $bad -Deployed $script:Prev -EnvPath $script:EnvFile | Should -BeNullOrEmpty
+        }
+        $script:AskedUri | Should -BeNullOrEmpty
+    }
+    It 'does not ask with a running sha that is not one' {
+        Get-RatchetAnswer -Sha $script:H -Deployed 'main&x=1' -EnvPath $script:EnvFile | Should -BeNullOrEmpty
+        $script:AskedUri | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Get-AutoDeployOutcome' {
     It 'is success on exit 0 healthy on the new sha' {
         $o = Get-AutoDeployOutcome -Code 0 -HealthyOnNew $true -HealthyOnPrevious $false -PreviousKnown $true

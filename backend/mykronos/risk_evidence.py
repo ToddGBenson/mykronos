@@ -469,15 +469,19 @@ def toxic_combinations(
     *,
     escalate_steps: int = 1,
     suppress: bool = True,
+    drop_ids: frozenset[str] = frozenset(),
+    add_ids: tuple[str, ...] = (),
 ) -> list[Any]:
     """`toxic.detect` for one repository: the same combinations either reader sees.
 
     `suppress=False` is what an acceptance's approver is shown: every
-    combination, none dissolved by an earlier acceptance (TheHub #61013)."""
+    combination, none dissolved by an earlier acceptance (TheHub #61013).
+    `drop_ids` / `add_ids` are the deploy ratchet's other states (D-182)."""
     from mykronos import toxic
 
     return toxic.detect(
-        catalog, repo=repo, session=session, escalate_steps=escalate_steps, suppress=suppress
+        catalog, repo=repo, session=session, escalate_steps=escalate_steps, suppress=suppress,
+        drop_ids=drop_ids, add_ids=add_ids,
     )
 
 

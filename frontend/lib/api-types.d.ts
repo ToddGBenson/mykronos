@@ -2937,9 +2937,12 @@ export interface paths {
          * @description May this commit be deployed over what the repository runs now? (D-182)
          *
          *     The deploy ratchet. Refuses a deploy that raises the repository's risk
-         *     score beyond a 0.5 tolerance or brings an open critical or high the
-         *     running commit lacks; once the repository has been below No-Go, refuses
-         *     any No-Go; allows a fix that lowers the score while it is still No-Go.
+         *     score beyond a 0.5 tolerance (summed across deploys) or brings an open
+         *     critical or high the running commit lacks (by severity, KEV boost or a
+         *     toxic combination); once the repository has been below No-Go, refuses a
+         *     No-Go unless it lowers the score by more than the tolerance and brings no
+         *     critical or high; allows a fix that lowers the score while it is still
+         *     No-Go.
          *
          *     **Fails closed, and says why.** No recorded decision for the commit, an
          *     unknown or disputed baseline, or an evaluation error is `allow: false`
@@ -2952,7 +2955,12 @@ export interface paths {
          *
          *     Readable by viewers as `/decisions/by-commit` is (the deploy host holds a
          *     viewer token). Can set the repository's latch as a side effect, which is
-         *     monotonic and idempotent.
+         *     monotonic and idempotent, and records an allowed rise in the creep ledger
+         *     until the commit is seen running.
+         *
+         *     An answer is reused for a few seconds while nothing it read has changed
+         *     (the lake's files, the latch, the creep ledger), so a caller polling it
+         *     cannot make the backend evaluate the whole backlog on every request.
          */
         get: operations["deploy_gate_check_api_oracle_deploy_gate_get"];
         put?: never;
@@ -7537,8 +7545,27 @@ export interface components {
             baseline_score?: number | null;
             /** Score Delta */
             score_delta?: number | null;
-            /** Tolerance */
+            /**
+             * Tolerance
+             * @description The total rise deploys may add, summed across deploys: `score_raised` refuses when `accepted_creep` plus this deploy's rise exceeds it.
+             */
             tolerance: number;
+            /**
+             * Accepted Creep
+             * @description The rise earlier allowed deploys already shipped (the creep ledger), confirmed when their commit was later seen running. Null when not read.
+             */
+            accepted_creep?: number | null;
+            /**
+             * Fix Credit Pending
+             * @description Open findings this commit's latest scan no longer reports that absence reconciliation has not closed yet: not credited until a second scan.
+             * @default 0
+             */
+            fix_credit_pending: number;
+            /**
+             * Error Id
+             * @description Set on `evaluation_failed` from an exception: the backend log carries the detail under this id. The response never carries the exception text.
+             */
+            error_id?: string | null;
             /** No Go Threshold */
             no_go_threshold: number;
             /** Policy Version */
@@ -7596,7 +7623,7 @@ export interface components {
         DeployGateReason: {
             /**
              * Code
-             * @description Stable. Refusals: `no_decision`, `not_assessed`, `baseline_unknown`, `baseline_disagrees`, `evaluation_failed`, `introduced_blocking`, `score_raised`, `latched_no_go`. Allows: `not_raised`, `lowered`, `unchanged_while_no_go`, `lowered_while_no_go`.
+             * @description Stable. Refusals: `no_decision`, `not_assessed`, `baseline_unknown`, `baseline_disagrees`, `evaluation_failed`, `introduced_blocking`, `score_raised`, `latched_no_go`. Allows: `not_raised`, `lowered`, `unchanged_while_no_go`, `lowered_while_no_go`, `lowered_while_latched`.
              */
             code: string;
             /** Message */

@@ -4,11 +4,18 @@ Operator decision 2026-11-15. A deploy of commit C for repository R is judged
 against the commit R is running now (the *baseline*, D):
 
 (a) REFUSED if C raises R's risk relative to D: its score is higher than D's
-    by more than `TOLERANCE`, or C carries an open critical or high finding
-    that D did not;
+    by more than `TOLERANCE` (accumulated across deploys, see THE CREEP
+    LEDGER), or C carries an open critical or high finding that D did not -
+    by its own severity, by a KEV boost to high or critical, or as a member of
+    a high or critical toxic combination;
 (b) once R's score has been below the No-Go threshold (`policy.no_go`), a
     No-Go is a hard refusal. The first crossing is recorded per repository in
-    `oracle_ratchet_latches` and never cleared by code;
+    `oracle_ratchet_latches` and never cleared by code. Operator decision
+    2026-11-15, which replaces (b) as literally applied: while latched and the
+    candidate is still No-Go, a deploy is ALLOWED only when it lowers the
+    score by more than the tolerance and introduces no critical or high
+    (`lowered_while_latched`); everything else is refused, with no repair
+    exemption;
 (c) the gate FAILS CLOSED: no decision for C, an unknown baseline, or an
     evaluation that could not be completed is a refusal with a named reason;
 (d) a fix that lowers the score is allowed while R is still No-Go (unlatched).
@@ -20,28 +27,56 @@ scored 166.3 against the deployed commit's 165.2, and all of the 1.1 was three
 otel-sdk mediums and a dpkg low first seen that morning in images neither
 commit changed. Comparing stored decisions would have refused every deploy
 until the next CVE-free day. So nothing stored is compared. The backlog is
-scored once, now, and the baseline is that same score with the change taken
-out of it: the findings attributable to the commits between D and C are
-removed and the findings they fixed are put back, and only the severity bands
-are re-scored. Whatever the vulnerability database did since D was scanned is
-in both scores equally, so it cancels.
+scored once, now, and BOTH scores are that score with the lake's current
+state turned back into the state each commit carried: the findings a commit
+did not have are taken out and the closed findings it did have are put back.
+Every term a finding moves is re-scored, not only the severity bands: the
+bands (with their dampened, in-flight and no-upstream-fix tallies), the age
+terms, the KEV boost (`exploitability.<id>`), toxic combinations and the
+No-Go they force, blast radius, and overdue findings. What the vulnerability
+database did since D was scanned is in both states equally, so it cancels.
 
-"Attributable" is the commit gate's own rule (D-048, #734, TheHub #61063):
-first seen by a scan of a commit in the range, minus what `split_disclosed`
-calls newly disclosed (a CVE in an image whose bytes did not change, or on a
-dependency version the baseline already carried). A finding that also
-affects the deployed commit is therefore never introduced by C.
+Reconstructing C as well as D, rather than taking C to be "now", is what
+keeps a candidate older than the branch head honest: a high C introduced and
+a later commit fixed is closed now, but C still carries it, so it is put back
+on C's side and refuses.
 
-THE RANGE is read from the lake, never taken from the caller: the commits
-with push scans (no pull request) on the branch both commits were scanned on,
-whose first scan falls after D's first scan and no later than C's. A finding
-first seen by a pull-request scan counts when a push scan on that branch has
-seen it since D: a squash merge's commit never "first sees" what its pull
-request already reported. Where that cannot be placed precisely it counts
-against C, because the gate fails closed. A rollback (C scanned before D) is
-the same range read the other way: C lacks what the range introduced and
-carries again what the range fixed, so a rollback past a security fix is
+WHICH COMMIT CARRIES A FINDING. There is no occurrence table: a finding
+records only its first and its last sighting, and `last_seen_scan_run_id` is
+overwritten by any scan, pull-request scans included. So:
+
+* an open finding is carried by commit X unless it was *introduced after X*:
+  first seen after X's first push scan on the branch, by a scan that is not
+  of X or of a commit pushed before X (whatever kind of scan saw it first or
+  last); or first seen on a pull request scanned before X whose pull request
+  was scanned again after X existed (it was still open, so it merged after X);
+* minus what `split_disclosed` calls newly disclosed (a CVE in an image whose
+  bytes did not change, or on a dependency version the baseline already
+  carried), which every commit carries;
+* a finding that only its own pull request ever saw (first and last sighting
+  the same pull request) is on no branch, so it is the same on both sides;
+* a closed (`fixed`) finding is carried by X when it was not introduced after
+  X and its last sighting is no earlier than X's last push scan of the same
+  capability (so X's own scans never missed it).
+
+Where a finding cannot be placed precisely it counts against C, because the
+gate fails closed. The one case not placed: a pull request whose every scan
+predates D and that merged after D without being scanned again.
+
+A rollback (C scanned before D) needs nothing special: both states are
+reconstructed the same way, so C lacks what the commits after it introduced
+and carries again what they fixed, and a rollback past a security fix is
 refused as introducing it.
+
+THE CREEP LEDGER. The tolerance absorbs one small rise, not a series: ten
+deploys at +0.4 each are +4.0, and a change could be split on purpose to stay
+under 0.5. `oracle_ratchet_creep` keeps each repository's accumulated rise.
+A deploy is refused `score_raised` when that plus its own rise passes the
+tolerance. The gate learns that a deploy went through from the next question:
+an allow records its delta as pending against the candidate sha, and the next
+check that names that sha as the running baseline adds it (a lowering
+subtracts, never below zero). A forced deploy is never allowed, so it adds
+nothing; its record is deploy.ps1's ledger.
 
 THE BASELINE SOURCE. The caller names D from what is running (the deploy host
 reads the running container's build stamp). For this platform's own
@@ -57,20 +92,31 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 
-from mykronos.db.models import OracleRatchetLatch, RepoOnboarding
+from mykronos import blast_radius, risk_evidence
+from mykronos.db.models import OracleRatchetCreep, OracleRatchetLatch, RepoOnboarding
 from mykronos.db.session import Database
 from mykronos.deployments import OK as PROBE_OK
 from mykronos.deployments import SELF_REPO_NAME
 from mykronos.logsafe import scrub
-from mykronos.oracle.engine import TOOL_IMAGE_SQL, OracleEngine, finding_band_terms
+from mykronos.oracle.engine import (
+    AGE_DAYS,
+    TOOL_IMAGE_SQL,
+    OracleEngine,
+    _overdue_snapshot,
+    age_terms,
+    finding_band_terms,
+    kev_boost,
+)
 from mykronos.oracle.policy import Policy
 from mykronos.schemas import utcnow
+from mykronos.threat_intel import extract_cve
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +128,8 @@ logger = logging.getLogger(__name__)
 #: (D-018) makes tiny in a large band: one more medium on top of 13 adds
 #: 5 x log2(15/14) = 0.497. A critical or high is never let through by it,
 #: because rule (a)'s second clause refuses any introduced critical or high
-#: outright. A constant rather than policy for the reason the floor is one: a
+#: outright. It is a budget across deploys, not per deploy (the creep
+#: ledger). A constant rather than policy for the reason the floor is one: a
 #: tolerance an operator can raise under pressure is one that reaches 100.
 TOLERANCE = 0.5
 
@@ -111,8 +158,12 @@ NOT_RAISED = "not_raised"
 LOWERED = "lowered"
 LOWERED_WHILE_NO_GO = "lowered_while_no_go"
 UNCHANGED_WHILE_NO_GO = "unchanged_while_no_go"
+LOWERED_WHILE_LATCHED = "lowered_while_latched"
 
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
+
+#: How many not-yet-confirmed candidates the creep ledger remembers.
+_PENDING_CAP = 50
 
 
 @dataclass(frozen=True)
@@ -130,6 +181,16 @@ class Judgement:
     reasons: list[Reason]
 
 
+def _pending_note(fix_credit_pending: int) -> str:
+    if not fix_credit_pending:
+        return ""
+    return (
+        f" Fix credit pending: {fix_credit_pending} finding(s) this commit's latest scan "
+        "did not report stay open until a second scan closes them, and are not yet "
+        "credited to it; there is no need to re-deploy to collect the credit."
+    )
+
+
 def judge(
     *,
     candidate_found: bool,
@@ -142,6 +203,8 @@ def judge(
     latched: bool,
     no_go: float,
     tolerance: float = TOLERANCE,
+    creep: float = 0.0,
+    fix_credit_pending: int = 0,
 ) -> Judgement:
     """The ratchet's rule, as a pure function of what was measured.
 
@@ -149,6 +212,8 @@ def judge(
     fixing one does not discover the next on the following run. The
     fail-closed refusals come first and stop the comparison: without a
     decision or a baseline there is nothing to compare.
+
+    `creep` is the rise earlier deploys already spent of the tolerance.
     """
     closed: list[Reason] = []
     if not candidate_found:
@@ -172,26 +237,34 @@ def judge(
             closed.append(Reason(EVALUATION_FAILED, "No score could be computed."))
         return Judgement(False, closed)
 
+    creep = max(0.0, float(creep))
     delta = candidate_score - baseline_score
+    pending = _pending_note(fix_credit_pending)
     refusals: list[Reason] = []
     if blocking_ids:
         refusals.append(Reason(
             INTRODUCED_BLOCKING,
             f"This deploy brings {len(blocking_ids)} open critical or high finding(s) the "
-            f"running commit does not have: {', '.join(blocking_ids[:10])}"
-            + (" ..." if len(blocking_ids) > 10 else "") + ".",
+            "running commit does not have (by severity, a KEV boost, or a high or critical "
+            f"toxic combination): {', '.join(blocking_ids[:10])}"
+            + (" ..." if len(blocking_ids) > 10 else "") + "." + pending,
         ))
-    if delta > tolerance:
+    if delta > 0 and delta + creep > tolerance:
         refusals.append(Reason(
             SCORE_RAISED,
             f"This deploy raises the risk score from {baseline_score:.2f} to "
-            f"{candidate_score:.2f} (+{delta:.2f}, tolerance {tolerance:g}).",
+            f"{candidate_score:.2f} (+{delta:.2f}"
+            + (f", on top of +{creep:.2f} earlier deploys already added" if creep else "")
+            + f"; tolerance {tolerance:g} in total).",
         ))
-    if latched and candidate_score >= no_go:
+    lowered = delta < -tolerance
+    if latched and candidate_score >= no_go and not (lowered and not blocking_ids):
         refusals.append(Reason(
             LATCHED_NO_GO,
-            f"The repository has been below No-Go ({no_go:g}) before, so a No-Go is a hard "
-            f"refusal (D-182 (b)). This deploy scores {candidate_score:.2f}"
+            f"The repository has been below No-Go ({no_go:g}) before, so a No-Go deploy is "
+            f"refused unless it lowers the score by more than {tolerance:g} and introduces "
+            f"no critical or high (D-182 (b), operator decision 2026-11-15). This deploy "
+            f"scores {candidate_score:.2f} ({delta:+.2f})"
             + (
                 "; the change itself does not raise it, so the No-Go is the backlog: "
                 "lower it below the threshold, or override with a recorded reason."
@@ -202,18 +275,27 @@ def judge(
         return Judgement(False, refusals)
 
     if candidate_score >= no_go:
-        code = LOWERED_WHILE_NO_GO if delta < -tolerance else UNCHANGED_WHILE_NO_GO
+        if latched:
+            return Judgement(True, [Reason(
+                LOWERED_WHILE_LATCHED,
+                f"Still No-Go at {candidate_score:.2f} on a repository that has been below "
+                f"{no_go:g}, but this deploy lowers the score by {-delta:.2f} (more than "
+                f"{tolerance:g}) and introduces no critical or high, so it is allowed "
+                "(D-182 (b), operator decision 2026-11-15)." + pending,
+            )])
+        code = LOWERED_WHILE_NO_GO if lowered else UNCHANGED_WHILE_NO_GO
         return Judgement(True, [Reason(
             code,
             f"Still No-Go at {candidate_score:.2f}, but the repository has never been below "
             f"{no_go:g}, and this deploy does not raise the score ({delta:+.2f}), so it is "
-            "allowed (D-182 (d)).",
+            "allowed (D-182 (d))." + pending,
         )])
-    code = LOWERED if delta < -tolerance else NOT_RAISED
+    code = LOWERED if lowered else NOT_RAISED
     return Judgement(True, [Reason(
         code,
-        f"The score moves from {baseline_score:.2f} to {candidate_score:.2f} ({delta:+.2f}) "
-        "and nothing critical or high is introduced.",
+        f"The score moves from {baseline_score:.2f} to {candidate_score:.2f} ({delta:+.2f}"
+        + (f"; +{creep:.2f} of the {tolerance:g} tolerance already spent" if creep else "")
+        + ") and nothing critical or high is introduced." + pending,
     )])
 
 
@@ -293,6 +375,78 @@ def note_score(
     return True
 
 
+# -- the creep ledger -----------------------------------------------------------
+
+
+def _pending(row: OracleRatchetCreep) -> dict[str, dict[str, Any]]:
+    try:
+        value = json.loads(row.pending_json or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def settle_creep(db: Database, repo_full_name: str, deployed_sha: str) -> float:
+    """The repository's accumulated rise, after confirming any pending one.
+
+    A pending delta is confirmed when the commit it was recorded for is now the
+    running baseline: the deploy it allowed went through. Confirmation clears
+    every pending entry, because they were all measured over a baseline that
+    no longer runs. Raises if the store cannot be read or written; the caller
+    refuses, because an unreadable ledger must not read as "no creep".
+    """
+    deployed = (deployed_sha or "").strip().lower()
+    with db.session() as session:
+        row = session.get(OracleRatchetCreep, repo_full_name)
+        if row is None:
+            return 0.0
+        if deployed and not _same(deployed, row.confirmed_sha or ""):
+            pending = _pending(row)
+            match = next((sha for sha in pending if _same(sha, deployed)), None)
+            if match is not None:
+                delta = float(pending[match].get("delta") or 0.0)
+                row.accepted_creep = max(0.0, float(row.accepted_creep or 0.0) + delta)
+                row.confirmed_sha = deployed
+                row.pending_json = "{}"
+                row.updated_at = utcnow()
+        return float(row.accepted_creep or 0.0)
+
+
+def record_pending(
+    db: Database, repo_full_name: str, *, candidate: str, baseline: str, delta: float
+) -> None:
+    """Remember an allowed deploy's delta until the candidate is seen running."""
+    with db.session() as session:
+        row = session.get(OracleRatchetCreep, repo_full_name)
+        if row is None:
+            row = OracleRatchetCreep(
+                repo_full_name=repo_full_name, accepted_creep=0.0, confirmed_sha="",
+                pending_json="{}",
+            )
+            session.add(row)
+        pending = _pending(row)
+        pending.pop(candidate, None)
+        pending[candidate] = {
+            "delta": round(float(delta), 4), "baseline": baseline, "at": utcnow().isoformat(),
+        }
+        while len(pending) > _PENDING_CAP:
+            pending.pop(next(iter(pending)))
+        row.pending_json = json.dumps(pending)
+        row.updated_at = utcnow()
+
+
+def ratchet_state(db: Database, repo_full_name: str) -> tuple[bool, tuple[Any, ...] | None]:
+    """The latch and creep rows as a comparable value, for the route's cache."""
+    with db.session() as session:
+        latch = session.get(OracleRatchetLatch, repo_full_name)
+        creep = session.get(OracleRatchetCreep, repo_full_name)
+        return (
+            latch is not None,
+            None if creep is None
+            else (creep.accepted_creep, creep.confirmed_sha, creep.pending_json),
+        )
+
+
 # -- the lake reads -----------------------------------------------------------
 
 
@@ -322,6 +476,22 @@ def _push_scans(catalog: Any, repo_full_name: str, sha: str) -> dict[str, tuple[
         [repo_full_name, sha],
     )
     return {str(r[0]): (r[1], r[2]) for r in rows if r[1] is not None}
+
+
+def _capability_last(
+    catalog: Any, repo_full_name: str, branch: str, sha: str
+) -> dict[str, Any]:
+    """Capability -> the commit's last push scan of it on the branch."""
+    rows = catalog.query(
+        """
+        SELECT capability, max(started_at) FROM scan_runs
+        WHERE repo_full_name = ? AND lower(commit_sha) = ? AND coalesce(pr_number, 0) = 0
+          AND coalesce(branch, '') = ?
+        GROUP BY 1
+        """,
+        [repo_full_name, sha, branch],
+    )
+    return {str(r[0]): r[1] for r in rows if r[1] is not None}
 
 
 def _range(
@@ -355,104 +525,170 @@ def _in_scope_sql(policy: Policy) -> str:
     return "(" + " AND ".join(parts) + ")"
 
 
-def _marks(values: list[str]) -> str:
-    return ", ".join("?" for _ in values) or "NULL"
+@dataclass
+class _Row:
+    """One finding, with what is known about where it was seen."""
+
+    finding_id: str
+    severity: str
+    capability: str
+    rule_id: str
+    title: str
+    status: str
+    in_scope: bool
+    is_tool: bool
+    package: str
+    version: str
+    fixed_version: str
+    first_seen_at: Any
+    due_at: Any
+    fs_scan: str
+    fs_at: Any
+    fs_pr: int
+    fs_commit: str
+    fs_commit_first: Any
+    ls_at: Any
+    ls_pr: int
+    pr_last: Any
+    image: str | None
+    baseline: Any
+    remedy: Any
+    disclosed: bool = False
+
+    @property
+    def pr_only(self) -> bool:
+        """Seen by its own pull request and nothing else: on no branch."""
+        return self.fs_pr != 0 and self.ls_pr == self.fs_pr
+
+    def split_row(self) -> dict[str, Any]:
+        return {
+            "finding_id": self.finding_id, "severity": self.severity,
+            "capability": self.capability, "rule_id": self.rule_id, "_scan": self.fs_scan,
+            "_image": self.image, "_package": self.package, "_version": self.version,
+            "_baseline": self.baseline, "_remedy": self.remedy,
+        }
 
 
-def _introduced_in_range(
-    catalog: Any,
-    queries: Any,
-    policy: Policy,
-    repo_full_name: str,
-    branch: str,
-    commits: list[str],
-    after: Any,
-) -> list[dict[str, Any]]:
-    """Open findings the range introduced, newly disclosed ones removed."""
-    if not commits:
-        return []
-    in_scope = _in_scope_sql(policy)
+def _rows(
+    catalog: Any, policy: Policy, repo_full_name: str, branch: str, since: Any
+) -> list[_Row]:
+    """The findings whose place relative to two commits first scanned no earlier
+    than `since` can differ: open ones first seen after it (or on a pull request
+    scanned after it), and closed ones last seen at or after it. Everything else
+    is the same on both sides."""
+    open_statuses = ", ".join(f"'{s}'" for s in policy.statuses_considered)
+    tool = TOOL_IMAGE_SQL if policy.exclude_tool_images else "false"
     rows = catalog.query(
         f"""
-        SELECT DISTINCT f.finding_id, f.severity, f.capability, f.rule_id,
-               f.first_seen_scan_run_id,
+        WITH cp AS (
+            SELECT lower(commit_sha) AS sha, min(started_at) AS first_at
+            FROM scan_runs
+            WHERE repo_full_name = ? AND coalesce(pr_number, 0) = 0
+              AND coalesce(branch, '') = ? AND commit_sha IS NOT NULL AND commit_sha <> ''
+            GROUP BY 1
+        ), pl AS (
+            SELECT pr_number, max(started_at) AS last_at
+            FROM scan_runs
+            WHERE repo_full_name = ? AND coalesce(pr_number, 0) <> 0
+            GROUP BY 1
+        )
+        SELECT f.finding_id, lower(f.severity), f.capability, f.rule_id, coalesce(f.title, ''),
+               f.status, {_in_scope_sql(policy)} AS in_scope, ({tool}) AS is_tool,
+               lower(trim(coalesce(f.package_name, ''))), coalesce(f.package_version, ''),
+               coalesce(json_extract_string(f.raw_finding_json, '$.fixed_version'), ''),
+               f.first_seen_at, f.due_at, f.first_seen_scan_run_id,
+               fs.started_at, coalesce(fs.pr_number, 0), lower(coalesce(fs.commit_sha, '')),
+               fcp.first_at,
+               coalesce(ls.started_at, f.last_seen_at), coalesce(ls.pr_number, 0), pl.last_at,
                json_extract_string(f.raw_finding_json, '$.image'),
-               f.package_name, f.package_version,
                json_extract(f.raw_finding_json, '$.baseline_commits'),
                json_extract(f.raw_finding_json, '$.remediated_by'),
-               {in_scope} AS in_scope
+               f.package_name
         FROM findings f
         JOIN scan_runs fs ON fs.scan_run_id = f.first_seen_scan_run_id
         LEFT JOIN scan_runs ls ON ls.scan_run_id = f.last_seen_scan_run_id
-        WHERE f.asset_id = ? AND f.status = 'open'
-          AND fs.repo_full_name = ?
-          AND fs.started_at > ?
+        LEFT JOIN cp fcp ON fcp.sha = lower(fs.commit_sha)
+        LEFT JOIN pl ON pl.pr_number = fs.pr_number AND coalesce(fs.pr_number, 0) <> 0
+        WHERE f.asset_id = ? AND fs.repo_full_name = ?
           AND (
-                (coalesce(fs.pr_number, 0) = 0 AND coalesce(fs.branch, '') = ?
-                 AND lower(fs.commit_sha) IN ({_marks(commits)}))
-             OR (coalesce(fs.pr_number, 0) <> 0
-                 AND coalesce(ls.pr_number, 0) = 0 AND coalesce(ls.branch, '') = ?
-                 AND ls.started_at > ?)
+                (f.status IN ({open_statuses})
+                 AND (fs.started_at > ? OR (coalesce(fs.pr_number, 0) <> 0 AND pl.last_at > ?)))
+             OR (f.status = 'fixed' AND coalesce(ls.started_at, f.last_seen_at) >= ?)
           )
         """,
-        [repo_full_name, repo_full_name, after, branch, *commits, branch, after],
+        [repo_full_name, branch, repo_full_name, repo_full_name, repo_full_name,
+         since, since, since],
     )
-    found = [
-        {
-            "finding_id": str(fid),
-            "severity": str(severity),
-            "capability": str(capability),
-            "rule_id": str(rule_id),
-            "_scan": str(scan),
-            "_image": None if image is None else str(image),
-            "_package": str(package or ""),
-            "_version": str(version or ""),
-            "_baseline": baseline,
-            "_remedy": remedy,
-            "_in_scope": bool(scoped),
-        }
-        for (fid, severity, capability, rule_id, scan, image, package, version,
-             baseline, remedy, scoped) in rows
-    ]
-    introduced, _ = queries.split_disclosed(found)
-    return list(introduced)
+    out: list[_Row] = []
+    for (fid, severity, capability, rule_id, title, status, scoped, is_tool, package,
+         version, fixed_version, first_seen_at, due_at, fs_scan, fs_at, fs_pr, fs_commit,
+         fs_commit_first, ls_at, ls_pr, pr_last, image, baseline, remedy, raw_package) in rows:
+        out.append(_Row(
+            finding_id=str(fid), severity=str(severity), capability=str(capability),
+            rule_id=str(rule_id), title=str(title), status=str(status),
+            in_scope=bool(scoped), is_tool=bool(is_tool), package=str(package or ""),
+            version=str(version or ""), fixed_version=str(fixed_version or ""),
+            first_seen_at=first_seen_at, due_at=due_at, fs_scan=str(fs_scan), fs_at=fs_at,
+            fs_pr=int(fs_pr or 0), fs_commit=str(fs_commit or ""),
+            fs_commit_first=fs_commit_first, ls_at=ls_at, ls_pr=int(ls_pr or 0),
+            pr_last=pr_last, image=None if image is None else str(image),
+            baseline=baseline, remedy=remedy,
+        ))
+        # `split_disclosed` compares the package as the scanner named it.
+        out[-1].package = str(raw_package or "")
+    return out
 
 
-def _fixed_in_range(
-    catalog: Any,
-    policy: Policy,
-    repo_full_name: str,
-    branch: str,
-    older: str,
-    commits: list[str],
-    older_last: Any,
-) -> list[dict[str, Any]]:
-    """Findings the older commit carried that the range closed by absence:
-    first seen no later than the older commit's last scan and not by a commit
-    in the range, last seen on the branch at the older commit or a range
-    commit other than the newest (which did not see it)."""
-    seen_at = [older, *commits[:-1]]
-    in_scope = _in_scope_sql(policy)
-    rows = catalog.query(
-        f"""
-        SELECT DISTINCT f.finding_id, f.severity, {in_scope} AS in_scope
-        FROM findings f
-        JOIN scan_runs fs ON fs.scan_run_id = f.first_seen_scan_run_id
-        JOIN scan_runs ls ON ls.scan_run_id = f.last_seen_scan_run_id
-        WHERE f.asset_id = ? AND f.status = 'fixed'
-          AND fs.repo_full_name = ? AND ls.repo_full_name = ?
-          AND fs.started_at <= ?
-          AND lower(coalesce(fs.commit_sha, '')) NOT IN ({_marks(commits)})
-          AND coalesce(ls.pr_number, 0) = 0 AND coalesce(ls.branch, '') = ?
-          AND lower(ls.commit_sha) IN ({_marks(seen_at)})
-        """,
-        [repo_full_name, repo_full_name, repo_full_name, older_last, *commits, branch,
-         *seen_at],
-    )
-    return [
-        {"finding_id": str(fid), "severity": str(sev), "_in_scope": bool(scoped)}
-        for fid, sev, scoped in rows
-    ]
+@dataclass(frozen=True)
+class _Commit:
+    sha: str
+    first: Any  # first push scan on the branch, any capability
+    last_by_capability: dict[str, Any]
+
+
+def _after(row: _Row, commit: _Commit) -> bool:
+    """Whether the finding was (or may have been) introduced after `commit`."""
+    if row.disclosed or row.pr_only:
+        return False
+    if row.fs_at is not None and row.fs_at > commit.first:
+        if row.fs_commit == commit.sha:
+            return False  # a rescan of the commit itself found it
+        # Not when a rescan of an older commit on the branch found it.
+        return row.fs_commit_first is None or row.fs_commit_first > commit.first
+    # First seen on a pull request before the commit existed, and that pull
+    # request was still being scanned after: it merged after the commit.
+    return row.fs_pr != 0 and row.pr_last is not None and row.pr_last > commit.first
+
+
+def _carries(row: _Row, commit: _Commit) -> bool:
+    """Whether `commit` carries the finding (open now, or closed since)."""
+    if row.pr_only:
+        return row.status != "fixed"
+    if _after(row, commit):
+        return False
+    if row.status != "fixed":
+        return True
+    # Closed: the commit carried it if its own scans of that capability never
+    # missed it, i.e. the last sighting is no earlier than its last such scan.
+    if row.ls_at is None:
+        return False
+    last = commit.last_by_capability.get(row.capability)
+    return bool(row.ls_at >= (last if last is not None else commit.first))
+
+
+# -- re-scoring a state -------------------------------------------------------
+
+
+def _terms_by_key(snapshot: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for term in snapshot.get("terms") or []:
+        key = str(term.get("key") or "")
+        out[key] = out.get(key, 0.0) + float(term.get("contribution") or 0.0)
+    return out
+
+
+def _sum_prefix(terms: dict[str, float], prefix: str) -> float:
+    return sum(v for k, v in terms.items() if k.startswith(prefix))
 
 
 def _band_inputs(
@@ -476,38 +712,264 @@ def _band_inputs(
     return counts, dampened, covered, unfixable
 
 
-def _band_total(
-    counts: dict[str, int],
-    dampened: dict[str, int],
-    covered: dict[str, int],
-    unfixable: dict[str, int],
-    policy: Policy,
-) -> float:
-    terms, _ = finding_band_terms(counts, dampened, covered, unfixable, policy)
-    return sum(term.contribution for term in terms)
+@dataclass(frozen=True)
+class _Combination:
+    severity: str
+    finding_ids: frozenset[str]
 
 
-def _tally(rows: list[dict[str, Any]]) -> dict[str, int]:
-    out: dict[str, int] = {}
+@dataclass
+class _Scorer:
+    """Turns the current snapshot into the score of another state of the findings."""
+
+    engine: OracleEngine
+    repo_full_name: str
+    snapshot: dict[str, Any]
+    current_raw: float
+    as_of: datetime
+    covered: set[str]
+    kev: dict[str, tuple[str, float]]
+    terms: dict[str, float] = field(default_factory=dict)
+    dampened_rules: set[str] = field(default_factory=set)
+    _packages: dict[str, int] | None = None
+    _dependents: dict[str, int] | None = None
+    _dependents_read: bool = False
+
+    def __post_init__(self) -> None:
+        self.terms = _terms_by_key(self.snapshot)
+        damp = (self.snapshot.get("false_positive_dampening") or {}).get("dampened_rules")
+        self.dampened_rules = {
+            str(r.get("rule_id")) for r in (damp or []) if isinstance(r, dict)
+        }
+
+    @property
+    def policy(self) -> Policy:
+        return self.engine.policy
+
+    def combinations_now(self) -> list[_Combination]:
+        block = self.snapshot.get("toxic_combinations") or {}
+        return [
+            _Combination(
+                str(c.get("severity")), frozenset(str(i) for i in c.get("finding_ids") or [])
+            )
+            for c in block.get("combinations") or []
+        ]
+
+    def _combinations(self, drop: list[_Row], add: list[_Row]) -> list[_Combination]:
+        pol = self.policy.toxic_combinations
+        kwargs: dict[str, Any] = {
+            "escalate_steps": pol.escalate_steps,
+            "drop_ids": frozenset(r.finding_id for r in drop),
+            "add_ids": tuple(sorted(r.finding_id for r in add)),
+        }
+        if self.engine.db is not None:
+            with self.engine.db.session() as session:
+                combos = risk_evidence.toxic_combinations(
+                    self.engine.catalog, session, self.repo_full_name, **kwargs
+                )
+        else:
+            combos = risk_evidence.toxic_combinations(
+                self.engine.catalog, None, self.repo_full_name, **kwargs
+            )
+        return [
+            _Combination(str(c.severity), frozenset(str(m["finding_id"]) for m in c.members))
+            for c in combos
+        ]
+
+    def _radius(self, drop: list[_Row], add: list[_Row], lenient: bool) -> float | None:
+        """Blast radius for the edited state, or None when it is not scored."""
+        if not self._dependents_read:
+            self._dependents_read = True
+            self._dependents = blast_radius.build(self.engine.catalog)
+            not_tool = f"AND NOT ({TOOL_IMAGE_SQL})" if self.policy.exclude_tool_images else ""
+            self._packages = {
+                str(name): int(n)
+                for name, n in self.engine.catalog.query(
+                    f"""
+                    SELECT lower(trim(package_name)), count(*) FROM findings
+                    WHERE asset_id = ? AND status = 'open'
+                      AND package_name IS NOT NULL AND trim(package_name) <> ''
+                      {not_tool}
+                    GROUP BY 1
+                    """,
+                    [self.repo_full_name],
+                )
+            }
+        if self._dependents is None or self._packages is None:
+            return None
+        packages = dict(self._packages)
+        for row in drop:
+            name = row.package.strip().lower()
+            if name and not row.is_tool and row.status != "fixed":
+                packages[name] = packages.get(name, 0) - 1
+        for row in add:
+            name = row.package.strip().lower()
+            if name and not row.is_tool:
+                packages[name] = packages.get(name, 0) + 1
+        pol = self.policy.blast_radius
+        concentrated = 0
+        for name, n in packages.items():
+            if n <= 0:
+                continue
+            dependents = self._dependents.get(name, 0)
+            # A package this repository does not carry now is not in the
+            # finding-derived count for it; the candidate's side assumes it
+            # would be, the baseline's that it would not.
+            if lenient and self._packages.get(name, 0) <= 0:
+                dependents += 1
+            if dependents >= pol.min_dependents:
+                concentrated += 1
+        return min(pol.points_per_package * concentrated, pol.cap)
+
+    def score(
+        self, drop: list[_Row], add: list[_Row], *, lenient: bool
+    ) -> tuple[float, list[_Combination]]:
+        """The raw score with `drop` taken out and `add` put back.
+
+        `lenient` is the candidate's side: where a term can only be estimated,
+        the candidate is estimated high and the baseline low, so an estimate
+        never lets a rise through.
+        """
+        if not drop and not add:
+            return self.current_raw, self.combinations_now()
+        policy = self.policy
+        terms = self.terms
+        lift_now = terms.get("toxic_combination_no_go", 0.0)
+        moved_now = (
+            _sum_prefix(terms, "findings.")
+            + _sum_prefix(terms, "age.")
+            + _sum_prefix(terms, "exploitability.")
+            + terms.get("toxic_combinations", 0.0)
+            + terms.get("blast_radius", 0.0)
+            + terms.get("overdue_findings", 0.0)
+        )
+        other = self.current_raw - lift_now - moved_now
+
+        # 1. The bands, with all four tallies moved together.
+        counts, dampened, covered, unfixable = _band_inputs(self.snapshot)
+        counts, dampened = dict(counts), dict(dampened)
+        covered, unfixable = dict(covered), dict(unfixable)
+        aged = {str(k): int(v) for k, v in ((self.snapshot.get("findings") or {})
+                                             .get("aged") or {}).items()}
+        overdue_block = self.snapshot.get("overdue_findings") or {}
+        overdue = int(overdue_block.get("overdue_findings") or 0)
+        with_target = int(overdue_block.get("findings_with_a_target") or 0)
+        kev_total = _sum_prefix(terms, "exploitability.")
+        for sign, rows in ((-1, drop), (1, add)):
+            for row in rows:
+                if not row.in_scope:
+                    continue
+                s = row.severity
+                counts[s] = counts.get(s, 0) + sign
+                if row.rule_id in self.dampened_rules:
+                    dampened[s] = dampened.get(s, 0) + sign
+                if row.finding_id in self.covered:
+                    covered[s] = covered.get(s, 0) + sign
+                if row.package.strip() and not row.fixed_version:
+                    unfixable[s] = unfixable.get(s, 0) + sign
+                days = AGE_DAYS.get(s)
+                if days is not None and row.first_seen_at is not None and (
+                    row.first_seen_at <= self.as_of - timedelta(days=days)
+                ):
+                    aged[s] = aged.get(s, 0) + sign
+                if row.due_at is not None:
+                    with_target += sign
+                    if row.due_at <= self.as_of:
+                        overdue += sign
+                kev_total += sign * self.kev.get(row.finding_id, ("", 0.0))[1]
+        for tally in (counts, dampened, covered, unfixable, aged):
+            for s in list(tally):
+                tally[s] = max(0, tally[s])
+        band_terms, _ = finding_band_terms(counts, dampened, covered, unfixable, policy)
+        bands = sum(t.contribution for t in band_terms)
+        age = sum(t.contribution for t in age_terms(aged, policy))
+        kev_total = max(0.0, kev_total)
+
+        # 2. Overdue, when the policy sets deadlines at all.
+        if overdue_block.get("available"):
+            overdue_points = sum(
+                t.contribution
+                for t in _overdue_snapshot(max(0, overdue), max(0, with_target), policy)[1]
+            )
+        else:
+            overdue_points = terms.get("overdue_findings", 0.0)
+
+        # 3. Toxic combinations, detected again over the edited pool.
+        combos = self._combinations(drop, add)
+        pol = policy.toxic_combinations
+        forces = pol.critical_forces_no_go and any(c.severity == "critical" for c in combos)
+        toxic_points = min(
+            sum(
+                pol.points.get(c.severity, 0.0)
+                for c in combos
+                if not (forces and c.severity == "critical")
+            ),
+            pol.cap,
+        )
+
+        # 4. Blast radius.
+        radius = self._radius(drop, add, lenient)
+        if radius is None:
+            radius = terms.get("blast_radius", 0.0)
+
+        raw = other + bands + age + kev_total + overdue_points + toxic_points + radius
+        if forces and raw < policy.no_go:
+            raw = float(policy.no_go)
+        return raw, combos
+
+
+def _kev(engine: OracleEngine, rows: list[_Row]) -> dict[str, tuple[str, float]]:
+    """finding id -> (boosted_to, boost) for KEV-listed in-scope findings, the
+    engine's own rule (spec 17 §5.4). Empty without the operational database,
+    as the engine's exploitability category is."""
+    if engine.db is None:
+        return {}
+    by_cve: dict[str, list[_Row]] = {}
     for row in rows:
-        if row.get("_in_scope"):
-            out[row["severity"]] = out.get(row["severity"], 0) + 1
+        if not row.in_scope:
+            continue
+        cve = extract_cve(row.rule_id, row.title)
+        if cve is not None:
+            by_cve.setdefault(cve, []).append(row)
+    if not by_cve:
+        return {}
+    with engine.db.session() as session:
+        matches = risk_evidence.threat_signals(session, by_cve)
+    out: dict[str, tuple[str, float]] = {}
+    for cve, members in by_cve.items():
+        match = matches.get(cve) or matches.get(cve.upper())
+        if not (match and match.in_kev):
+            continue
+        for row in members:
+            boosted_to, boost = kev_boost(row.severity, engine.policy.severity_weights)
+            if boost > 0:
+                out[row.finding_id] = (boosted_to, boost)
     return out
 
 
-def _stored_decision(catalog: Any, repo_full_name: str, sha: str) -> dict[str, Any] | None:
-    """The newest decision recorded for this repository at this commit."""
+def _stored_decision(
+    catalog: Any, repo_full_name: str, sha: str, *, exact: bool = False
+) -> dict[str, Any] | None:
+    """The newest decision recorded for this repository at this commit.
+
+    `exact` once the sha is resolved to the full one, so a short prefix
+    cannot pick up another commit's decision."""
+    match = (
+        "lower(commit_sha) = ?"
+        if exact
+        else "(starts_with(lower(commit_sha), ?) OR starts_with(?, lower(commit_sha)))"
+    )
     rows = catalog.query(
-        """
+        f"""
         SELECT decision_id, decision_type, commit_sha, overall_risk_score, recommendation,
                policy_version, evaluated_at, inputs_snapshot, human_override
         FROM risk_decisions
         WHERE repo_full_name = ? AND commit_sha IS NOT NULL AND commit_sha <> ''
-          AND (starts_with(lower(commit_sha), ?) OR starts_with(?, lower(commit_sha)))
+          AND {match}
         ORDER BY evaluated_at DESC
         LIMIT 1
         """,
-        [repo_full_name, sha, sha],
+        [repo_full_name, sha] if exact else [repo_full_name, sha, sha],
     )
     if not rows:
         return None
@@ -534,6 +996,32 @@ def _stored_decision(catalog: Any, repo_full_name: str, sha: str) -> dict[str, A
     }
 
 
+def _fix_credit_pending(
+    catalog: Any, policy: Policy, repo_full_name: str, branch: str, candidate: str
+) -> int:
+    """Open in-scope findings whose last sighting is a push scan older than the
+    candidate's last push scan of their capability: its scan no longer reports
+    them, and absence reconciliation has not yet closed them."""
+    statuses = ", ".join(f"'{s}'" for s in policy.statuses_considered)
+    rows = catalog.query(
+        f"""
+        WITH cq AS (
+            SELECT capability, max(started_at) AS last_at FROM scan_runs
+            WHERE repo_full_name = ? AND lower(commit_sha) = ? AND coalesce(pr_number, 0) = 0
+              AND coalesce(branch, '') = ?
+            GROUP BY 1
+        )
+        SELECT count(*) FROM findings f
+        JOIN scan_runs ls ON ls.scan_run_id = f.last_seen_scan_run_id
+        JOIN cq ON cq.capability = f.capability
+        WHERE f.asset_id = ? AND f.status IN ({statuses}) AND {_in_scope_sql(policy)}
+          AND coalesce(ls.pr_number, 0) = 0 AND ls.started_at < cq.last_at
+        """,
+        [repo_full_name, candidate, branch, repo_full_name],
+    )
+    return int(rows[0][0] or 0) if rows else 0
+
+
 # -- the baseline -------------------------------------------------------------
 
 
@@ -547,6 +1035,8 @@ class Baseline:
 
 def _same(a: str, b: str) -> bool:
     a, b = a.lower(), b.lower()
+    if not a or not b:
+        return False
     return a.startswith(b) or b.startswith(a)
 
 
@@ -604,6 +1094,8 @@ class DeployGate:
     baseline_score: float | None = None
     score_delta: float | None = None
     tolerance: float = TOLERANCE
+    accepted_creep: float | None = None
+    fix_credit_pending: int = 0
     no_go_threshold: float = 0.0
     policy_version: str = ""
     direction: str = "forward"
@@ -615,7 +1107,14 @@ class DeployGate:
     candidate_decision: dict[str, Any] | None = None
     baseline_decision: dict[str, Any] | None = None
     latch: Latch = field(default_factory=lambda: Latch(latched=False))
+    error_id: str | None = None
     evaluated_at: datetime = field(default_factory=utcnow)
+
+
+def _decision(catalog: Any, repo_full_name: str, sha: str, full: list[str]) -> Any:
+    if len(full) == 1:
+        return _stored_decision(catalog, repo_full_name, full[0], exact=True)
+    return _stored_decision(catalog, repo_full_name, sha)
 
 
 def evaluate(
@@ -642,6 +1141,7 @@ def evaluate(
     error: str | None = None
     candidate_recommendation: str | None = None
     blocking: list[str] = []
+    creep = 0.0
     try:
         gate.latch = read_latch(db, repo_full_name)
         baseline = baseline_for(db, repo_full_name, deployed, self_build_sha)
@@ -650,13 +1150,10 @@ def evaluate(
         gate.probe_revision = baseline.probe_revision
         baseline_problem = baseline.problem
 
-        gate.candidate_decision = _stored_decision(catalog, repo_full_name, commit)
+        full_c = _resolve(catalog, repo_full_name, commit)
+        gate.candidate_decision = _decision(catalog, repo_full_name, commit, full_c)
         if gate.candidate_decision is not None:
             candidate_recommendation = gate.candidate_decision["recommendation"]
-        if baseline.sha:
-            gate.baseline_decision = _stored_decision(catalog, repo_full_name, baseline.sha)
-
-        full_c = _resolve(catalog, repo_full_name, commit)
         # Without a decision the answer is `no_decision` alone, which is the
         # one refusal a deploy host waits on; an unscanned commit is the
         # same state seen earlier, not a second fault.
@@ -666,17 +1163,25 @@ def evaluate(
                 "it must name exactly one."
             )
         full_d: list[str] = []
-        if baseline_problem is None and baseline.sha:
+        if baseline.sha:
             full_d = _resolve(catalog, repo_full_name, baseline.sha)
-            if len(full_d) != 1:
-                baseline_problem = Reason(
-                    BASELINE_UNKNOWN,
-                    f"The deployed commit {baseline.sha[:12]} names {len(full_d)} scanned "
-                    f"commits of {repo_full_name}, so what it carries is unknown.",
-                )
+            gate.baseline_decision = _decision(catalog, repo_full_name, baseline.sha, full_d)
+        if baseline_problem is None and baseline.sha and len(full_d) != 1:
+            baseline_problem = Reason(
+                BASELINE_UNKNOWN,
+                f"The deployed commit {baseline.sha[:12]} names {len(full_d)} scanned "
+                f"commits of {repo_full_name}, so what it carries is unknown.",
+            )
         if error is None and baseline_problem is None and gate.candidate_decision is not None:
             c, d = full_c[0], full_d[0]
             gate.commit_sha, gate.deployed_sha = c, d
+            if policy.environmental.live_for(repo_full_name) is not None:
+                raise ValueError(
+                    "environmental scoring is live for this repository, and the ratchet "
+                    "does not re-score the environmental recount"
+                )
+            creep = settle_creep(db, repo_full_name, d)
+            gate.accepted_creep = round(creep, 2)
             fresh = engine.evaluate(repo_full_name, decision_type="commit_gate", commit_sha=c)
             snapshot = fresh.inputs_snapshot
             raw_value = (snapshot.get("totals") or {}).get("raw_score")
@@ -689,61 +1194,10 @@ def evaluate(
                 gate.candidate_score = gate.baseline_score = round(current_raw, 2)
                 gate.direction = "same"
             else:
-                c_scans = _push_scans(catalog, repo_full_name, c)
-                d_scans = _push_scans(catalog, repo_full_name, d)
-                common = sorted(set(c_scans) & set(d_scans))
-                if not common:
-                    baseline_problem = Reason(
-                        BASELINE_UNKNOWN,
-                        f"{c[:12]} and the deployed {d[:12]} have no push scan on a common "
-                        "branch, so the commits between them cannot be read.",
-                    )
-                else:
-                    # The branch the candidate was scanned on most recently.
-                    branch = max(common, key=lambda b: c_scans[b][1])
-                    gate.branch = branch
-                    forward = d_scans[branch][0] <= c_scans[branch][0]
-                    newer, older = (c, d) if forward else (d, c)
-                    older_scans = d_scans if forward else c_scans
-                    newer_scans = c_scans if forward else d_scans
-                    commits = _range(
-                        catalog, repo_full_name, branch,
-                        older_scans[branch][0], newer_scans[branch][0],
-                    )
-                    if newer not in commits:
-                        commits.append(newer)
-                    gate.range_commits = commits
-                    intro = _introduced_in_range(
-                        catalog, queries, policy, repo_full_name, branch, commits,
-                        older_scans[branch][0],
-                    )
-                    fixed = _fixed_in_range(
-                        catalog, policy, repo_full_name, branch, older, commits,
-                        older_scans[branch][1],
-                    )
-                    counts, dampened, covered, unfixable = _band_inputs(snapshot)
-                    intro_n, fixed_n = _tally(intro), _tally(fixed)
-                    older_counts = {
-                        s: max(0, counts.get(s, 0) - intro_n.get(s, 0) + fixed_n.get(s, 0))
-                        for s in set(counts) | set(intro_n) | set(fixed_n)
-                    }
-                    delta = _band_total(counts, dampened, covered, unfixable, policy) - (
-                        _band_total(older_counts, dampened, covered, unfixable, policy)
-                    )
-                    if forward:
-                        gate.candidate_score = round(current_raw, 2)
-                        gate.baseline_score = round(current_raw - delta, 2)
-                        brought, removed = intro, fixed
-                    else:
-                        gate.direction = "rollback"
-                        gate.baseline_score = round(current_raw, 2)
-                        gate.candidate_score = round(current_raw - delta, 2)
-                        brought, removed = fixed, intro
-                    gate.introduced = _by_severity(brought)
-                    gate.fixed = _by_severity(removed)
-                    blocking = sorted(
-                        r["finding_id"] for r in brought if r["severity"] in BLOCKING_SEVERITIES
-                    )
+                baseline_problem = _compare(
+                    engine, queries, gate, c, d, snapshot, current_raw, fresh.evaluated_at,
+                    blocking,
+                )
             if gate.candidate_score is not None and gate.baseline_score is not None:
                 gate.score_delta = round(gate.candidate_score - gate.baseline_score, 2)
             # The backlog as it stands now is R's score: latch on it, from the
@@ -753,13 +1207,20 @@ def evaluate(
             if note_score(
                 db, repo_full_name, raw_score=current_raw,
                 recommendation=fresh.recommendation, policy=policy,
-                commit_sha=c if gate.direction != "rollback" else d, source="deploy_gate",
+                commit_sha=d if gate.direction == "rollback" else c, source="deploy_gate",
             ):
                 gate.latch = read_latch(db, repo_full_name)
-    except Exception as exc:  # rule (c): any failure is a refusal, never a pass
-        logger.exception("Deploy ratchet could not evaluate %s", scrub(repo_full_name))
-        error = f"The ratchet could not be evaluated: {type(exc).__name__}: {scrub(str(exc))}"
-        gate.candidate_score = gate.baseline_score = None
+    except Exception:  # rule (c): any failure is a refusal, never a pass
+        gate.error_id = uuid.uuid4().hex[:12]
+        logger.exception(
+            "Deploy ratchet could not evaluate %s (error id %s)",
+            scrub(repo_full_name), gate.error_id,
+        )
+        error = (
+            "The ratchet could not be evaluated; the detail is in the backend log under "
+            f"error id {gate.error_id}."
+        )
+        gate.candidate_score = gate.baseline_score = gate.score_delta = None
 
     gate.introduced_blocking_ids = blocking
     outcome = judge(
@@ -772,15 +1233,145 @@ def evaluate(
         blocking_ids=blocking,
         latched=gate.latch.latched,
         no_go=float(policy.no_go),
+        creep=creep,
+        fix_credit_pending=gate.fix_credit_pending,
     )
+    if outcome.allow and gate.score_delta is not None and gate.direction != "same":
+        try:
+            record_pending(
+                db, repo_full_name, candidate=gate.commit_sha,
+                baseline=gate.deployed_sha or "",
+                delta=float(gate.candidate_score or 0.0) - float(gate.baseline_score or 0.0),
+            )
+        except Exception:  # an allow whose rise cannot be remembered is refused
+            gate.error_id = uuid.uuid4().hex[:12]
+            logger.exception(
+                "Deploy ratchet could not record the creep for %s (error id %s)",
+                scrub(repo_full_name), gate.error_id,
+            )
+            outcome = Judgement(False, [Reason(
+                EVALUATION_FAILED,
+                "The ratchet could not record this deploy's rise in the creep ledger; the "
+                f"detail is in the backend log under error id {gate.error_id}.",
+            )])
     gate.allow = outcome.allow
     gate.verdict = ALLOW if outcome.allow else REFUSE
     gate.reasons = outcome.reasons
     return gate
 
 
-def _by_severity(rows: list[dict[str, Any]]) -> dict[str, int]:
+def _compare(
+    engine: OracleEngine,
+    queries: Any,
+    gate: DeployGate,
+    c: str,
+    d: str,
+    snapshot: dict[str, Any],
+    current_raw: float,
+    as_of: datetime,
+    blocking: list[str],
+) -> Reason | None:
+    """Score the states C and D carried over this snapshot. Fills `gate` and
+    `blocking`; returns a baseline problem, or None."""
+    catalog = engine.catalog
+    policy = engine.policy
+    repo = gate.repo_full_name
+    c_scans = _push_scans(catalog, repo, c)
+    d_scans = _push_scans(catalog, repo, d)
+    shared = set(c_scans) & set(d_scans)
+    common = sorted(b for b in shared if b)
+    if not common:
+        return Reason(
+            BASELINE_UNKNOWN,
+            f"{c[:12]} and the deployed {d[:12]} have no push scan on a common named "
+            "branch, so the commits between them cannot be read"
+            + (" (a scan with no branch is no line of history)." if "" in shared else "."),
+        )
+    # The branch the candidate was scanned on most recently.
+    branch = max(common, key=lambda b: c_scans[b][1])
+    gate.branch = branch
+    cand = _Commit(c, c_scans[branch][0], _capability_last(catalog, repo, branch, c))
+    base = _Commit(d, d_scans[branch][0], _capability_last(catalog, repo, branch, d))
+    forward = base.first <= cand.first
+    older, newer = (base, cand) if forward else (cand, base)
+    if not forward:
+        gate.direction = "rollback"
+    commits = _range(catalog, repo, branch, older.first, newer.first)
+    if newer.sha not in commits:
+        commits.append(newer.sha)
+    gate.range_commits = commits
+
+    rows = _rows(catalog, policy, repo, branch, older.first)
+    # Newly disclosed findings are carried by every commit (D-048, #734).
+    maybe = [r for r in rows if _after(r, cand) or _after(r, base)]
+    _, disclosed = queries.split_disclosed([r.split_row() for r in maybe])
+    disclosed_ids = {str(r["finding_id"]) for r in disclosed}
+    # A renamed image's old-name findings close by absence while its new-name
+    # ones read as disclosed: the same CVE, so neither side gets it back.
+    renamed = {
+        (str(r["rule_id"]), str(r.get("_package") or ""), str(r.get("_version") or ""))
+        for r in disclosed
+    }
+    kept: list[_Row] = []
+    for row in rows:
+        if row.finding_id in disclosed_ids:
+            row.disclosed = True
+        if row.status == "fixed" and (row.rule_id, row.package, row.version) in renamed:
+            continue
+        kept.append(row)
+
+    open_rows = [r for r in kept if r.status != "fixed"]
+    fixed_rows = [r for r in kept if r.status == "fixed"]
+    c_drop = [r for r in open_rows if not _carries(r, cand)]
+    d_drop = [r for r in open_rows if not _carries(r, base)]
+    c_add = [r for r in fixed_rows if _carries(r, cand)]
+    d_add = [r for r in fixed_rows if _carries(r, base)]
+    c_gone = {r.finding_id for r in c_drop}
+    d_gone = {r.finding_id for r in d_drop}
+    in_c = {r.finding_id for r in open_rows if r.finding_id not in c_gone}
+    in_c |= {r.finding_id for r in c_add}
+    in_d = {r.finding_id for r in open_rows if r.finding_id not in d_gone}
+    in_d |= {r.finding_id for r in d_add}
+    brought = [r for r in kept if r.finding_id in in_c and r.finding_id not in in_d]
+    removed = [r for r in kept if r.finding_id in in_d and r.finding_id not in in_c]
+
+    scorer = _Scorer(
+        engine=engine, repo_full_name=repo, snapshot=snapshot, current_raw=current_raw,
+        as_of=as_of, covered=_covered(engine, repo),
+        kev=_kev(engine, c_drop + d_drop + c_add + d_add),
+    )
+    cand_raw, cand_combos = scorer.score(c_drop, c_add, lenient=True)
+    base_raw, _ = scorer.score(d_drop, d_add, lenient=False)
+    gate.candidate_score = round(cand_raw, 2)
+    gate.baseline_score = round(base_raw, 2)
+    gate.introduced = _by_severity(brought)
+    gate.fixed = _by_severity(removed)
+    if forward:
+        gate.fix_credit_pending = _fix_credit_pending(catalog, policy, repo, branch, c)
+
+    chained = {
+        fid
+        for combo in cand_combos
+        if combo.severity in BLOCKING_SEVERITIES
+        for fid in combo.finding_ids
+    }
+    blocking.extend(sorted(
+        r.finding_id
+        for r in brought
+        if r.severity in BLOCKING_SEVERITIES
+        or scorer.kev.get(r.finding_id, ("", 0.0))[0] in BLOCKING_SEVERITIES
+        or r.finding_id in chained
+    ))
+    return None
+
+
+def _covered(engine: OracleEngine, repo_full_name: str) -> set[str]:
+    """Findings with a fix in flight, as the engine reads them."""
+    return set(engine._remediation_in_flight(repo_full_name))
+
+
+def _by_severity(rows: list[_Row]) -> dict[str, int]:
     out: dict[str, int] = {}
     for row in rows:
-        out[row["severity"]] = out.get(row["severity"], 0) + 1
+        out[row.severity] = out.get(row.severity, 0) + 1
     return out

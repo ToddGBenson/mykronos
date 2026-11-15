@@ -92,9 +92,12 @@
     facts and only the second one is the deploy's job.
 
 .PARAMETER PlatformUrl
-    Where to ask for the sha's risk decision. The local backend by default -
-    the same address this script already polls for health, so it adds no
-    new host, no new port and no new credential store.
+    Where to ask the ratchet. The local production backend, and ONLY that:
+    http://127.0.0.1:8100 is the one value accepted (D-182). Since the gate
+    fails closed, the address it asks is the gate - a listener elsewhere
+    that answers {"allow": true} would otherwise ship anything with no
+    -Force and no override in the ledger. The parameter stays so the value is
+    visible and recorded (`asked` on every ledger line), not so it can move.
 
 .PARAMETER GateWaitMinutes
     How long to wait for the risk gate to score the sha when it has not yet
@@ -148,13 +151,14 @@ param(
     [string]$Tag,
     # Where to ask what the risk gate decided about $Tag (#60487). The same
     # backend this script already deploys and checks, so the new dependency
-    # is a route, not a machine.
+    # is a route, not a machine. Pinned (D-182): see .PARAMETER PlatformUrl.
+    # A throw rather than ValidateScript's ErrorMessage, which Windows
+    # PowerShell 5.1 does not parse.
+    [ValidateScript({
+        if ($_ -ceq 'http://127.0.0.1:8100') { $true }
+        else { throw "-PlatformUrl must be http://127.0.0.1:8100, the production backend this script deploys (D-182). The ratchet's answer is the gate; it is not asked anywhere else." }
+    })]
     [string]$PlatformUrl = "http://127.0.0.1:8100",
-    # The repository the ratchet judges $Tag in (D-182). For this platform's
-    # own repository the backend compares the running sha this script sends
-    # with its own build stamp and refuses a disagreement.
-    [ValidatePattern('^[\w.-]+/[\w.-]+$')]
-    [string]$Repo = "ToddGBenson/mykronos",
     # How long to wait for the gate to answer about $Tag (#735). 0 = ask once.
     [ValidateRange(0, 180)]
     [int]$GateWaitMinutes = 45,
@@ -168,6 +172,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
+# The repository the ratchet judges $Tag in (D-182). Not a parameter: this
+# script deploys MyKronos and nothing else, and for this platform's own
+# repository the backend compares the running sha this script sends with its
+# own build stamp and refuses a disagreement.
+$Repo = "ToddGBenson/mykronos"
 
 # [TheHub #61644] A PRE-MOVE REFUSAL IS NOT AN ATTEMPT. Every stop before the
 # first change to the host (the risk gate refused or never scored the sha, the
@@ -309,6 +318,8 @@ function Write-RiskLedger {
         $Entry["at"] = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $Entry["user"] = $env:USERNAME
         $Entry["host"] = $env:COMPUTERNAME
+        # Which platform answered (or was asked), on every line (D-182).
+        $Entry["asked"] = $PlatformUrl
         Add-Content -Path $riskLedger -Value ($Entry | ConvertTo-Json -Compress -Depth 8)
         return $true
     } catch {
@@ -584,6 +595,11 @@ if ($verdict.State -eq "allow") {
         "(score $($answer.baseline_score) -> $($answer.candidate_score), " +
         "$(@($answer.reasons | ForEach-Object { $_.code }) -join ', '), " +
         "latched $($answer.latch.latched), policy $($answer.policy_version), asked $PlatformUrl).")
+    # Fixes the scans already show but reconciliation has not closed (two
+    # missed scans) are not credited yet; said so nobody re-deploys to chase it.
+    if ($answer.PSObject.Properties.Name -contains "fix_credit_pending" -and [int]$answer.fix_credit_pending -gt 0) {
+        $note += " Fix credit pending: $($answer.fix_credit_pending) finding(s) close on their second missed scan; no need to re-deploy for it."
+    }
     $color = if ([double]$answer.candidate_score -lt [double]$answer.no_go_threshold) { "DarkGray" } else { "Yellow" }
     Write-Host $note -ForegroundColor $color
     $riskSummary = $note
@@ -639,7 +655,7 @@ if ($verdict.State -eq "allow") {
             $lines = @("REFUSED - the deploy ratchet refused $Tag over $(Format-Short $answer.deployed_sha) (D-182).") +
                 @($answer.reasons | ForEach-Object { "  [$($_.code)] $($_.message)" }) + @(
                 "",
-                "Score $($answer.baseline_score) running -> $($answer.candidate_score) for $Tag (tolerance $($answer.tolerance), No-Go $($answer.no_go_threshold)), latched $($answer.latch.latched).",
+                "Score $($answer.baseline_score) running -> $($answer.candidate_score) for $Tag (tolerance $($answer.tolerance) in total, already spent $($answer.accepted_creep), No-Go $($answer.no_go_threshold)), latched $($answer.latch.latched).",
                 "Introduced: $(($answer.introduced | ConvertTo-Json -Compress)); fixed: $(($answer.fixed | ConvertTo-Json -Compress)).",
                 "Repository $($answer.repo_full_name), policy $($answer.policy_version), range of $(@($answer.range_commits).Count) commit(s)."
             )
@@ -699,7 +715,7 @@ if ($verdict.State -eq "allow") {
                     @{ Authorization = "Bearer $riskToken" }
                 }) `
                 -ContentType "application/json" `
-                -Body (@{ reason = "Deployed by deploy.ps1 -Force: $ForceReason"; accepted_recommendation = "go" } | ConvertTo-Json) `
+                -Body (@{ reason = "Deployed by deploy.ps1 -Force over the deploy ratchet ($(($codes + @($verdict.State)) -join ', ')): $ForceReason"; accepted_recommendation = "go" } | ConvertTo-Json) `
                 -TimeoutSec 10 | Out-Null
             $pushed = "recorded on the platform"
             Write-Host "Override also recorded against decision $decisionId." -ForegroundColor Yellow

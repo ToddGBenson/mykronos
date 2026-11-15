@@ -675,6 +675,11 @@ function Get-RatchetAnswer {
         [int]$TimeoutSec = 60
     )
     if (-not $Sha -or -not $EnvPath -or -not (Test-Path -LiteralPath $EnvPath)) { return $null }
+    # Validated before they reach a URL: a sha is 7-40 lower-case hex, and
+    # anything else is "could not ask", which the decision reads as a skip.
+    # Escaped anyway, so a value that slipped past cannot add a parameter.
+    if ($Sha -cnotmatch '^[0-9a-f]{7,40}$') { return $null }
+    if ($Deployed -and $Deployed -cnotmatch '^[0-9a-f]{7,40}$') { return $null }
     $token = $null
     foreach ($name in @('MYKRONOS_ADMIN_TOKEN', 'MYKRONOS_VIEWER_TOKEN')) {
         $line = Select-String -LiteralPath $EnvPath -Pattern "^$name=" -ErrorAction SilentlyContinue |
@@ -682,8 +687,8 @@ function Get-RatchetAnswer {
         if ($line) { $token = $line.Line.Split('=', 2)[1].Trim(); break }
     }
     if (-not $token) { return $null }
-    $query = "repo=$([uri]::EscapeDataString($Repo))&commit=$Sha"
-    if ($Deployed) { $query += "&deployed=$Deployed" }
+    $query = "repo=$([uri]::EscapeDataString($Repo))&commit=$([uri]::EscapeDataString($Sha))"
+    if ($Deployed) { $query += "&deployed=$([uri]::EscapeDataString($Deployed))" }
     try {
         return Invoke-RestMethod -TimeoutSec $TimeoutSec -Headers @{ Authorization = "Bearer $token" } `
             -Uri "$PlatformUrl/api/oracle/deploy-gate?$query"
