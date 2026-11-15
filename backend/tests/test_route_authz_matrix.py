@@ -255,6 +255,7 @@ ROUTES: dict[str, str] = {
     "GET /api/oracle/shadow-mode": PRINCIPAL,
     "GET /api/oracle/environmental-shadow": PRINCIPAL,
     "GET /api/oracle/term-analytics": PRINCIPAL,
+    "GET /api/oracle/deploy-gate": PRINCIPAL,
     "GET /api/oracle/decisions/by-commit/{commit_sha}": PRINCIPAL,
     "GET /api/oracle/decisions/{repo_id}": PRINCIPAL,
     "POST /api/oracle/decisions/{decision_id}/override": HUMAN,

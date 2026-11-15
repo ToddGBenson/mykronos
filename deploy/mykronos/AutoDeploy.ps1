@@ -28,6 +28,12 @@
       running_unread        the running image's sha could not be read, so
                             there would be nothing to roll back to
       already_running       production already runs the promoted sha
+      ratchet_unread        the deploy ratchet (D-182) could not be asked
+                            about the promoted sha over the running one:
+                            fail closed, a skip and never a pass
+      ratchet_refused       the ratchet refused it (score raised, an
+                            introduced critical or high, a latched No-Go,
+                            no decision yet); deploy.ps1 would refuse too
       rollback_unavailable  the images of the sha production runs now are
                             not on this host and in the registry, so a
                             failed deploy would have no way back
@@ -376,6 +382,10 @@ function Get-AutoDeployDecision {
         # $true when the running sha's images can be pulled back; $false or
         # $null (could not ask) is a skip: no deploy without a way back.
         [AllowNull()][object]$RollbackAvailable = $null,
+        # The deploy ratchet's answer (D-182): an object with .allow and
+        # .reasons, as GET /api/oracle/deploy-gate returns it, or $null when
+        # it could not be asked. Only allow = true and verdict = 'allow' pass.
+        [AllowNull()][object]$Ratchet = $null,
         # not_attempted runs of one sha allowed per window before retry_cap.
         [int]$RetryCap = 3,
         [int]$RetryWindowHours = 24,
@@ -429,6 +439,18 @@ function Get-AutoDeployDecision {
             Add-Reason 'rollback_unavailable' ("the images of $(Get-Short $RunningSha), which production runs now, " +
                 'could not be found on this host and in the registry: a failed deploy would have no way back')
         }
+    }
+    # 2b. Would the ratchet let it replace what runs (D-182). Fail closed: an
+    #     unread ratchet is a skip of its own, never a pass.
+    if ($null -eq $Ratchet -or -not ($Ratchet.PSObject.Properties.Name -contains 'allow')) {
+        Add-Reason 'ratchet_unread' ('the deploy ratchet (GET /api/oracle/deploy-gate) could not be asked ' +
+            'about the promoted sha over the running one; the gate fails closed')
+    } elseif ($Ratchet.allow -is [bool] -and $Ratchet.allow -and $Ratchet.verdict -eq 'allow') {
+        $checks.Add('ratchet_allows')
+    } else {
+        $said = @($Ratchet.reasons | ForEach-Object { "[$($_.code)] $($_.message)" }) -join ' '
+        Add-Reason 'ratchet_refused' ("the deploy ratchet refused $(Get-Short $promoted) over " +
+            "$(Get-Short $RunningSha): $said")
     }
     $tried = $false
     if ($promotedOk -and (Test-AutoDeployAttempted -Attempts $Attempts -Sha $promoted)) { $tried = $true }
@@ -638,6 +660,36 @@ function Get-RunningSha {
         Write-Verbose 'docker inspect failed'
     }
     return $null
+}
+
+function Get-RatchetAnswer {
+    # GET /api/oracle/deploy-gate for the promoted sha over the running one
+    # (D-182), or $null when it could not be asked. The token is read from
+    # backend/.env by name and never printed.
+    param(
+        [string]$Sha,
+        [string]$Deployed,
+        [string]$EnvPath,
+        [string]$Repo = 'ToddGBenson/mykronos',
+        [string]$PlatformUrl = 'http://127.0.0.1:8100',
+        [int]$TimeoutSec = 60
+    )
+    if (-not $Sha -or -not $EnvPath -or -not (Test-Path -LiteralPath $EnvPath)) { return $null }
+    $token = $null
+    foreach ($name in @('MYKRONOS_ADMIN_TOKEN', 'MYKRONOS_VIEWER_TOKEN')) {
+        $line = Select-String -LiteralPath $EnvPath -Pattern "^$name=" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($line) { $token = $line.Line.Split('=', 2)[1].Trim(); break }
+    }
+    if (-not $token) { return $null }
+    $query = "repo=$([uri]::EscapeDataString($Repo))&commit=$Sha"
+    if ($Deployed) { $query += "&deployed=$Deployed" }
+    try {
+        return Invoke-RestMethod -TimeoutSec $TimeoutSec -Headers @{ Authorization = "Bearer $token" } `
+            -Uri "$PlatformUrl/api/oracle/deploy-gate?$query"
+    } catch {
+        return $null
+    }
 }
 
 function Get-VaultSealed {

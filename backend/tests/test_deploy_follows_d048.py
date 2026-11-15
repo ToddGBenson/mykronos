@@ -1,4 +1,9 @@
-"""deploy.ps1 refuses only what the gate refuses (D-159, TheHub #60732).
+"""The gate job refuses only what a commit introduced (D-159, TheHub #60732).
+
+Since D-182 deploy.ps1 no longer mirrors this job: it asks the deploy ratchet
+(`GET /api/oracle/deploy-gate`), which refuses a superset (a raised score, a
+latched No-Go, and anything it could not judge), and is tested in
+test_deploy_ratchet_ps1.py. What stays here is the gate job's own rule.
 
 The gate job (`oracle-gate` in `deploy/concourse/pipelines/mykronos.yml`)
 fails only when the commit INTRODUCED an open critical or high (D-048). A
@@ -60,119 +65,6 @@ BACKLOG_NO_GO = decision(recommendation="no_go", blocking=False)
 INTRODUCED_HIGH = decision(recommendation="review_recommended", blocking=True, high=1)
 NO_GO_AND_HIGH = decision(recommendation="no_go", blocking=True, high=2)
 CLEAN = decision(recommendation="go", blocking=False)
-
-
-# -- deploy.ps1, end to end ----------------------------------------------------
-
-
-def deploy(tmp_path: Path, answer: dict[str, Any], *extra: str) -> tuple[int, str, list[dict]]:
-    """Run deploy.ps1 -NoStart against `answer`. Returns (exit, output, ledger)."""
-    tree = tmp_path / "tree"
-    (tree / "deploy" / "mykronos").mkdir(parents=True)
-    (tree / "backend").mkdir()
-    shutil.copy(SCRIPT, tree / "deploy" / "mykronos" / "deploy.ps1")
-    # deploy.ps1 dot-sources its lock (TheHub #61610); the lock directory is
-    # pointed into the scratch tree so a test never touches the host's.
-    shutil.copy(SCRIPT.parent / "DeployLock.ps1", tree / "deploy" / "mykronos" / "DeployLock.ps1")
-    (tree / "backend" / ".env").write_text("MYKRONOS_VIEWER_TOKEN=t\n", encoding="utf-8")
-    fixture = tmp_path / "answer.json"
-    fixture.write_text(json.dumps(answer), encoding="utf-8")
-    args = " ".join(f"'{a}'" if " " in a else a for a in extra)
-    program = f"""
-$env:MYKRONOS_DEPLOY_LOCK_DIR = '{tmp_path / "deploy.lock"}'
-function Invoke-RestMethod {{ Get-Content -Raw '{fixture}' | ConvertFrom-Json }}
-function docker {{ $global:LASTEXITCODE = 0 }}
-function Start-Sleep {{ }}
-try {{
-  & '{tree / "deploy" / "mykronos" / "deploy.ps1"}' -Tag {TAG} -NoStart `
-    -GateWaitMinutes 0 {args} *>&1 |
-    ForEach-Object {{ "$_" }}
-  exit 0
-}} catch {{
-  "THROWN: $($_.Exception.Message)"
-  exit 3
-}}
-"""
-    out = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", program],
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    ledger_path = tree / "deploy" / "mykronos" / "deploy-risk-log.jsonl"
-    ledger = (
-        [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
-        if ledger_path.exists() else []
-    )
-    return out.returncode, out.stdout + out.stderr, ledger
-
-
-needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not on PATH")
-
-
-@needs_pwsh
-class TestDeployPs1:
-    def test_a_backlog_no_go_passes_with_a_warning(self, tmp_path: Path) -> None:
-        code, output, ledger = deploy(tmp_path, BACKLOG_NO_GO)
-
-        assert code == 0, output
-        assert "BACKLOG NO_GO" in output
-        assert "Recommendation no_go, effective no_go, score 82" in output
-        assert "Pulling images" in output, "the deploy went on"
-        assert [entry["state"] for entry in ledger] == ["backlog_no_go"]
-        assert ledger[0]["introduced_blocking"] is False
-        assert ledger[0]["score"] == 82
-
-    def test_introduced_blocking_refuses(self, tmp_path: Path) -> None:
-        code, output, ledger = deploy(tmp_path, INTRODUCED_HIGH)
-
-        assert code == 3, output
-        assert "it introduced 0 critical and 1 high open finding(s)" in output
-        assert "Pulling images" not in output
-        assert [(e["event"], e["state"], e["floor"]) for e in ledger] == [
-            ("refused", "refused", True)
-        ]
-
-    def test_no_go_and_introduced_blocking_refuses_as_the_floor(self, tmp_path: Path) -> None:
-        code, _, ledger = deploy(tmp_path, NO_GO_AND_HIGH)
-
-        assert code == 3
-        assert ledger[0]["floor"] is True
-
-    def test_force_with_a_reason_still_ships_a_refusal_and_records_it(
-        self, tmp_path: Path
-    ) -> None:
-        code, output, ledger = deploy(
-            tmp_path, INTRODUCED_HIGH, "-Force", "-ForceReason", "hotfix for the sealed vault"
-        )
-
-        assert code == 0, output
-        assert "OVERRIDDEN" in output
-        assert [(e["event"], e["reason"]) for e in ledger] == [
-            ("override", "hotfix for the sealed vault")
-        ]
-
-    def test_a_recorded_override_clears_the_floor(self, tmp_path: Path) -> None:
-        answer = decision(recommendation="no_go", blocking=True, high=1, overridden=True)
-
-        code, _, ledger = deploy(tmp_path, answer)
-
-        assert code == 0
-        assert ledger[0]["state"] == "clean"
-
-    def test_force_on_a_backlog_no_go_has_nothing_to_override(self, tmp_path: Path) -> None:
-        code, output, ledger = deploy(
-            tmp_path, BACKLOG_NO_GO, "-Force", "-ForceReason", "not needed any more at all"
-        )
-
-        assert code == 0
-        assert "there was nothing to override" in output
-        assert [e["event"] for e in ledger] == ["checked"]
-
-    def test_clean_is_one_quiet_line(self, tmp_path: Path) -> None:
-        code, output, ledger = deploy(tmp_path, CLEAN)
-
-        assert code == 0
-        assert "BACKLOG" not in output
-        assert ledger[0]["state"] == "clean"
 
 
 # -- the gate job's own rule ---------------------------------------------------
@@ -277,17 +169,3 @@ class TestTheGateJobAgrees:
 
         assert code == 1, output
         assert "not true or false" in output
-
-    @needs_pwsh
-    @pytest.mark.parametrize(
-        "answer", [BACKLOG_NO_GO, INTRODUCED_HIGH, NO_GO_AND_HIGH, CLEAN],
-        ids=["backlog-no-go", "introduced-high", "no-go-and-high", "clean"],
-    )
-    def test_deploy_ps1_refuses_exactly_what_the_gate_refuses(
-        self, tmp_path: Path, answer: dict[str, Any]
-    ) -> None:
-        (tmp_path / "gate").mkdir()
-        gate_code, _ = run_gate(tmp_path / "gate", answer)
-        deploy_code, _, _ = deploy(tmp_path / "deploy", answer)
-
-        assert (gate_code != 0) == (deploy_code != 0)

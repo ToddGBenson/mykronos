@@ -26,6 +26,7 @@ BeforeAll {
             NowUtc        = $script:Noon
             Attempts      = @()
             RollbackAvailable = $true
+            Ratchet       = [pscustomobject]@{ allow = $true; verdict = 'allow'; reasons = @([pscustomobject]@{ code = 'not_raised'; message = 'ok' }) }
             Mode          = 'Live'
         }
     }
@@ -55,6 +56,34 @@ Describe 'Get-AutoDeployDecision' {
         $d = Get-AutoDeployDecision @in
         $d.Mode | Should -Be 'DryRun'
         $d.Execute | Should -BeFalse
+    }
+
+    It 'skips when the ratchet could not be asked (D-182 fails closed)' {
+        $in = Get-GreenInput; $in.Ratchet = $null
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Skip'
+        $d.Reason | Should -Be 'ratchet_unread'
+        $d.Execute | Should -BeFalse
+    }
+
+    It 'skips when the ratchet answered something that is not a verdict' {
+        $in = Get-GreenInput; $in.Ratchet = [pscustomobject]@{ detail = 'Not Found' }
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'ratchet_unread'
+    }
+
+    It 'skips when the ratchet refused, and names its codes' {
+        $in = Get-GreenInput
+        $in.Ratchet = [pscustomobject]@{ allow = $false; verdict = 'refuse'
+            reasons = @([pscustomobject]@{ code = 'score_raised'; message = 'raises 40 to 42' }) }
+        $d = Get-AutoDeployDecision @in
+        $d.Reason | Should -Be 'ratchet_refused'
+        $d.Detail | Should -Match 'score_raised'
+    }
+
+    It 'treats a string "true" as no allow' {
+        $in = Get-GreenInput
+        $in.Ratchet = [pscustomobject]@{ allow = 'true'; verdict = 'allow'; reasons = @() }
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'ratchet_refused'
     }
 
     It 'skips when nothing was promoted' {
@@ -229,9 +258,15 @@ Describe 'a pre-move refusal is not an attempt; a post-move failure is (61644)' 
     }
 
     It 'every kind deploy.ps1 emits is read back by the watcher' {
-        $kinds = @([regex]::Matches($script:DeployPs1, 'Stop-BeforeMove -Kind "([a-z_]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        # Literal kinds, and the ones the ratchet's refusal assigns to $kind
+        # before `Stop-BeforeMove -Kind $kind` (D-182).
+        $kinds = @(@([regex]::Matches($script:DeployPs1, 'Stop-BeforeMove -Kind "([a-z_]+)"')) +
+            @([regex]::Matches($script:DeployPs1, '\$kind = "([a-z_]+)"')) |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        $script:DeployPs1 | Should -Match 'Stop-BeforeMove -Kind \$kind -Message'
         $kinds | Should -Contain 'risk_refused'
         $kinds | Should -Contain 'risk_not_judged'
+        $kinds | Should -Contain 'risk_unasked'
         $kinds | Should -Contain 'lock_held'
         $kinds | Should -Contain 'pull_failed'
         foreach ($k in $kinds) {

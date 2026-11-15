@@ -243,6 +243,9 @@ $promote = Get-PromotedSha -ConcourseUrl $ConcourseUrl
 $mainHead = Get-MainHead -RepoRoot $repoRoot
 $running = Get-RunningSha
 $rollbackSupply = Get-RollbackImage -Sha $running -Registry $Registry
+# D-182: the ratchet's answer about the promoted sha over the running one.
+$ratchet = Get-RatchetAnswer -Sha $promote.Sha -Deployed $running `
+    -EnvPath (Join-Path $repoRoot 'backend\.env')
 $lockPath = Get-MykronosDeployLockPath
 $lockHeld = Test-Path -LiteralPath $lockPath
 $otherHeld = Test-Path -LiteralPath $TheHubLockDir
@@ -265,10 +268,12 @@ try {
 $decision = Get-AutoDeployDecision -PromotedSha $promote.Sha -MainHead $mainHead -RunningSha $running `
     -LockHeld $lockHeld -OtherDeployRunning $otherHeld -VaultSealed $sealed -VmFreeMB $vmFree `
     -WindowsFreeMB $winFree -NowUtc $tickStart -Attempts $attempts -RollbackAvailable $rollbackSupply.Available `
-    -Mode $Mode
+    -Ratchet $ratchet -Mode $Mode
 
 $inputs = [ordered]@{
     promoted_sha = $promote.Sha; promote_build = $promote.Build; main_head = $mainHead; running_sha = $running
+    ratchet_allow = $(if ($ratchet) { $ratchet.allow } else { $null })
+    ratchet_codes = $(if ($ratchet) { @($ratchet.reasons | ForEach-Object { $_.code }) } else { @() })
     rollback_available = $rollbackSupply.Available; rollback_tag = $rollbackSupply.Tag; rollback_detail = $rollbackSupply.Detail
     lock_held = $lockHeld; thehub_lock_held = $otherHeld; vault_sealed = $sealed
     vm_free_mb = $vmFree; windows_free_mb = $winFree

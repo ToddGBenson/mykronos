@@ -1894,6 +1894,33 @@ class RiskGateNoticeState(Base):
         return f"<RiskGateNoticeState {self.repo_full_name} {self.subject} {self.state}>"
 
 
+class OracleRatchetLatch(Base):
+    """When a repository's risk score first fell below the No-Go threshold (D-182).
+
+    The deploy ratchet's latch: once a repository has been out of No-Go, a
+    deploy whose decision is No-Go again is refused outright. One row per
+    repository, written once and never updated or cleared by code: the first
+    crossing is a fact, and a latch that moved with the score would be no latch.
+    Created by `create_all` like every other operational table.
+    """
+
+    __tablename__ = "oracle_ratchet_latches"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    latched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: The commit whose evaluation first scored below the threshold.
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    #: That evaluation's unclamped `raw_score`, and the threshold it was under.
+    raw_score: Mapped[float] = mapped_column(Float, default=0.0)
+    no_go_threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    policy_version: Mapped[str] = mapped_column(String(32), default="")
+    #: `decision` (a recorded gate decision) or `deploy_gate` (a ratchet check).
+    source: Mapped[str] = mapped_column(String(16), default="")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<OracleRatchetLatch {self.repo_full_name} {self.latched_at}>"
+
+
 class LibraryRequest(Base):
     """A request to onboard one third-party library (TheHub #60895, #60896).
 
