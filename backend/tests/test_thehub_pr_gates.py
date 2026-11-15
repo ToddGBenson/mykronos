@@ -310,8 +310,8 @@ def test_a_tick_that_judged_nothing_files_nothing_in_thehub(tmp_path) -> None:
 # -- and TheHub's script lays the pull request's backend/ over it and runs only
 # config/ci/pr-integration-subset.txt.
 
-INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "MEMORY_GUARD",
-                      "MEMORY_BUDGET_MB"}
+INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "TIER_HARD_BUDGET_S",
+                      "MEMORY_GUARD", "MEMORY_BUDGET_MB"}
 
 
 def _memory_guard_anchor() -> str:
