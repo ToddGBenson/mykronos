@@ -2918,7 +2918,9 @@ jobs:
                     bash pr/scripts/ci/container-tiers.sh pr subset
                   fi
                 }
-                TIERS_START=$SECONDS
+                # `let`, not shell arithmetic expansion: Concourse reads a
+                # doubled open parenthesis as a credential variable.
+                let "TIERS_DEADLINE = SECONDS + BUDGET"
                 run_tiers 2>&1 | tee /tmp/container-tiers.log
                 RC=${PIPESTATUS[0]}
                 OVERRAN=0
@@ -2926,7 +2928,7 @@ jobs:
                 # follows it; container-tiers' own 124 (the subset's soft cap)
                 # returns well inside the budget, so the clock tells them apart.
                 if [ -n "$TIMER" ] && { [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; } \
-                   && [ $((SECONDS - TIERS_START)) -ge "$BUDGET" ]; then
+                   && [ "$SECONDS" -ge "$TIERS_DEADLINE" ]; then
                   OVERRAN=1
                   if grep -q '\[container-tiers\] running the subset tier' /tmp/container-tiers.log; then
                     WHERE="the subset had started but had not finished, so its results are incomplete"
