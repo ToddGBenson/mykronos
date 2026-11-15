@@ -256,7 +256,9 @@ class TestThisEstate:
             # Adopted 2026-10-19: the registry-src derivative, served by the
             # registry itself. The lane resolves REGISTRY to its LAN address.
             "localhost:5000/library/registry",
-            "postgres",
+            # Adopted 2026-11-14 (TheHub #61701): the postgres-gosu derivative,
+            # pulled from the same registry, keyed to library/postgres.
+            "localhost:5000/library/postgres",
             # Not pgsty/silo: compose builds it from deploy/images/silo since
             # TheHub #61023, and the lane builds and scans that (test_silo_image.py).
             # Not ZAP: the demo builds it from deploy/zap/Dockerfile now, and

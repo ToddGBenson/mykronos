@@ -34,8 +34,14 @@ Exit codes: 0 when the report was read and the Hub (if needed) was written;
 3 when the Hub refused or could not be reached. The job exits with pytest's
 own code whatever this returns, so a filing failure never hides a red suite.
 
-Stdlib only: it runs in the task after the suite, under the real clock, and
-must not depend on the packages the suite just exercised.
+Two steps, in two tasks (TheHub #61701). The suite's task, which has the
+backend's locked install, reads the JUnit report with defusedxml and writes
+the summary (`--junit PATH --write-run PATH`): the test count and the failing
+tests, as JSON. The filing task, the only one given TheHub's token, reads that
+summary (`--run PATH`) and files: stdlib only, under the real clock, and
+never depending on the packages the suite just exercised. No XML parser runs
+where the token is. `--junit` alone does both in one process (tests, and a
+run by hand with the backend installed).
 """
 
 from __future__ import annotations
@@ -47,7 +53,6 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,11 +96,24 @@ class HubError(RuntimeError):
 
 
 def read_report(path: Path) -> Run:
-    """Every failed or errored test case, as `classname::name`, sorted."""
+    """Every failed or errored test case, as `classname::name`, sorted.
+
+    defusedxml, imported here and not at the top, so the filing task (stdlib
+    only, `--run`) never needs it: entity expansion and external entities are
+    refused, as for every other XML this repo reads.
+    """
     try:
-        root = ET.parse(path).getroot()
-    except (OSError, ET.ParseError) as exc:
+        from defusedxml import ElementTree as SafeElementTree
+        from defusedxml.common import DefusedXmlException
+    except ImportError as exc:
+        raise ReportError(f"--junit needs defusedxml, which is not installed: {exc}") from exc
+
+    try:
+        root = SafeElementTree.parse(path).getroot()
+    except (OSError, SafeElementTree.ParseError, DefusedXmlException) as exc:
         raise ReportError(f"no readable JUnit report at {path}: {exc}") from exc
+    if root is None:
+        raise ReportError(f"the JUnit report at {path} has no root element")
     cases = list(root.iter("testcase"))
     if not cases:
         raise ReportError(f"the JUnit report at {path} has no test cases")
@@ -106,6 +124,30 @@ def read_report(path: Path) -> Run:
             cls = case.get("classname", "")
             failing.add(f"{cls}::{name}" if cls else name)
     return Run(tests=len(cases), failing=tuple(sorted(failing)))
+
+
+def write_run(run: Run, path: Path) -> None:
+    """The summary `--run` reads: the test count and the failing tests."""
+    path.write_text(json.dumps({"tests": run.tests, "failing": list(run.failing)}) + "\n")
+
+
+def read_run(path: Path) -> Run:
+    """A summary `write_run` wrote, checked, so a malformed one is an error."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ReportError(f"no readable run summary at {path}: {exc}") from exc
+    tests = data.get("tests") if isinstance(data, dict) else None
+    failing = data.get("failing") if isinstance(data, dict) else None
+    if (
+        not isinstance(tests, int)
+        or isinstance(tests, bool)
+        or tests < 1
+        or not isinstance(failing, list)
+        or not all(isinstance(name, str) for name in failing)
+    ):
+        raise ReportError(f"the run summary at {path} is not a summary of a run with test cases")
+    return Run(tests=tests, failing=tuple(sorted(set(failing))))
 
 
 def _split_notes(detail: str) -> tuple[str, str]:
@@ -279,14 +321,27 @@ def report(run: Run, send: Send, *, offset: str, commit: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--junit", required=True, type=Path)
-    parser.add_argument("--offset", required=True, help="the libfaketime offset, e.g. +45d")
-    parser.add_argument("--commit", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--junit", type=Path, help="the suite's JUnit report (needs defusedxml)")
+    source.add_argument("--run", type=Path, help="a summary --write-run wrote (stdlib only)")
+    parser.add_argument(
+        "--write-run", type=Path, help="with --junit: write the summary here and file nothing"
+    )
+    parser.add_argument("--offset", help="the libfaketime offset, e.g. +45d")
+    parser.add_argument("--commit")
     args = parser.parse_args(argv)
+    if args.write_run is not None and args.junit is None:
+        parser.error("--write-run needs --junit")
+    if args.write_run is None and (args.offset is None or args.commit is None):
+        parser.error("filing needs --offset and --commit")
 
     try:
-        run = read_report(args.junit)
-    except ReportError as exc:
+        run = read_report(args.junit) if args.junit is not None else read_run(args.run)
+        if args.write_run is not None:
+            write_run(run, args.write_run)
+            print(f"time-travel: {run.tests} tests, {len(run.failing)} failing -> {args.write_run}")
+            return 0
+    except (ReportError, OSError) as exc:
         print(f"::error::time-travel: {exc}", file=sys.stderr)
         return 2
     for name in run.failing:

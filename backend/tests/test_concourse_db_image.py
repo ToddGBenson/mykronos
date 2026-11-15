@@ -94,6 +94,15 @@ class TestDockerfile:
         assert text.index("apt-get -y") < text.index("COPY --from=gosu")
         assert re.search(r"^RUN gosu nobody true$", text, re.M)
 
+    def test_the_build_refuses_a_base_on_another_debian_release(self) -> None:
+        # Same glibc and ICU under the existing volume's text indexes: a base
+        # rebased onto another Debian release must fail the build, not pass.
+        text = _text()
+        assert re.search(
+            r'^RUN \. /etc/os-release && test "\$VERSION_CODENAME" = trixie$', text, re.M
+        )
+        assert text.index("VERSION_CODENAME") < text.index("apt-get update")
+
     def test_the_build_refuses_a_binary_on_another_go(self) -> None:
         version = ".".join(GOLANG_FROM.findall(_text())[0])
         assert f"go{version}" in _text().replace("\\.", ".")

@@ -1056,6 +1056,12 @@ jobs:
                   echo "No Hub story filed: a run killed for memory judged nothing on this commit."
                   exit 0
                 fi
+                # [TheHub #61701] The report is read here, with defusedxml from the
+                # locked install, and handed to the filing task as JSON, so no XML
+                # parser runs where the token is. A report it cannot read leaves no
+                # run.json, and the filing task says so (exit 2) without hiding rc.
+                python ../scripts/time_travel_report.py --junit ../../results/unit.xml --write-run ../../results/run.json \
+                  || echo "::warning::time-travel: the JUnit report could not be summarized (see above)."
                 printf '%s\n' "$rc" > ../../judged/verdict
                 echo "$rc" > ../../results/rc
                 git -C .. rev-parse --short=12 HEAD > ../../results/commit
@@ -1085,7 +1091,7 @@ jobs:
               - -ec
               - |
                 rc="$(cat results/rc)"
-                python source/scripts/time_travel_report.py --junit results/unit.xml --offset "$TIME_TRAVEL_OFFSET" --commit "$(cat results/commit)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
+                python source/scripts/time_travel_report.py --run results/run.json --offset "$TIME_TRAVEL_OFFSET" --commit "$(cat results/commit)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
                 exit "$rc"
 
   # -- The detector benchmark (spec 23 §1.6, TheHub #60742) --------------

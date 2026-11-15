@@ -176,7 +176,7 @@ assets:
     evidence_ref: deploy/concourse/docker-compose.yml
 
   - id: concourse-db
-    name: Concourse database (postgres:15.19, Docker network only)
+    name: Concourse database (postgres 15.20, gosu rebuilt; Docker network only)
     description: >-
       mykronos-concourse-db: pipeline definitions, build history and logs for
       all four pipelines (mykronos, thehub, personal-soc, keel). Not published

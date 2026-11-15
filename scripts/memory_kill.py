@@ -41,7 +41,6 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from xml.etree import ElementTree  # ParseError only; the parse is defusedxml's
 
 from defusedxml import ElementTree as SafeElementTree
 from defusedxml.common import DefusedXmlException
@@ -67,7 +66,7 @@ def _crashes_and_real(junit: Path) -> tuple[int, int] | None:
     """(crashed workers, real failures) in a JUnit report, or None if unreadable."""
     try:
         root = SafeElementTree.parse(junit).getroot()
-    except (OSError, ElementTree.ParseError, DefusedXmlException):
+    except (OSError, SafeElementTree.ParseError, DefusedXmlException):
         return None
     if root is None:
         return None

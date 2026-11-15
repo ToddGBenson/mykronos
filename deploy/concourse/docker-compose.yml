@@ -173,7 +173,8 @@ x-worker: &worker
 
 
 services:
-  # 15.19, pinned by digest (2026-10-14): `postgres:15` floated, so the estate
+  # The image-refresh derivative of vendor 15.20, pinned by digest (TheHub #61701).
+  # Pinned by digest first on 2026-10-14: `postgres:15` floated, so the estate
   # scan read whatever Docker Hub's 15 was that day while the container kept
   # running the 15.18 / Debian 13.6 build it was created from (14 critical,
   # 141 high in Trivy against 2 and 85 here, none new). Major 15 on purpose:
@@ -182,31 +183,30 @@ services:
   # gosu 1.19 is still Go 1.24.6 (CVE-2025-68121, CRITICAL, and friends);
   # upstream has not rebuilt it, so the recipe below does (TheHub #61617).
   concourse-db:
-    # Rollback: the vendor 15.19 this host ran before the derivative.
+    # Rollback: the vendor 15.19 this host ran before the derivative (same
+    # major, same on-disk format; `up -d --no-deps concourse-db` either way).
     #   postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
-    image: postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
+    image: ${REGISTRY:-localhost:5000}/library/postgres:15.20-p20261114@sha256:b85f69d6c4e6bddf916f7e86dc764ad5f317995a04b736d18c6049e1a820f98c
     # Out-of-band rebuild (mykronos.yml `image-refresh`): postgres 15.20 with
     # gosu rebuilt from source on Go 1.27.3 and `apt-get upgrade`, published
     # as <registry>/library/postgres:15.20-p<date> only when strictly better.
-    # Declared, not adopted: `image:` stays the vendor's until a reviewed
-    # change pins a published date, so the estate scan never reads a tag the
-    # registry does not have yet (a missing image reads as fixed). Adoption is
-    #   image: ${REGISTRY:-localhost:5000}/library/postgres:15.20-p<date>
-    # and drops `baseline:` below, so later dates compare against what runs.
     #
-    # Trivy 0.58.1, 2026-11-13 (critical/high): vendor 15.19 2/149, vendor
-    # 15.20 2/149, this build 1/122. The one CRITICAL left is libxml2
-    # CVE-2026-6653, no Debian fix; `apt-get upgrade` takes it when one ships.
+    # ADOPTED 2026-11-14 (TheHub #61701): 15.20-p20261114, the first published
+    # date. Pinned by digest: the tag is a single-platform manifest (no
+    # index), so this is its manifest digest. `baseline:` is gone, as the
+    # declaration said: later dates compare against what runs. Still Debian
+    # and still 15, so the volume is reused as a minor upgrade; alpine would
+    # change the libc under every text index (dump, restore and REINDEX).
+    #
+    # Trivy 0.58.1, 2026-11-15 (critical/high/medium): running vendor 15.19
+    # 2/149/189, this 1/122/159. Gone: gosu's Go stdlib (CVE-2025-68121 and
+    # 25 HIGH), zlib1g, apt/libapt-pkg. Left: libxml2 CVE-2026-6653 (no
+    # Debian fix). New: CVE-2026-16742 (HIGH, no fix) in systemd and
+    # libsystemd-shared, which 15.20's postgresql-common pulls in; 15.19
+    # already carries it in libsystemd0 and libudev1.
     x-mykronos-build:
       context: ../images/postgres-gosu
       base: postgres:15.20@sha256:ad51f1a9aec85898aff1d1702ac361039286460de92d25610c85d76950f5d212
-      # Compared against its own vendor base, not the running 15.19: 15.20's
-      # postgresql-common (294) newly installs `systemd`, which brings
-      # CVE-2026-16742 (HIGH, no Debian fix) into two more packages
-      # (systemd, libsystemd-shared). 15.19 already carries that CVE in
-      # libsystemd0 and libudev1, but per (vulnerability, package) the lane
-      # would read the move as `regressed` and never publish the 30 it fixes.
-      baseline: postgres:15.20@sha256:ad51f1a9aec85898aff1d1702ac361039286460de92d25610c85d76950f5d212
       # library/: identity drops the registry host but adds library/ only
       # without one, so this is what keeps findings (and acceptances) keyed
       # to the vendor image.

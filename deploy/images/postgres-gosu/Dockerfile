@@ -60,6 +60,9 @@ RUN go build -trimpath -ldflags '-d -w' -o /out/gosu . \
 FROM ${BASE_IMAGE}
 ARG APT_REFRESH=unset
 ARG DEBIAN_FRONTEND=noninteractive
+# Collation (glibc) and ICU versions under the existing volume must not move: a base on
+# another Debian release fails the build here instead of passing silently.
+RUN . /etc/os-release && test "$VERSION_CODENAME" = trixie
 RUN echo "apt refresh: ${APT_REFRESH}" \
     && apt-get update \
     && apt-get -y -o Dpkg::Options::=--force-confold upgrade \
