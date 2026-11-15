@@ -211,6 +211,21 @@ class TestTheJob:
         assert filing["params"]["HUB_STORY_TOKEN"] == "((hub-story-token))"
         assert "HUB_STORY_TOKEN" not in (_task(job, SUITE_TASK).get("params") or {})
 
+    def test_the_report_is_read_in_the_suite_task_and_filed_from_json(self, pipeline) -> None:
+        # [TheHub #61701] defusedxml lives in the suite task's locked install;
+        # the token task is stdlib only, so it reads the summary, not the XML.
+        job = _job(pipeline)
+        suite = _script(job)
+        summarize = (
+            "time_travel_report.py --junit ../../results/unit.xml"
+            " --write-run ../../results/run.json"
+        )
+        assert summarize in suite
+        assert suite.index("pip install") < suite.index(summarize)
+        filing = _script(job, FILING_TASK)
+        assert "--run results/run.json" in filing
+        assert "--junit" not in filing and "unit.xml" not in filing
+
     def test_the_install_and_the_filing_run_on_the_real_clock(self, pipeline) -> None:
         # pip under a moved clock can refuse a certificate that is valid today,
         # and the story must say when it was really filed.
@@ -398,6 +413,71 @@ class TestTheReport:
     def test_a_missing_report_is_an_error_not_a_green_run(self, tt, tmp_path) -> None:
         argv = ["--junit", str(tmp_path / "absent.xml"), "--offset", "+45d", "--commit", "abc"]
         assert tt.main(argv) == 2
+
+    def test_a_report_that_declares_entities_is_refused(self, tt, tmp_path) -> None:
+        # [TheHub #61701] defusedxml, not xml.etree: an entity declaration is
+        # an unreadable report (exit 2), never expanded into test names.
+        path = tmp_path / "unit.xml"
+        path.write_text(
+            '<!DOCTYPE t [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;">]>'
+            '<testsuites><testsuite><testcase classname="c" name="&b;">'
+            '<failure message="x"/></testcase></testsuite></testsuites>',
+            encoding="utf-8",
+        )
+        with pytest.raises(tt.ReportError):
+            tt.read_report(path)
+        assert tt.main(["--junit", str(path), "--write-run", str(tmp_path / "run.json")]) == 2
+        assert not (tmp_path / "run.json").exists()
+
+    def test_the_summary_round_trips_and_the_filing_reads_it(self, tt, tmp_path) -> None:
+        out = tmp_path / "run.json"
+        junit = _junit(tmp_path, passed=2, failed=[BOMB], errored=[OTHER])
+        assert tt.main(["--junit", str(junit), "--write-run", str(out)]) == 0
+        assert tt.read_run(out) == tt.read_report(junit)
+        hub = FakeHub()
+        tt.report(tt.read_run(out), hub, offset="+45d", commit="abc123")
+        assert len(hub.writes) == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        ["", "not json", "[]", '{"tests": 0, "failing": []}', '{"tests": 3}',
+         '{"tests": true, "failing": []}', '{"tests": 3, "failing": [1]}'],
+    )
+    def test_a_malformed_summary_is_an_error_not_a_green_run(self, tt, tmp_path, body) -> None:
+        path = tmp_path / "run.json"
+        path.write_text(body, encoding="utf-8")
+        assert tt.main(["--run", str(path), "--offset", "+45d", "--commit", "abc"]) == 2
+
+    def test_a_missing_summary_is_an_error_not_a_green_run(self, tt, tmp_path) -> None:
+        argv = ["--run", str(tmp_path / "absent.json"), "--offset", "+45d", "--commit", "abc"]
+        assert tt.main(argv) == 2
+
+    def test_the_filing_path_needs_no_xml_parser(self, tmp_path) -> None:
+        # The token task is stdlib only and runs no XML parser: the script
+        # imports no xml at module level, and `--run` works with defusedxml
+        # (and the stdlib xml package) unimportable.
+        source = SCRIPT.read_text(encoding="utf-8")
+        assert not re.search(r"^(import xml|from xml)\b", source, re.MULTILINE)
+        assert not re.search(r"^(import defusedxml|from defusedxml)\b", source, re.MULTILINE)
+        run = tmp_path / "run.json"
+        run.write_text('{"tests": 4, "failing": []}', encoding="utf-8")
+        probe = (
+            "import sys\n"
+            "for name in ('xml', 'defusedxml'):\n"
+            "    sys.modules[name] = None\n"
+            f"sys.argv = ['t', '--run', {str(run)!r}, '--offset', '+45d', '--commit', 'a']\n"
+            f"import runpy; runpy.run_path({str(SCRIPT)!r}, run_name='__main__')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=60
+        )
+        assert done.returncode == 0, done.stderr
+
+    def test_write_run_needs_junit_and_filing_needs_offset_and_commit(self, tt, tmp_path) -> None:
+        with pytest.raises(SystemExit):
+            tt.main(["--run", str(tmp_path / "r.json"), "--write-run", str(tmp_path / "o.json")])
+        with pytest.raises(SystemExit):
+            tt.main(["--run", str(tmp_path / "r.json")])
 
     def test_an_empty_report_is_an_error_not_a_green_run(self, tt, tmp_path) -> None:
         path = tmp_path / "unit.xml"

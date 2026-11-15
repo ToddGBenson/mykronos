@@ -366,6 +366,31 @@ def test_exit_1_without_a_report_never_retries(tmp_path: Path) -> None:
     assert fake.runs == 1
 
 
+def test_a_report_that_declares_entities_is_unreadable_and_never_retries(tmp_path: Path) -> None:
+    # [TheHub #61701] The crash message arrives through an entity. defusedxml
+    # refuses the declaration, so the report reads as unreadable (no verdict
+    # either way) and a real exit 1 is never re-run on its say-so.
+    junit = tmp_path / "unit.xml"
+    msg = "worker 'gw3' crashed while running 'tests/test_x.py::test_a'"
+    junit.write_text(
+        f'<!DOCTYPE testsuites [<!ENTITY m "{msg}">]>'
+        '<testsuites><testsuite><testcase classname="t" name="a">'
+        '<failure message="&m;">node down</failure></testcase></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    assert mk._crashes_and_real(junit) is None
+    fake = _Fake(1)
+    assert _retry_cmd(fake, ["pytest", f"--junitxml={junit}"]) == 1
+    assert fake.runs == 1
+
+
+def test_the_stdlib_xml_package_is_never_imported() -> None:
+    # [TheHub #61701] Semgrep's use-defused-xml flags any stdlib xml import,
+    # even one kept only for ParseError; defusedxml re-exports it.
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert not re.search(r"^\s*(import xml|from xml)\b", source, re.MULTILINE)
+
+
 def test_the_wrapper_does_not_re_run_when_the_time_does_not_fit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
