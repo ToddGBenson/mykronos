@@ -36,6 +36,12 @@ HUB = "report-to-hub"
 WORST_CREATION_S = 130
 ENSUREPIP_S = 13
 KILL_GRACE_S = 30
+# The environment build on a HEALTHY worker, from the budget's start to the
+# subset tier's start: green build 1332 (copy 11s, apt 129s, bootstrap 77s,
+# prepare_test_db 98s). A budget that cannot hold this plus the whole soft cap
+# cuts a hanging test off early and reports it as an outage.
+HEALTHY_ENV_S = 315
+SLACK_S = 120
 
 
 def _job() -> dict[str, Any]:
@@ -72,18 +78,17 @@ def test_the_budget_ends_before_concourse_does_even_on_a_starved_worker() -> Non
     assert margin >= WORST_CREATION_S + ENSUREPIP_S + KILL_GRACE_S + 60, margin
     script = task["config"]["run"]["args"][-1]
     assert '-s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset' in script
-    # Still room for the environment build and the 300s subset inside it.
-    assert budget >= int(task["params"]["TIER_SOFT_TIMEOUT_S"]) + 240
 
 
-def test_the_script_stays_short_enough_to_execute_on_a_windows_host() -> None:
-    """These tests pass the script as one `bash -c` argument. Git Bash on
-    Windows truncates a command line past about 8190 characters (each `"` is
-    escaped to two), which shows up as "unexpected EOF while looking for
-    matching" in every test that executes the script. Explanations belong in
-    YAML comments beside `run:`, not inside the script."""
-    script = _step("integration")["config"]["run"]["args"][-1]
-    assert len(script) + script.count('"') < 7400, len(script) + script.count('"')
+def test_the_budget_holds_a_healthy_environment_build_and_the_whole_soft_cap() -> None:
+    """Re-review of #1175, R1: a hang is told from an outage by whether the
+    subset ran its whole soft cap before the budget ended. On a healthy worker
+    the subset starts ~315s in, so the budget must be at least that plus the
+    soft cap plus slack, or a hanging test posts `cancelled`."""
+    task = _step("integration")
+    budget = int(task["params"]["TIER_HARD_BUDGET_S"])
+    soft = int(task["params"]["TIER_SOFT_TIMEOUT_S"])
+    assert budget >= HEALTHY_ENV_S + soft + SLACK_S, budget
 
 
 def _integration(tmp_path: Path, tiers_body: str, budget: str,
@@ -102,7 +107,9 @@ def _integration(tmp_path: Path, tiers_body: str, budget: str,
     script = _step("integration")["config"]["run"]["args"][-1].replace(
         "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
     env = {**os.environ, "TIER_HARD_BUDGET_S": budget, "TIER_SOFT_TIMEOUT_S": soft}
-    return subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+    # From a file, not `bash -c`: Git Bash on Windows truncates a long argv.
+    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
+    return subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
                           timeout=90, env=env)
 
 
@@ -222,6 +229,30 @@ def test_an_overrun_reaches_github_as_cancelled_not_failure(tmp_path: Path) -> N
     assert (body["commit_sha"], body["phase"], body["conclusion"]) == (HEAD, "end", "cancelled")
 
 
+# The production ratio, scaled down: budget 840 = environment 315 + soft 300 +
+# 225. Here budget 8, environment 3, soft 3: the subset starts late, as on a
+# healthy worker, and a test then ignores SIGINT.
+LATE_HUNG_SUBSET = (
+    "echo '[container-tiers] installing PostgreSQL 16 + pgvector and Redis'\n"
+    "sleep 3\n"
+    "echo '[container-tiers] running the subset tier: pytest x'\n"
+    "trap '' INT\n"
+    "sleep 12\n"
+    "exit 0\n"
+)
+
+
+def test_a_hang_after_a_healthy_environment_build_stays_red(tmp_path: Path) -> None:
+    """Re-review of #1175, R1: the subset starts after the environment build,
+    not at t=0, and still hangs past its soft cap. A verdict: 124, no marker,
+    and GitHub hears `failure`."""
+    r = _integration(tmp_path, LATE_HUNG_SUBSET, budget="8", soft="3")
+    assert r.returncode == 124, r.stdout + r.stderr
+    assert not (tmp_path / "memory-infra").exists()
+    assert "past its 3s soft cap" in r.stdout
+    assert _report(tmp_path, "on_failure")["conclusion"] == "failure"
+
+
 def test_a_hung_subset_reaches_github_as_failure(tmp_path: Path) -> None:
     _integration(tmp_path, HUNG_SUBSET, budget="3", soft="1")
     assert _report(tmp_path, "on_failure")["conclusion"] == "failure"
@@ -272,6 +303,10 @@ def test_a_refused_check_post_cannot_skip_the_hub_report(hook: str) -> None:
 
 def test_the_caps_sit_above_the_starved_runs_and_the_soft_cap_holds() -> None:
     integration = _step("integration")
-    assert integration["timeout"] == "14m"
+    assert integration["timeout"] == "18m"
     assert integration["params"]["TIER_SOFT_TIMEOUT_S"] == "300"
     assert _step("pick")["timeout"] == "15m"
+    # PS-7 / the timeout audit: a cap more than 30% above the worst run. The
+    # worst green integration run was 6m35s with container creation; the
+    # starved environment phase alone measured 10-12m.
+    assert _seconds(integration["timeout"]) >= 12 * 60 * 1.3

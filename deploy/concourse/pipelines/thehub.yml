@@ -2838,19 +2838,24 @@ jobs:
         # PS-7: the worst green run was 6m35s with container creation; on a
         # disk-starved worker the environment build alone took 10-12m
         # (2026-11-15). Concourse starts this clock at worker selection, so
-        # it includes container creation.
-        timeout: 14m
+        # it includes container creation. 18m = the budget below + 240s.
+        timeout: 18m
         params:
           CONTAINER_TIERS_DISPOSABLE: "1"
-          # container-tiers' own cap, 240s under the 14m above, so a slow
+          # container-tiers' own cap, 240s under the 18m above, so a slow
           # environment build ends with this script still alive to say it
           # was an outage. A Concourse timeout kills the task before it can
-          # write infra/reason, and the hooks then post `failure`. The 14m
+          # write infra/reason, and the hooks then post `failure`. The 18m
           # starts at worker selection, this budget only once the script
           # runs: the margin covers container creation (94s and 130s in the
           # starved builds 1333 and 1341), ensurepip (13s) and the 30s KILL
           # grace after TERM, with room to spare.
-          TIER_HARD_BUDGET_S: "600"
+          # And the budget itself must hold a healthy environment build
+          # (~315s in green build 1332: copy, apt, bootstrap, scratch db)
+          # plus the whole 300s soft cap plus slack. Otherwise a hanging
+          # test on a healthy worker is cut off before it has run its soft
+          # cap and reads as an outage (`cancelled`), not a hang (red).
+          TIER_HARD_BUDGET_S: "840"
           # The subset's soft cap: SIGINT lets pytest write its summary, and
           # TheHub's script turns a run that hit it into "partial", never green.
           TIER_SOFT_TIMEOUT_S: "300"
@@ -2859,7 +2864,7 @@ jobs:
           MEMORY_GUARD: *memory_guard
           MEMORY_BUDGET_MB: "2304"
           # [#61606] MEMORY_GUARD_SOFT_TIMEOUT_S is deliberately not set, so the
-          # guard never re-runs a kill here: this task has a 14m hard cap and a
+          # guard never re-runs a kill here: this task has an 18m hard cap and a
           # 300s soft cap, and a wait plus a second run fits in neither.
         config:
           platform: linux
@@ -2887,7 +2892,7 @@ jobs:
           # and did not stop on SIGINT has a hanging test, which deploy.sh's
           # tier would hang on too, so it stays 124: a verdict. Arithmetic is
           # `let`, never a doubled parenthesis, which Concourse reads as a
-          # credential variable. The script is kept short: it is one argv.
+          # credential variable.
           run:
             path: bash
             args:
@@ -2927,7 +2932,7 @@ jobs:
                   "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
                 fi
                 # The budget: see TIER_HARD_BUDGET_S and the note above `run:`.
-                BUDGET="${TIER_HARD_BUDGET_S:-600}"
+                BUDGET="${TIER_HARD_BUDGET_S:-840}"
                 SOFT="${TIER_SOFT_TIMEOUT_S:-300}"
                 TIMER=""
                 if command -v timeout >/dev/null 2>&1; then

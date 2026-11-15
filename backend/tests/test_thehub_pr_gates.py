@@ -417,7 +417,9 @@ def _integration(tmp_path: Path, tiers_rc: int | None, *, head: bool = True,
             (pr / "config" / "ci" / "pr-integration-subset.txt").write_text("x  # y\n")
     script = _step("integration")["config"]["run"]["args"][-1].replace(
         "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
-    return subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+    # From a file, not `bash -c`: Git Bash on Windows truncates a long argv.
+    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
+    return subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
                           timeout=60)
 
 
@@ -512,7 +514,8 @@ def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int =
         "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
     env = {**os.environ, "PATH": f"{stubs.as_posix()}:{os.environ['PATH']}",
            "APP_DIR": app.as_posix()}
-    r = subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
+    r = subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
                        timeout=60, env=env)
     calls = log.read_text().splitlines() if log.exists() else []
     return r, calls
