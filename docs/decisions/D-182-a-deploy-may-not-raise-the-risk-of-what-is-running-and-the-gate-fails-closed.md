@@ -213,7 +213,23 @@ whenever a CVE is published.
    to the pre-deploy baseline: it is that baseline, not a new state, which
    is why it is narrower than the repair exemption the latch amendment
    refused. The HMAC stops an edit by anyone without the token; whoever can
-   read `backend/.env` on this host can already deploy with `-Force`.
+   read `backend/.env` on this host can already deploy with `-Force`. The
+   restore is also bound to what runs: when the running stamp can be read it
+   must be the most recent `deploying` line's tag (after a failed deploy the
+   unhealthy container still reports it), so a replayed older line or a
+   truncated ledger cannot re-target it at an older sha. After a restore the
+   running stamp must equal the full recorded sha, not merely the tag pulled,
+   or the run fails. A deploy on a host with no token says it cannot be
+   restored.
+15. **Recovering a creep ledger that cannot be measured.** If the confirmed
+   sha can no longer be measured against what runs (its scans are gone, or
+   on no common branch), every check is `evaluation_failed`, and `-Force`
+   does not move `confirmed_sha`. The recovery is the operator's, recorded:
+   a ledger line in `deploy-risk-log.jsonl` (or the decision log) saying why,
+   then a reset of that repository's `oracle_ratchet_creep` row
+   (`confirmed_sha` set to the running sha, `pending_json` `{}`, and
+   `accepted_creep` kept unless the operator decides otherwise). No code
+   path resets it.
 
 **What it costs.** D-126 chose fail open on a measured case: Vault sealed four
 days in September 2026, and a fail-closed gate would have blocked the deploy

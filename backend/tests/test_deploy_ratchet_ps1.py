@@ -555,3 +555,51 @@ class TestARollbackRestoresThePriorSha:
         assert code == 3, output
         assert "DEPLOY-PRE-MOVE-REFUSAL kind=deploy_unrecorded" in output
         assert "Pulling images" not in output
+
+
+class TestTheRestoreIsBoundToWhatRuns:
+    """Re-review of ab9a17d7, non-blocking 1 and 4."""
+
+    def test_a_replayed_older_deploy_line_cannot_re_target_it(self, tmp_path: Path) -> None:
+        """Deploy 1 replaced RUNNING; deploy 2 (def5678) replaced deploy 1's
+        sha. Copying deploy 1's genuine line to the end must not make RUNNING
+        restorable while deploy 2's build runs."""
+        code, output, _, _ = deploy(tmp_path, [ALLOW])
+        assert code == 0, output
+        path = _ledger_path(tmp_path)
+        first = next(line for line in path.read_text(encoding="utf-8").splitlines()
+                     if json.loads(line)["event"] == "deploying")
+        second_tag = "def5678"
+        code, output, _, _ = deploy(tmp_path, [ALLOW], tag=second_tag, running=FAILED)
+        assert code == 0, output
+        with path.open("a", encoding="utf-8") as f:
+            f.write(first + "\n")
+
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING, running=second_tag + "0" * 33, down=True
+        )
+
+        assert code == 3, output
+        assert "DEPLOY-PRE-MOVE-REFUSAL kind=restore_refused" in output
+        assert "the most recent recorded deploy" in output
+
+    def test_with_the_running_stamp_unreadable_the_restore_ships(self, tmp_path: Path) -> None:
+        code, output, _, _ = deploy(tmp_path, [ALLOW])
+        assert code == 0, output
+
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING, running=None, down=True
+        )
+
+        assert code == 0, output
+
+    def test_a_deploy_with_no_token_says_it_cannot_be_restored(self, tmp_path: Path) -> None:
+        code, output, ledger, _ = deploy(
+            tmp_path, ["THROW"], "-Force", "-ForceReason", "the platform is down and this fixes it",
+            env="", with_deploying=True,
+        )
+
+        assert code == 0, output
+        assert "cannot be restored with -Restore" in output
+        deploying = [e for e in ledger if e["event"] == "deploying"]
+        assert deploying and deploying[0]["mac"] is None

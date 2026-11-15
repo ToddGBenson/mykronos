@@ -378,7 +378,7 @@ function Get-RestoreTarget {
         ledger alone. Fails closed: any doubt is a refusal with a reason.
         Returns @{ Ok; Sha; Deploy; Reason }.
     #>
-    param([string]$Tag, [string]$Key)
+    param([string]$Tag, [string]$Key, [string]$Running)
     $no = { param($why) @{ Ok = $false; Sha = $null; Deploy = $null; Reason = $why } }
     if (-not $Key) { return (& $no "there is no platform token in backend/.env to verify the ledger with") }
     if (-not (Test-Path -LiteralPath $riskLedger -PathType Leaf)) {
@@ -409,6 +409,14 @@ function Get-RestoreTarget {
     $expected = Get-LedgerMac -Key $Key -Text (Get-DeployingMacText -DeployTag ([string]$last.tag) -Previous $previous -Nonce ([string]$last.nonce))
     if ($expected -cne [string]$last.mac) {
         return (& $no "the most recent deploy line does not verify (edited, or written with another token)")
+    }
+    # Bound to what runs now, so a replayed older line or a truncated ledger
+    # cannot re-target the restore: after the failed deploy the unhealthy
+    # container still reports the failed deploy's sha. Unreadable is allowed
+    # (the backend container may be gone altogether).
+    $lastTag = ([string]$last.tag).ToLowerInvariant()
+    if ($Running -and -not $Running.ToLowerInvariant().StartsWith($lastTag)) {
+        return (& $no "the running build is $($Running.Substring(0, [Math]::Min(12, $Running.Length))), not $lastTag, the most recent recorded deploy; a restore undoes only that deploy")
     }
     $want = $Tag.ToLowerInvariant()
     if ($want.Length -lt 7 -or -not $previous.StartsWith($want)) {
@@ -647,7 +655,7 @@ if ($Restore) {
     # D-182, operator decision 2026-11-15: "Allow restore of the prior sha".
     # The ratchet is not asked: the backend that answers it may be the thing
     # that just failed. Only the sha the ledger says the last deploy replaced.
-    $target = Get-RestoreTarget -Tag $Tag -Key $riskToken
+    $target = Get-RestoreTarget -Tag $Tag -Key $riskToken -Running $previousSha
     if (-not $target.Ok) {
         Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "restore"; kind = "restore_refused";
             reason = $target.Reason; deployed = $previousSha } | Out-Null
@@ -873,7 +881,10 @@ try {
 if (-not $Restore) {
     $deployingNonce = [guid]::NewGuid().ToString("N")
     $deployingMac = $null
-    if ($riskToken) {
+    if (-not $riskToken) {
+        Write-Host ("No platform token in backend/.env: this deploy's ledger line cannot be signed, " +
+            "so it cannot be restored with -Restore if it fails; a rollback will need -Force.") -ForegroundColor Yellow
+    } else {
         $deployingMac = Get-LedgerMac -Key $riskToken -Text (Get-DeployingMacText -DeployTag $Tag -Previous ([string]$previousSha) -Nonce $deployingNonce)
     }
     $recorded = Write-RiskLedger @{ event = "deploying"; tag = $Tag; previous = $previousSha;
@@ -1097,9 +1108,21 @@ try {
     # same MYKRONOS_BUILD_SHA the backend serves as `build.sha`: the image's
     # ENV, which compose does not override.
     $running = Get-RunningBuildSha
+    # A restore may pull a short tag; what it must run is exactly the full
+    # sha the ledger recorded, so a colliding prefix cannot pass as one.
+    $restoreMismatch = $false
+    $tookTag = $false
+    if ($running) {
+        if ($Restore) {
+            $tookTag = ($running.ToLowerInvariant() -ceq $target.Sha)
+            $restoreMismatch = -not $tookTag
+        } else {
+            $tookTag = ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag))
+        }
+    }
     if (-not $running) {
         Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
-    } elseif ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag)) {
+    } elseif ($tookTag) {
         Write-Host "Confirmed: the backend is running $Tag." -ForegroundColor Green
         # [TheHub #61046] Only a confirmed deploy is recorded: on a mismatch
         # the stories in the range are not what is running.
@@ -1131,6 +1154,9 @@ try {
 
     Write-Host ""
     Write-RiskSummaryLine
+    if ($restoreMismatch) {
+        throw "RESTORE MISMATCH: the restore was of $($target.Sha), and the backend reports $running."
+    }
 } finally {
     foreach ($name in $slackResolved) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
     Pop-Location

@@ -222,10 +222,13 @@ def _push_scan(
     started_at: str,
     findings: list[dict[str, Any]],
     branch: str | None = None,
+    status: str | None = None,
 ) -> None:
     """A push scan on main (no pull request), the kind the range is read from."""
     auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'sast')}"}
-    extra = {"branch": branch} if branch is not None else {}
+    extra: dict[str, Any] = {"branch": branch} if branch is not None else {}
+    if status is not None:
+        extra["scan_status"] = status
     response = post_scan(
         client, auth, scan_run_id=scan_run_id, commit_sha=commit, pr_number=None,
         triggered_by="push", started_at=started_at, **extra,
@@ -593,12 +596,12 @@ class TestItFailsClosed:
     def test_this_platform_refuses_a_baseline_it_is_not_running(self, client) -> None:
         own = "a" * 40
         baseline = deploy_gate.baseline_for(
-            client.app.state.db, "someone/mykronos", "b" * 40, own
+            client.app.state.db, deploy_gate.SELF_REPO_FULL_NAME, "b" * 40, own
         )
         assert baseline.problem is not None
         assert baseline.problem.code == BASELINE_DISAGREES
         agreed = deploy_gate.baseline_for(
-            client.app.state.db, "someone/mykronos", own[:12], own
+            client.app.state.db, deploy_gate.SELF_REPO_FULL_NAME, own[:12], own
         )
         assert agreed.problem is None and agreed.sha == own
 
@@ -1028,8 +1031,12 @@ class TestOnlyThisPlatformIsJudged:
         assert _codes_of(body) == [NOT_ENFORCEABLE]
 
     def test_only_this_platform_with_its_own_build_is_enforceable(self) -> None:
-        assert deploy_gate.enforceable("someone/mykronos", "a" * 40)
-        assert not deploy_gate.enforceable("someone/mykronos", "")  # caller's word
+        own = deploy_gate.SELF_REPO_FULL_NAME
+        assert deploy_gate.enforceable(own, "a" * 40)
+        assert deploy_gate.enforceable(own.lower(), "a" * 40)
+        assert not deploy_gate.enforceable(own, "")  # caller's word
+        # Another owner's repository of the same name is not this platform.
+        assert not deploy_gate.enforceable("someone/mykronos", "a" * 40)
         assert not deploy_gate.enforceable("someone/thehub", "a" * 40)
         assert not deploy_gate.enforceable(REPO, "a" * 40)
 
@@ -1116,3 +1123,43 @@ class TestAFixInsideTheRange:
 
         assert body["allow"] is False, body
         assert INTRODUCED_BLOCKING in _codes_of(body)
+
+
+class TestOnlyACompletedScanSaysAFindingIsGone:
+    """Re-review of ab9a17d7, R-B1: C's last scan of a capability, of any
+    status, decided that C no longer carried a finding, so a failed rescan
+    reporting nothing made a high C carries read as fixed."""
+
+    def test_a_failed_rescan_does_not_fix_a_high(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", [])
+        _push_scan(client, run_compaction, "run-c1", C1, "2026-11-14T03:00:00",
+                   [_sast("H1", "high")])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00",
+                   [_sast("H1", "high")])
+        _decide(client, oracle_auth, C)
+        _push_scan(client, run_compaction, "run-c-failed", C, "2026-11-14T05:00:00", [],
+                   status="failure")
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert INTRODUCED_BLOCKING in _codes_of(body)
+        assert body["introduced"] == {"high": 1}
+
+    def test_a_failed_rescan_earns_no_fix_credit_note(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00",
+                   [_sast("M1", "medium")])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00",
+                   [_sast("M1", "medium")])
+        _decide(client, oracle_auth, C)
+        _push_scan(client, run_compaction, "run-c-failed", C, "2026-11-14T05:00:00", [],
+                   status="failure")
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is True, body
+        assert body["fix_credit_pending"] == 0

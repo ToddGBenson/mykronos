@@ -123,7 +123,7 @@ from mykronos import blast_radius, risk_evidence
 from mykronos.db.models import OracleRatchetCreep, OracleRatchetLatch, RepoOnboarding
 from mykronos.db.session import Database
 from mykronos.deployments import OK as PROBE_OK
-from mykronos.deployments import SELF_REPO_NAME
+from mykronos.lake.reconcile import CONFIRMING_STATUSES
 from mykronos.logsafe import scrub
 from mykronos.oracle.engine import (
     AGE_DAYS,
@@ -193,8 +193,20 @@ _PENDING_CAP = 50
 _TEST_ENFORCEABLE: frozenset[str] = frozenset()
 
 
+#: This platform's own repository, in full: the one whose deployment the
+#: answering backend is. Any other owner's `.../mykronos` is not it.
+SELF_REPO_FULL_NAME = "ToddGBenson/mykronos"
+
+
 def _is_self(repo_full_name: str) -> bool:
-    return repo_full_name.split("/")[-1].lower() == SELF_REPO_NAME
+    return repo_full_name.strip().lower() == SELF_REPO_FULL_NAME.lower()
+
+
+def _confirming_sql() -> str:
+    """Scan statuses that are evidence of what a commit carries: the ones
+    absence reconciliation trusts. A failed or partial scan reporting nothing
+    is not evidence a finding is gone (re-review of ab9a17d7, R-B1)."""
+    return ", ".join(f"'{s}'" for s in CONFIRMING_STATUSES)
 
 
 def enforceable(repo_full_name: str, self_build_sha: str) -> bool:
@@ -555,12 +567,14 @@ def _push_scans(catalog: Any, repo_full_name: str, sha: str) -> dict[str, tuple[
 def _capability_last(
     catalog: Any, repo_full_name: str, branch: str, sha: str
 ) -> dict[str, Any]:
-    """Capability -> the commit's last push scan of it on the branch."""
+    """Capability -> the commit's last confirming push scan of it on the
+    branch. Only a scan that completed counts: it is what says a finding the
+    commit had is gone (`_missed`, and the closed-row rule in `_carries`)."""
     rows = catalog.query(
-        """
+        f"""
         SELECT capability, max(started_at) FROM scan_runs
         WHERE repo_full_name = ? AND lower(commit_sha) = ? AND coalesce(pr_number, 0) = 0
-          AND coalesce(branch, '') = ?
+          AND coalesce(branch, '') = ? AND scan_status IN ({_confirming_sql()})
         GROUP BY 1
         """,
         [repo_full_name, sha, branch],
@@ -1089,7 +1103,7 @@ def _fix_credit_pending(
         WITH cq AS (
             SELECT capability, max(started_at) AS last_at FROM scan_runs
             WHERE repo_full_name = ? AND lower(commit_sha) = ? AND coalesce(pr_number, 0) = 0
-              AND coalesce(branch, '') = ?
+              AND coalesce(branch, '') = ? AND scan_status IN ({_confirming_sql()})
             GROUP BY 1
         )
         SELECT f.finding_id FROM findings f
@@ -1129,7 +1143,7 @@ def baseline_for(
     if claimed is not None and not _SHA.match(claimed):
         return Baseline(None, "caller", problem=Reason(
             BASELINE_UNKNOWN, f"deployed={claimed!r} is not a commit sha (7-40 hex)."))
-    is_self = repo_full_name.split("/")[-1].lower() == SELF_REPO_NAME
+    is_self = _is_self(repo_full_name)
     own = (self_build_sha or "").strip().lower()
     if is_self and _SHA.match(own):
         if claimed is not None and not _same(claimed, own):
