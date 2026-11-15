@@ -223,21 +223,27 @@ function Get-DeployScriptArgumentList {
         sha the decision chose: a 12-character tag was refused by a deploy
         script on 2026-11-13, and a prefix can name two commits. A rollback
         passes the tag the running images carry, which a hand deploy may
-        have made shorter, so it needs only 7 to 40 hex.
+        have made shorter, so it needs only 7 to 40 hex. -Restore (the
+        rollback) adds deploy.ps1's -Restore: it ships the sha the failed
+        deploy replaced without asking the ratchet, which may be down with
+        the backend that failed (D-182, operator decision 2026-11-15).
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
         [AllowEmptyString()][string]$Tag,
         [Parameter(Mandatory = $true)][string]$Registry,
         [string[]]$Extra = @(),
-        [switch]$RequireFullSha
+        [switch]$RequireFullSha,
+        [switch]$Restore
     )
     if ($RequireFullSha -and $Tag -cnotmatch '^[0-9a-f]{40}$') {
         throw "deploy.ps1 needs the full 40-character lowercase commit sha, got '$Tag'"
     }
     if ($Tag -cnotmatch '^[0-9a-f]{7,40}$') { throw "not a commit sha: '$Tag'" }
+    $restoreArg = @()
+    if ($Restore) { $restoreArg = @('-Restore') }
     return @('-NoProfile', '-NonInteractive', '-File', ('"{0}"' -f $ScriptPath),
-        '-Tag', $Tag, '-Registry', $Registry) + @($Extra)
+        '-Tag', $Tag, '-Registry', $Registry) + $restoreArg + @($Extra)
 }
 
 function Get-PreMoveRefusal {

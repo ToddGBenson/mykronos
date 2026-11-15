@@ -20,7 +20,7 @@
 The decision names TheHub and MyKronos; it is implemented for MyKronos only,
 for the reasons in point 13.
 
-**Operator decisions later the same day (2026-11-15).** Two amendments, as given:
+**Operator decisions later the same day (2026-11-15).** Three amendments. The first, as given:
 
 > While a repo is latched and the candidate is still No-Go, ALLOW only if the
 > candidate lowers the score by more than the tolerance and introduces no high
@@ -28,7 +28,14 @@ for the reasons in point 13.
 
 This replaces (b) as literally applied (see item 6). And the cost the
 independent review named, accepted: a down backend or sealed Vault refuses
-(`risk_unasked`) and needs the operator's `-Force` with a reason.
+(`risk_unasked`) and needs the operator's `-Force` with a reason. And,
+on the re-review's question about the watcher's automatic rollback, which
+the ratchet refused when the backend that answers it was what had failed:
+
+> Allow restore of the prior sha.
+
+That is point 14: a rollback may redeploy exactly the sha that ran before
+the failed deploy, without asking the ratchet, and nothing else.
 
 And the Product Owner's note on the same day, from live data: MyKronos main
 `b11c74a6` scored raw 166.3 against the deployed `0e9a8886` at 165.2, and the
@@ -185,11 +192,35 @@ whenever a CVE is published.
    both kinds of scan, so its follow-up must wait for both, not adopt an
    endpoint that would answer allow.
 
+14. **A rollback restores the prior sha without asking** (operator decision
+   2026-11-15, "Allow restore of the prior sha"). Before every pull,
+   `deploy.ps1` writes an `event=deploying` ledger line with the running
+   build stamp it replaces (`previous`), a random nonce, and an HMAC-SHA256
+   of the three keyed with this host's platform token from `backend/.env`.
+   If that line cannot be written the deploy does not happen
+   (`deploy_unrecorded`), because an unattended deploy that then failed
+   health could not be rolled back. `deploy.ps1 -Restore -Tag <sha>` does
+   not ask the ratchet. It ships only when the most recent `deploying` line
+   verifies and `<sha>` is its `previous` (or a prefix of it, the tag a hand
+   deploy may have pulled), and records `event=restore` before the pull
+   (`restore_unrecorded` if it cannot). Everything else refuses before
+   anything moves (`restore_refused`): another sha, no ledger, a line that
+   is not JSON, an edited or unsigned line, a deploy that recorded no
+   running sha, or no token to verify with. A restore writes no `deploying`
+   line, so it never makes the failed sha restorable, and it does not
+   combine with `-Force`. The watcher's rollback runs `deploy.ps1 -Restore`
+   with the running images' tag. The restore cannot raise the risk relative
+   to the pre-deploy baseline: it is that baseline, not a new state, which
+   is why it is narrower than the repair exemption the latch amendment
+   refused. The HMAC stops an edit by anyone without the token; whoever can
+   read `backend/.env` on this host can already deploy with `-Force`.
+
 **What it costs.** D-126 chose fail open on a measured case: Vault sealed four
 days in September 2026, and a fail-closed gate would have blocked the deploy
 that fixed it. That cost is now accepted, and its answer is the operator's
 `-Force` with a reason. The backend that answers the ratchet is the one being
-deployed, so a deploy that repairs a down backend always needs `-Force`. The
+deployed, so a deploy that repairs a down backend always needs `-Force`,
+except the restore of the sha that ran before the failed deploy (point 14). The
 latch's literal reading also means a backlog pushed over No-Go by a newly
 published CVE refuses every deploy, fixes included, until the backlog is
 lowered or an override is recorded; that is the operator's (b) as written, and

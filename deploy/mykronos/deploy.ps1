@@ -86,7 +86,9 @@
 .PARAMETER Tag
     REQUIRED. The commit sha to deploy - 7 to 40 hex characters, validated.
 
-    Rollback is the same command with the previous sha. The deploy reads
+    Rollback is the same command with the previous sha, plus -Restore when
+    the ratchet cannot be asked (the failed deploy took the backend down):
+    see .PARAMETER Restore. The deploy reads
     the running container's `MYKRONOS_BUILD_SHA` afterwards and says whether
     the running commit is the one requested, because "healthy" and "running what you asked for" are different
     facts and only the second one is the deploy's job.
@@ -112,6 +114,25 @@
     is written to a ledger beside this script before anything is pulled. An
     override nobody can find afterwards is not an override, it is an
     unrecorded exception.
+
+.PARAMETER Restore
+    Redeploy the sha that was running before the most recent deploy, WITHOUT
+    asking the ratchet (D-182, operator decision 2026-11-15: "Allow restore
+    of the prior sha"). It exists for the rollback after a failed deploy,
+    when the backend that answers the ratchet is the thing that failed.
+
+    The sha is not the caller's word. Before every pull, deploy.ps1 writes
+    an `event=deploying` line with the running build stamp it replaces
+    (`previous`) and an HMAC of it keyed with this host's platform token. A
+    restore is accepted only when -Tag is that recorded sha (or a prefix of
+    it, the tag a hand deploy may have pulled) for the MOST RECENT
+    `deploying` line, and that line verifies. Anything else refuses before
+    anything moves (`restore_refused`): a different sha, no ledger, an
+    unreadable or edited ledger, a deploy that recorded no running sha, or
+    no token to verify with. The restore is recorded as `event=restore`
+    before the pull (`restore_unrecorded` if it cannot be). A restore writes
+    no `deploying` line, so it can never make the failed sha restorable.
+    Cannot be combined with -Force.
 
 .PARAMETER ForceReason
     Why this refused or unjudged sha ships anyway. Recorded, not just printed.
@@ -144,8 +165,8 @@ param(
     # every deploy for months passed `-Tag <sha>` because `:latest` could not
     # be trusted -- and D-125 makes the practice the contract.
     #
-    # Rollback is unchanged and is still the whole procedure: the same command
-    # with the previous sha.
+    # Rollback is the same command with the previous sha; -Restore ships that
+    # sha without asking the ratchet (D-182), and only that sha.
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{7,40}$')]
     [string]$Tag,
@@ -166,6 +187,9 @@ param(
     # prints and the ledger it writes.
     [switch]$Force,
     [string]$ForceReason,
+    # Redeploy the sha the most recent deploy replaced, without asking the
+    # ratchet; only that sha, read from the ledger. See .PARAMETER Restore.
+    [switch]$Restore,
     [string]$MigrateFrom,
     [switch]$NoStart
 )
@@ -326,6 +350,71 @@ function Write-RiskLedger {
         Write-Host "Could not write $riskLedger : $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
+}
+
+function Get-LedgerMac {
+    # HMAC-SHA256 of a ledger line's load-bearing fields, keyed with this
+    # host's platform token (D-182 restore). Lower-case hex.
+    param([string]$Key, [string]$Text)
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($Key))
+    try {
+        $bytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+        return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $hmac.Dispose()
+    }
+}
+
+function Get-DeployingMacText {
+    # A random nonce, not the time: ConvertFrom-Json turns an ISO time back
+    # into a DateTime, and its string is then not the one that was signed.
+    param([string]$DeployTag, [string]$Previous, [string]$Nonce)
+    return "deploying|$DeployTag|$Previous|$Nonce"
+}
+
+function Get-RestoreTarget {
+    <#
+        Whether -Tag is the sha the most recent deploy replaced, from the
+        ledger alone. Fails closed: any doubt is a refusal with a reason.
+        Returns @{ Ok; Sha; Deploy; Reason }.
+    #>
+    param([string]$Tag, [string]$Key)
+    $no = { param($why) @{ Ok = $false; Sha = $null; Deploy = $null; Reason = $why } }
+    if (-not $Key) { return (& $no "there is no platform token in backend/.env to verify the ledger with") }
+    if (-not (Test-Path -LiteralPath $riskLedger -PathType Leaf)) {
+        return (& $no "there is no deploy ledger ($riskLedger), so no deploy recorded what it replaced")
+    }
+    try {
+        $lines = @(Get-Content -LiteralPath $riskLedger -ErrorAction Stop)
+    } catch {
+        return (& $no "the deploy ledger could not be read: $($_.Exception.Message)")
+    }
+    $last = $null
+    foreach ($line in $lines) {
+        if (-not "$line".Trim()) { continue }
+        try {
+            $entry = $line | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            return (& $no "a deploy ledger line is not JSON, so the ledger was edited or damaged")
+        }
+        if ($entry -and $entry.PSObject.Properties.Name -contains "event" -and $entry.event -eq "deploying") {
+            $last = $entry
+        }
+    }
+    if (-not $last) { return (& $no "the ledger records no deploy, so there is no prior sha to restore") }
+    $previous = [string]$last.previous
+    if ($previous -cnotmatch '^[0-9a-f]{40}$') {
+        return (& $no "the most recent deploy ($([string]$last.tag)) recorded no running sha")
+    }
+    $expected = Get-LedgerMac -Key $Key -Text (Get-DeployingMacText -DeployTag ([string]$last.tag) -Previous $previous -Nonce ([string]$last.nonce))
+    if ($expected -cne [string]$last.mac) {
+        return (& $no "the most recent deploy line does not verify (edited, or written with another token)")
+    }
+    $want = $Tag.ToLowerInvariant()
+    if ($want.Length -lt 7 -or -not $previous.StartsWith($want)) {
+        return (& $no "$Tag is not $($previous.Substring(0, 12)), the sha that ran before the most recent deploy ($([string]$last.tag))")
+    }
+    return @{ Ok = $true; Sha = $previous; Deploy = [string]$last.tag; Reason = $null }
 }
 
 function Get-RiskVerdict {
@@ -525,6 +614,9 @@ if ($Force -and -not $ForceReason) {
 if ($ForceReason -and $ForceReason.Trim().Length -lt 10) {
     Stop-BeforeMove -Kind "usage" -Message "-ForceReason is too short to be a reason. Write the sentence someone reading the ledger in six months needs."
 }
+if ($Restore -and $Force) {
+    Stop-BeforeMove -Kind "usage" -Message "-Restore and -Force do not combine. A restore ships only the sha the last deploy replaced, without -Force; anything else is a normal deploy."
+}
 if ($ForceReason -and -not $Force) {
     Write-Host "-ForceReason was given without -Force; it will only be recorded if the gate actually refuses." -ForegroundColor DarkGray
 }
@@ -546,6 +638,32 @@ $gateToken = Read-EnvValue $backendEnv "MYKRONOS_GATE_TOKEN"
 # is the deployment) or refuses with baseline_unknown.
 $previousSha = Get-RunningBuildSha -Quiet
 if ($previousSha -notmatch '^[0-9a-f]{7,40}$') { $previousSha = $null }
+
+# Repeated as the very last line of the run. The banner below scrolls away
+# behind a pull, a health wait and a briefing; this does not.
+$riskSummary = ""
+
+if ($Restore) {
+    # D-182, operator decision 2026-11-15: "Allow restore of the prior sha".
+    # The ratchet is not asked: the backend that answers it may be the thing
+    # that just failed. Only the sha the ledger says the last deploy replaced.
+    $target = Get-RestoreTarget -Tag $Tag -Key $riskToken
+    if (-not $target.Ok) {
+        Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "restore"; kind = "restore_refused";
+            reason = $target.Reason; deployed = $previousSha } | Out-Null
+        Stop-BeforeMove -Kind "restore_refused" -Message ("RESTORE REFUSED - $($target.Reason). " +
+            "A restore ships only the sha the most recent deploy replaced, as its ledger line recorded it. " +
+            "Nothing has been pulled.")
+    }
+    $recorded = Write-RiskLedger @{ event = "restore"; tag = $Tag; restores = $target.Sha;
+        failed_deploy = $target.Deploy; deployed = $previousSha }
+    if (-not $recorded) {
+        Stop-BeforeMove -Kind "restore_unrecorded" -Message "The restore could not be recorded, so it does not happen. Fix $riskLedger and re-run."
+    }
+    $riskSummary = ("Risk gate: not asked - RESTORE of $(Format-Short $target.Sha), the sha the deploy of " +
+        "$(Format-Short $target.Deploy) replaced (D-182, operator decision 2026-11-15).")
+    Write-Host $riskSummary -ForegroundColor Yellow
+} else {
 
 $verdict = Get-RatchetVerdict -Sha $Tag -Deployed $previousSha -Repo $Repo -BaseUrl $PlatformUrl -Token $riskToken
 
@@ -583,10 +701,6 @@ if ($verdict.State -eq "unjudged" -and $GateWaitMinutes -gt 0) {
     }
 }
 $answer = $verdict.Answer
-
-# Repeated as the very last line of the run. The banner above scrolls away
-# behind a pull, a health wait and a briefing; this does not.
-$riskSummary = ""
 
 if ($verdict.State -eq "allow") {
     # One line. No banner, no pause. The quiet path has to be quiet, or the
@@ -729,6 +843,7 @@ if ($verdict.State -eq "allow") {
     $riskSummary = "Risk gate: OVERRIDDEN - $Tag was $heading ($(($codes + @($verdict.Reason)) -join ', ')) and shipped with -Force ($pushed). Reason: $ForceReason"
     Start-Sleep -Seconds 5
 }
+}  # end of: not a restore
 
 # [TheHub #61610] ONE DEPLOY AT A TIME. Taken here, after the risk gate and
 # before the first pull: the gate is read-only and can wait 45 minutes, and
@@ -748,6 +863,25 @@ if (-not $deployLock.Acquired) {
 # The rest of the script runs inside this try, unindented to keep the diff
 # readable; the matching finally is the last line of the file.
 try {
+
+# What this deploy replaces, recorded BEFORE the pull and signed, so a
+# rollback can restore exactly that sha without asking the ratchet (D-182,
+# -Restore). A restore writes none: it must never make the failed sha
+# restorable. If the line cannot be written the deploy does not happen, for
+# the same reason an override that cannot be recorded does not: an
+# unattended deploy that then fails health could not be rolled back.
+if (-not $Restore) {
+    $deployingNonce = [guid]::NewGuid().ToString("N")
+    $deployingMac = $null
+    if ($riskToken) {
+        $deployingMac = Get-LedgerMac -Key $riskToken -Text (Get-DeployingMacText -DeployTag $Tag -Previous ([string]$previousSha) -Nonce $deployingNonce)
+    }
+    $recorded = Write-RiskLedger @{ event = "deploying"; tag = $Tag; previous = $previousSha;
+        nonce = $deployingNonce; mac = $deployingMac }
+    if (-not $recorded) {
+        Stop-BeforeMove -Kind "deploy_unrecorded" -Message "The deploy could not record what it replaces, so it could not be restored if it fails. Fix $riskLedger and re-run."
+    }
+}
 
 Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
 # [TheHub #61644] Both are pulled before either is retagged, so a failed pull
@@ -843,7 +977,7 @@ function Write-RiskSummaryLine {
     if (-not $riskSummary) { return }
     $color = if ($riskSummary.StartsWith("Risk gate: allow")) {
         "DarkGray"
-    } elseif ($riskSummary.StartsWith("Risk gate: OVERRIDDEN")) {
+    } elseif ($riskSummary.StartsWith("Risk gate: OVERRIDDEN") -or $riskSummary.StartsWith("Risk gate: not asked - RESTORE")) {
         "Red"
     } else {
         "Yellow"

@@ -56,9 +56,11 @@
                                 rollback when the old stack still answers).
                                 The sha's one attempt is spent either way
           timeout               still running at -DeployTimeoutMin
-      - rolls back by running deploy.ps1 again with the tag of the sha that
-        ran before (deploy.ps1's documented rollback: "the same command
-        with the previous sha"), with -GateWaitMinutes 0;
+      - rolls back by running deploy.ps1 -Restore with the tag of the sha
+        that ran before, with -GateWaitMinutes 0. -Restore does not ask the
+        ratchet, whose backend may be the thing that failed; deploy.ps1
+        accepts it only for the sha its own ledger recorded the failed deploy
+        replacing (D-182, operator decision 2026-11-15);
       - reports ONE host-job run at the end (actor Watch-AutoDeploy, kind
         deploy; no "started ok" run that could read as a success) and, on
         anything but success, one Hub incident (room devops).
@@ -192,9 +194,9 @@ function Invoke-DeployScript {
     # prompts, the child fails instead of waiting for a keyboard nobody is at.
     # -RequireFullSha on the forward deploy: the decision's full 40-char sha,
     # never a prefix (61644). A rollback passes the running images' tag.
-    param([string]$Tag, [string]$LogPath, [string[]]$Extra = @(), [switch]$RequireFullSha)
+    param([string]$Tag, [string]$LogPath, [string[]]$Extra = @(), [switch]$RequireFullSha, [switch]$Restore)
     $argList = Get-DeployScriptArgumentList -ScriptPath $deployScript -Tag $Tag -Registry $Registry `
-        -Extra $Extra -RequireFullSha:$RequireFullSha
+        -Extra $Extra -RequireFullSha:$RequireFullSha -Restore:$Restore
     $errPath = [IO.Path]::ChangeExtension($LogPath, '.err.log')
     $proc = Start-Process -FilePath $pwshPath -ArgumentList $argList -WorkingDirectory $here `
         -NoNewWindow -PassThru -RedirectStandardOutput $LogPath -RedirectStandardError $errPath
@@ -352,7 +354,7 @@ try {
     } elseif ($outcome.Rollback) {
         Write-Host "Health check failed for $s12 (backend=$($after.Backend) frontend=$($after.Frontend) sha=$(Get-Short $after.Sha)); rolling back to $previousTag." -ForegroundColor Red
         $rollbackLog = Join-Path $StateDir "rollback-$s12-to-$(Get-Short $previousTag)-$stamp.log"
-        $rollbackCode = Invoke-DeployScript -Tag $previousTag -LogPath $rollbackLog -Extra @('-GateWaitMinutes', '0')
+        $rollbackCode = Invoke-DeployScript -Tag $previousTag -LogPath $rollbackLog -Extra @('-GateWaitMinutes', '0') -Restore
         $restored = Get-StackState
         if ($rollbackCode -eq 0 -and (Test-StackOn $restored $previous)) {
             $result = 'rolled_back'

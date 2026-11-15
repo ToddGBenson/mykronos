@@ -383,6 +383,13 @@ Describe 'the watcher passes the decision''s full sha (61644)' {
         $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev.Substring(0, 12) -Registry 'r' -Extra @('-GateWaitMinutes', '0')
         $a[-2] | Should -Be '-GateWaitMinutes'
     }
+    It 'a rollback is a -Restore, which does not ask the ratchet (D-182)' {
+        $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev -Registry 'r' -Extra @('-GateWaitMinutes', '0') -Restore
+        $a | Should -Contain '-Restore'
+        (Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:H -Registry 'r' -RequireFullSha) | Should -Not -Contain '-Restore'
+        $w = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\Watch-AutoDeploy.ps1') -Raw
+        $w | Should -Match "Invoke-DeployScript -Tag \`$previousTag -LogPath \`$rollbackLog -Extra @\('-GateWaitMinutes', '0'\) -Restore"
+    }
     It 'the watcher''s forward deploy asks for the full sha' {
         $w = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\Watch-AutoDeploy.ps1') -Raw
         $w | Should -Match 'Invoke-DeployScript -Tag \$sha -LogPath \$deployLog -RequireFullSha'
