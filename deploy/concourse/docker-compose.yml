@@ -197,8 +197,12 @@ services:
     # and still 15, so the volume is reused as a minor upgrade; alpine would
     # change the libc under every text index (dump, restore and REINDEX).
     #
-    # image-refresh build 27 (2026-11-14) against vendor 15.20: -28 +0 = 123
-    # HIGH/CRITICAL, -32 +0 MEDIUM; zlib1g and postgresql-common upgraded.
+    # Trivy 0.58.1, 2026-11-15 (critical/high/medium): running vendor 15.19
+    # 2/149/189, this 1/122/159. Gone: gosu's Go stdlib (CVE-2025-68121 and
+    # 25 HIGH), zlib1g, apt/libapt-pkg. Left: libxml2 CVE-2026-6653 (no
+    # Debian fix). New: CVE-2026-16742 (HIGH, no fix) in systemd and
+    # libsystemd-shared, which 15.20's postgresql-common pulls in; 15.19
+    # already carries it in libsystemd0 and libudev1.
     x-mykronos-build:
       context: ../images/postgres-gosu
       base: postgres:15.20@sha256:ad51f1a9aec85898aff1d1702ac361039286460de92d25610c85d76950f5d212
