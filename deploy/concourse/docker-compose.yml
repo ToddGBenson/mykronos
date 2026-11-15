@@ -173,7 +173,8 @@ x-worker: &worker
 
 
 services:
-  # 15.19, pinned by digest (2026-10-14): `postgres:15` floated, so the estate
+  # The image-refresh derivative of vendor 15.20, pinned by digest (TheHub #61701).
+  # Pinned by digest first on 2026-10-14: `postgres:15` floated, so the estate
   # scan read whatever Docker Hub's 15 was that day while the container kept
   # running the 15.18 / Debian 13.6 build it was created from (14 critical,
   # 141 high in Trivy against 2 and 85 here, none new). Major 15 on purpose:

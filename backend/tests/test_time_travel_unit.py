@@ -473,11 +473,33 @@ class TestTheReport:
         )
         assert done.returncode == 0, done.stderr
 
-    def test_write_run_needs_junit_and_filing_needs_offset_and_commit(self, tt, tmp_path) -> None:
-        with pytest.raises(SystemExit):
+    def test_write_run_needs_junit_and_filing_needs_offset_and_commit(
+        self, tt, tmp_path, capsys
+    ) -> None:
+        with pytest.raises(SystemExit) as refused:
             tt.main(["--run", str(tmp_path / "r.json"), "--write-run", str(tmp_path / "o.json")])
-        with pytest.raises(SystemExit):
+        assert refused.value.code == 2
+        assert "--write-run needs --junit" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as refused:
             tt.main(["--run", str(tmp_path / "r.json")])
+        assert refused.value.code == 2
+        assert "filing needs --offset and --commit" in capsys.readouterr().err
+
+    def test_a_missing_defusedxml_exits_2_not_with_a_traceback(self, tmp_path) -> None:
+        junit = _junit(tmp_path, passed=1, failed=[])
+        probe = (
+            "import sys\n"
+            "sys.modules['defusedxml'] = None\n"
+            f"sys.argv = ['t', '--junit', {str(junit)!r}, "
+            f"'--write-run', {str(tmp_path / 'o.json')!r}]\n"
+            f"import runpy; runpy.run_path({str(SCRIPT)!r}, run_name='__main__')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=60
+        )
+        assert done.returncode == 2, done.stderr
+        assert "defusedxml" in done.stderr
+        assert "Traceback" not in done.stderr
 
     def test_an_empty_report_is_an_error_not_a_green_run(self, tt, tmp_path) -> None:
         path = tmp_path / "unit.xml"

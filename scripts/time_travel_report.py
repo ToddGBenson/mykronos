@@ -102,8 +102,11 @@ def read_report(path: Path) -> Run:
     only, `--run`) never needs it: entity expansion and external entities are
     refused, as for every other XML this repo reads.
     """
-    from defusedxml import ElementTree as SafeElementTree
-    from defusedxml.common import DefusedXmlException
+    try:
+        from defusedxml import ElementTree as SafeElementTree
+        from defusedxml.common import DefusedXmlException
+    except ImportError as exc:
+        raise ReportError(f"--junit needs defusedxml, which is not installed: {exc}") from exc
 
     try:
         root = SafeElementTree.parse(path).getroot()
