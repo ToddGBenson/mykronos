@@ -38,26 +38,47 @@ team, which is far more than re-running a red build needs.
    would either carry them or need a generator step and a gitignored file;
    inline keeps one source.
 4. **`pipeline-operator`, not `member` or `viewer`.** Per
-   `atc/api/accessor/roles.go` (8.3.3) it allows trigger, rerun, abort,
-   check, pin and pause/unpause; it does not allow `set-pipeline`, delete,
-   archive, expose, hijack, `fly execute` or `set-team`. Viewer cannot
-   rerun, and member can rewrite any pipeline. Pause is allowed by the role and
-   forbidden to agents by standing rule; the role cannot express that split.
+   `atc/api/accessor/roles.go` (8.3.3) it allows trigger, rerun, abort and
+   build comments, check, pin, unpin and pin comments, disabling and
+   enabling a resource version, clearing the task and resource caches, and
+   pause/unpause; it does not allow `set-pipeline`, delete, archive, expose,
+   hijack, `fly execute` or `set-team`. Viewer cannot rerun, and member can
+   rewrite any pipeline. The standing rule is narrower than the role: agents
+   never pause, pin, unpin or disable a resource version, never clear a
+   cache, and abort only builds they started. Each of those can stop a lane
+   in a way that reads as quiet rather than stopped. The role cannot express
+   that split, so it is a rule, not a permission.
 5. **Agents renew their own token.** `Connect-AgentFly.ps1` logs fly target
    `mykronos-agent` in from `.env` without printing the password, leaves a
    valid token alone, and after a login reads `fly userinfo` and logs out
    again unless Concourse granted exactly `pipeline-operator` on main. Run
    from a worktree it finds the main checkout's `.env` and `bin\fly.exe`
    through git's common directory. `-Provision` is the operator's one-time
-   step that appends the two values.
+   step that appends the two values; it accepts only an agent name matching
+   `^[a-z0-9][a-z0-9_-]*$` and refuses one equal to the owner's
+   (case-insensitive), before writing anything. It is PowerShell 7 only.
+
+**Not a security boundary.** The second user prevents accidents: an agent
+that renews its own token cannot rewrite a pipeline or hijack a container by
+mistake. It does not contain a determined agent. Agents run as the
+operator's OS user, so they can read the owner's password in `.env` and the
+owner's `mykronos` target in `~/.flyrc`.
 
 **Why not a longer `--auth-duration`.** It applies to every user, the owner
 included, and a long-lived owner token is the thing to avoid. The 24-hour
 token stays; what changed is that renewing it no longer needs a person.
 
-**Accepted.** The agents' password reaches fly as `--password`, as in
-`set-pipeline.ps1`: fly 8 uses the password grant only when both `-u` and
-`-p` are given, so the password is in `fly.exe`'s argv for the duration of
-the login. The two required variables also mean every `docker compose`
-command against this stack fails until `.env` has them, which is why the
-operator steps add them before the checkout moves.
+**Accepted.** The agents' password reaches fly as one argument,
+`--password=<value>`, as the owner's does in `set-pipeline.ps1`. (As two
+arguments, a value starting with `-` is refused by fly's flag parser and
+printed back in its error; the generators also never produce one.) fly 8
+uses the password grant only when both `-u` and `-p` are given, so the
+password is in `fly.exe`'s argv for the duration of the login. That is the
+live process list only: where command-line auditing is on (Security event
+4688 with command lines, Sysmon, an EDR), the password is recorded durably
+in that log. The two required variables also mean every `docker compose`
+command against this stack, including those inside `vault-init.ps1`,
+`Add-LinuxWorker.ps1` and `Invoke-RegistryRetention.ps1`, fails from the
+moment the checkout has this change until `.env` has them; running
+containers are unaffected. The operator steps therefore run `-Provision`
+immediately after updating the checkout, and it never calls compose.

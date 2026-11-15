@@ -1,3 +1,7 @@
+#Requires -Version 7
+# ^ pwsh only: [RandomNumberGenerator]::Fill does not exist in Windows
+# PowerShell 5.1, and 5.1 turns fly's stderr into a terminating error under
+# $ErrorActionPreference = "Stop" exactly when the token has expired.
 <#
 .SYNOPSIS
     Log fly target `mykronos-agent` in to the local Concourse as the agents'
@@ -12,15 +16,24 @@
     .env and logs in again without anyone at the keyboard.
 
     What pipeline-operator can do on the main team (atc/api/accessor/roles.go,
-    Concourse 8.3): trigger a job, rerun and abort a build, check and pin a
-    resource, pause and unpause a job or a pipeline. What it cannot: set or
-    delete a pipeline, archive or expose one, hijack a container, run
-    `fly execute`, or change the team.
+    Concourse 8.3): trigger a job, rerun and abort a build, comment on a
+    build, check a resource, pin and unpin a resource version and comment on
+    the pin, disable and enable a resource version, clear the task and
+    resource caches, and pause and unpause a job or a pipeline. What it
+    cannot: set or delete a pipeline, archive or expose one, hijack a
+    container, run `fly execute`, or change the team.
 
-    AGENTS NEVER PAUSE. The role allows pausing a job or a pipeline; the
-    standing rule does not. A paused pipeline stops every lane behind it and
-    reads as "nothing to report" rather than as "stopped". Trigger and rerun
-    only; pausing is the operator's.
+    AGENTS NEVER PAUSE. The role allows more than agents may use; the
+    standing rule is narrower. Agents never pause, pin, unpin or disable a
+    resource version, and never clear a cache; they abort only builds they
+    started themselves. Each of those stops a lane in a way that reads as
+    "nothing to report" rather than as "stopped": a paused pipeline, a
+    resource pinned to an old version, a version hidden from the pipeline.
+    Trigger, rerun, check and abort-your-own only; the rest is the operator's.
+
+    This is a guard against accident, not a security boundary: agents run as
+    the operator's OS user and can read the owner's password in .env and the
+    owner's `mykronos` target in ~/.flyrc (D-182).
 
     Without -Force, a target whose token is still valid is left alone, so
     this can run before every fly call. After a login it checks the role
@@ -31,13 +44,18 @@
 
     -Provision is the operator's one-time step: it adds CONCOURSE_AGENT_USER
     and a generated CONCOURSE_AGENT_PASSWORD to .env when they are absent,
-    and never replaces a value that is there. The web node reads them only
-    when it is recreated: docker compose up -d --no-deps concourse.
+    and never replaces a value that is there. It refuses an agent name that
+    is not lowercase letters, digits, '-' and '_' (starting with a letter or
+    digit), and one equal to CONCOURSE_LOCAL_USER, before writing anything.
+    It never calls docker compose. The web node reads the values only when
+    it is recreated: docker compose up -d --no-deps concourse.
 
     Nothing here prints the password or the token. The password reaches fly
-    as `--password`, as in set-pipeline.ps1: fly 8 takes the password grant
-    only with both -u and -p, so it is in fly.exe's argv for the second the
-    login takes.
+    as ONE argument, "--password=<value>": fly parses flags with go-flags,
+    which refuses a separate value that starts with '-' and repeats it in
+    the error on stderr. New-Secret also never returns a value that starts
+    with '-'. fly 8 takes the password grant only with both -u and -p, so the
+    password is in fly.exe's argv for the second the login takes.
 
     Run from a worktree it still finds the stack's .env and bin\fly.exe: both
     are gitignored and live only in the main checkout, which it locates
@@ -52,7 +70,7 @@
     (operator, once) then: docker compose up -d --no-deps concourse
 
 .NOTES
-    ASCII only - see setup.ps1 for why.
+    PowerShell 7 (pwsh). ASCII only - see setup.ps1 for why.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -85,10 +103,14 @@ function New-Secret {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure generator: returns a random string and changes no state. Writing .env is the caller''s job, guarded by ShouldProcess.')]
     param([int]$Bytes = 24)
     $buffer = New-Object byte[] $Bytes
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
     # URL-safe, as setup.ps1's: no comma, which CONCOURSE_ADD_LOCAL_USER
     # splits on, and no colon, which separates the user from the password.
-    [Convert]::ToBase64String($buffer).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+    # Never a leading '-', which a flag parser reads as an option.
+    do {
+        [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
+        $secret = [Convert]::ToBase64String($buffer).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+    } while ($secret.StartsWith('-'))
+    $secret
 }
 
 function Read-EnvValue {
@@ -104,6 +126,18 @@ if (-not (Test-Path $EnvFile)) { throw "$EnvFile is missing: run setup.ps1 first
 
 # -- -Provision: the operator's one-time .env step ---------------------------
 if ($Provision) {
+    # The name goes into CONCOURSE_ADD_LOCAL_USER's USER:PASSWORD list and
+    # into a quoted YAML list in the team config, so only characters that
+    # break neither. Checked before anything is written.
+    $agentName = Read-EnvValue $EnvFile "CONCOURSE_AGENT_USER"
+    if (-not $agentName) { $agentName = $AgentUser }
+    if ($agentName -cnotmatch '^[a-z0-9][a-z0-9_-]*$') {
+        throw "Agent user '$agentName' is not lowercase letters, digits, '-' and '_' starting with a letter or digit. Nothing was written."
+    }
+    $ownerName = Read-EnvValue $EnvFile "CONCOURSE_LOCAL_USER"
+    if ($ownerName -and ($ownerName.ToLowerInvariant() -eq $agentName.ToLowerInvariant())) {
+        throw "Agent user '$agentName' is the owner (CONCOURSE_LOCAL_USER). The agents' login must be a user of its own, or it holds owner. Nothing was written."
+    }
     $envLines = @(Get-Content $EnvFile)
     $add = @()
     if (-not (Read-EnvValue $EnvFile "CONCOURSE_AGENT_USER")) {
@@ -153,8 +187,10 @@ if (-not $Force) {
 }
 
 Write-Host "Logging fly target $Target in to $Concourse as $user (team $Team)..." -ForegroundColor Cyan
+# "--password=..." as one argument: as two, a value starting with '-' is
+# refused by fly's flag parser and printed back in its error (stderr).
 & $fly --target $Target login --concourse-url $Concourse `
-    --username $user --password $password --team-name $Team | Out-Null
+    --username $user "--password=$password" --team-name $Team | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "fly login failed. If the web node predates D-182, recreate it: docker compose up -d --no-deps concourse"
 }
@@ -171,4 +207,4 @@ if ($info.is_admin -or ($roles.Count -ne 1) -or ($roles[0] -ne "pipeline-operato
 }
 
 Write-Host "fly target $Target : $user, pipeline-operator on $Team. Token valid for 24h; re-run to refresh." -ForegroundColor Green
-Write-Host "Trigger and rerun only - agents never pause." -ForegroundColor Yellow
+Write-Host "Trigger, rerun, check and abort your own builds only - agents never pause, pin, unpin, disable a version or clear a cache." -ForegroundColor Yellow

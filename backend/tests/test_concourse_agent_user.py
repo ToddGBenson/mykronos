@@ -115,7 +115,7 @@ def test_the_helper_logs_the_agent_target_in_from_env() -> None:
     script = HELPER.read_text(encoding="utf-8")
     assert '[string]$Target = "mykronos-agent"' in script
     assert re.search(r'Read-EnvValue \$EnvFile "CONCOURSE_AGENT_PASSWORD"', script)
-    assert "--username $user --password $password" in script
+    assert '--username $user "--password=$password"' in script
     # It checks the role Concourse granted rather than trusting the config.
     assert "userinfo --json" in script and '"pipeline-operator"' in script
 
@@ -123,14 +123,78 @@ def test_the_helper_logs_the_agent_target_in_from_env() -> None:
 def test_the_helper_never_prints_the_password() -> None:
     script = HELPER.read_text(encoding="utf-8")
     for n, line in enumerate(script.splitlines(), 1):
-        if re.search(r"Write-(Host|Output|Verbose|Information)", line):
+        if re.search(r"Write-(Host|Output|Verbose|Information|Warning|Error)|\bthrow\b", line):
             assert "$password" not in line, f"line {n} prints the password: {line}"
+
+
+# `--password $x` (or `--password (...)`) as two arguments. fly parses flags
+# with go-flags, which refuses a separate value that starts with '-' and
+# repeats that value in its error on stderr: the password, printed in full.
+_PASSWORD_AS_TWO_ARGS = re.compile(r"--password\s+[$(]")
+
+
+def test_every_fly_login_passes_the_password_as_one_argument() -> None:
+    scripts = sorted(CONCOURSE.glob("*.ps1"))
+    hits = [
+        f"{s.name}:{n}: {line.strip()}"
+        for s in scripts
+        for n, line in enumerate(s.read_text(encoding="utf-8").splitlines(), 1)
+        if _PASSWORD_AS_TWO_ARGS.search(line) and not line.lstrip().startswith("#")
+    ]
+    assert hits == []
+    logins = [s.name for s in scripts if '"--password=$' in s.read_text(encoding="utf-8")]
+    assert {
+        "Connect-AgentFly.ps1",
+        "set-pipeline.ps1",
+        "set-personal-soc-pipeline.ps1",
+        "set-thehub-pipeline.ps1",
+    } <= set(logins)
+
+
+def test_the_two_argument_pattern_catches_what_it_is_for() -> None:
+    assert _PASSWORD_AS_TWO_ARGS.search("--username $user --password $password")
+    assert _PASSWORD_AS_TWO_ARGS.search('--password (Read-EnvValue $e "X") `')
+    assert not _PASSWORD_AS_TWO_ARGS.search('--username $user "--password=$password"')
+
+
+def test_no_generated_secret_starts_with_a_dash() -> None:
+    for script in (HELPER, SETUP):
+        text = script.read_text(encoding="utf-8")
+        body = text.split("function New-Secret", 1)[1].split("\n}", 1)[0]
+        assert "while ($secret.StartsWith('-'))" in body, script.name
+
+
+def test_the_helper_refuses_the_owner_as_the_agent() -> None:
+    """Both at -Provision, before anything is written, and at login. A shared
+    name would put the agents' login in the owner role."""
+    script = HELPER.read_text(encoding="utf-8")
+    provision = script.split("if ($Provision) {", 1)[1].split("Set-Content", 1)[0]
+    assert "ToLowerInvariant() -eq $agentName.ToLowerInvariant()" in provision
+    assert "$ownerName = Read-EnvValue $EnvFile \"CONCOURSE_LOCAL_USER\"" in provision
+    assert "$owner.ToLowerInvariant() -eq $user.ToLowerInvariant()" in script
+
+
+def test_provision_accepts_only_plain_names() -> None:
+    script = HELPER.read_text(encoding="utf-8")
+    provision = script.split("if ($Provision) {", 1)[1].split("Set-Content", 1)[0]
+    assert "-cnotmatch '^[a-z0-9][a-z0-9_-]*$'" in provision
+
+
+def test_the_helper_requires_pwsh() -> None:
+    """RandomNumberGenerator.Fill is missing in 5.1, and 5.1 turns fly's
+    stderr into a terminating error under Stop."""
+    first = HELPER.read_text(encoding="utf-8").splitlines()[0]
+    assert first == "#Requires -Version 7"
 
 
 def test_the_helper_says_agents_never_pause() -> None:
     header = HELPER.read_text(encoding="utf-8").split("#>", 1)[0]
     assert "pipeline-operator" in header
     assert "AGENTS NEVER PAUSE" in header
+    flat = " ".join(header.split())
+    assert "never pause, pin, unpin or disable a resource version" in flat
+    assert "never clear a cache" in flat
+    assert "abort only builds they started" in flat
 
 
 def test_the_helper_is_ascii() -> None:
@@ -143,3 +207,15 @@ def test_the_operator_steps_name_the_values_and_the_recreate() -> None:
     section = text.split("D-182", 1)[1]
     for needle in (AGENT, "CONCOURSE_AGENT_PASSWORD", "docker compose up -d --no-deps concourse"):
         assert needle in section, needle
+    assert "PowerShell 7 (`pwsh`)" in section
+
+
+def test_the_operator_steps_update_the_checkout_before_provisioning() -> None:
+    """-Provision is in the change itself, so it cannot run before the
+    checkout has it; then it runs before any compose call."""
+    section = OPERATOR_TASKS.read_text(encoding="utf-8").split("## 11 ", 1)[1]
+    section = section.split("\n---", 1)[0]
+    update = section.index("Update the checkout")
+    provision = section.index(r".\Connect-AgentFly.ps1 -Provision")
+    recreate = section.index("docker compose up -d --no-deps concourse\n")
+    assert update < provision < recreate

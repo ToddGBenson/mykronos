@@ -693,42 +693,51 @@ Concourse had one local user, the operator, who owns the main team. Every fly
 token lasts 24 hours, so an agent's fly target lapsed daily and only the
 operator could log it back in. `docker-compose.yml` now defines a second local
 user, `CONCOURSE_AGENT_USER`, with the `pipeline-operator` role on main: it
-can trigger and rerun jobs, abort builds, check and pin resources and pause or
-unpause, and it cannot set a pipeline, hijack a container, run `fly execute`
-or change the team. Agents never pause; that is a standing rule, not
-something the role prevents. The operator keeps owner.
+can trigger and rerun jobs, abort and comment on builds, check resources, pin,
+unpin and comment on a pinned version, disable and enable a version, clear
+caches, and pause or unpause; it cannot set a pipeline, hijack a container,
+run `fly execute` or change the team. The standing rule is narrower than the
+role: agents never pause, pin, unpin or disable a resource version, never clear a cache, and abort only their own builds. The role cannot express that split. The operator
+keeps owner.
 
 Both variables are required (`:?`), like the operator's, so **every `docker
-compose` command against this stack fails until `.env` has them.** Do step 1
-before the checkout that runs the stack is moved to a main that contains this
-change; the two lines are harmless to the compose that is running now.
+compose` command against this stack fails from the moment the checkout has
+this change until `.env` has the two values** - including the ones inside
+`vault-init.ps1`, `Add-LinuxWorker.ps1` and `Invoke-RegistryRetention.ps1`.
+Containers that are already running are unaffected. Step 2 closes that window
+straight away, and it never calls compose itself.
 
 ### Steps
 
-In a real PowerShell prompt, in `deploy/concourse/` of the main checkout:
+In PowerShell 7 (`pwsh`), in `deploy/concourse/` of the main checkout. The
+helper refuses to run in Windows PowerShell 5.1.
 
-1. Add the two `.env` values. This appends `CONCOURSE_AGENT_USER=mykronos-agent`
-   and a generated `CONCOURSE_AGENT_PASSWORD`, prints neither value, and leaves
-   either one alone if it is already there:
+1. Update the checkout to a main that has this change. `Connect-AgentFly.ps1`
+   is new in it, so this comes first.
+2. Straight away, add the two `.env` values. This appends
+   `CONCOURSE_AGENT_USER=mykronos-agent` and a generated
+   `CONCOURSE_AGENT_PASSWORD`, prints neither value, leaves either one alone
+   if it is already there, and refuses an agent name equal to
+   `CONCOURSE_LOCAL_USER`:
 
    ```powershell
    .\Connect-AgentFly.ps1 -Provision
    ```
 
-   By hand instead: two lines, `CONCOURSE_AGENT_USER=<a name that is not
-   CONCOURSE_LOCAL_USER>` and `CONCOURSE_AGENT_PASSWORD=<a password with no
-   comma>`. `CONCOURSE_ADD_LOCAL_USER` is a comma-separated list, so a comma
-   splits the password.
-2. Update the checkout to a main that has this change, then recreate the web
-   node so it reads the new users and the team config. Only `concourse` is
-   recreated; the workers and Postgres keep running, and builds in flight
-   reconnect:
+   By hand instead: two lines, `CONCOURSE_AGENT_USER=<lowercase letters,
+   digits, - and _, not CONCOURSE_LOCAL_USER>` and
+   `CONCOURSE_AGENT_PASSWORD=<letters, digits, - and _ only, not starting
+   with ->`. A comma or colon shifts the `USER:PASSWORD` split, `$` and `#`
+   are read by compose, and a leading `-` is read by fly as an option.
+3. Recreate the web node so it reads the new users and the team config. Only
+   `concourse` is recreated; the workers and Postgres keep running, and builds
+   in flight reconnect:
 
    ```powershell
    docker compose up -d --no-deps concourse
    ```
 
-3. Log the agents' target in and confirm the role:
+4. Log the agents' target in and confirm the role:
 
    ```powershell
    .\Connect-AgentFly.ps1

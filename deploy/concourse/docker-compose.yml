@@ -680,9 +680,13 @@ volumes:
 #
 # owner is the operator, as it was under CONCOURSE_MAIN_TEAM_LOCAL_USER.
 # pipeline-operator is the agents' login: trigger, rerun and abort builds,
-# check and pin resources, pause and unpause - but not set-pipeline, hijack,
-# delete, archive, expose or set-team (atc/api/accessor/roles.go, 8.3.3).
-# Agents never pause; that is a standing rule, not something the role stops.
+# check resources, pin, unpin and disable versions, clear caches, pause and
+# unpause - but not set-pipeline, hijack, delete, archive, expose or set-team
+# (atc/api/accessor/roles.go, 8.3.3). Agents never pause, pin, unpin, disable
+# a version or clear a cache, and abort only their own builds; that is a
+# standing rule, not something the role stops.
+#
+# Inline `content:` needs Docker Compose 2.23.1 or later.
 configs:
   concourse-main-team:
     content: |

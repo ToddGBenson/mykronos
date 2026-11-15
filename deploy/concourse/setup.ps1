@@ -38,9 +38,13 @@ function New-Secret {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure generator: returns a random string and changes no state. Writing .env is the caller''s job, guarded by -Rotate.')]
     param([int]$Bytes = 24)
     $buffer = New-Object byte[] $Bytes
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
     # URL-safe: these values travel through compose interpolation and a shell.
-    [Convert]::ToBase64String($buffer).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+    # Never a leading '-': fly's flag parser reads one as an option (D-182).
+    do {
+        [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
+        $secret = [Convert]::ToBase64String($buffer).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+    } while ($secret.StartsWith('-'))
+    $secret
 }
 
 if ((Test-Path $EnvFile) -and -not $Rotate) {
