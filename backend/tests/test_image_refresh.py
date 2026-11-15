@@ -613,6 +613,9 @@ case "$cmd" in
   digest)
     if [ "$1" = "--tarball" ]; then cat "$2"; exit 0; fi
     ref=$2
+    if [ "$LOOKUP_FAILS" = "auth" ]; then
+      echo "GET https://reg.local/v2/x/manifests/y-p20260404: UNAUTHORIZED" >&2; exit 1
+    fi
     if [ -n "$LOOKUP_FAILS" ]; then echo "dial tcp: connection refused" >&2; exit 1; fi
     if [ -f "$REG/$(safe "$ref")" ]; then cat "$REG/$(safe "$ref")"; exit 0; fi
     echo "GET ...: MANIFEST_UNKNOWN: manifest unknown" >&2; exit 1 ;;
@@ -650,7 +653,11 @@ def _bash() -> str | None:
 
 
 def _run_publish(
-    tmp_path: Path, built: dict[str, str], registry: dict[str, str], *, lookup_fails: bool = False
+    tmp_path: Path,
+    built: dict[str, str],
+    registry: dict[str, str],
+    *,
+    lookup_fails: bool | str = False,
 ) -> tuple[int, str, list[str]]:
     """Run publish with `built` (candidate -> digest of its tarball) against a
     registry already holding `registry` (ref -> digest)."""
@@ -680,7 +687,8 @@ def _run_publish(
     script = _publish_script()
     assert "/ko-app/crane" in script
     script = script.replace("/ko-app/crane", f'"{bash}" "{crane.as_posix()}"')
-    env = {**os.environ, "REG": reg.as_posix(), "LOOKUP_FAILS": "1" if lookup_fails else ""}
+    fails = str(lookup_fails) if lookup_fails else ""
+    env = {**os.environ, "REG": reg.as_posix(), "LOOKUP_FAILS": fails}
     r = subprocess.run(
         [bash, "-ec", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300
     )
@@ -734,6 +742,17 @@ def test_an_unanswered_lookup_is_not_proof_of_absence(tmp_path: Path) -> None:
     exactly how a tag would be overwritten."""
     code, out, pushes = _run_publish(
         tmp_path, {"r/a:1-p20261115": DIGEST_A}, {}, lookup_fails=True
+    )
+    assert code != 0
+    assert pushes == []
+    assert "could not look up" in out
+
+
+def test_a_date_containing_404_is_not_a_not_found(tmp_path: Path) -> None:
+    """crane's error line carries the whole ref: a -p20260404 tag must not read as
+    a 404 when the registry answered UNAUTHORIZED."""
+    code, out, pushes = _run_publish(
+        tmp_path, {"r/a:1-p20260404": DIGEST_A}, {}, lookup_fails="auth"
     )
     assert code != 0
     assert pushes == []

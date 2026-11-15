@@ -8160,6 +8160,11 @@ jobs:
                 # tag would be pushed for nobody. The image already at the tag
                 # is the one TheHub published and pins for that date.
                 #
+                # Kaniko builds are not reproducible, so a same-day rerun builds
+                # new bytes for tags that already exist: every tag is found
+                # present with another digest and the task goes red here by
+                # design (nothing this run built is offered).
+                #
                 # The run fails only when the result cannot stand: a lookup or
                 # push went unanswered (the date's image may not exist for the
                 # demo), or every candidate collided, so nothing this run built
@@ -8171,7 +8176,10 @@ jobs:
                 while IFS="$TAB" read -r current candidate context args; do
                   [ -n "$candidate" ] || continue
                   name=$(printf '%s' "$candidate" | sed 's/[^A-Za-z0-9._-]/_/g')
-                  want=$(/ko-app/crane digest --tarball "images/$name.tar" </dev/null)
+                  if ! want=$(/ko-app/crane digest --tarball "images/$name.tar" </dev/null); then
+                    echo "::error::could not read the digest of the built tarball for $candidate"
+                    exit 1
+                  fi
                   if have=$(/ko-app/crane digest --insecure "$candidate" 2>lookup.err </dev/null); then
                     if [ "$have" = "$want" ]; then
                       echo "present, unchanged: $candidate@$have"
@@ -8182,7 +8190,10 @@ jobs:
                     fi
                     continue
                   fi
-                  if ! grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|404' lookup.err; then
+                  # crane's error lines carry the whole ref, so a bare 404 would
+                  # match a tag such as -p20260404 on any failure: match the
+                  # status text, never the digits.
+                  if ! grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|status code 404' lookup.err; then
                     echo "::error::could not look up $candidate; not pushed: $(head -c 300 lookup.err)"
                     unverified=$((unverified + 1))
                     continue
