@@ -597,3 +597,144 @@ def test_every_rebuild_scan_reports_every_severity_decide_reads(lane: Path) -> N
     for severities in scans:
         missing = set(ir.GATED + ir.SECOND_TIER) - set(severities.split(","))
         assert not missing, f"a rebuild scan omits {sorted(missing)}"
+
+
+# -- TheHub #61698: publish never overwrites an existing tag ----------------------
+#
+# Build 32 (2026-11-13) re-pushed thehub-nginx:...-p20261113, a tag TheHub's
+# docker-compose.yml pins by digest, and the next deploy failed. These run the
+# real `publish` script against a fake crane whose "registry" is a directory.
+
+_FAKE_CRANE = r"""#!/usr/bin/env bash
+set -e
+safe() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'; }
+cmd=$1; shift
+case "$cmd" in
+  digest)
+    if [ "$1" = "--tarball" ]; then cat "$2"; exit 0; fi
+    ref=$2
+    if [ -n "$LOOKUP_FAILS" ]; then echo "dial tcp: connection refused" >&2; exit 1; fi
+    if [ -f "$REG/$(safe "$ref")" ]; then cat "$REG/$(safe "$ref")"; exit 0; fi
+    echo "GET ...: MANIFEST_UNKNOWN: manifest unknown" >&2; exit 1 ;;
+  push)
+    tar=$2; ref=$3
+    echo "$ref" >> "$REG/../pushes.log"
+    cp "$tar" "$REG/$(safe "$ref")" ;;
+esac
+"""
+
+
+def _publish_script() -> str:
+    import yaml
+
+    config = yaml.safe_load(THEHUB_PIPELINE.read_text(encoding="utf-8"))
+    job = next(j for j in config["jobs"] if j["name"] == "image-refresh")
+    steps = [s for step in job["plan"] for s in [step, *(step.get("do") or [])]]
+    publish = next(s for s in steps if s.get("task") == "publish")
+    return publish["config"]["run"]["args"][-1]
+
+
+def _bash() -> str | None:
+    import os
+    import shutil
+
+    found = shutil.which("bash")
+    if found and os.name == "nt" and any(s in found.lower() for s in ("system32", "windowsapps")):
+        found = None
+    if found is None and os.name == "nt":
+        program_files = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
+        git_bash = program_files / "Git" / "bin" / "bash.exe"
+        if git_bash.exists():
+            return str(git_bash)
+    return found
+
+
+def _run_publish(
+    tmp_path: Path, built: dict[str, str], registry: dict[str, str], *, lookup_fails: bool = False
+) -> tuple[int, str, list[str]]:
+    """Run publish with `built` (candidate -> digest of its tarball) against a
+    registry already holding `registry` (ref -> digest)."""
+    import os
+    import subprocess
+
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is required to execute the publish task")
+
+    def safe(ref: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]", "_", ref)
+
+    (tmp_path / "verdict").mkdir()
+    (tmp_path / "images").mkdir()
+    reg = tmp_path / "registry"
+    reg.mkdir()
+    (tmp_path / "verdict" / "verdict.json").write_text('{"verdict": "improved"}', encoding="utf-8")
+    plan = "".join(f"r/cur:{i}\t{c}\tctx\t\n" for i, c in enumerate(built))
+    (tmp_path / "verdict" / "plan.tsv").write_bytes(plan.encode())
+    for candidate, digest in built.items():
+        (tmp_path / "images" / f"{safe(candidate)}.tar").write_bytes(digest.encode())
+    for ref, digest in registry.items():
+        (reg / safe(ref)).write_bytes(digest.encode())
+    crane = tmp_path / "crane"
+    crane.write_bytes(_FAKE_CRANE.encode())
+    script = _publish_script()
+    assert "/ko-app/crane" in script
+    script = script.replace("/ko-app/crane", f'"{bash}" "{crane.as_posix()}"')
+    env = {**os.environ, "REG": reg.as_posix(), "LOOKUP_FAILS": "1" if lookup_fails else ""}
+    r = subprocess.run(
+        [bash, "-ec", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300
+    )
+    log = tmp_path / "pushes.log"
+    pushes = log.read_text(encoding="utf-8").split() if log.exists() else []
+    return r.returncode, r.stdout + r.stderr, pushes
+
+
+def test_publish_pushes_a_tag_that_does_not_exist(tmp_path: Path) -> None:
+    code, out, pushes = _run_publish(tmp_path, {"r/a:1-p20261115": DIGEST_A}, {})
+    assert code == 0, out
+    assert pushes == ["r/a:1-p20261115"]
+    assert "pushed=1" in out
+
+
+def test_publish_never_overwrites_a_tag_with_other_bytes(tmp_path: Path) -> None:
+    """The #61698 regression: an existing tag with a different digest is
+    skipped and reported, the other candidates still publish, the run stays
+    green so the rest of the job (and the demo) proceeds."""
+    built = {"r/nginx:1-p20261115": DIGEST_B, "r/redis:1-p20261115": DIGEST_A}
+    code, out, pushes = _run_publish(tmp_path, built, {"r/nginx:1-p20261115": DIGEST_A})
+    assert code == 0, out
+    assert pushes == ["r/redis:1-p20261115"]
+    assert "not overwritten (tags are immutable)" in out
+    assert "::warning::" in out
+    assert (tmp_path / "registry" / "r_nginx_1-p20261115").read_text(encoding="utf-8") == DIGEST_A
+    assert "collided-not-overwritten=1" in out
+
+
+def test_publish_leaves_an_identical_tag_alone(tmp_path: Path) -> None:
+    code, out, pushes = _run_publish(
+        tmp_path, {"r/a:1-p20261115": DIGEST_A}, {"r/a:1-p20261115": DIGEST_A}
+    )
+    assert code == 0, out
+    assert pushes == []
+    assert "present, unchanged" in out
+
+
+def test_publish_fails_when_every_candidate_collides(tmp_path: Path) -> None:
+    """Nothing this run built and judged is offered, so the job goes red
+    rather than redeploying the demo on images it never scanned."""
+    built = {"r/a:1-p20261115": DIGEST_B}
+    code, out, pushes = _run_publish(tmp_path, built, {"r/a:1-p20261115": DIGEST_A})
+    assert code != 0
+    assert pushes == []
+    assert "nothing from this run was published" in out
+
+
+def test_an_unanswered_lookup_is_not_proof_of_absence(tmp_path: Path) -> None:
+    """A registry that cannot be asked must not be pushed to blind: that is
+    exactly how a tag would be overwritten."""
+    code, out, pushes = _run_publish(
+        tmp_path, {"r/a:1-p20261115": DIGEST_A}, {}, lookup_fails=True
+    )
+    assert code != 0
+    assert pushes == []
+    assert "could not look up" in out
