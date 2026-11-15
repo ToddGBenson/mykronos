@@ -390,6 +390,8 @@ function Get-RestoreTarget {
         return (& $no "the deploy ledger could not be read: $($_.Exception.Message)")
     }
     $last = $null
+    $lastIndex = -1
+    $entries = @()
     foreach ($line in $lines) {
         if (-not "$line".Trim()) { continue }
         try {
@@ -397,11 +399,24 @@ function Get-RestoreTarget {
         } catch {
             return (& $no "a deploy ledger line is not JSON, so the ledger was edited or damaged")
         }
+        $entries += , $entry
         if ($entry -and $entry.PSObject.Properties.Name -contains "event" -and $entry.event -eq "deploying") {
             $last = $entry
+            $lastIndex = $entries.Count - 1
         }
     }
     if (-not $last) { return (& $no "the ledger records no deploy, so there is no prior sha to restore") }
+    # A replayed copy of a genuine older line carries that line's nonce, which
+    # every deploy draws fresh: the latest deploying line's nonce on any
+    # earlier line means the line is a replay, whatever the running stamp says.
+    $lastNonce = [string]$last.nonce
+    for ($i = 0; $i -lt $lastIndex; $i++) {
+        $earlier = $entries[$i]
+        if ($earlier -and $earlier.PSObject.Properties.Name -contains "nonce" -and $lastNonce -and
+            ([string]$earlier.nonce) -ceq $lastNonce) {
+            return (& $no "the most recent deploy line repeats an earlier line's nonce, so it is a replayed copy")
+        }
+    }
     $previous = [string]$last.previous
     if ($previous -cnotmatch '^[0-9a-f]{40}$') {
         return (& $no "the most recent deploy ($([string]$last.tag)) recorded no running sha")

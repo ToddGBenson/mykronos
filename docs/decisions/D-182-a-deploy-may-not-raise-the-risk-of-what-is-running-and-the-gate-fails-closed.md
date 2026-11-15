@@ -217,7 +217,9 @@ whenever a CVE is published.
    restore is also bound to what runs: when the running stamp can be read it
    must be the most recent `deploying` line's tag (after a failed deploy the
    unhealthy container still reports it), so a replayed older line or a
-   truncated ledger cannot re-target it at an older sha. After a restore the
+   truncated ledger cannot re-target it at an older sha; and a latest
+   `deploying` line whose nonce appears on any earlier line is a byte-copy
+   replay and refuses, whatever the stamp says. After a restore the
    running stamp must equal the full recorded sha, not merely the tag pulled,
    or the run fails. A deploy on a host with no token says it cannot be
    restored.

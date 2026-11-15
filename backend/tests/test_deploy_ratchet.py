@@ -1148,6 +1148,24 @@ class TestOnlyACompletedScanSaysAFindingIsGone:
         assert INTRODUCED_BLOCKING in _codes_of(body)
         assert body["introduced"] == {"high": 1}
 
+    def test_a_partially_failed_rescan_does_not_fix_a_high(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", [])
+        _push_scan(client, run_compaction, "run-c1", C1, "2026-11-14T03:00:00",
+                   [_sast("H1", "high")])
+        _push_scan(client, run_compaction, "run-c", C, "2026-11-14T04:00:00",
+                   [_sast("H1", "high")])
+        _decide(client, oracle_auth, C)
+        _push_scan(client, run_compaction, "run-c-partial", C, "2026-11-14T05:00:00", [],
+                   status="partial_failure")
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert INTRODUCED_BLOCKING in _codes_of(body)
+        assert body["introduced"] == {"high": 1}
+
     def test_a_failed_rescan_earns_no_fix_credit_note(
         self, client, run_compaction, oracle_auth, viewer_auth
     ) -> None:

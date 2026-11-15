@@ -16,6 +16,8 @@ answers in order and records every URL it was asked.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import shutil
 import subprocess
@@ -68,7 +70,7 @@ def deploy(
     tmp_path: Path, answers: list[Any], *extra: str, wait_minutes: int = 0,
     running: str | None = RUNNING, env: str = "MYKRONOS_VIEWER_TOKEN=t\n",
     ledger_unwritable: bool = False, tag: str = TAG, down: bool = False,
-    with_deploying: bool = False,
+    with_deploying: bool = False, start: bool = False, stamps: list[str] | None = None,
 ) -> tuple[int, str, list[dict], list[str]]:
     """Run deploy.ps1 -NoStart; ratchet `answers` play back in order
     ("THROW" = timeout). Returns (exit, output, ledger, ratchet URLs asked).
@@ -76,7 +78,10 @@ def deploy(
     makes every request fail, as a stopped backend does. The tree (and so
     the ledger) is kept between calls with the same `tmp_path`. The
     `deploying` lines every deploy writes before its pull are left out of
-    the returned ledger unless `with_deploying`."""
+    the returned ledger unless `with_deploying`. `start` runs past the pull
+    (no -NoStart): compose and the health wait are faked healthy, and
+    `stamps` are the running build stamps `docker inspect` reports, in order
+    (before the deploy, then after it)."""
     tree = tmp_path / "tree"
     (tree / "deploy" / "mykronos").mkdir(parents=True, exist_ok=True)
     if ledger_unwritable:
@@ -92,6 +97,8 @@ def deploy(
     args = " ".join(f"'{a}'" if " " in a else a for a in extra)
     stamp = f"MYKRONOS_BUILD_SHA={running}" if running else ""
     down_ps = "true" if down else "false"
+    stamp_list = json.dumps([f"MYKRONOS_BUILD_SHA={s}" for s in (stamps or [])])
+    no_start = "" if start else "-NoStart"
     program = f"""
 $env:MYKRONOS_DEPLOY_LOCK_DIR = '{tmp_path / "deploy.lock"}'
 $global:Answers = @(Get-Content -Raw '{fixture}' | ConvertFrom-Json)
@@ -115,14 +122,26 @@ function Invoke-RestMethod {{
   }}
   return $a
 }}
+$global:Stamps = @('{stamp_list}' | ConvertFrom-Json)
+$global:StampAt = 0
 function docker {{
   $global:LASTEXITCODE = 0
-  if ($args -contains 'inspect') {{ '{stamp}' }}
+  $joined = $args -join ' '
+  if ($joined -like '*Health.Status*') {{ return 'healthy' }}
+  if ($joined -like '*State.Status*') {{ return 'running' }}
+  if ($args -contains 'inspect') {{
+    if ($global:Stamps.Count -gt 0) {{
+      $s = $global:Stamps[[Math]::Min($global:StampAt, $global:Stamps.Count - 1)]
+      $global:StampAt++
+      return $s
+    }}
+    '{stamp}'
+  }}
 }}
 function git {{ $global:LASTEXITCODE = 1 }}
 function Start-Sleep {{ }}
 try {{
-  & '{tree / "deploy" / "mykronos" / "deploy.ps1"}' -Tag {tag} -NoStart `
+  & '{tree / "deploy" / "mykronos" / "deploy.ps1"}' -Tag {tag} {no_start} `
     -GateWaitMinutes {wait_minutes} {args} *>&1 | ForEach-Object {{ "$_" }}
   exit 0
 }} catch {{
@@ -562,8 +581,9 @@ class TestTheRestoreIsBoundToWhatRuns:
 
     def test_a_replayed_older_deploy_line_cannot_re_target_it(self, tmp_path: Path) -> None:
         """Deploy 1 replaced RUNNING; deploy 2 (def5678) replaced deploy 1's
-        sha. Copying deploy 1's genuine line to the end must not make RUNNING
-        restorable while deploy 2's build runs."""
+        sha. Deploy 1's line appended again, even re-signed with a fresh
+        nonce by someone holding the token (so the nonce check cannot see
+        it), must not make RUNNING restorable while deploy 2's build runs."""
         code, output, _, _ = deploy(tmp_path, [ALLOW])
         assert code == 0, output
         path = _ledger_path(tmp_path)
@@ -572,8 +592,14 @@ class TestTheRestoreIsBoundToWhatRuns:
         second_tag = "def5678"
         code, output, _, _ = deploy(tmp_path, [ALLOW], tag=second_tag, running=FAILED)
         assert code == 0, output
+        replay = json.loads(first)
+        replay["nonce"] = "1" * 32
+        replay["mac"] = hmac.new(
+            b"t", f"deploying|{replay['tag']}|{replay['previous']}|{replay['nonce']}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
         with path.open("a", encoding="utf-8") as f:
-            f.write(first + "\n")
+            f.write(json.dumps(replay) + "\n")
 
         code, output, _, _ = deploy(
             tmp_path, [], "-Restore", tag=RUNNING, running=second_tag + "0" * 33, down=True
@@ -603,3 +629,56 @@ class TestTheRestoreIsBoundToWhatRuns:
         assert "cannot be restored with -Restore" in output
         deploying = [e for e in ledger if e["event"] == "deploying"]
         assert deploying and deploying[0]["mac"] is None
+
+
+class TestTheRestoreIsConfirmedInFull:
+    """Re-review of d7f34eff: the post-deploy check that a restore runs the
+    full recorded sha, and the nonce replay check."""
+
+    def _failed_deploy(self, tmp_path: Path) -> None:
+        code, output, _, _ = deploy(tmp_path, [ALLOW])
+        assert code == 0, output
+
+    def test_a_restore_running_the_full_recorded_sha_is_confirmed(self, tmp_path: Path) -> None:
+        self._failed_deploy(tmp_path)
+
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING[:12], down=True, start=True,
+            stamps=[FAILED, RUNNING],
+        )
+
+        assert code == 0, output
+        assert "Confirmed: the backend is running" in output
+        assert "RESTORE MISMATCH" not in output
+
+    def test_a_restore_running_another_sha_with_the_same_prefix_fails(
+        self, tmp_path: Path
+    ) -> None:
+        self._failed_deploy(tmp_path)
+        collision = RUNNING[:7] + "f" * 33
+
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING[:7], down=True, start=True,
+            stamps=[FAILED, collision],
+        )
+
+        assert code == 3, output
+        assert "RESTORE MISMATCH" in output
+        assert "Confirmed: the backend is running" not in output
+
+    def test_a_replayed_copy_of_the_latest_line_is_refused(self, tmp_path: Path) -> None:
+        """A byte copy repeats the nonce; the stamp check alone passes it."""
+        self._failed_deploy(tmp_path)
+        path = _ledger_path(tmp_path)
+        line = next(x for x in path.read_text(encoding="utf-8").splitlines()
+                    if json.loads(x)["event"] == "deploying")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING, running=FAILED, down=True
+        )
+
+        assert code == 3, output
+        assert "DEPLOY-PRE-MOVE-REFUSAL kind=restore_refused" in output
+        assert "replayed copy" in output
