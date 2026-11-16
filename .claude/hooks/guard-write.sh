@@ -26,7 +26,7 @@ esac
   echo "BLOCKED by .claude/hooks/guard-write.sh — internal error: it could not load _guard-common.sh, so it cannot judge the call. Retry the call." >&2
   exit 2
 }
-payload="$(cat)"
+guard_read_payload
 
 run_guard write
 guard_judge_or_fall_back $?

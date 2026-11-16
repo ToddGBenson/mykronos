@@ -78,6 +78,10 @@ Any other outcome is a non-blocking error and the call runs:
     and 2, or an allow after a recorded fault, into a block (TheHub #61831). A hook
     killed outright (SIGKILL) runs no trap, and Claude Code then runs the call.
 
+Failing closed has a cost: a broken Python, a missing temp directory or a full disk
+blocks every guarded call for every agent on the PC. LOCKOUT RECOVERY in
+_guard-common.sh has the diagnosis, the measured triggers and the fixes.
+
 The protected checkouts are MYKRONOS_PROTECTED_CHECKOUTS (separated by ';'), or by
 default <user profile>/Documents/Projects/TheHub-main, the profile read from
 USERPROFILE, then HOME.

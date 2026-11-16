@@ -42,10 +42,46 @@
 #    pwsh with it); then PATH becomes /usr/bin:/bin, so a tr or grep planted earlier
 #    on PATH (in ~/bin, say) cannot answer for the real one.
 #
+# 5. An empty payload blocks. guard_read_payload blocks when the read fails or reads
+#    nothing but whitespace. Claude Code always sends a JSON object, so an empty
+#    payload means the read went wrong (a capture emptied by a failed fork, say),
+#    and estate_guard.py would read it as {} and allow.
+#
 # MYKRONOS_HOOK_FAULT_INJECT (tests only): a space-separated list of helper names that
 # the wrappers treat as failed (exit 2) without running them. It can only make a
 # helper fail, so the worst it can do is block a call. With PATH pinned it is the only
 # way a test can make a helper fail.
+#
+# LOCKOUT RECOVERY. Failing closed means a broken host blocks every Bash, PowerShell,
+# Monitor, Write and Edit call for every agent on this PC. Read, Glob and Grep are
+# not hooked, so a locked-out agent can still read files, but it cannot run anything.
+# The recovery is a human's.
+#
+#   Diagnose: run the hook by hand from PowerShell, with Git Bash by path (PowerShell's
+#   `bash` is WSL), and read stderr. rc=0 means the hook is healthy.
+#     $payload = '{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"C:/x"}'
+#     $hook = "$env:USERPROFILE\Documents\Projects\mykronos\.claude\hooks\guard-bash.sh"
+#     $payload | & 'C:\Program Files\Git\usr\bin\bash.exe' $hook; "rc=$LASTEXITCODE"
+#
+#   Measured triggers:
+#     * The python3 or python found first is the App Installer alias stub (the Store
+#       Python was removed and the aliases are still on). It starts and exits 9009,
+#       which bash sees as 49.
+#     * A venv python whose base interpreter is gone (exit 103).
+#     * No temp directory: TEMP/TMP (TMPDIR under bash) unset or pointing nowhere, or
+#       a full disk. mktemp cannot create the fault file ("cannot create its fault
+#       file").
+#     * A malformed payload: empty, not JSON, a UTF-8 BOM, or not an object. Claude
+#       Code does not send these, so the caller is something else.
+#
+#   Fix: set MYKRONOS_HOOK_PYTHON to the absolute path of a working interpreter (the
+#   backend venv's python.exe, say) as a user environment variable, then restart the
+#   session. Or repair or reinstall Python. Check that %TEMP% exists and the disk has
+#   free space.
+#
+#   Last resort, for a human only: set "disableAllHooks": true in the session's
+#   .claude/settings.local.json, or revert the hook from a terminal. Undo it once the
+#   host is fixed, because with hooks off nothing guards the live checkout.
 
 guard_here="${BASH_SOURCE[0]}"
 case "$guard_here" in
@@ -180,6 +216,19 @@ guard_exit() { # builtins only: a broken helper must not be able to hide its own
     exit 2
   fi
   exit "$rc"
+}
+
+# guard_read_payload: reads stdin into $payload. It blocks when the read fails or the
+# payload has no text in it (point 5 above). The test is a builtin.
+guard_read_payload() {
+  payload="$(cat)" && [[ "$payload" =~ [^[:space:]] ]] && return 0
+  {
+    echo "BLOCKED by .claude/hooks/$guard_hook — internal error: it read an empty hook payload, so it has nothing to judge."
+    echo ""
+    echo "This is the guard failing closed (TheHub #61831), not a rule. Claude Code always sends a"
+    echo "payload. If this keeps happening, see LOCKOUT RECOVERY in .claude/hooks/_guard-common.sh."
+  } >&2
+  exit 2
 }
 
 # run_guard <bash|write|ps1>: the payload is in $payload; returns the guard's exit code.

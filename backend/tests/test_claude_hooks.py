@@ -1303,6 +1303,27 @@ def test_a_payload_that_could_not_be_read_blocks_even_a_harmless_call(
     assert_blocked(guard_write(estate, "Write", path, str(estate.mykronos), env=env), path)
 
 
+@pytest.mark.parametrize("python", ["python", "no-python"])
+@pytest.mark.parametrize("stdin", ["", "\n", " \r\n\t"], ids=["empty", "newline", "whitespace"])
+@pytest.mark.parametrize("hook", ["guard-bash.sh", "guard-write.sh"])
+def test_an_empty_payload_blocks(estate: Estate, hook: str, stdin: str, python: str) -> None:
+    # Claude Code always sends a JSON object, so a payload with no text in it means the
+    # read failed (a capture emptied without cat failing visibly), not a harmless call.
+    env = estate.env if python == "python" else _no_python(estate.env, estate)
+    assert BASH is not None
+    r = subprocess.run(
+        [BASH, str(HOOKS / hook)],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=60,
+    )
+    assert_blocked(r, f"{hook} with stdin {stdin!r}")
+    assert "internal error" in r.stderr, r.stderr
+
+
 def test_with_no_fault_the_rules_decide(estate: Estate, tmp_path: Path) -> None:
     # The wrappers must not turn grep's "no match" (1) into a fault.
     for env in (estate.env, _no_python(estate.env, estate)):
