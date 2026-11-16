@@ -9,9 +9,9 @@ hold those checks:
 * every remote task sits in a timed `try:` and writes `ran/rc` from an EXIT
   trap, and `remote-result` runs next, on this host;
 * `remote-result` takes this host's HEAD as the commit, refuses a result
-  naming another, and refuses a SARIF that is not a run of the expected tool
-  or holds no results: an empty upload counts toward absence-closing every
-  open finding of that tool;
+  naming another, and refuses a SARIF that is not a well-formed run of the
+  expected tool. Zero results is accepted (re-review of #1178): a clean tree
+  is an honest result, and refusing it stopped no forgery;
 * every upload names this host's commit, never the file the remote wrote.
 
 The script is executed here, against fixtures, not just read.
@@ -188,7 +188,6 @@ def test_a_good_result_is_checked_with_this_hosts_commit(tmp_path: Path) -> None
         {"rc": "zero"},
         {"commit": "f" * 40},  # another commit
         {"commit": None},
-        {"sarif": _sarif("Semgrep OSS", 0)},  # empty: would absence-close
         {"sarif": {"version": "2.1.0", "runs": []}},
         {"sarif": _sarif("osv-scanner", 2)},  # another tool
         {"sarif": "not json"},
@@ -207,6 +206,17 @@ def test_a_missing_or_forged_result_is_refused_and_errors_the_build(
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert not (checked / "ok").exists(), proc.stdout
     assert "NOT A VERDICT, NOT UPLOADED" in proc.stdout
+
+
+@pytest.mark.parametrize("tool", ["Semgrep OSS", "semgrep"])
+def test_a_valid_zero_result_sarif_is_accepted(tmp_path: Path, tool: str) -> None:
+    """A clean tree. Refusing it would error the lane, and oracle-gate behind
+    it, for good once the tool reached zero findings, and could not stop a
+    forgery: one dummy result passes any count check."""
+    proc, checked = _run(tmp_path, sarif=_sarif(tool, 0))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (checked / "ok").read_text().strip() == HOST
+    assert "0 result(s)" in proc.stdout
 
 
 def test_a_remote_task_that_ran_and_failed_keeps_its_verdict(tmp_path: Path) -> None:

@@ -384,9 +384,12 @@ anchors:
   #                  only when the process started and ended), takes this
   #                  host's HEAD as the commit, refuses a result naming any
   #                  other commit, and for a SARIF refuses one that is not a
-  #                  run of the expected tool or that holds no results: an
-  #                  empty upload would count toward absence-closing every
-  #                  open finding of that tool (REQUIRED_ABSENCES, two). It
+  #                  well-formed run of the expected tool. Zero results is
+  #                  accepted: a clean tree is an honest result, and refusing
+  #                  it could not stop a forgery (one dummy result passes),
+  #                  while it would error the lane, and oracle-gate behind
+  #                  it, for good once a tool reached zero (re-review of
+  #                  #1178). Remote-origin absence closing is a follow-up. It
   #                  writes `checked/ok` only when the result may be sent; the
   #                  `load_var` after it errors the build otherwise. A task
   #                  that ran and failed exits with its own code: FAILED, a
@@ -514,10 +517,6 @@ anchors:
                     if not all(isinstance(r, dict) for r in results):
                         refuse(f"{sarif} has a result that is not an object")
                     count += len(results)
-                if count == 0:
-                    refuse(f"{sarif} holds no results. A remote run reporting nothing is not "
-                           f"uploaded: it would count toward absence-closing every open {tool} "
-                           "finding. If the tree is truly clean, run this scan on the host")
                 print(f"{sarif}: {len(runs)} run(s) of {tool}, {count} result(s).")
 
             # Reachability (sast only) is tolerated, as before: an invalid
@@ -862,9 +861,9 @@ jobs:
     # (operator decision 2026-11-16, ~03:20Z), with host-side checks
     # (`linux_probe` and `remote_result` in `anchors:`): every upload names
     # this host's HEAD as its commit and refuses a result that names another,
-    # a SARIF must be a run of the expected tool, and an EMPTY one is never
-    # uploaded, so a forged or broken remote run cannot absence-close
-    # findings. A remote result that is missing or refused ERRORS the build;
+    # and a SARIF must be a well-formed run of the expected tool, so a broken
+    # or mislabelled remote run is never uploaded. A remote result that is
+    # missing or refused ERRORS the build;
     # a remote task that ran and failed FAILS it, as before.
     #
     # A tagged step never falls back to this host, so each job first asks for
