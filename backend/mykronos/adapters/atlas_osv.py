@@ -189,8 +189,17 @@ def _basis(
         # false statement.
         return None
 
+    # The path comes from the scanner's output, which since the review of
+    # #1178 may be made on another host: never read outside the workspace.
     try:
-        text = (workspace / file_path).read_text(encoding="utf-8", errors="replace")
+        root = workspace.resolve()
+        target = (workspace / file_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not target.is_relative_to(root):
+        return None
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
 

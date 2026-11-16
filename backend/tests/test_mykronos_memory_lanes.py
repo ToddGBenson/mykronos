@@ -334,7 +334,14 @@ class TestTheJobErrorsInsteadOfFailing:
         i = holder(plan, task)
         outputs = {o["name"] for o in find(plan, task)["config"].get("outputs") or []}
         assert "judged" in outputs, f"{job}/{task} has no `judged` output for the verdict"
-        after = plan[i + 1] if i + 1 < len(plan) else {}
+        # A remote suite's host-side check (`remote-result` and its load_var,
+        # review of #1178) may come first: it errors the build as well.
+        j = i + 1
+        while j < len(plan) and (
+            plan[j].get("task") == "remote-result" or plan[j].get("file") == "checked/ok"
+        ):
+            j += 1
+        after = plan[j] if j < len(plan) else {}
         assert after.get("load_var") == ERRORED_STEP and after.get("file") == "judged/verdict", (
             f"{job}: the step after {task} must be `load_var: {ERRORED_STEP}` reading "
             "judged/verdict, so a run with no verdict ERRORS instead of failing"

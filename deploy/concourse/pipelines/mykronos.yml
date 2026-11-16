@@ -365,6 +365,197 @@ anchors:
     # its uploads read `$SCANNED_BRANCH` for exactly this reason.
     SCANNED_BRANCH: ((scanned-branch))
 
+  # -- The remote `linux` workers: what this host takes back -------------
+  #
+  # [review of mykronos #1177/#1178] The laptops are inside the CI trust
+  # boundary for these verdicts (operator decision 2026-11-16, ~03:20Z), WITH
+  # host-side checks. These anchors are thehub.yml's `linux_probe` and
+  # `linux_absent` ported to this pipeline's way of saying ERRORED: a
+  # `load_var` of a file that is not there, as `unit` does for a memory kill.
+  #
+  #   linux_probe    a no-op that only asks for a remote worker, in a `try:`
+  #                  with a 5m wrapper, then `linux_probed`, whose load_var
+  #                  errors the build when no worker took it. An offline
+  #                  laptop costs a tick 5m and reads as ERRORED, never as a
+  #                  red scan. Its output is `probed`, not `ran`: the probe's
+  #                  would outlive a remote task that timed out.
+  #   remote_result  on this host, after the remote task's own `try:`. Reads
+  #                  `ran/rc` (written from the task's EXIT trap, so it exists
+  #                  only when the process started and ended), takes this
+  #                  host's HEAD as the commit, refuses a result naming any
+  #                  other commit, and for a SARIF refuses one that is not a
+  #                  run of the expected tool or that holds no results: an
+  #                  empty upload would count toward absence-closing every
+  #                  open finding of that tool (REQUIRED_ABSENCES, two). It
+  #                  writes `checked/ok` only when the result may be sent; the
+  #                  `load_var` after it errors the build otherwise. A task
+  #                  that ran and failed exits with its own code: FAILED, a
+  #                  verdict, as before.
+  #
+  # The `try:` is what lets a timed-out remote task reach `remote_result`: a
+  # wrapper timeout on its own fails the build, which red_main reads as red.
+  linux_probe: &linux_probe
+    try:
+      do:
+        - task: linux-worker-probe
+          tags: [linux]
+          image: python
+          config:
+            platform: linux
+            outputs: [{ name: probed }]
+            run:
+              path: sh
+              args: [-c, "echo a linux worker took this build; echo 0 > probed/rc"]
+      timeout: 5m
+  linux_probed: &linux_probed
+    load_var: no-linux-worker-took-this-build-re-run-when-one-is-up
+    file: probed/rc
+
+  remote_result: &remote_result
+    task: remote-result
+    timeout: 5m
+    image: python
+    config:
+      platform: linux
+      inputs:
+        - { name: source }
+        - { name: ran, optional: true }
+        - { name: result, optional: true }
+        - { name: reach, optional: true }
+      outputs: [{ name: checked }]
+      run:
+        path: python
+        args:
+          - -I
+          - -c
+          - |
+            import json, os, re, sys
+
+            step = os.environ.get("LINUX_STEP", "the remote step")
+            HEX40 = re.compile(r"[0-9a-f]{40}")
+
+
+            def refuse(why):
+                print(f"::error::NOT A VERDICT, NOT UPLOADED: {step}: {why}.")
+                print("          The next step errors the build. Re-run once fly workers")
+                print("          lists linux-1 or linux-2 as running.")
+                sys.exit(0)
+
+
+            def head_sha(repo):
+                """This host's checkout's HEAD, without git: 40 hex or ''."""
+                try:
+                    head = open(os.path.join(repo, ".git", "HEAD"), encoding="ascii").read(200).strip()
+                except (OSError, UnicodeDecodeError):
+                    return ""
+                if head.startswith("ref: "):
+                    ref = head[5:].strip()
+                    try:
+                        head = open(os.path.join(repo, ".git", ref), encoding="ascii").read(200).strip()
+                    except (OSError, UnicodeDecodeError):
+                        head = ""
+                        try:
+                            for line in open(os.path.join(repo, ".git", "packed-refs"), encoding="ascii"):
+                                parts = line.split()
+                                if len(parts) == 2 and parts[1] == ref:
+                                    head = parts[0]
+                        except (OSError, UnicodeDecodeError):
+                            pass
+                return head if HEX40.fullmatch(head) else ""
+
+
+            def read(path, limit=200):
+                try:
+                    with open(path, encoding="ascii") as fh:
+                        return fh.read(limit).strip()
+                except (OSError, UnicodeDecodeError):
+                    return None
+
+
+            host = head_sha("source")
+            if not host:
+                refuse("this host's checkout has no 40-hex HEAD")
+            rc = read("ran/rc", 8)
+            if rc is None:
+                refuse("no linux worker finished it within its wrapping timeout (the "
+                       "remote host was off, asleep or unreachable, or the step was interrupted)")
+            if not re.fullmatch(r"\d{1,3}", rc):
+                refuse(f"ran/rc is {rc[:8]!r}, not an exit code")
+            if int(rc) != 0:
+                print(f"{step} ran on a linux worker and exited {rc}: its own verdict stands.")
+                sys.exit(int(rc))
+
+            short = bool(os.environ.get("SHORT_COMMIT"))
+            got = read(os.path.join("result", os.environ["COMMIT_FILE"]), 64)
+            want = host[:12] if short else host
+            if got != want:
+                refuse(f"it reports commit {got!r}; this host exported {want}")
+
+            sarif = os.environ.get("SARIF_FILE")
+            if sarif:
+                tool = os.environ["EXPECT_TOOL"].lower()
+                try:
+                    with open(os.path.join("result", sarif), encoding="utf-8") as fh:
+                        doc = json.load(fh)
+                except (OSError, ValueError) as exc:
+                    refuse(f"{sarif} is not readable JSON ({exc.__class__.__name__})")
+                runs = doc.get("runs") if isinstance(doc, dict) else None
+                if not isinstance(runs, list) or not runs or doc.get("version") != "2.1.0":
+                    refuse(f"{sarif} is not a SARIF 2.1.0 log with at least one run")
+                count = 0
+                for run in runs:
+                    run = run if isinstance(run, dict) else {}
+                    tool_obj = run.get("tool") if isinstance(run.get("tool"), dict) else {}
+                    driver = tool_obj.get("driver") if isinstance(tool_obj.get("driver"), dict) else {}
+                    name = str(driver.get("name", ""))
+                    results = run.get("results")
+                    if tool not in name.lower() or not isinstance(results, list):
+                        refuse(f"{sarif} has a run of {name[:40]!r}, not {tool}, or no results list")
+                    if not all(isinstance(r, dict) for r in results):
+                        refuse(f"{sarif} has a result that is not an object")
+                    count += len(results)
+                if count == 0:
+                    refuse(f"{sarif} holds no results. A remote run reporting nothing is not "
+                           f"uploaded: it would count toward absence-closing every open {tool} "
+                           "finding. If the tree is truly clean, run this scan on the host")
+                print(f"{sarif}: {len(runs)} run(s) of {tool}, {count} result(s).")
+
+            # Reachability (sast only) is tolerated, as before: an invalid
+            # report is dropped, never posted, and costs nothing else.
+            reach = os.path.join("reach", "reachability.json")
+            if os.path.isfile(reach):
+                ok = False
+                try:
+                    with open(reach, encoding="utf-8") as fh:
+                        body = json.load(fh)
+                    keys = {"language", "commit_sha", "orphaned_paths", "files_analysed",
+                            "files_unparseable", "taint"}
+                    ok = (isinstance(body, dict) and set(body) <= keys
+                          and body.get("language") == "python"
+                          and body.get("commit_sha") == host
+                          and isinstance(body.get("files_analysed"), int)
+                          and isinstance(body.get("orphaned_paths"), list)
+                          and all(isinstance(p, str) for p in body["orphaned_paths"])
+                          and isinstance(body.get("taint", {}), dict))
+                except (OSError, ValueError):
+                    ok = False
+                if ok:
+                    open("checked/reachability-ok", "w").close()
+                    print("reachability.json: the expected shape, for this commit.")
+                else:
+                    print("::warning::reachability.json is not the expected shape for this "
+                          "commit; it is not posted, and the category stays unavailable.")
+
+            with open("checked/ok", "w", encoding="ascii") as fh:
+                fh.write(host + "\n")
+            with open("checked/short", "w", encoding="ascii") as fh:
+                fh.write(host[:12] + "\n")
+            print(f"{step}: checked against {host}; uploading.")
+  remote_checked: &remote_checked
+    load_var: remote-result-missing-or-refused-not-a-verdict-re-run
+    file: checked/ok
+
+
   # -- PS-2: fail before scanning, not after (spec 04 SS2, spec 05 SS4) ----
   #
   # The GitHub Actions skeleton every onboarded repository gets
@@ -666,17 +857,29 @@ jobs:
     # time-travel's existing `file-hub-story`) holds the token and sends them,
     # with the verdict the task used to apply, unchanged. The suite needs no
     # service and touches no production data; the scans read the checkout.
-    # A tagged step never falls back to this host, so each remote task sits
-    # in a timed `do:` (a task's own timeout starts only once a worker is
-    # chosen), and with the remote host off those jobs fail at that bound.
-    # `sast` and `dependencies` gate `oracle-gate` through `passed:`, so with
-    # the remote host off nothing is judged until it is back: the cost the
-    # operator accepted.
+    #
+    # The laptops are inside the CI trust boundary for these verdicts
+    # (operator decision 2026-11-16, ~03:20Z), with host-side checks
+    # (`linux_probe` and `remote_result` in `anchors:`): every upload names
+    # this host's HEAD as its commit and refuses a result that names another,
+    # a SARIF must be a run of the expected tool, and an EMPTY one is never
+    # uploaded, so a forged or broken remote run cannot absence-close
+    # findings. A remote result that is missing or refused ERRORS the build;
+    # a remote task that ran and failed FAILS it, as before.
+    #
+    # A tagged step never falls back to this host, so each job first asks for
+    # a remote worker (`linux_probe`, 5m), and each remote task sits in a
+    # timed `try:` (a task's own timeout starts only once a worker is chosen);
+    # with the remote host off those jobs ERROR within 5m. `sast` and
+    # `dependencies` gate `oracle-gate` through `passed:`, so with the remote
+    # host off nothing is judged until it is back: the cost the operator
+    # accepted.
     #
     # `linux-3` carries `linux,small` and so also takes `[linux]` steps;
-    # Concourse has no "not small" tag. Keeping the suites off it needs
-    # linux-1 and linux-2 re-registered with a further tag (say `large`) and
-    # the suites tagged `[linux, large]`: an operator step on that host.
+    # Concourse has no "not small" tag. Recommended (not required here, as
+    # requiring it would stop every remote step until the hosts re-register):
+    # re-register linux-1 and linux-2 with `linux,large` and tag the suites
+    # `[linux, large]`, an operator step on that host.
     serial_groups: [worker-a, pytest-memory]
     plan:
       - get: source
@@ -868,78 +1071,94 @@ jobs:
       - *preflight
       # Remote, and compute only: the suite and its reports. `upload-coverage`
       # below, on this host, holds the ingestion token and sends them.
-      - do:
-          - task: pytest-cov
-            tags: [linux]
-            # [TheHub #61210] The same CPU shares as `unit`'s task; see there.
-            container_limits: {cpu: 512}
-            # The suite plus coverage tracing, measured at 541s on the host's
-            # worker. The cap is on the wrapper below (TheHub #61761).
-            image: python
-            params:
-              PIP_CACHE_DIR: /pipcache
-              MYKRONOS_PERF_MULTIPLIER: "3"
-            config:
-              platform: linux
-              inputs: [{ name: source }]
-              # [TheHub #61210] Holds `verdict` only when the run reached one, as
-              # on `unit`; the load_var step after this task reads it.
-              # `results` carries the reports and rc to upload-coverage.
-              outputs: [{ name: judged }, { name: results }]
-              caches: [{ path: /pipcache }]
-              run:
-                path: bash
-                args:
-                  - -ec
-                  - |
-                    # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                    # route is dead, so this must land before apt opens a socket. See the
-                    # note at the top of `anchors:`.
-                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                    apt-get update -qq && apt-get install -y -qq git >/dev/null
-                    cd source/backend
-                    # The locked set, hash-checked, then the project itself without a
-                    # second resolve: what this lane tests is what the image ships
-                    # (backend/requirements-dev.txt, scripts/lock_backend.py).
-                    pip install --quiet --require-hashes -r requirements-dev.txt
-                    pip install --quiet --no-deps -e .
+      - *linux_probe
+      - *linux_probed
+      - try:
+          do:
+            - task: pytest-cov
+              tags: [linux]
+              # [TheHub #61210] The same CPU shares as `unit`'s task; see there.
+              container_limits: {cpu: 512}
+              # The suite plus coverage tracing, measured at 541s on the host's
+              # worker. The cap is on the wrapper below (TheHub #61761).
+              image: python
+              params:
+                PIP_CACHE_DIR: /pipcache
+                MYKRONOS_PERF_MULTIPLIER: "3"
+              config:
+                platform: linux
+                inputs: [{ name: source }]
+                # [TheHub #61210] Holds `verdict` only when the run reached one, as
+                # on `unit`; the load_var step after this task reads it.
+                # `results` carries the reports and rc to upload-coverage.
+                outputs: [{ name: judged }, { name: results }, { name: ran }]
+                caches: [{ path: /pipcache }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      # [review of #1178] rc on exit, for `remote-result` on this host.
+                      RAN_DIR="$PWD/ran"
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+                      # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                      # route is dead, so this must land before apt opens a socket. See the
+                      # note at the top of `anchors:`.
+                      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                      apt-get update -qq && apt-get install -y -qq git >/dev/null
+                      cd source/backend
+                      # The locked set, hash-checked, then the project itself without a
+                      # second resolve: what this lane tests is what the image ships
+                      # (backend/requirements-dev.txt, scripts/lock_backend.py).
+                      pip install --quiet --require-hashes -r requirements-dev.txt
+                      pip install --quiet --no-deps -e .
 
-                    mkdir -p ../../results
-                    rc=0
-                    # `--cov-branch` is not optional here. Cobertura writes
-                    # `branch-rate="0"` whether or not branch data was collected,
-                    # and the dashboard reads that as a measured 0% — publishing a
-                    # number nobody measured, which is the failure B-042 spent a
-                    # paragraph on.
-                    # [TheHub #61210] -n 4, not 6, for `unit`'s reason (#61117):
-                    # coverage #8 ran 8,583 tests green and went red on one
-                    # "worker 'gw5' crashed" at -n 6 under host memory pressure.
-                    python ../scripts/memory_kill.py run -- python -m pytest -q -n 4 \
-                      --cov=mykronos --cov-branch \
-                      --cov-report=xml:../../results/coverage.xml \
-                      --junitxml=../../results/unit.xml || rc=$?
+                      mkdir -p ../../results
+                      rc=0
+                      # `--cov-branch` is not optional here. Cobertura writes
+                      # `branch-rate="0"` whether or not branch data was collected,
+                      # and the dashboard reads that as a measured 0% — publishing a
+                      # number nobody measured, which is the failure B-042 spent a
+                      # paragraph on.
+                      # [TheHub #61210] -n 4, not 6, for `unit`'s reason (#61117):
+                      # coverage #8 ran 8,583 tests green and went red on one
+                      # "worker 'gw5' crashed" at -n 6 under host memory pressure.
+                      python ../scripts/memory_kill.py run -- python -m pytest -q -n 4 \
+                        --cov=mykronos --cov-branch \
+                        --cov-report=xml:../../results/coverage.xml \
+                        --junitxml=../../results/unit.xml || rc=$?
 
-                    # [TheHub #61210] Killed for memory is not a verdict, exactly
-                    # as on `unit`: no upload (a figure with a dead worker's tests
-                    # missing reads their lines as uncovered), no judged/verdict,
-                    # and the step after this task errors the build. A real
-                    # failure anywhere in the report is still a verdict.
-                    OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
-                      || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
-                    if [ -n "$OOM" ]; then
-                      echo "::error::${OOM}"
-                      echo "Not uploaded: a run killed for memory judged nothing on this commit."
-                      exit 0
-                    fi
-                    printf '%s\n' "$rc" > ../../judged/verdict
-                    # The suite's exit code and commit, for upload-coverage.
-                    printf '%s\n' "$rc" > ../../results/rc
-                    git -C .. rev-parse HEAD > ../../results/commit
-        # [TheHub #61761] p95 x 1.5 of the job's succeeded builds (Concourse,
-        # 2026-11-16: p95 27.4m over 7, p50 7.0m), rounded up. On
-        # this wrapper, not the task: a task's own `timeout:` starts only once
-        # a worker is chosen, so this also bounds the wait for a remote worker.
-        timeout: 41m
+                      # [TheHub #61210] Killed for memory is not a verdict, exactly
+                      # as on `unit`: no upload (a figure with a dead worker's tests
+                      # missing reads their lines as uncovered), no judged/verdict,
+                      # and the step after this task errors the build. A real
+                      # failure anywhere in the report is still a verdict.
+                      OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
+                        || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
+                      if [ -n "$OOM" ]; then
+                        echo "::error::${OOM}"
+                        echo "Not uploaded: a run killed for memory judged nothing on this commit."
+                        exit 0
+                      fi
+                      printf '%s\n' "$rc" > ../../judged/verdict
+                      # The suite's exit code and commit, for upload-coverage.
+                      printf '%s\n' "$rc" > ../../results/rc
+                      git -C .. rev-parse HEAD > ../../results/commit
+          # [review of #1178] max(2 x p95, p95 + 10m): the first run on a
+          # remote worker streams the image and pip cache over Wi-Fi, which
+          # p95 x 1.5 (TheHub #61761's first cap) did not leave room for.
+          # Measured over the job's succeeded builds (Concourse, 2026-11-16:
+          # p95 27.4m over 7, p50 7.0m): 2 x 27.4, rounded up. On
+          # this wrapper, not the task: a task's own `timeout:` starts only once
+          # a worker is chosen, so this also bounds the wait for a remote worker.
+          timeout: 55m
+      # [review of #1178] This host decides: see `remote_result`.
+      - <<: *remote_result
+        input_mapping: { result: results }
+        params:
+          LINUX_STEP: coverage/pytest-cov
+          COMMIT_FILE: commit
+      - *remote_checked
       # [TheHub #61210] ERRORED, not FAILED, when the task above was killed
       # for memory: see the same step on `unit`.
       - load_var: killed-for-memory-not-a-test-failure-re-run
@@ -974,7 +1193,7 @@ jobs:
                   --results-path ../../results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
-                  --commit-sha "$(cat ../../results/commit)" \
+                  --commit-sha "$(git -C .. rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" \
                   --workspace "$PWD" \
                   --severity-threshold low --blocking false || upload_rc=$?
@@ -1064,92 +1283,109 @@ jobs:
       # Remote, and compute only: TIME_TRAVEL_OFFSET is a non-secret var from
       # vars/mykronos.yml, the suite needs no service, and the token stays
       # with `file-hub-story` on this host.
-      - do:
-          - task: pytest-time-travel
-            tags: [linux]
-            # [TheHub #61288] The same CPU shares as `unit`'s task; see there.
-            container_limits: {cpu: 512}
-            image: python
-            params:
-              PIP_CACHE_DIR: /pipcache
-              MYKRONOS_PERF_MULTIPLIER: "3"
-              TIME_TRAVEL_OFFSET: ((time-travel-offset))
-              FAKETIME_DONT_FAKE_MONOTONIC: "1"
-            config:
-              platform: linux
-              inputs: [{ name: source }]
-              # [TheHub #61288] `judged` holds `verdict` only when the run reached
-              # one, as on `unit`; the load_var step after this task reads it.
-              outputs: [{ name: results }, { name: judged }]
-              caches: [{ path: /pipcache }]
-              run:
-                path: bash
-                args:
-                  - -ec
-                  - |
-                    # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                    # route is dead, so this must land before apt opens a socket. See the
-                    # note at the top of `anchors:`.
-                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                    apt-get update -qq && apt-get install -y -qq git faketime >/dev/null
-                    cd source/backend
-                    pip install --quiet --require-hashes -r requirements-dev.txt
-                    pip install --quiet --no-deps -e .
+      - *linux_probe
+      - *linux_probed
+      - try:
+          do:
+            - task: pytest-time-travel
+              tags: [linux]
+              # [TheHub #61288] The same CPU shares as `unit`'s task; see there.
+              container_limits: {cpu: 512}
+              image: python
+              params:
+                PIP_CACHE_DIR: /pipcache
+                MYKRONOS_PERF_MULTIPLIER: "3"
+                TIME_TRAVEL_OFFSET: ((time-travel-offset))
+                FAKETIME_DONT_FAKE_MONOTONIC: "1"
+              config:
+                platform: linux
+                inputs: [{ name: source }]
+                # [TheHub #61288] `judged` holds `verdict` only when the run reached
+                # one, as on `unit`; the load_var step after this task reads it.
+                outputs: [{ name: results }, { name: judged }, { name: ran }]
+                caches: [{ path: /pipcache }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      # [review of #1178] rc on exit, for `remote-result` on this host.
+                      RAN_DIR="$PWD/ran"
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+                      # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                      # route is dead, so this must land before apt opens a socket. See the
+                      # note at the top of `anchors:`.
+                      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                      apt-get update -qq && apt-get install -y -qq git faketime >/dev/null
+                      cd source/backend
+                      pip install --quiet --require-hashes -r requirements-dev.txt
+                      pip install --quiet --no-deps -e .
 
-                    # The one faketime invocation. The canary and the suite both go
-                    # through it, so the canary proves the clock the suite runs on.
-                    under_faketime() { faketime -m -f "$TIME_TRAVEL_OFFSET" "$@"; }
+                      # The one faketime invocation. The canary and the suite both go
+                      # through it, so the canary proves the clock the suite runs on.
+                      under_faketime() { faketime -m -f "$TIME_TRAVEL_OFFSET" "$@"; }
 
-                    # [TheHub #61230] `source` is the newest commit to pass `unit`,
-                    # and this script is the pipeline's, applied from main. When
-                    # `unit` has been red since before the canary landed (#1056),
-                    # the tree here predates it, and pytest's "file or directory
-                    # not found" read as the clock not moving. Say what it is.
-                    commit="$(git -C .. rev-parse --short=12 HEAD)"
-                    if [ ! -f tests/test_time_travel_canary.py ]; then
-                      echo "::error::time-travel SOURCE TOO OLD: $commit, the newest commit to pass unit, has no tests/test_time_travel_canary.py (added by #1056). Nothing ran. The job runs properly on the first night after unit passes a newer commit."
-                      exit 1
-                    fi
+                      # [TheHub #61230] `source` is the newest commit to pass `unit`,
+                      # and this script is the pipeline's, applied from main. When
+                      # `unit` has been red since before the canary landed (#1056),
+                      # the tree here predates it, and pytest's "file or directory
+                      # not found" read as the clock not moving. Say what it is.
+                      commit="$(git -C .. rev-parse --short=12 HEAD)"
+                      if [ ! -f tests/test_time_travel_canary.py ]; then
+                        echo "::error::time-travel SOURCE TOO OLD: $commit, the newest commit to pass unit, has no tests/test_time_travel_canary.py (added by #1056). Nothing ran. The job runs properly on the first night after unit passes a newer commit."
+                        exit 1
+                      fi
 
-                    echo "Clock moved to now${TIME_TRAVEL_OFFSET} for the suite (TheHub #61109)."
-                    export TIME_TRAVEL_REAL_NOW="$(date +%s)"
-                    if ! TIME_TRAVEL_CANARY_IN_WORKER=0 under_faketime python -m pytest -q -p no:cacheprovider -n 0 tests/test_time_travel_canary.py \
-                      || ! TIME_TRAVEL_CANARY_IN_WORKER=1 under_faketime python -m pytest -q -p no:cacheprovider -n 2 tests/test_time_travel_canary.py; then
-                      echo "::error::time-travel CANARY: the clock did not move to now${TIME_TRAVEL_OFFSET} (see above). The suite was not run: on the real clock its green would be a false all-clear."
-                      exit 1
-                    fi
+                      echo "Clock moved to now${TIME_TRAVEL_OFFSET} for the suite (TheHub #61109)."
+                      export TIME_TRAVEL_REAL_NOW="$(date +%s)"
+                      if ! TIME_TRAVEL_CANARY_IN_WORKER=0 under_faketime python -m pytest -q -p no:cacheprovider -n 0 tests/test_time_travel_canary.py \
+                        || ! TIME_TRAVEL_CANARY_IN_WORKER=1 under_faketime python -m pytest -q -p no:cacheprovider -n 2 tests/test_time_travel_canary.py; then
+                        echo "::error::time-travel CANARY: the clock did not move to now${TIME_TRAVEL_OFFSET} (see above). The suite was not run: on the real clock its green would be a false all-clear."
+                        exit 1
+                      fi
 
-                    rc=0
-                    # [TheHub #61288] -n 4, not 6, for `unit`'s reason (#61117).
-                    under_faketime python ../scripts/memory_kill.py run -- python -m pytest -q -n 4 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
+                      rc=0
+                      # [TheHub #61288] -n 4, not 6, for `unit`'s reason (#61117).
+                      under_faketime python ../scripts/memory_kill.py run -- python -m pytest -q -n 4 -p no:cacheprovider --junitxml=../../results/unit.xml || rc=$?
 
-                    # [TheHub #61288] Killed for memory is not a time bomb. The
-                    # classifier runs on the real clock, outside faketime. On a
-                    # memory kill: no verdict and no results/rc, so the load_var
-                    # step below errors the build and file-hub-story never runs.
-                    # A real failure is still a verdict, and is filed as before.
-                    OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
-                      || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
-                    if [ -n "$OOM" ]; then
-                      echo "::error::${OOM}"
-                      echo "No Hub story filed: a run killed for memory judged nothing on this commit."
-                      exit 0
-                    fi
-                    # [TheHub #61701] The report is read here, with defusedxml from the
-                    # locked install, and handed to the filing task as JSON, so no XML
-                    # parser runs where the token is. A report it cannot read leaves no
-                    # run.json, and the filing task says so (exit 2) without hiding rc.
-                    python ../scripts/time_travel_report.py --junit ../../results/unit.xml --write-run ../../results/run.json \
-                      || echo "::warning::time-travel: the JUnit report could not be summarized (see above)."
-                    printf '%s\n' "$rc" > ../../judged/verdict
-                    echo "$rc" > ../../results/rc
-                    git -C .. rev-parse --short=12 HEAD > ../../results/commit
-        # [TheHub #61761] p95 x 1.5 of the job's succeeded builds (Concourse,
-        # 2026-11-16: p95 43.1m over 9, p50 23.4m; the 51m run
-        # aborted on 2026-11-15 is past it). On this wrapper: a task's own
-        # `timeout:` starts only once a worker is chosen, so this also bounds
-        # the wait for a remote worker.
-        timeout: 65m
+                      # [TheHub #61288] Killed for memory is not a time bomb. The
+                      # classifier runs on the real clock, outside faketime. On a
+                      # memory kill: no verdict and no results/rc, so the load_var
+                      # step below errors the build and file-hub-story never runs.
+                      # A real failure is still a verdict, and is filed as before.
+                      OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
+                        || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
+                      if [ -n "$OOM" ]; then
+                        echo "::error::${OOM}"
+                        echo "No Hub story filed: a run killed for memory judged nothing on this commit."
+                        exit 0
+                      fi
+                      # [TheHub #61701] The report is read here, with defusedxml from the
+                      # locked install, and handed to the filing task as JSON, so no XML
+                      # parser runs where the token is. A report it cannot read leaves no
+                      # run.json, and the filing task says so (exit 2) without hiding rc.
+                      python ../scripts/time_travel_report.py --junit ../../results/unit.xml --write-run ../../results/run.json \
+                        || echo "::warning::time-travel: the JUnit report could not be summarized (see above)."
+                      printf '%s\n' "$rc" > ../../judged/verdict
+                      echo "$rc" > ../../results/rc
+                      git -C .. rev-parse --short=12 HEAD > ../../results/commit
+          # [review of #1178] max(2 x p95, p95 + 10m): the first run on a
+          # remote worker streams the image and pip cache over Wi-Fi, which
+          # p95 x 1.5 (TheHub #61761's first cap) did not leave room for.
+          # Measured over the job's succeeded builds (Concourse, 2026-11-16:
+          # p95 43.1m over 9, p50 23.4m): 2 x 43.1, rounded up, past the 51m
+          # run aborted on 2026-11-15. On this wrapper: a task's own
+          # `timeout:` starts only once a worker is chosen, so this also bounds
+          # the wait for a remote worker.
+          timeout: 87m
+      # [review of #1178] This host decides: see `remote_result`.
+      - <<: *remote_result
+        input_mapping: { result: results }
+        params:
+          LINUX_STEP: time-travel/pytest-time-travel
+          COMMIT_FILE: commit
+          SHORT_COMMIT: "1"
+      - *remote_checked
 
       # [TheHub #61288] ERRORED, not FAILED, and no story, when the suite was
       # killed for memory. See the same step on `unit`.
@@ -1169,14 +1405,15 @@ jobs:
           HUB_STORY_TOKEN: ((hub-story-token))
         config:
           platform: linux
-          inputs: [{ name: source }, { name: results }]
+          # `checked/short`: this host's commit, not the remote's (#1178).
+          inputs: [{ name: source }, { name: results }, { name: checked }]
           run:
             path: bash
             args:
               - -ec
               - |
                 rc="$(cat results/rc)"
-                python source/scripts/time_travel_report.py --run results/run.json --offset "$TIME_TRAVEL_OFFSET" --commit "$(cat results/commit)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
+                python source/scripts/time_travel_report.py --run results/run.json --offset "$TIME_TRAVEL_OFFSET" --commit "$(cat checked/short)" || echo "::warning::time-travel: the Hub filing exited $? (see above)."
                 exit "$rc"
 
   # -- The detector benchmark (spec 23 §1.6, TheHub #60742) --------------
@@ -1686,152 +1923,171 @@ jobs:
       - get: python
         attempts: *retry_fetch
       - *preflight
-      - do:
-          - task: osv-scanner
-            tags: [linux]
-            # 32m, not 30m (#60002). MEASURED 2026-09-18 over the last 99 successful
-            # builds: p50 3.2m, p90 7.2m, worst 39.9m. The cap is the SUM of this and
-            # `sbom-and-evidence` (20m), so 32+20 = 52m against a 39.9m worst run.
-            #
-            # This job is the hardest cap in the estate to set and it is worth saying
-            # why rather than leaving the number looking arbitrary: its worst run is
-            # 5.5x its own p90, the HIGHEST outlier ratio of the 53 jobs with enough
-            # history to measure (estate p50 2.65x, p90 5.10x). So the usual rule --
-            # clear the routine worst by the estate's p90 outlier ratio -- gives only
-            # 36.7m here, BELOW a run that has already happened. The binding
-            # constraint is instead the observed worst plus the audit's own 1.3x pass
-            # threshold: 39.9 x 1.3 = 51.9m.
-            #
-            # That leaves it at 1.30x, the tightest cap in this file, and it is the
-            # one to watch: one slower build re-flags it. Raising it further without
-            # new measurement would be picking a number.
-            #
-            # [TheHub #61761] Superseded 2026-11-16: the cap is now 16m, p95 x 1.5
-            # of the last 59 successful builds (p95 10.4m, worst 13.4m), on the
-            # wrapper below, which a task-level timeout could not be: it starts
-            # only once a worker is chosen. With sbom-and-evidence and upload-osv
-            # the job's caps still sum to 46m, past the 39.9m worst of 2026-09.
-            image: python
-            # No params: the upload is `upload-osv`, on this host.
-            config:
-              platform: linux
-              inputs: [{ name: source }]
-              outputs: [{ name: evidence }, { name: osv-results }]
-              run:
-                path: bash
-                args:
-                  - -ec
-                  - |
-                    set -uo pipefail
-                    cd source
-                    # The SARIF leaves in `osv-results` for upload-osv.
-                    # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                    # route is dead, so this must land before apt opens a socket. See the
-                    # note at the top of `anchors:`.
-                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                    apt-get update -qq && apt-get install -y -qq curl git >/dev/null
+      - *linux_probe
+      - *linux_probed
+      - try:
+          do:
+            - task: osv-scanner
+              tags: [linux]
+              # 32m, not 30m (#60002). MEASURED 2026-09-18 over the last 99 successful
+              # builds: p50 3.2m, p90 7.2m, worst 39.9m. The cap is the SUM of this and
+              # `sbom-and-evidence` (20m), so 32+20 = 52m against a 39.9m worst run.
+              #
+              # This job is the hardest cap in the estate to set and it is worth saying
+              # why rather than leaving the number looking arbitrary: its worst run is
+              # 5.5x its own p90, the HIGHEST outlier ratio of the 53 jobs with enough
+              # history to measure (estate p50 2.65x, p90 5.10x). So the usual rule --
+              # clear the routine worst by the estate's p90 outlier ratio -- gives only
+              # 36.7m here, BELOW a run that has already happened. The binding
+              # constraint is instead the observed worst plus the audit's own 1.3x pass
+              # threshold: 39.9 x 1.3 = 51.9m.
+              #
+              # That leaves it at 1.30x, the tightest cap in this file, and it is the
+              # one to watch: one slower build re-flags it. Raising it further without
+              # new measurement would be picking a number.
+              #
+              # [TheHub #61761] Superseded 2026-11-16: the cap is now 21m, 2 x p95
+              # of the last 59 successful builds (p95 10.4m, worst 13.4m), on the
+              # wrapper below, which a task-level timeout could not be: it starts
+              # only once a worker is chosen. With the probe, remote-result,
+              # sbom-and-evidence and upload-osv the job's caps sum to 61m, past
+              # the 39.9m worst of 2026-09.
+              image: python
+              # No params: the upload is `upload-osv`, on this host.
+              config:
+                platform: linux
+                inputs: [{ name: source }]
+                outputs: [{ name: evidence }, { name: osv-results }, { name: ran }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      # [review of #1178] rc on exit, for `remote-result` on this host.
+                      RAN_DIR="$PWD/ran"
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+                      set -uo pipefail
+                      cd source
+                      # The SARIF leaves in `osv-results` for upload-osv.
+                      # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                      # route is dead, so this must land before apt opens a socket. See the
+                      # note at the top of `anchors:`.
+                      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                      apt-get update -qq && apt-get install -y -qq curl git >/dev/null
 
-                    # The released Go binary, checksummed. `pip install
-                    # osv-scanner` installs a reserved-name placeholder with no
-                    # CLI, which is how this lane reported zero findings for its
-                    # entire first life.
-                    curl -sSfL -o /usr/local/bin/osv-scanner \
-                      https://github.com/google/osv-scanner/releases/download/v2.5.0/osv-scanner_linux_amd64
-                    echo "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c  /usr/local/bin/osv-scanner" \
-                      | sha256sum -c -
-                    chmod +x /usr/local/bin/osv-scanner
+                      # The released Go binary, checksummed. `pip install
+                      # osv-scanner` installs a reserved-name placeholder with no
+                      # CLI, which is how this lane reported zero findings for its
+                      # entire first life.
+                      curl -sSfL -o /usr/local/bin/osv-scanner \
+                        https://github.com/google/osv-scanner/releases/download/v2.5.0/osv-scanner_linux_amd64
+                      echo "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c  /usr/local/bin/osv-scanner" \
+                        | sha256sum -c -
+                      chmod +x /usr/local/bin/osv-scanner
 
-                    # What this reads for the backend is backend/requirements.txt,
-                    # the hash-locked set the image installs, found by the
-                    # recursive walk (osv-scanner picks up `requirements*.txt`).
-                    # osv-scanner 2.5.0 does not read pyproject.toml with these
-                    # flags: run against 782a2c2 it found deploy/zap/requirements.txt
-                    # and frontend/package-lock.json and nothing else, so before the
-                    # lock the backend's Python dependencies were not scanned here
-                    # at all. Every line in the lock is an exact `==`, so
-                    # `--no-resolve` assesses the version that runs, not a floor,
-                    # and the deps.dev resolver it avoids is not needed.
-                    # requirements-dev.txt (the unit lanes' set) is read too.
-                    #
-                    # Exit 1 means vulnerabilities were found, which is a result.
-                    # Anything else is a scan failure and must not read as a clean
-                    # supply chain.
-                    rc=0
-                    osv-scanner scan source --recursive --no-resolve \
-                      --format sarif --output-file ../osv-results/osv.sarif . || rc=$?
+                      # What this reads for the backend is backend/requirements.txt,
+                      # the hash-locked set the image installs, found by the
+                      # recursive walk (osv-scanner picks up `requirements*.txt`).
+                      # osv-scanner 2.5.0 does not read pyproject.toml with these
+                      # flags: run against 782a2c2 it found deploy/zap/requirements.txt
+                      # and frontend/package-lock.json and nothing else, so before the
+                      # lock the backend's Python dependencies were not scanned here
+                      # at all. Every line in the lock is an exact `==`, so
+                      # `--no-resolve` assesses the version that runs, not a floor,
+                      # and the deps.dev resolver it avoids is not needed.
+                      # requirements-dev.txt (the unit lanes' set) is read too.
+                      #
+                      # Exit 1 means vulnerabilities were found, which is a result.
+                      # Anything else is a scan failure and must not read as a clean
+                      # supply chain.
+                      rc=0
+                      osv-scanner scan source --recursive --no-resolve \
+                        --format sarif --output-file ../osv-results/osv.sarif . || rc=$?
 
-                    # PS-3: the verdict is deferred to the end of this task. It
-                    # used to `exit "$rc"` here, so a scanner that broke skipped
-                    # its own upload and `atlas` read as `never_reported` --
-                    # indistinguishable from a capability nobody enabled. Whatever
-                    # findings did get written are still worth having, and the
-                    # ScanRun's `failure` status is what says the picture is
-                    # incomplete.
+                      # PS-3: the verdict is deferred to the end of this task. It
+                      # used to `exit "$rc"` here, so a scanner that broke skipped
+                      # its own upload and `atlas` read as `never_reported` --
+                      # indistinguishable from a capability nobody enabled. Whatever
+                      # findings did get written are still worth having, and the
+                      # ScanRun's `failure` status is what says the picture is
+                      # incomplete.
 
-                    # A second copy in JSON, because the counts the trust score is
-                    # built from are not derivable from the SARIF. Tolerant of a
-                    # failure here: it costs the evidence step, not the findings.
-                    osv-scanner scan source --recursive --no-resolve \
-                      --format json --all-packages --output-file /tmp/osv.json . || true
-                    test -f /tmp/osv.json || echo '{"results":[]}' > /tmp/osv.json
-                    cp /tmp/osv.json ../evidence/osv.json
+                      # A second copy in JSON, because the counts the trust score is
+                      # built from are not derivable from the SARIF. Tolerant of a
+                      # failure here: it costs the evidence step, not the findings.
+                      osv-scanner scan source --recursive --no-resolve \
+                        --format json --all-packages --output-file /tmp/osv.json . || true
+                      test -f /tmp/osv.json || echo '{"results":[]}' > /tmp/osv.json
+                      cp /tmp/osv.json ../evidence/osv.json
 
-                    # Every manifest this job claims to scan must have yielded
-                    # packages. Zero is not a clean result, it is a manifest the
-                    # scanner did not read - the shape that hid the backend for
-                    # this lane's whole life (build #265: 8 packages from
-                    # deploy/zap, 517 from the frontend, nothing for the backend,
-                    # because there was no backend lock until #961). Recorded now
-                    # and decided after the upload (PS-3), the same as `rc`:
-                    # unknown is not a pass. A manifest missing from the tree
-                    # counts as not scanned, so deleting the backend lock turns
-                    # this job red rather than quietly shrinking what it covers.
-                    manifests_rc=0
-                    python - /tmp/osv.json \
-                      backend/requirements.txt \
-                      backend/requirements-dev.txt \
-                      frontend/package-lock.json \
-                      deploy/zap/requirements.txt <<'PY' || manifests_rc=$?
-                    import json, sys
+                      # Every manifest this job claims to scan must have yielded
+                      # packages. Zero is not a clean result, it is a manifest the
+                      # scanner did not read - the shape that hid the backend for
+                      # this lane's whole life (build #265: 8 packages from
+                      # deploy/zap, 517 from the frontend, nothing for the backend,
+                      # because there was no backend lock until #961). Recorded now
+                      # and decided after the upload (PS-3), the same as `rc`:
+                      # unknown is not a pass. A manifest missing from the tree
+                      # counts as not scanned, so deleting the backend lock turns
+                      # this job red rather than quietly shrinking what it covers.
+                      manifests_rc=0
+                      python - /tmp/osv.json \
+                        backend/requirements.txt \
+                        backend/requirements-dev.txt \
+                        frontend/package-lock.json \
+                        deploy/zap/requirements.txt <<'PY' || manifests_rc=$?
+                      import json, sys
 
-                    document = json.load(open(sys.argv[1], encoding="utf-8"))
-                    scanned = {}
-                    for result in document.get("results") or []:
-                        path = (result.get("source") or {}).get("path") or ""
-                        scanned[path] = scanned.get(path, 0) + len(result.get("packages") or [])
+                      document = json.load(open(sys.argv[1], encoding="utf-8"))
+                      scanned = {}
+                      for result in document.get("results") or []:
+                          path = (result.get("source") or {}).get("path") or ""
+                          scanned[path] = scanned.get(path, 0) + len(result.get("packages") or [])
 
-                    missing = []
-                    for manifest in sys.argv[2:]:
-                        counts = [n for path, n in scanned.items() if path == manifest or path.endswith("/" + manifest)]
-                        total = sum(counts)
-                        print(f"  {manifest}: " + (f"{total} package(s)" if counts else "not scanned"))
-                        if total == 0:
-                            missing.append(manifest)
-                    # Anything else the recursive scan read and got nothing from.
-                    for path, n in sorted(scanned.items()):
-                        if n == 0 and path not in missing:
-                            print(f"  {path}: 0 package(s)")
-                            missing.append(path)
-                    if missing:
-                        print(
-                            "::error::osv-scanner read no packages from: " + ", ".join(missing)
-                            + ". That is a manifest nobody scanned, not a clean one."
-                        )
-                        sys.exit(1)
-                    PY
+                      missing = []
+                      for manifest in sys.argv[2:]:
+                          counts = [n for path, n in scanned.items() if path == manifest or path.endswith("/" + manifest)]
+                          total = sum(counts)
+                          print(f"  {manifest}: " + (f"{total} package(s)" if counts else "not scanned"))
+                          if total == 0:
+                              missing.append(manifest)
+                      # Anything else the recursive scan read and got nothing from.
+                      for path, n in sorted(scanned.items()):
+                          if n == 0 and path not in missing:
+                              print(f"  {path}: 0 package(s)")
+                              missing.append(path)
+                      if missing:
+                          print(
+                              "::error::osv-scanner read no packages from: " + ", ".join(missing)
+                              + ". That is a manifest nobody scanned, not a clean one."
+                          )
+                          sys.exit(1)
+                      PY
 
-                    # [operator decision 2026-11-16] The verdict inputs leave as
-                    # data; upload-osv, on this host, uploads and then applies them
-                    # in the order this task used to.
-                    printf '%s\n' "$rc" > ../osv-results/rc
-                    printf '%s\n' "$manifests_rc" > ../osv-results/manifests_rc
-                    git rev-parse HEAD > ../osv-results/commit
-        # [TheHub #61761] p95 x 1.5 of the job's succeeded builds (Concourse,
-        # 2026-11-16: p95 10.4m over 59, p50 5.3m), rounded up.
-        # dependencies #303 hung past 21m against a normal 7m and held
-        # worker-a; it now stops at 16m, off the host's lanes. On this wrapper,
-        # so it bounds the wait for a remote worker too.
-        timeout: 16m
+                      # [operator decision 2026-11-16] The verdict inputs leave as
+                      # data; upload-osv, on this host, uploads and then applies them
+                      # in the order this task used to.
+                      printf '%s\n' "$rc" > ../osv-results/rc
+                      printf '%s\n' "$manifests_rc" > ../osv-results/manifests_rc
+                      git rev-parse HEAD > ../osv-results/commit
+          # [review of #1178] max(2 x p95, p95 + 10m): the first run on a
+          # remote worker streams the image and pip cache over Wi-Fi, which
+          # p95 x 1.5 (TheHub #61761's first cap) did not leave room for.
+          # Measured over the job's succeeded builds (Concourse, 2026-11-16:
+          # p95 10.4m over 59, p50 5.3m): 2 x 10.4, rounded up.
+          # dependencies #303 hung past 21m against a normal 7m and held
+          # worker-a for it; it now stops at 21m, off the host's lanes. On this wrapper,
+          # so it bounds the wait for a remote worker too.
+          timeout: 21m
+      # [review of #1178] This host decides: see `remote_result`.
+      - <<: *remote_result
+        input_mapping: { result: osv-results }
+        params:
+          LINUX_STEP: dependencies/osv-scanner
+          COMMIT_FILE: commit
+          SARIF_FILE: osv.sarif
+          EXPECT_TOOL: osv
+      - *remote_checked
       # The upload, on this host, with the ingestion token, then the two
       # verdicts osv-scanner used to apply after it, unchanged: 1 means
       # vulnerabilities were found, which is a result; anything above it is a
@@ -1864,7 +2120,7 @@ jobs:
                   --results-path ../osv-results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
-                  --commit-sha "$(cat ../osv-results/commit)" \
+                  --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD" \
                   --severity-threshold low --blocking false
                 if [ "$rc" -gt 1 ]; then
@@ -2112,129 +2368,138 @@ jobs:
       - get: pwsh
         attempts: *retry_fetch
       - *preflight
-      - do:
-          - task: semgrep
-            tags: [linux]
-            # [TheHub #61761] 18m, p95 x 1.5: on the wrapper below, so it bounds
-            # the wait for a remote worker.
-            image: python
-            # Only what installs the uploader, for `mykronos.reachability`:
-            # no token and no host address (`upload-semgrep` has those).
-            params:
-              MYKRONOS_INSTALL_UPLOADER: *install_uploader
-              MYKRONOS_REF: ((mykronos-ref))
-            config:
-              platform: linux
-              inputs: [{ name: source }]
-              outputs: [{ name: semgrep-results }, { name: reachability }]
-              run:
-                path: bash
-                args:
-                  - -ec
-                  - |
-                    set -uo pipefail
-                    cd source
-                    # The SARIF leaves in `semgrep-results` for upload-semgrep.
-                    # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                    # route is dead, so this must land before apt opens a socket. See the
-                    # note at the top of `anchors:`.
-                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                    apt-get update -qq && apt-get install -y -qq git >/dev/null
+      - *linux_probe
+      - *linux_probed
+      - try:
+          do:
+            - task: semgrep
+              tags: [linux]
+              # [TheHub #61761, review of #1178] 24m, 2 x p95: on the wrapper
+              # below, so it bounds the wait for a remote worker.
+              image: python
+              # Only what installs the uploader, for `mykronos.reachability`:
+              # no token and no host address (`upload-semgrep` has those).
+              params:
+                MYKRONOS_INSTALL_UPLOADER: *install_uploader
+                MYKRONOS_REF: ((mykronos-ref))
+              config:
+                platform: linux
+                inputs: [{ name: source }]
+                outputs: [{ name: semgrep-results }, { name: reachability }, { name: ran }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      # [review of #1178] rc on exit, for `remote-result` on this host.
+                      RAN_DIR="$PWD/ran"
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+                      set -uo pipefail
+                      cd source
+                      # The SARIF leaves in `semgrep-results` for upload-semgrep.
+                      # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                      # route is dead, so this must land before apt opens a socket. See the
+                      # note at the top of `anchors:`.
+                      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                      apt-get update -qq && apt-get install -y -qq git >/dev/null
 
-                    # setuptools is not optional here despite not being a semgrep
-                    # dependency, and the version bound is not caution. Python
-                    # 3.13 images stopped shipping setuptools, and semgrep's
-                    # opentelemetry instrumentation imports pkg_resources at
-                    # module load - so semgrep dies with ModuleNotFoundError
-                    # before parsing an argument. Installing plain `setuptools`
-                    # does not fix it: 81 removed pkg_resources, so the newest
-                    # release reintroduces the exact error it was added to solve.
-                    #
-                    # The upload reported a failed scan rather than clean code,
-                    # which is the only reason any of this was visible.
-                    pip install --quiet "setuptools<81" semgrep==1.97.0
+                      # setuptools is not optional here despite not being a semgrep
+                      # dependency, and the version bound is not caution. Python
+                      # 3.13 images stopped shipping setuptools, and semgrep's
+                      # opentelemetry instrumentation imports pkg_resources at
+                      # module load - so semgrep dies with ModuleNotFoundError
+                      # before parsing an argument. Installing plain `setuptools`
+                      # does not fix it: 81 removed pkg_resources, so the newest
+                      # release reintroduces the exact error it was added to solve.
+                      #
+                      # The upload reported a failed scan rather than clean code,
+                      # which is the only reason any of this was visible.
+                      pip install --quiet "setuptools<81" semgrep==1.97.0
 
-                    # Rule packs download from semgrep.dev; the source stays here.
-                    # `--config auto` is deliberately not used - it reports the
-                    # repository to semgrep.dev, which is the class of thing spec
-                    # 12 §5.2 makes opt-in.
-                    #
-                    # The third config is Patchwork's named fix rules (TheHub
-                    # #60746). `--autofix --dryrun` writes nothing to the tree; it
-                    # is what makes Semgrep put each rule's fix into the SARIF
-                    # `fixes`, which apply-semgrep-fix applies as written. The
-                    # excluded directory is that fixer's own test fixtures, which
-                    # exist to match those rules.
-                    rc=0
-                    semgrep scan \
-                      --config p/security-audit \
-                      --config p/owasp-top-ten \
-                      --config backend/mykronos/patchwork/semgrep_fix_rules.yml \
-                      --exclude backend/tests/fixtures/semgrep_fix \
-                      --autofix --dryrun \
-                      --sarif --output ../semgrep-results/semgrep.sarif \
-                      --metrics off --quiet . || rc=$?
+                      # Rule packs download from semgrep.dev; the source stays here.
+                      # `--config auto` is deliberately not used - it reports the
+                      # repository to semgrep.dev, which is the class of thing spec
+                      # 12 §5.2 makes opt-in.
+                      #
+                      # The third config is Patchwork's named fix rules (TheHub
+                      # #60746). `--autofix --dryrun` writes nothing to the tree; it
+                      # is what makes Semgrep put each rule's fix into the SARIF
+                      # `fixes`, which apply-semgrep-fix applies as written. The
+                      # excluded directory is that fixer's own test fixtures, which
+                      # exist to match those rules.
+                      rc=0
+                      semgrep scan \
+                        --config p/security-audit \
+                        --config p/owasp-top-ten \
+                        --config backend/mykronos/patchwork/semgrep_fix_rules.yml \
+                        --exclude backend/tests/fixtures/semgrep_fix \
+                        --autofix --dryrun \
+                        --sarif --output ../semgrep-results/semgrep.sarif \
+                        --metrics off --quiet . || rc=$?
 
-                    # 1 means findings, which is a result. Anything else is a scan
-                    # failure and must not read as clean code.
-                    if [ "$rc" -gt 1 ]; then
-                      echo "::error::semgrep exited $rc - a scan failure, not a result"
-                      exit "$rc"
-                    fi
+                      # 1 means findings, which is a result. Anything else is a scan
+                      # failure and must not read as clean code.
+                      if [ "$rc" -gt 1 ]; then
+                        echo "::error::semgrep exited $rc - a scan failure, not a result"
+                        exit "$rc"
+                      fi
 
-                    git rev-parse HEAD > ../semgrep-results/commit
-                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
-                    python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                      git rev-parse HEAD > ../semgrep-results/commit
+                      bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                      python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
 
-                    # Which Python files nothing here imports (spec 19 §2.1).
-                    # Under sast because reachability is a fact about source
-                    # code, and sast owns the findings it prioritises.
-                    #
-                    # Tolerated failure throughout: this is one Oracle input
-                    # worth a small discount, and the semgrep findings uploaded
-                    # above are the reason this job exists. Nothing here may cost
-                    # them. Silence leaves the category `available: false`, which
-                    # reads as "we did not check" rather than "nothing is dead".
-                    # The subshell and the trailing `|| true` are load-bearing,
-                    # and the first version of this had neither. The task runs
-                    # under `bash -ec`, which aborts on the first failing command
-                    # inside an `if` body as readily as outside one -- so the
-                    # summary line, written with `jq`, took the whole job down:
-                    # jq is not in this image.
-                    #
-                    # Worse than a plain bug because of when it fired. While the
-                    # pinned package predated the module, the `if` condition
-                    # failed and control took the `else` branch, which touched no
-                    # jq. The step only broke once the analysis started *working*,
-                    # which is the least likely moment to suspect it.
-                    #
-                    # So: nothing here uses a tool not already proven present in
-                    # this image (python is -- it just ran), and the wrapper
-                    # cannot propagate a failure whatever happens inside it.
-                    (
-                      set +e
-                      # `--taint` adds the Semgrep taint run for the rules named
-                      # in taint_reachability.TAINT_SPECS, TheHub #60745; semgrep
-                      # is installed above. No parentheses in this comment: the
-                      # step tests find the subshell by the nearest one. An uploader pinned before the flag
-                      # existed rejects it, so the plain import analysis is the
-                      # fallback rather than no report at all.
-                      python -m mykronos.reachability . --taint \
-                        --commit-sha "$(git rev-parse HEAD)" > ../reachability/reachability.json \
-                        || python -m mykronos.reachability . \
-                          --commit-sha "$(git rev-parse HEAD)" > ../reachability/reachability.json
-                      [ -s ../reachability/reachability.json ] || exit 0
-                      python -c 'import json; d = json.load(open("../reachability/reachability.json")); print("Import analysis:", d["files_analysed"], "Python file(s),", len(d["orphaned_paths"]), "orphaned; taint:", (d.get("taint") or {}).get("status", "not run"), len((d.get("taint") or {}).get("matches") or []), "match(es).")'
-                      # The report is posted by upload-semgrep, on this host: this
-                      # task holds no token. It only writes the file.
-                    ) || true
+                      # Which Python files nothing here imports (spec 19 §2.1).
+                      # Under sast because reachability is a fact about source
+                      # code, and sast owns the findings it prioritises.
+                      #
+                      # Tolerated failure throughout: this is one Oracle input
+                      # worth a small discount, and the semgrep findings uploaded
+                      # above are the reason this job exists. Nothing here may cost
+                      # them. Silence leaves the category `available: false`, which
+                      # reads as "we did not check" rather than "nothing is dead".
+                      # The subshell and the trailing `|| true` are load-bearing,
+                      # and the first version of this had neither. The task runs
+                      # under `bash -ec`, which aborts on the first failing command
+                      # inside an `if` body as readily as outside one -- so the
+                      # summary line, written with `jq`, took the whole job down:
+                      # jq is not in this image.
+                      #
+                      # Worse than a plain bug because of when it fired. While the
+                      # pinned package predated the module, the `if` condition
+                      # failed and control took the `else` branch, which touched no
+                      # jq. The step only broke once the analysis started *working*,
+                      # which is the least likely moment to suspect it.
+                      #
+                      # So: nothing here uses a tool not already proven present in
+                      # this image (python is -- it just ran), and the wrapper
+                      # cannot propagate a failure whatever happens inside it.
+                      (
+                        set +e
+                        # `--taint` adds the Semgrep taint run for the rules named
+                        # in taint_reachability.TAINT_SPECS, TheHub #60745; semgrep
+                        # is installed above. No parentheses in this comment: the
+                        # step tests find the subshell by the nearest one. An uploader pinned before the flag
+                        # existed rejects it, so the plain import analysis is the
+                        # fallback rather than no report at all.
+                        python -m mykronos.reachability . --taint \
+                          --commit-sha "$(git rev-parse HEAD)" > ../reachability/reachability.json \
+                          || python -m mykronos.reachability . \
+                            --commit-sha "$(git rev-parse HEAD)" > ../reachability/reachability.json
+                        [ -s ../reachability/reachability.json ] || exit 0
+                        python -c 'import json; d = json.load(open("../reachability/reachability.json")); print("Import analysis:", d["files_analysed"], "Python file(s),", len(d["orphaned_paths"]), "orphaned; taint:", (d.get("taint") or {}).get("status", "not run"), len((d.get("taint") or {}).get("matches") or []), "match(es).")'
+                        # The report is posted by upload-semgrep, on this host: this
+                        # task holds no token. It only writes the file.
+                      ) || true
 
-        # [TheHub #61761] p95 x 1.5 of the job's succeeded builds (Concourse,
-        # 2026-11-16: p95 11.8m over 57, p50 7.2m), rounded up.
-        # sast #296 held worker-a for 26m and timed out at 35m while build
-        # waited; it now stops at 18m, in `linux-scans`. On this wrapper, so
-        # it bounds the wait for a remote worker too.
-        timeout: 18m
+          # [review of #1178] max(2 x p95, p95 + 10m): the first run on a
+          # remote worker streams the image and pip cache over Wi-Fi, which
+          # p95 x 1.5 (TheHub #61761's first cap) did not leave room for.
+          # Measured over the job's succeeded builds (Concourse, 2026-11-16:
+          # p95 11.8m over 57, p50 7.2m): 2 x 11.8, rounded up.
+          # sast #296 held worker-a for 26m and timed out at 35m while build
+          # waited; it now stops at 24m, in `linux-scans`. On this wrapper, so
+          # it bounds the wait for a remote worker too.
+          timeout: 24m
         # -- PowerShell, which semgrep does not read (B-051) -----------------
         #
         # semgrep's rule packs here cover no PowerShell, and this repository
@@ -2349,6 +2614,15 @@ jobs:
                       --commit-sha "$(git rev-parse HEAD)" \
                       --branch "$SCANNED_BRANCH" --workspace "$PWD" \
                       --severity-threshold low --blocking false
+      # [review of #1178] This host decides: see `remote_result`.
+      - <<: *remote_result
+        input_mapping: { result: semgrep-results, reach: reachability }
+        params:
+          LINUX_STEP: sast/semgrep
+          COMMIT_FILE: commit
+          SARIF_FILE: semgrep.sarif
+          EXPECT_TOOL: semgrep
+      - *remote_checked
       # [operator decision 2026-11-16] The upload, on this host, with the
       # ingestion token: semgrep's SARIF, then the reachability report the
       # remote task wrote (tolerated failure, as before: a missing report
@@ -2359,7 +2633,11 @@ jobs:
         params: *mykronos_env
         config:
           platform: linux
-          inputs: [{ name: source }, { name: semgrep-results }, { name: reachability }]
+          inputs:
+            - { name: source }
+            - { name: semgrep-results }
+            - { name: reachability, optional: true }
+            - { name: checked }
           run:
             path: bash
             args:
@@ -2379,12 +2657,14 @@ jobs:
                   --results-path ../semgrep-results \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/mykronos \
-                  --commit-sha "$(cat ../semgrep-results/commit)" \
+                  --commit-sha "$(git rev-parse HEAD)" \
                   --branch "$SCANNED_BRANCH" --workspace "$PWD" \
                   --severity-threshold low --blocking false
                 (
                   set +e
                   [ -s ../reachability/reachability.json ] || exit 0
+                  # Only a report `remote-result` found well formed, for this commit.
+                  [ -f ../checked/reachability-ok ] || exit 0
                   # urllib, not curl: curl is not in this image. Credentials are
                   # read from the environment inside python rather than passed
                   # through the shell, so nothing has to be quoted twice.

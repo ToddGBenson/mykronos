@@ -91,6 +91,10 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         ("mykronos", "time-travel", "pytest-time-travel"),
         ("mykronos", "sast", "semgrep"),
         ("mykronos", "dependencies", "osv-scanner"),
+        ("mykronos", "coverage", "linux-worker-probe"),
+        ("mykronos", "time-travel", "linux-worker-probe"),
+        ("mykronos", "sast", "linux-worker-probe"),
+        ("mykronos", "dependencies", "linux-worker-probe"),
     }
 )
 
@@ -383,7 +387,7 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
-    assert len(REMOTE_COMPUTE) == 5
+    assert len(REMOTE_COMPUTE) == 9
     assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
