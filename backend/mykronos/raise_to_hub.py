@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from mykronos.jobs import self_check
+from mykronos.product_owner import default_tag
 
 Kind = Literal["lane", "finding", "health"]
 KINDS: tuple[str, ...] = ("lane", "finding", "health")
@@ -193,7 +194,7 @@ def story_payload(
 ) -> dict[str, Any]:
     tags = ["mykronos-raised", f"raised-from:{draft.kind}"]
     if draft.repo_full_name:
-        tags.append(f"repo:{draft.repo_full_name}")
+        tags.append(default_tag(draft.repo_full_name))
     return {
         "title": title[:255],
         "detail": _detail(draft, actor, actor_kind, note),

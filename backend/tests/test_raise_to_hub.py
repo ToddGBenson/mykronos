@@ -223,7 +223,8 @@ class TestRaising:
         assert sent["bucket"] == "backlog"
         assert sent["title"] == "sast lane red"
         assert "Seen on the repo page." in sent["detail"] and RAW in sent["detail"]
-        assert f"repo:{REPO}" in sent["tags"]
+        assert f"repo:{REPO.rsplit('/', 1)[-1].lower()}" in sent["tags"]
+        assert f"repo:{REPO}" not in sent["tags"]
 
     def test_an_agent_is_attributed_as_an_agent(
         self, client: TestClient, admin_auth: dict[str, str], lane: str, hub: RaiseHub
