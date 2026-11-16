@@ -156,10 +156,15 @@ class TestTheBenchPostsOnlyOverHttp:
             assert server.hits == 1
 
 
-@pytest.mark.parametrize("script", FETCHERS)
-def test_no_fetcher_calls_urlopen(script: str) -> None:
-    """The static half: a later edit that goes back to urlopen reopens file://."""
-    tree = ast.parse((SCRIPTS / script).read_text(encoding="utf-8"))
+@pytest.mark.parametrize("script", [SCRIPTS / name for name in FETCHERS] + [SEED], ids=lambda p: p.name)
+def test_no_fetcher_calls_urlopen(script: Path) -> None:
+    """The static half: a later edit that goes back to urlopen reopens file://.
+
+    `seed.py` already refused a non-http `--url` (test_audit_timeouts_url), and
+    its finding was a recorded false positive; it moves to the opener too, so
+    the line shift above it cannot reopen that finding under a new line number.
+    """
+    tree = ast.parse(script.read_text(encoding="utf-8"))
     calls = [
         node.lineno
         for node in ast.walk(tree)
