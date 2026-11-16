@@ -69,8 +69,14 @@ Any other outcome is a non-blocking error and the call runs:
     the command cannot start (exit 127) and nothing inside the hook runs to stop the
     call. This cannot fail closed from here. Claude Code on Windows itself needs Git
     for Windows' bash, so check `bash --version` after any reinstall.
-  * Python is missing or crashes. The wrapper sees an exit other than 0 or 2 and
-    applies its coarse fallback, which fails closed on the obvious forms.
+  * Python is missing. When no interpreter is found, or it cannot start (exit 126 or
+    127), the wrapper applies its coarse fallback, which fails closed on the obvious
+    forms. A Python that starts and exits with anything but 0 or 2 (a crash, or this
+    module's 3) is blocked outright (TheHub #61831): nothing has judged the call.
+  * A shell helper fails or the hook stops mid-run. _guard-common.sh records a failed
+    tr, grep, sed or cat, pins PATH for them, and its EXIT trap turns any exit but 0
+    and 2, or an allow after a recorded fault, into a block (TheHub #61831). A hook
+    killed outright (SIGKILL) runs no trap, and Claude Code then runs the call.
 
 The protected checkouts are MYKRONOS_PROTECTED_CHECKOUTS (separated by ';'), or by
 default <user profile>/Documents/Projects/TheHub-main, the profile read from
@@ -78,8 +84,7 @@ USERPROFILE, then HOME.
 
 Usage (stdin is the hook payload):  python estate_guard.py bash|write|ps1
 Exit 0 allows, 2 blocks (stderr to the agent), 3 is an internal error: the shell
-wrapper then applies its coarse fallback, so a bug here fails closed on the obvious
-forms rather than open.
+wrapper then blocks the call, so a bug here fails closed rather than open.
 """
 
 from __future__ import annotations
@@ -1629,6 +1634,6 @@ def main(argv: list[str]) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv))
-    except Exception as exc:  # any bug must reach the wrapper's fallback
+    except Exception as exc:  # any bug must reach the wrapper, which then blocks
         sys.stderr.write(f"estate_guard.py: internal error: {exc!r}\n")
         sys.exit(3)

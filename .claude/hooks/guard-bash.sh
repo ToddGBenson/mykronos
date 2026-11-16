@@ -22,15 +22,23 @@
 # backend/tests/test_claude_hooks.py.
 
 set -uo pipefail
-payload="$(cat)"
+# TheHub #61831: load the shared wrappers and fail closed before anything is read (see
+# _guard-common.sh). No dirname: a helper that fails here would lose the wrappers.
+case "${BASH_SOURCE[0]}" in
+  */* | *\\*) guard_dir="${BASH_SOURCE[0]%[/\\]*}" ;;
+  *) guard_dir=. ;;
+esac
 # shellcheck source=_guard-common.sh
-. "$(dirname "${BASH_SOURCE[0]}")/_guard-common.sh"
+. "$guard_dir/_guard-common.sh" && guard_fail_closed guard-bash.sh || {
+  echo "BLOCKED by .claude/hooks/guard-bash.sh — internal error: it could not load _guard-common.sh, so it cannot judge the call. Retry the call." >&2
+  exit 2
+}
+payload="$(cat)"
 
 run_guard bash
-rc=$?
-case "$rc" in 0 | 2) exit "$rc" ;; esac
+guard_judge_or_fall_back $?
 
-# Fallback: Python did not run. Judge the raw payload, coarsely and closed.
+# Fallback: Python could not start. Judge the raw payload, coarsely and closed.
 lc="$(printf '%s' "$payload" | tr '[:upper:]' '[:lower:]')"
 if printf '%s' "$lc" | grep -qE 'ruff[^a-z0-9_]{1,12}format'; then
   fallback_block guard-bash.sh "a command that looks like \`ruff format\`."

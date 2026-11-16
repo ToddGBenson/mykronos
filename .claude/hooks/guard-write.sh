@@ -15,15 +15,23 @@
 # Contract: the hook payload on stdin; exit 2 blocks and stderr goes to the agent.
 
 set -uo pipefail
-payload="$(cat)"
+# TheHub #61831: load the shared wrappers and fail closed before anything is read (see
+# _guard-common.sh). No dirname: a helper that fails here would lose the wrappers.
+case "${BASH_SOURCE[0]}" in
+  */* | *\\*) guard_dir="${BASH_SOURCE[0]%[/\\]*}" ;;
+  *) guard_dir=. ;;
+esac
 # shellcheck source=_guard-common.sh
-. "$(dirname "${BASH_SOURCE[0]}")/_guard-common.sh"
+. "$guard_dir/_guard-common.sh" && guard_fail_closed guard-write.sh || {
+  echo "BLOCKED by .claude/hooks/guard-write.sh — internal error: it could not load _guard-common.sh, so it cannot judge the call. Retry the call." >&2
+  exit 2
+}
+payload="$(cat)"
 
 run_guard write
-rc=$?
-case "$rc" in 0 | 2) exit "$rc" ;; esac
+guard_judge_or_fall_back $?
 
-# Fallback: Python did not run. Judge the path field, coarsely and closed.
+# Fallback: Python could not start. Judge the path field, coarsely and closed.
 path="$(printf '%s' "$payload" \
   | sed -nE 's/.*"(file_path|notebook_path)"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\2/p' \
   | tr '[:upper:]\\' '[:lower:]/')"
