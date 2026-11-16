@@ -483,11 +483,15 @@ def test_checkov_has_a_budget_inside_the_task_cap() -> None:
     assert "infra" in {o["name"] for o in task["config"]["outputs"]}
 
 
-# Stubs for the image's tools; `git` is stubbed so the task's
-# `git config --global` never touches the machine running the test.
+# Stubs for every tool the task (old or new) reaches for, so the script never
+# touches the machine running the test: no `git config --global`, and no real
+# apt or pip install. Run with `-e`, as Concourse runs it (`bash -ec`).
 _IAC_STUBS = """checkov() { echo "checkov stub $*"; }
 git() { :; }
 python3() { echo 0; }
+python() { :; }
+pip() { :; }
+apt-get() { :; }
 timeout() { return "${TIMEOUT_RC:-0}"; }
 """
 
@@ -499,7 +503,7 @@ def _run_iac(tmp_path: Path, timeout_rc: int) -> subprocess.CompletedProcess[str
     for d in ("source", "infra", "notify"):
         (tmp_path / d).mkdir()
     return subprocess.run(
-        [bash, "-s"],
+        [bash, "-e", "-s"],
         input=_IAC_STUBS + _iac_task()["config"]["run"]["args"][-1],
         env={**os.environ, "TIMEOUT_RC": str(timeout_rc), "MYKRONOS_TOKEN": ""},
         cwd=tmp_path,

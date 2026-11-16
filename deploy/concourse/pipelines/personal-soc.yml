@@ -526,8 +526,10 @@ anchors:
                 -d "$1" "$MYKRONOS_URL/api/ingest/check-runs"
             }
 
-            rc=0
-            post_check "$(body_for "${CONCLUSION:-}")" || rc=$?
+            # if/else, not an or-assignment of $?: check_pipeline_conformance.py
+            # reads that form as a job's scanner capture for PS-3, and this
+            # hook is in every job.
+            if post_check "$(body_for "${CONCLUSION:-}")"; then rc=0; else rc=$?; fi
             if [ "$rc" -ne 0 ]; then
               # A Mykronos older than #61007 refuses `cancelled` with a 422
               # (curl 22). Then say `failure`, as before, rather than leave
@@ -1048,11 +1050,12 @@ jobs:
                 # says `cancelled`. Any other exit falls through to the SARIF
                 # check below, unchanged.
                 echo "== checkov, github_actions framework =="
-                rc=0
-                timeout --kill-after=30s 8m \
+                # (if/else: a scan that writes no report below still skips the
+                # upload, so personal-soc.yml:iac PS-3 stays a recorded gap.)
+                if timeout --kill-after=30s 8m \
                   checkov --directory . --framework github_actions \
                   --output sarif --output-file-path /tmp/results \
-                  --soft-fail --compact --quiet || rc=$?
+                  --soft-fail --compact --quiet; then rc=0; else rc=$?; fi
                 if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
                   reason="INFRASTRUCTURE, NOT A VERDICT: checkov did not finish inside its 8m budget (exit ${rc}), so nothing on this commit was scanned or judged. The worker was most likely under load. Re-run the job."
                   echo "::error:: ${reason}"
