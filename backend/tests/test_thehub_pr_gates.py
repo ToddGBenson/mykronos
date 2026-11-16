@@ -345,15 +345,18 @@ def test_the_cached_image_is_the_newest_develop_commit_build_pushed() -> None:
 
 def test_the_integration_subset_runs_in_that_image() -> None:
     task = _step("integration")
-    image = task["config"]["image_resource"]
-    assert image["type"] == "registry-image"
-    # `remote-registry`: the image is fetched by the remote worker (#61760).
-    assert image["source"] == {"repository": "((remote-registry))/thehub",
-                               "tag": "((.:image_sha))", "insecure": True}
+    # The image is pulled on this host and handed over as an artifact: the
+    # registry never faces the LAN (review of mykronos #1177, B-054, D-109).
+    assert "image_resource" not in task["config"]
+    assert task["image"] == "thehub-image"
     plan = _job()["plan"]
     load = next(s for s in plan if s.get("load_var") == "image_sha")
-    assert plan.index(load) < holder(plan, "integration") < len(plan) - 1, (
-        "after the image is resolved, and before the success report"
+    fetch = next(s for s in plan if s.get("task") == "fetch-image")
+    assert fetch["params"]["REPOSITORY"] == "((registry))/thehub"
+    assert fetch["params"]["TAG"] == "((.:image_sha))"
+    assert "linux" not in (fetch.get("tags") or [])
+    assert plan.index(load) < plan.index(fetch) < holder(plan, "integration") < len(plan) - 1, (
+        "after the image is resolved and fetched, and before the success report"
     )
 
 

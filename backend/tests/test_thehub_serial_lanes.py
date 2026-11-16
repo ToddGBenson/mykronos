@@ -72,8 +72,18 @@ MAX_LANES = 3
 # The operator decision of 2026-11-16: the lanes whose heavy steps run on the
 # remote `linux` workers, not this host. They are bounded among themselves (one
 # build per lane) but do not count against MAX_LANES, which is this host's
-# memory. image-refresh's only heavy step, the kaniko `build`, is remote.
-REMOTE_LANES = {"linux-suites", "linux-pr", "image-refresh"}
+# memory, so EVERY task of a job in them is either tagged `linux` or one of
+# the short host steps below (review of mykronos #1177: image-refresh, whose
+# trivy scan and demo redeploy run here, went back to `dast` for that).
+REMOTE_LANES = {"linux-suites", "linux-pr"}
+REMOTE_TAG = "linux"
+# Host steps a remote-lane job may run: reports, picks, exports, the image
+# fetch and the verdict checks. Each is capped at 15 minutes.
+LIGHT_HOST_TASKS = {
+    "preflight", "pick", "smoke-inputs", "export-tree", "export-pr", "fetch-image",
+    "linux-verdict", "report-verdict", "report-check-run",
+}
+LIGHT_HOST_CAP_MINUTES = 15
 
 # TheHub #61106. Not a lane: a second group on the jobs that run TheHub's FULL
 # pytest suite, so two of them never run at once. unit #360 and post-merge
@@ -269,6 +279,38 @@ def test_every_heavy_job_is_still_in_exactly_one_lane() -> None:
             continue
         lanes = [g for g in job.get("serial_groups") or [] if g != MEMORY_GROUP]
         assert len(lanes) == 1, f"{name} has serial lanes {lanes}; expected exactly one"
+
+
+def _plan_tasks(steps: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        if "task" in step:
+            found.append(step)
+        for key in ("do", "in_parallel", "aggregate"):
+            inner = step.get(key)
+            if isinstance(inner, dict):
+                inner = inner.get("steps")
+            found.extend(_plan_tasks(inner))
+        if "try" in step:
+            found.extend(_plan_tasks([step["try"]]))
+    return found
+
+
+def test_a_remote_lane_runs_nothing_heavy_on_this_host() -> None:
+    """Otherwise a job in a remote lane escapes every host lane (MAX_LANES)."""
+    escaped = []
+    for name, job in _jobs().items():
+        if not set(job.get("serial_groups") or []) & REMOTE_LANES:
+            continue
+        for task in _plan_tasks(job.get("plan")):
+            if REMOTE_TAG in (task.get("tags") or []):
+                continue
+            minutes = int(str(task.get("timeout") or "0m").rstrip("m") or 0)
+            if task["task"] not in LIGHT_HOST_TASKS or not 0 < minutes <= LIGHT_HOST_CAP_MINUTES:
+                escaped.append(f"{name}/{task['task']} ({task.get('timeout')})")
+    assert not escaped, f"heavy host steps in a remote lane: {escaped}"
 
 
 def test_no_more_than_three_heavy_jobs_can_run_at_once() -> None:

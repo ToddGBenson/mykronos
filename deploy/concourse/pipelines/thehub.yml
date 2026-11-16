@@ -145,6 +145,15 @@ resources:
     # a 3.14 codebase, which is one more variable than a test lane should have.
     source: { repository: python, tag: "3.14-slim" }
 
+  # [review of mykronos #1177] The registry-image resource's own image, for
+  # `fetch_image`: this host pulls TheHub's image from the local registry and
+  # hands it to a remote task as an `image:` artifact. Public, and the same
+  # image and tag as `resource_types` above.
+  - name: image-fetcher
+    type: registry-image
+    icon: docker
+    source: { repository: concourse/registry-image-resource, tag: "1.10" }
+
   # PSScriptAnalyzer's runtime, for `sast`. The image and tag mykronos.yml and
   # personal-soc.yml run their analyser on, so the estate's three PowerShell
   # lanes read code the same way.
@@ -526,11 +535,11 @@ anchors:
   # failed, and `check_run` reports cancelled, not failure, which `pick`
   # asks again instead of remembering a false red on a pull request.
   #
-  # `ran` is an output the remote task always declares, mapped per call
-  # site. Concourse registers a task's outputs when its process exits, so
-  # `ran` exists whenever the task ran to an exit code, pass or fail, and is
-  # missing when no worker took it or the wrapper's deadline interrupted it.
-  # Only the missing case writes a reason: a real failure keeps its verdict.
+  # `ran/rc` is a FILE each remote task writes from an EXIT trap, so it
+  # exists only when the task's process started and ended, pass or fail.
+  # The directory alone proves nothing: Concourse can register an output on
+  # a deadline or a cancel (review of mykronos #1177). Only the missing case
+  # writes a reason: a task that ran and failed keeps its verdict.
   # `infra` is an input as well as the output, so a reason the task itself
   # wrote (a memory kill) is carried through, never replaced by an empty one.
   linux_absent: &linux_absent
@@ -551,8 +560,8 @@ anchors:
         args:
           - -ec
           - |
-            if [ -d ran ]; then
-              echo "The linux step ran to an exit code; its own verdict stands."
+            if [ -s ran/rc ]; then
+              echo "The linux step ran and exited $(head -c 8 ran/rc | tr -cd '0-9'); its own verdict stands."
               exit 0
             fi
             reason="INFRASTRUCTURE, NOT A VERDICT: no linux worker finished ${LINUX_STEP:-the remote step} within its wrapping timeout (the remote host was off, asleep or unreachable, or the step was interrupted), so nothing was judged. Re-run once fly workers lists linux-1 or linux-2 as running."
@@ -573,9 +582,228 @@ anchors:
     container_limits: {cpu: 512}
     config:
       platform: linux
+      # `probed`, not `ran`: a `ran` from the probe would still be there when
+      # the job's remote task timed out, and read to `linux_absent` as that
+      # task having run and exited 0.
+      outputs: [{ name: probed }]
       run:
         path: sh
-        args: [-c, "echo a linux worker took this build"]
+        args: [-c, "echo a linux worker took this build; echo 0 > probed/rc"]
+
+  # -- What a remote task is given, and what this host takes back ---------
+  #
+  # [review of mykronos #1177] The laptops are inside the CI trust boundary
+  # for gating verdicts (operator decision 2026-11-16, ~03:20Z), WITH these
+  # host-side checks. Three anchors, all on this host:
+  #
+  #   export_tree   the checkout as a TREE, no `.git`: TheHub's history has
+  #                 held secrets (#398), so it never reaches a laptop. The
+  #                 commit is written beside it from the host's own HEAD.
+  #   fetch_image   TheHub's image, pulled here from the local registry and
+  #                 handed over as an `image:` artifact. The registry is
+  #                 published on 127.0.0.1 only and has no auth (B-054,
+  #                 D-109); it is not opened to the LAN.
+  #   linux_verdict a remote task's exit code, decided here: `ran/rc` must be
+  #                 a small integer, `ran/commit` must be the commit this host
+  #                 exported, and only then does this step exit with it.
+  #
+  # `head_sha` is the host's `git rev-parse HEAD` without git in the image:
+  # .git/HEAD, then the ref file or packed-refs it names. 40 hex or nothing.
+  head_sha: &head_sha |
+    import pathlib, re, sys
+    def head_sha(repo):
+        git = pathlib.Path(repo) / ".git"
+        try:
+            head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        if head.startswith("ref: "):
+            name = head[5:].strip()
+            ref = git / name
+            if ref.is_file():
+                head = ref.read_text(encoding="utf-8").strip()
+            else:
+                packed = git / "packed-refs"
+                found = ""
+                if packed.is_file():
+                    for line in packed.read_text(encoding="utf-8").splitlines():
+                        parts = line.split(" ", 1)
+                        if len(parts) == 2 and parts[1].strip() == name:
+                            found = parts[0]
+                head = found
+        return head if re.fullmatch(r"[0-9a-f]{40}", head) else ""
+
+  export_tree: &export_tree
+    task: export-tree
+    # This host, beside `pick` and `preflight` (PLACEMENT in
+    # test_concourse_worker_tags.py).
+    tags: [thehub]
+    container_limits: {cpu: 512}
+    timeout: 10m
+    params:
+      HEAD_SHA: *head_sha
+    config:
+      platform: linux
+      inputs: [{ name: source }]
+      outputs: [{ name: tree }, { name: commit }]
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            set -euo pipefail
+            SHA="$(python -c "$HEAD_SHA
+            print(head_sha('source'))")"
+            if [ -z "$SHA" ]; then
+              echo "::error::the checkout's HEAD is not a 40-hex commit; nothing to export"
+              exit 1
+            fi
+            # The working tree as checked out, without .git: the tree a
+            # `git archive HEAD` would give for a clean checkout.
+            tar -C source --exclude=./.git -cf - . | tar -C tree -xf -
+            printf '%s\n' "$SHA" > commit/sha
+            head -1 source/.git/commit_message 2>/dev/null > commit/message || : > commit/message
+            echo "exported ${SHA} as a tree with no history ($(du -sh tree | cut -f1))"
+            if [ -n "${TIP_BRANCH:-}" ]; then
+              # TheHub's risk gate reads exactly one `tip of <branch>: <sha>`
+              # line from this job's log (scripts/lib/risk_gate.py `_TIP`). It
+              # is printed here, from this host's checkout, never remotely.
+              echo "tip of ${TIP_BRANCH}:       ${SHA}"
+            fi
+
+  # A pull request's `pr` (made by `pick` or `smoke-inputs` on this host)
+  # without its history: the head's tree, plus the files under .git that
+  # those steps wrote for the gates (HEAD, pr-number, process-gates/, the
+  # base commit's judge/ tree). No objects, no refs. An empty `pr` (a tick
+  # with no head) stays empty.
+  export_pr: &export_pr
+    task: export-pr
+    # This host, beside `pick` and `preflight` (PLACEMENT in
+    # test_concourse_worker_tags.py).
+    tags: [thehub]
+    container_limits: {cpu: 512}
+    timeout: 10m
+    config:
+      platform: linux
+      inputs: [{ name: pr }]
+      outputs: [{ name: pr-tree }]
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            set -euo pipefail
+            if [ ! -f pr/.git/HEAD ]; then
+              echo "No pull request head on this run; nothing to export."
+              exit 0
+            fi
+            tar -C pr --exclude=./.git -cf - . | tar -C pr-tree -xf -
+            mkdir -p pr-tree/.git
+            for f in HEAD pr-number; do
+              [ -f "pr/.git/$f" ] && cp "pr/.git/$f" "pr-tree/.git/$f"
+            done
+            for d in process-gates judge; do
+              [ -d "pr/.git/$d" ] && cp -R "pr/.git/$d" "pr-tree/.git/$d"
+            done
+            echo "exported pull request $(cat pr/.git/pr-number 2>/dev/null) at $(cat pr/.git/HEAD) with no history"
+
+  # TheHub's image at one commit, from the local registry, as a directory a
+  # task's `image:` can name (`rootfs/` and `metadata.json`, what a
+  # registry-image `get` produces), using the registry-image resource's own
+  # check and in. Each call site sets TAG. An image this host cannot fetch
+  # is an outage, not a verdict, so it leaves `infra/reason`.
+  fetch_image: &fetch_image
+    task: fetch-image
+    # This host, beside `pick` and `preflight` (PLACEMENT in
+    # test_concourse_worker_tags.py).
+    tags: [thehub]
+    container_limits: {cpu: 512}
+    timeout: 15m
+    image: image-fetcher
+    config:
+      platform: linux
+      # `when` and `fallback`, for pr-gates: with ONLY_IF set and missing
+      # from `when` there is nothing to judge, so the small `fallback` image
+      # is handed over instead of TheHub's.
+      inputs:
+        - { name: when, optional: true }
+        - { name: fallback, optional: true }
+      outputs: [{ name: thehub-image }, { name: infra }]
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            set -uo pipefail
+            if [ -n "${ONLY_IF:-}" ] && [ ! -f "when/${ONLY_IF}" ] && [ -d fallback/rootfs ]; then
+              cp -a fallback/. thehub-image/
+              echo "nothing to judge on this run; the remote task gets the small fallback image"
+              exit 0
+            fi
+            outage() {
+              reason="INFRASTRUCTURE, NOT A VERDICT: this host could not fetch ${REPOSITORY}:${TAG} for the remote task ($1), so nothing was judged."
+              echo "::error:: ${reason}"
+              printf '%s\n' "$reason" > infra/reason
+              exit 1
+            }
+            [[ "$TAG" =~ ^[0-9a-f]{40}$ ]] || outage "the tag is not a 40-hex commit"
+            src="{\"repository\":\"${REPOSITORY}\",\"tag\":\"${TAG}\",\"insecure\":true}"
+            versions="$(printf '{"source":%s}' "$src" | /opt/resource/check)" || outage "check failed"
+            digest="$(printf '%s' "$versions" | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | tail -1 | cut -d'"' -f4)"
+            [ -n "$digest" ] || outage "no digest for that tag"
+            printf '{"source":%s,"version":{"tag":"%s","digest":"%s"},"params":{}}' "$src" "$TAG" "$digest" \
+              | /opt/resource/in thehub-image >/dev/null || outage "in failed"
+            [ -d thehub-image/rootfs ] && [ -s thehub-image/metadata.json ] || outage "no rootfs"
+            echo "fetched ${REPOSITORY}:${TAG} at ${digest}"
+
+  # A remote task's exit code, decided on this host (see above). The remote
+  # task writes `ran/rc` from its EXIT trap and `ran/commit` from the
+  # commit it was given; EXPECT is the file on this host that names the
+  # commit it was given. A missing, malformed or mismatched pair is an
+  # outage, never a green.
+  linux_verdict: &linux_verdict
+    task: linux-verdict
+    # This host, beside `pick` and `preflight` (PLACEMENT in
+    # test_concourse_worker_tags.py).
+    tags: [thehub]
+    container_limits: {cpu: 512}
+    timeout: 2m
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      inputs:
+        - { name: ran, optional: true }
+        - { name: expect, optional: true }
+        - { name: infra, optional: true }
+      outputs: [{ name: infra }]
+      run:
+        path: sh
+        args:
+          - -c
+          - |
+            refuse() {
+              reason="INFRASTRUCTURE, NOT A VERDICT: ${LINUX_STEP:-the remote step}'s result failed this host's check ($1), so nothing was judged."
+              echo "::error:: ${reason}"
+              printf '%s\n' "$reason" > infra/reason
+              exit 1
+            }
+            rc="$(head -c 16 ran/rc 2>/dev/null | tr -d '[:space:]')"
+            case "$rc" in ''|*[!0-9]*) refuse "ran/rc is not an exit code" ;; esac
+            [ "${#rc}" -le 3 ] || refuse "ran/rc is not an exit code"
+            want="$(head -c 64 "expect/${EXPECT}" 2>/dev/null | tr -d '[:space:]')"
+            got="$(head -c 64 ran/commit 2>/dev/null | tr -d '[:space:]')"
+            if [ -z "$want" ]; then
+              # Nothing was handed over to judge (a pull-request tick with no
+              # head): only a remote run that judged nothing and passed agrees.
+              [ -z "$got" ] && [ "$rc" = 0 ] || refuse "it reports ${got:-a result} with nothing given to judge"
+            else
+              printf '%s' "$want" | grep -Eq '^[0-9a-f]{40}$' || refuse "this host's commit is not 40 hex"
+              [ "$got" = "$want" ] || refuse "it judged ${got:-nothing}, not ${want}"
+            fi
+            echo "${LINUX_STEP:-the remote step} exited ${rc}; this host accepts it."
+            exit "$rc"
 
   # -- A memory budget for the full pytest suites (TheHub #61106) ----------
   #
@@ -1808,15 +2036,25 @@ jobs:
         timeout: 5m
         on_failure:
           <<: *linux_absent
+          input_mapping: { ran: probed }
           params: { LINUX_STEP: the linux-worker probe }
         on_error:
           <<: *linux_absent
+          input_mapping: { ran: probed }
           params: { LINUX_STEP: the linux-worker probe }
+      # The tree `grade` judges, with no history, and the one `tip of
+      # <branch>: <sha>` line TheHub's risk gate reads: both from this host.
+      - <<: *export_tree
+        image: python
+        params:
+          HEAD_SHA: *head_sha
+          TIP_BRANCH: ((thehub-branch))
       # [operator decision 2026-11-16] `grade` runs on the remote `linux`
-      # workers and is compute only: no credential, no host address. It
-      # writes its three-valued verdict to `verdict/`, and `report-verdict`
-      # (the `ensure:` below, on this host) posts it with the deploy token,
-      # so the token never reaches the remote host. Its Postgres is the
+      # workers and is compute only: no credential, no host address, no git
+      # history. It writes its three-valued verdict to `verdict/` and exits 0;
+      # `report-verdict` below, on this host, checks those files against the
+      # commit it exported, prints the VERDICT block, posts the row with the
+      # deploy token and exits with the verdict's code. Its Postgres is the
       # task's own, on the task's 127.0.0.1, with a throwaway password and an
       # empty database: no production data.
       - do:
@@ -1824,11 +2062,8 @@ jobs:
             tags: [linux]
             container_limits: {cpu: 512}
             image: python
+            input_mapping: { source: tree }
             params:
-              # The branch, for the `tip of <branch>: <sha>` line TheHub's risk
-              # gate reads from this log (scripts/lib/risk_gate.py `_TIP`). A
-              # non-secret var from vars/thehub.yml, not a credential.
-              SCANNED_BRANCH: ((thehub-branch))
               PIP_CACHE_DIR: /pipcache
               # [#61106] The task's memory budget, enforced by memory-guard (see
               # the anchor: `container_limits.memory` is refused on the host's
@@ -1840,13 +2075,13 @@ jobs:
               MEMORY_BUDGET_MB: "2560"
             config:
               platform: linux
-              inputs: [{ name: source }]
+              inputs: [{ name: source }, { name: commit }]
               # [#61106] `infra` at a path of its own, written only when a tier
               # was killed for memory and so nothing was graded; the job's
               # post_merge_check report then says errored, not failed.
-              # `verdict` is what `report-verdict` posts; `notify` is also the
-              # `ran` marker `linux_absent` reads.
-              outputs: [{ name: notify }, { name: verdict }, { name: infra, path: memory-infra }]
+              # `verdict` is what `report-verdict` checks and posts; `ran/rc`
+              # is the EXIT trap's marker for `linux_absent`.
+              outputs: [{ name: ran }, { name: verdict }, { name: infra, path: memory-infra }]
               # /pipcache for the reason `unit` has one: a cold install of TheHub's
               # dependency set is most of this lane's wall clock. /watermark is the
               # last determinately-graded sha, one line. Task caches are per
@@ -1867,32 +2102,30 @@ jobs:
                   - -c
                   - |
                     set -uo pipefail
+                    trap 'printf "%s\n" "$?" > ran/rc' EXIT
 
-                    mkdir -p notify /watermark
+                    mkdir -p /watermark
                     WATERMARK=/watermark/last-graded-sha
                     SOFT_TIMEOUT_S=2700
 
-                    # -- The tip, read WITHOUT git ------------------------------
+                    # -- The tip, as this host exported it ----------------------
                     #
-                    # Concourse's git resource writes the checked-out sha to
-                    # `.git/ref` and the subject to `.git/commit_message`, so the
-                    # watermark comparison happens before anything is installed.
-                    # A tick with nothing to grade therefore costs seconds, which
-                    # is what makes a 30-minute cadence affordable at all.
-                    TIP="$(tr -d '[:space:]' < source/.git/ref 2>/dev/null || true)"
-                    MSG="$(head -1 source/.git/commit_message 2>/dev/null || true)"
+                    # `export-tree` wrote the commit beside the tree (there is no
+                    # .git here), so the watermark comparison happens before
+                    # anything is installed. A tick with nothing to grade costs
+                    # seconds, which is what makes a 30-minute cadence affordable.
+                    # The `tip of` line the risk gate reads was printed there.
+                    TIP="$(tr -d '[:space:]' < commit/sha 2>/dev/null || true)"
                     LAST="$(tr -d '[:space:]' < "$WATERMARK" 2>/dev/null || true)"
+                    printf '%s\n' "$TIP" > ran/commit
 
                     if [ -z "$TIP" ]; then
-                      echo "::error::the checkout carries no .git/ref, so there is"
-                      echo "          no tip to grade and no watermark to compare"
-                      echo "          it against. This is the lane failing, not"
-                      echo "          develop."
-                      echo "*TheHub*: post-merge could not read the sha it was asked to grade - the checkout carries no .git/ref. Nothing was measured about develop and the previous verdict still stands. Atlas (DevOps) is accountable." > notify/message.txt
+                      echo "::error::this host exported no commit, so there is no tip"
+                      echo "          to grade. This is the lane failing, not develop."
                       exit 1
                     fi
 
-                    echo "tip of ${SCANNED_BRANCH}:       ${TIP}"
+                    echo "grading ${TIP}"
                     echo "last determinate grading: ${LAST:-none}"
 
                     if [ "$TIP" = "${LAST:-}" ]; then
@@ -2220,9 +2453,9 @@ jobs:
                       fi
                     fi
 
-                    echo "=================================================="
-                    echo "VERDICT: ${VERDICT} - ${DETAIL}"
-                    echo "=================================================="
+                    # The VERDICT block TheHub's risk gate reads is printed by
+                    # `report-verdict`, on this host, from the files below.
+                    echo "graded ${TIP}: ${VERDICT}"
 
                     # -- The three-valued row, and the exit code ----------------
                     #
@@ -2248,11 +2481,9 @@ jobs:
 
                     # [operator decision 2026-11-16] The verdict leaves as data.
                     # This task runs on a remote worker with no credential and
-                    # no route to TheHub; `report-verdict`, on this host, posts
-                    # these six files as the post_merge_verdict row exactly as
-                    # this task used to.
+                    # no route to TheHub; `report-verdict`, on this host, checks
+                    # these five files and posts the post_merge_verdict row.
                     printf '%s' "$TIP" > verdict/tip
-                    printf '%s' "${MSG:-unknown}" > verdict/message
                     printf '%s' "$STATUS" > verdict/status
                     printf '%s' "$VERDICT" > verdict/verdict
                     printf '%s' "$DETAIL" > verdict/detail
@@ -2266,17 +2497,10 @@ jobs:
                       printf '%s' "$TIP" > "$WATERMARK"
                     fi
 
-                    # The Slack line, written only when there is something to say
-                    # and DIFFERENT for the two non-green verdicts, because they
-                    # call for opposite actions. The hook uses it verbatim; "the
-                    # job failed" on its own sends nobody anywhere.
-                    if [ "$VERDICT" = "red" ]; then
-                      echo "*TheHub*: post-merge - DEVELOP IS RED at ${TIP} on ${SCANNED_BRANCH}. The unit tier failed on the tree AS IT LANDED and the failure reproduced on an immediate re-run of the identical tree: ${DETAIL}. This is the merged tree, not one commit - both sides' gates can have passed. Atlas (DevOps) is accountable. Re-triggering does not clear this." > notify/message.txt
-                    elif [ "$VERDICT" = "indeterminate" ]; then
-                      echo "*TheHub*: post-merge - NO VERDICT for ${TIP} on ${SCANNED_BRANCH}. ${DETAIL}. This is NOT a red develop and NOT a green one: nothing was learned, the previous verdict still stands, any open red stays open, and the tip is deliberately NOT marked graded so the next tick grades it again. Atlas (DevOps) is accountable. Re-triggering is the correct response here, and would be the wrong one for a red." > notify/message.txt
-                    fi
-
-                    exit "$CODE"
+                    # Exit 0: a verdict was reached and written. The job's exit
+                    # code is `report-verdict`'s, decided on this host from these
+                    # files ($CODE is in verdict/exit_code).
+                    exit 0
         # Two tiers at a 45m soft cap each, plus the bootstrap. The SOFT cap
         # inside the task is the one that matters: a run killed by the hard cap
         # produces no verdict at all, and a run that produced no verdict must
@@ -2287,38 +2511,133 @@ jobs:
         timeout: 130m
         on_failure:
           <<: *linux_absent
-          input_mapping: { ran: notify }
           params: { LINUX_STEP: post-merge/grade }
         on_error:
           <<: *linux_absent
-          input_mapping: { ran: notify }
           params: { LINUX_STEP: post-merge/grade }
-        # The verdict row, from this host. Runs whatever `grade` did; with no
-        # `verdict/` (nothing to grade, the lane failed before grading, or no
-        # remote worker took it) it posts nothing, as `grade` posted nothing in
-        # those cases before, and post_merge_check carries the lane's state.
-        # Ends `exit 0` always: a verdict TheHub did not hear about is a
-        # reporting problem, never a different verdict.
-        ensure:
-          task: report-verdict
-          container_limits: {cpu: 512}
-          timeout: 5m
-          image: python
-          params: *hub_params
-          config:
-            platform: linux
-            inputs: [{ name: verdict, optional: true }]
-            run:
-              path: python
-              args:
-                - -c
-                - |
-                  import json, os, pathlib, sys, urllib.request
+      # [review of mykronos #1177] The verdict, decided on this host. The
+      # remote `grade` reached it and wrote it as files; this step accepts
+      # them only when the tip is the commit `export-tree` exported (this
+      # host's HEAD, 40 hex) and status, verdict and exit code are one of the
+      # three known triples. `detail` is one line, control characters
+      # removed, at most 1000 characters. Then, and only here, it prints the
+      # banner-framed VERDICT block TheHub's risk gate reads, posts the
+      # post_merge_verdict row with the deploy token, and exits with the
+      # verdict's code: 0 green, 1 red, 2 indeterminate (with `infra` from a
+      # memory kill carried through, so the job reports errored). Files that
+      # fail the check are an outage, never a verdict: `infra/reason`, exit 2,
+      # nothing posted. No `verdict/` at all is a watermark no-op: exit 0.
+      # A post that does not land is a reporting problem, never a different
+      # verdict.
+      - task: report-verdict
+        tags: [thehub]
+        container_limits: {cpu: 512}
+        timeout: 5m
+        image: python
+        params:
+          <<: *hub_params
+          HEAD_SHA: *head_sha
+        config:
+          platform: linux
+          inputs:
+            - { name: source }
+            - { name: commit }
+            - { name: verdict, optional: true }
+            - { name: infra, optional: true }
+          outputs: [{ name: notify }, { name: infra }]
+          run:
+            path: python
+            args:
+              - -c
+              - |
+                import json, os, pathlib, re, sys, urllib.request
+                exec(os.environ["HEAD_SHA"])
 
-                  d = pathlib.Path("verdict")
-                  if not (d / "status").is_file():
-                      print("grade wrote no verdict (nothing to grade, or it never graded); nothing to post.")
-                      sys.exit(0)
+                TRIPLES = {"green": ("success", 0), "red": ("failed", 1), "indeterminate": ("errored", 2)}
+                d = pathlib.Path("verdict")
+
+                def read(name, limit):
+                    path = d / name
+                    if not path.is_file():
+                        return ""
+                    with open(path, encoding="utf-8", errors="replace") as handle:
+                        return handle.read(limit)
+
+                def outage(why):
+                    reason = ("INFRASTRUCTURE, NOT A VERDICT: post-merge's remote grade wrote a verdict this "
+                              f"host refused ({why}), so nothing was reported about develop. Re-run the job.")
+                    print(f"::error:: {reason}")
+                    pathlib.Path("infra/reason").write_text(reason + "\n", encoding="utf-8")
+                    pathlib.Path("infra/exit_code").write_text("2\n", encoding="utf-8")
+                    sys.exit(2)
+
+                host_tip = head_sha("source")
+                exported = pathlib.Path("commit/sha").read_text(encoding="utf-8").strip()
+                if not host_tip or exported != host_tip:
+                    outage("this host's HEAD and the exported commit disagree")
+                if not (d / "status").is_file():
+                    print("grade wrote no verdict: the tip already has a determinate one, so there is nothing to report.")
+                    sys.exit(0)
+
+                tip = read("tip", 64).strip()
+                status, verdict = read("status", 16).strip(), read("verdict", 16).strip()
+                code = read("exit_code", 4).strip()
+                if not re.fullmatch(r"[0-9a-f]{40}", tip) or tip != host_tip:
+                    outage(f"it graded {tip[:40]!r}, not {host_tip}")
+                if verdict not in TRIPLES or TRIPLES[verdict] != (status, int(code) if code.isdigit() else -1):
+                    outage(f"{verdict[:16]!r}/{status[:16]!r}/{code[:4]!r} is not a known verdict")
+                detail = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", read("detail", 4000)).split())[:1000]
+                exit_code = TRIPLES[verdict][1]
+                branch = os.environ.get("SCANNED_BRANCH") or "develop"
+
+                print("=" * 50)
+                print(f"VERDICT: {verdict} - {detail}")
+                print("=" * 50)
+
+                # The Slack line, DIFFERENT for the two non-green verdicts,
+                # because they call for opposite actions.
+                notify = ""
+                if verdict == "red":
+                    notify = (f"*TheHub*: post-merge - DEVELOP IS RED at {tip} on {branch}. The unit tier failed on the tree AS IT LANDED and the failure reproduced on an immediate re-run of the identical tree: {detail}. This is the merged tree, not one commit - both sides' gates can have passed. Atlas (DevOps) is accountable. Re-triggering does not clear this.")
+                elif verdict == "indeterminate":
+                    notify = (f"*TheHub*: post-merge - NO VERDICT for {tip} on {branch}. {detail}. This is NOT a red develop and NOT a green one: nothing was learned, the previous verdict still stands, any open red stays open, and the tip is deliberately NOT marked graded so the next tick grades it again. Atlas (DevOps) is accountable. Re-triggering is the correct response here, and would be the wrong one for a red.")
+                if notify:
+                    pathlib.Path("notify/message.txt").write_text(notify + "\n", encoding="utf-8")
+
+                url = os.environ.get("HUB_URL", "")
+                token = os.environ.get("HUB_DEPLOY_TOKEN", "")
+                if not url or not token:
+                    print("TheHub reporting is not configured; the verdict is in this log only.")
+                    sys.exit(exit_code)
+                message = pathlib.Path("commit/message").read_text(encoding="utf-8", errors="replace").strip()[:200]
+                body = {
+                    "deploy_id": tip, "stage": "post_merge_verdict", "status": status,
+                    "git_sha": tip, "git_branch": branch,
+                    "commit_message": message or "unknown",
+                    "actor": "concourse", "target_env": "prod",
+                    "exit_code": exit_code,
+                    "notes": detail,
+                    "meta": {"source": "concourse", "pipeline": "thehub",
+                             "verdict": verdict, "check": "post_merge"},
+                }
+                # [#336] A red or indeterminate verdict is a failure report, and
+                # every failure report carries a log_tail: the verdict's own
+                # detail and the job link. Green is unchanged.
+                if status != "success":
+                    link = (os.environ.get("CONCOURSE_URL") or "http://localhost:8080") \
+                        + "/teams/main/pipelines/thehub/jobs/post-merge"
+                    body["log_tail"] = f"post-merge {verdict}: {detail} -- {link}"
+                request = urllib.request.Request(
+                    url + "/api/ops/deploys", data=json.dumps(body).encode(), method="POST",
+                    headers={"Content-Type": "application/json",
+                             "X-Ops-Deploy-Token": token})
+                try:
+                    with urllib.request.urlopen(request, timeout=20):
+                        pass
+                    print(f"Reported post_merge_verdict={status} ({verdict}) for {tip}.")
+                except Exception as exc:  # noqa: BLE001 - never a different verdict
+                    print(f"Could not report the verdict to TheHub ({exc}); the verdict stands.")
+                sys.exit(exit_code)
 
                   def read(name):
                       path = d / name
@@ -2372,9 +2691,11 @@ jobs:
   #   dast        every DAST lane plus the host jobs off the commit's
   #               clock: api-inventory, functional-demo, cicd-drift
   #               (quarterly). Idle for a commit's first ~35m, until
-  #               deploy-demo has passed. post-merge, container-tiers,
-  #               pr-gates, gate-smoke and image-refresh were here too, and
-  #               left for the remote lanes below (2026-11-16).
+  #               deploy-demo has passed. Also image-refresh (daily),
+  #               whose kaniko build is remote but whose trivy scan and demo
+  #               redeploy are not. post-merge, container-tiers, pr-gates and
+  #               gate-smoke were here too, and left for the remote lanes
+  #               below (2026-11-16).
   #
   # This was one `serial_groups: [worker]` for every job, and it was not
   # tidiness. Seven jobs trigger on the same commit and each one apt-gets and
@@ -2423,26 +2744,28 @@ jobs:
   #                 fewest-build-containers placement it normally runs on the
   #                 worker the suite is not using; the worst case, both on one
   #                 worker at their budgets, is 2560 + 2304 MiB under 5g.
-  #   image-refresh image-refresh (`build`, remote since #1169).
   #
-  # These three are not host lanes. The bound of three concurrent heavy
-  # jobs on THIS host (D-172, MAX_LANES in test_thehub_serial_lanes.py)
-  # still holds: only unit-chain, scanners and dast run heavy work here, and
+  # These two are not host lanes. The bound of three concurrent heavy jobs
+  # on THIS host (D-172, MAX_LANES in test_thehub_serial_lanes.py) still
+  # holds: every heavy task of a job in them is tagged `linux`, and what
+  # they run here is short (export, fetch, verdict, reports; the test holds
+  # that list). Only unit-chain, scanners and dast run heavy work here, and
   # `pytest-memory` keeps `unit`, the one full suite left on the host, apart
   # from any suite that comes back to it.
   #
-  # What runs remotely is compute only. No credential and no host address:
-  # every report and check run stays on this host (`preflight`, `pick`, the
-  # job hooks, post-merge's `report-verdict`). The suites' Postgres and
-  # Redis are the tasks' own, on the task's 127.0.0.1, with throwaway
-  # passwords and empty databases; no production data reaches the remote
-  # host. One address does: the two suites run in TheHub's image from the
-  # local registry, and an image_resource is fetched with its task's tags,
-  # i.e. by the remote worker, which cannot reach Docker Desktop's gateway
-  # (192.168.65.254, what `((registry))` names). So those two read
-  # `((remote-registry))`: the same registry at this host's LAN address,
-  # held in Vault at concourse/main/remote-registry so the address is not in
-  # this public file (D-180's recommended option).
+  # What runs remotely is compute only. No credential, no host address and
+  # no git history: every report and check run stays on this host
+  # (`preflight`, `pick`, the job hooks, post-merge's `report-verdict`). The
+  # suites' Postgres and Redis are the tasks' own, on the task's 127.0.0.1,
+  # with throwaway passwords and empty databases; no production data reaches
+  # the remote host. The laptops are inside the CI trust boundary for gating
+  # verdicts (operator decision 2026-11-16, ~03:20Z) WITH host-side checks:
+  # `export_tree` / `export_pr` hand over a tree without .git (TheHub's
+  # history has held secrets, #398), `fetch_image` hands over TheHub's image
+  # as an artifact (the registry stays on 127.0.0.1 with no auth, B-054,
+  # D-109), and `linux_verdict` and post-merge's `report-verdict` decide the
+  # exit code here, from `ran/rc` and the verdict files, bound to the commit
+  # this host exported.
   #
   # A tagged step never falls back to an untagged worker. Each remote task
   # sits in a timed `do:` (a task's own timeout starts only after a worker
@@ -2600,6 +2923,8 @@ jobs:
         attempts: *retry_fetch
       - get: python313
         attempts: *retry_fetch
+      - get: image-fetcher
+        attempts: *retry_fetch
       - <<: *preflight
         tags: [thehub]
       # Before `pick`, so a tick with no remote worker fails in 5m and posts
@@ -2610,9 +2935,11 @@ jobs:
         timeout: 5m
         on_failure:
           <<: *linux_absent
+          input_mapping: { ran: probed }
           params: { LINUX_STEP: the linux-worker probe }
         on_error:
           <<: *linux_absent
+          input_mapping: { ran: probed }
           params: { LINUX_STEP: the linux-worker probe }
       - task: pick
         tags: [thehub]
@@ -2820,17 +3147,23 @@ jobs:
                   git -C pr archive "$BASE_SHA" | tar -x -C pr/.git/judge
                   # -- process-gate inputs, end
                 fi
+      # [review of mykronos #1177] The pull request without its history: the
+      # head's tree and the gate inputs `pick` wrote, made on this host.
+      - &export_pr_step
+        <<: *export_pr
+        image: python313
       # [operator decision 2026-11-16] On the remote `linux` workers, in a
       # timed wrapper (see `linux_absent`). The anchor is the wrapper, so
       # `gate-smoke` runs the same step, timeout and hooks included. `gates`
       # is compute only already: no params, no cache, no host address (its
-      # inputs are data `pick` made on this host).
+      # inputs are data `pick` made on this host, `pr-tree` above).
       - &pr_gates_task
         do:
           - task: gates
             tags: [linux]
             container_limits: {cpu: 512}
             image: python313
+            input_mapping: { pr: pr-tree }
             # pip-audit resolves the whole requirements set into a scratch venv:
             # deploy.sh measured ~100s cold and ~30s warm in the same image. The
             # shape tests are seconds. 20m is a ceiling for a cold cache on a busy
@@ -2846,7 +3179,9 @@ jobs:
             config:
               platform: linux
               inputs: [{ name: pr }, { name: live-pipeline }]
-              outputs: [{ name: hub_log }]
+              # `ran`: rc and the commit judged, from the EXIT trap, for
+              # `linux_absent` and `linux-verdict`.
+              outputs: [{ name: hub_log }, { name: ran }]
               run:
                 path: bash
                 args:
@@ -2859,7 +3194,11 @@ jobs:
                     # [TheHub #61116] An absolute path: the trap runs wherever the script
                     # ends, and a task that cds into source/ made a relative write fail.
                     HUB_LOG_DIR="$PWD/hub_log"
-                    trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
+                    RAN_DIR="$PWD/ran"
+                    mkdir -p "$RAN_DIR"
+                    : > "$RAN_DIR/commit"
+                    if [ -f pr/.git/HEAD ]; then head -c 64 pr/.git/HEAD > "$RAN_DIR/commit"; fi
+                    trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; echo "$rc" > "$RAN_DIR/rc"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
 
                     if [ ! -f pr/.git/HEAD ]; then
                       echo "No pull request head needs judging on this run."
@@ -3035,16 +3374,28 @@ jobs:
         timeout: 25m
         on_failure:
           <<: *linux_absent
-          input_mapping: { ran: hub_log }
           params: { LINUX_STEP: gates }
         on_error:
           <<: *linux_absent
-          input_mapping: { ran: hub_log }
           params: { LINUX_STEP: gates }
+      - &pr_gates_verdict
+        <<: *linux_verdict
+        input_mapping: { expect: pr-tree }
+        params: { EXPECT: .git/HEAD, LINUX_STEP: gates }
       - load_var: image_sha
         file: image/sha
         format: raw
         reveal: true
+      # The cached develop image, pulled on this host and handed to
+      # `integration` as an `image:` artifact (the registry faces no LAN). A
+      # tick with no head to judge hands over python313 instead: the task
+      # then only says so and exits, and 1.45 GB is not streamed for nothing.
+      - <<: *fetch_image
+        input_mapping: { when: pr-tree, fallback: python313 }
+        params:
+          REPOSITORY: ((registry))/thehub
+          TAG: ((.:image_sha))
+          ONLY_IF: .git/HEAD
       # [TheHub #61110] The named integration subset, in the cached image. See
       # the job's header. Measured parts in container-tiers (2026-11-05): the
       # Postgres/Redis install ~1.5m, the bootstrap ~0.5m, the scratch
@@ -3053,6 +3404,8 @@ jobs:
           - task: integration
             tags: [linux]
             container_limits: {cpu: 512}
+            image: thehub-image
+            input_mapping: { pr: pr-tree }
             params:
               CONTAINER_TIERS_DISPOSABLE: "1"
               # The subset's soft cap: SIGINT lets pytest write its summary, and
@@ -3067,21 +3420,11 @@ jobs:
               # 300s soft cap, and a wait plus a second run fits in neither.
             config:
               platform: linux
-              # `insecure`: the registry is plain HTTP on the LAN (spec 15 section
-              # 5), as container-tiers' and kaniko's `--insecure` say.
-              # `remote-registry`, not `registry`: an image_resource is checked
-              # and fetched with the task's tags, so on a remote worker, which
-              # cannot reach Docker Desktop's gateway. See "The remote lanes".
-              image_resource:
-                type: registry-image
-                source:
-                  repository: ((remote-registry))/thehub
-                  tag: ((.:image_sha))
-                  insecure: true
+              # The image is `fetch-image`'s artifact, made on this host.
               inputs: [{ name: pr }]
               # [#61106] Written only when the subset was killed for memory; the
               # failure hooks then report errored / cancelled, not a verdict.
-              # `ran`: empty, registered whenever the task exits (linux_absent).
+              # `ran`: rc and the commit judged, from the EXIT trap.
               outputs: [{ name: infra, path: memory-infra }, { name: ran }]
               run:
                 path: bash
@@ -3089,6 +3432,9 @@ jobs:
                   - -c
                   - |
                     set -uo pipefail
+                    trap 'printf "%s\n" "$?" > ran/rc' EXIT
+                    : > ran/commit
+                    if [ -f pr/.git/HEAD ]; then head -c 64 pr/.git/HEAD > ran/commit; fi
                     if [ ! -f pr/.git/HEAD ]; then
                       echo "No pull request head needs judging on this run."
                       exit 0
@@ -3173,16 +3519,19 @@ jobs:
                       137) echo "::error::the integration subset was killed for memory; nothing was judged" ;;
                     esac
                     exit "$RC"
-        # The task's own 9m, plus 6m for the wait for a remote worker (the
-        # probe has already found one) and the cached image's first fetch
-        # over the LAN, which the host's worker never paid.
-        timeout: 15m
+        # The task's own 9m, plus 11m for the wait for a remote worker (the
+        # probe has already found one) and the image artifact's stream to it:
+        # ~1.45 GB on every judged head, ~2m at 100 Mbit/s, ~6.5m at 30.
+        timeout: 20m
         on_failure:
           <<: *linux_absent
           params: { LINUX_STEP: integration }
         on_error:
           <<: *linux_absent
           params: { LINUX_STEP: integration }
+      - <<: *linux_verdict
+        input_mapping: { expect: pr-tree }
+        params: { EXPECT: .git/HEAD, LINUX_STEP: integration }
       # Last, so a refused report is a failed job and the hooks above say so
       # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
       # owes no report.
@@ -3335,7 +3684,9 @@ jobs:
                 printf '%s %s %s\n' "$HEAD_SHA" "$HEAD_SHA" "$HEAD_SHA" > "$pg/range"
                 git -C pr archive "$HEAD_SHA" | tar -x -C pr/.git/judge
                 echo "GATE SMOKE inputs: branch head $HEAD_SHA, base == head (not a pull request)"
+      - *export_pr_step
       - *pr_gates_task
+      - *pr_gates_verdict
 
   - name: unit
     public: true
@@ -5495,54 +5846,45 @@ jobs:
         passed: [build]
       - get: python
         attempts: *retry_fetch
+      - get: image-fetcher
+        attempts: *retry_fetch
 
       - <<: *preflight
         tags: [thehub]
-      # The SHA names the image to run, so it is resolved with git (as
-      # `containers` does) and loaded as a build-local var for the task below.
-      - task: resolve-sha
-        tags: [thehub]
-        container_limits: {cpu: 512}
-        timeout: 5m
-        image: python
-        config:
-          platform: linux
-          inputs: [{ name: source }]
-          outputs: [{ name: meta }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                git -C source rev-parse HEAD | tr -d '\n' > meta/sha
-      - load_var: sha
-        file: meta/sha
-        format: raw
-        reveal: true
-
       - do:
           - <<: *linux_probe
             image: python
         timeout: 5m
         on_failure:
           <<: *linux_absent
+          input_mapping: { ran: probed }
           params: { LINUX_STEP: the linux-worker probe }
         on_error:
           <<: *linux_absent
+          input_mapping: { ran: probed }
           params: { LINUX_STEP: the linux-worker probe }
+      # [review of mykronos #1177] On this host: the commit as a tree with no
+      # history, its SHA (this host's HEAD, which names the image to run), and
+      # that image, pulled from the local registry and handed to `tiers` as
+      # an `image:` artifact. The registry never faces the LAN.
+      - <<: *export_tree
+        image: python
+      - load_var: sha
+        file: commit/sha
+        format: trim
+        reveal: true
+      - <<: *fetch_image
+        params:
+          REPOSITORY: ((registry))/thehub
+          TAG: ((.:sha))
       - do:
           - task: tiers
             tags: [linux]
             container_limits: {cpu: 512}
+            image: thehub-image
+            input_mapping: { source: tree }
             params:
               CONTAINER_TIERS_DISPOSABLE: "1"
-              EXPECTED_SHA: ((.:sha))
               TIER_SOFT_TIMEOUT_S: "3000"
               # [#61106] Enforced by memory-guard (`container_limits.memory` is
               # refused on the host's workers). 2304 MiB, not `unit`'s 2560: the
@@ -5555,22 +5897,13 @@ jobs:
               # the guard does not re-run a kill here; it reports it as before.
             config:
               platform: linux
-              # The commit's own image, the one `build` pushed and `containers`
-              # scanned. `insecure`: the registry is plain HTTP on the LAN (spec
-              # 15 section 5), as kaniko's `--insecure` and trivy's say.
-              # `remote-registry`: the same registry, at the address a remote
-              # worker reaches (see "The remote lanes" above `unit`).
-              image_resource:
-                type: registry-image
-                source:
-                  repository: ((remote-registry))/thehub
-                  tag: ((.:sha))
-                  insecure: true
-              inputs: [{ name: source }]
+              # The image is the commit's own, the one `build` pushed and
+              # `containers` scanned: `fetch-image` above, on this host.
+              inputs: [{ name: source }, { name: commit }]
               # [#61106] `infra` at a path of its own, written only when a tier
               # was killed for memory and no tier reached a verdict; the job's
               # failure report then says errored, not failed.
-              # `ran`: empty, registered whenever the task exits (linux_absent).
+              # `ran`: rc and commit, from the EXIT trap, for `linux-verdict`.
               outputs: [{ name: infra, path: memory-infra }, { name: ran }]
               run:
                 path: bash
@@ -5578,6 +5911,11 @@ jobs:
                   - -c
                   - |
                     set -uo pipefail
+                    trap 'printf "%s\n" "$?" > ran/rc' EXIT
+                    head -c 64 commit/sha > ran/commit
+                    # TheHub's script refuses an image built from another commit.
+                    EXPECTED_SHA="$(tr -d '[:space:]' < commit/sha)"
+                    export EXPECTED_SHA
                     # The image's entrypoint is not run: this is not the server,
                     # and the script bootstraps the database the way it does.
                     export CONTAINER_TIERS_OUT=/tmp/container-tiers
@@ -5610,7 +5948,7 @@ jobs:
         # matters: SIGINT lets pytest write its summary, and the script turns
         # a run that hit it into "partial", never into a green. 120m was the
         # task's own cap; the wrapper adds 10m for the wait for a remote
-        # worker and the commit image's first fetch over the LAN.
+        # worker and the image artifact's stream to it over the LAN.
         timeout: 130m
         on_failure:
           <<: *linux_absent
@@ -5618,6 +5956,10 @@ jobs:
         on_error:
           <<: *linux_absent
           params: { LINUX_STEP: container-tiers/tiers }
+      # The gating exit code, decided here from `ran/rc` and `ran/commit`.
+      - <<: *linux_verdict
+        input_mapping: { expect: commit }
+        params: { EXPECT: sha, LINUX_STEP: container-tiers/tiers }
 
 
   # == Stage 4: the gate ====================================================
@@ -8229,11 +8571,11 @@ jobs:
   # verdict this job prints is the evidence for that change.
   - name: image-refresh
     public: true
-    # Its own lane since the operator decision of 2026-11-16: `build` runs
-    # on the remote `linux` workers, and the host steps around it (`plan`,
-    # `scan`, `publish`, `deploy-demo`) are short and daily, so holding
-    # `dast` for the whole run only made the DAST lanes wait.
-    serial_groups: [image-refresh]
+    # Still `dast` (review of mykronos #1177): `build` runs on the remote
+    # `linux` workers, but `scan` (trivy, up to 90m) and `deploy-demo` run on
+    # this host, so the job must hold a host lane. A lane of its own would
+    # have let those steps escape the three-lane bound. It runs once a day.
+    serial_groups: [dast]
     # Every terminal state reports to TheHub, as every job here does
     # (TheHub's test_no_job_is_silent). `demo` because demo is the only
     # environment this job can change.
@@ -8297,6 +8639,10 @@ jobs:
                   --registry "$REGISTRY" --output refresh/plan.tsv
                 test -s refresh/plan.tsv || { echo "::error::no x-thehub-build recipes found"; exit 1; }
 
+      # [review of mykronos #1177] The build contexts without TheHub's git
+      # history, which has held secrets (#398): the remote build gets a tree.
+      - <<: *export_tree
+        image: python
       - do:
           - task: build
             # [TheHub #61659, D-181] Compute only, on the remote `linux` workers:
@@ -8319,6 +8665,7 @@ jobs:
             tags: [linux]
             container_limits: {cpu: 512}
             image: kaniko
+            input_mapping: { source: tree }
             config:
               platform: linux
               inputs: [{ name: source }, { name: refresh }]

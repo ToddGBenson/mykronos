@@ -81,6 +81,21 @@ LINUX_ABSENT_TASKS = {
     for job in ("post-merge", "pr-gates", "gate-smoke", "container-tiers")
 }
 
+#: The review of #1177: this host's checks on what a remote task wrote. Each
+#: installs nothing and writes infra/reason only when the remote result is
+#: missing or malformed, or (fetch-image) the image could not be pulled:
+#: nothing was judged. `linux-verdict` and `report-verdict` carry a memory
+#: kill's reason through from their `infra` input.
+HOST_CHECK_TASKS = {
+    ("thehub.yml", "post-merge", "report-verdict"),
+    ("thehub.yml", "pr-gates", "fetch-image"),
+    ("thehub.yml", "container-tiers", "fetch-image"),
+    *(
+        ("thehub.yml", job, "linux-verdict")
+        for job in ("pr-gates", "gate-smoke", "container-tiers")
+    ),
+}
+
 
 def _text(name: str) -> str:
     return (PIPELINES / name).read_text(encoding="utf-8")
@@ -260,7 +275,7 @@ def test_only_tasks_before_any_verdict_declare_infra() -> None:
         for job, task in _tasks(name)
         if any(o.get("name") == "infra" for o in task["config"].get("outputs") or [])
     }
-    assert declared == INFRA_TASKS | OOM_TASKS | LINUX_ABSENT_TASKS
+    assert declared == INFRA_TASKS | OOM_TASKS | LINUX_ABSENT_TASKS | HOST_CHECK_TASKS
 
 
 @pytest.mark.parametrize("name,job,task_name", sorted(OOM_TASKS))
