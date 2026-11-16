@@ -30,6 +30,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 
+from tests.pipeline_steps import flat
+
 ROOT = Path(__file__).resolve().parents[2]
 PIPELINE = ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
 VARS = ROOT / "deploy" / "concourse" / "vars" / "mykronos.yml"
@@ -65,7 +67,7 @@ CANARY = "tests/test_time_travel_canary.py"
 
 
 def _task(job: dict[str, Any], name: str) -> dict[str, Any]:
-    tasks = [s for s in job["plan"] if s.get("task") == name]
+    tasks = [s for s in flat(job["plan"]) if s.get("task") == name]
     assert len(tasks) == 1, f"time-travel should have one task named {name}"
     return tasks[0]
 
@@ -76,7 +78,7 @@ def _script(job: dict[str, Any], name: str = SUITE_TASK) -> str:
 
 def _all_scripts(job: dict[str, Any]) -> str:
     return "\n".join(
-        s["config"]["run"]["args"][-1] for s in job["plan"] if "task" in s and "config" in s
+        s["config"]["run"]["args"][-1] for s in flat(job["plan"]) if "task" in s and "config" in s
     )
 
 
@@ -199,7 +201,7 @@ class TestTheJob:
         # dependencies are exactly what should not hold it. Only the filing
         # task has it, and that task runs the reporter and nothing else.
         job = _job(pipeline)
-        for step in job["plan"]:
+        for step in flat(job["plan"]):
             if "task" not in step:
                 continue
             params = step.get("params") or {}
