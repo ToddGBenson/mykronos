@@ -89,9 +89,15 @@ FINDINGS = {
 
 
 def _stable(*parts: object) -> str:
-    """A hex digest of `parts`, the same in every process and on every run."""
+    """A 40-hex digest of `parts`, the same in every process and on every run.
+
+    SHA-256 cut to SHA-1's length, so a commit still looks like a git sha. It
+    was SHA-1, which Semgrep flags (insecure-hash-algorithm-sha1) even though
+    nothing here is a security use; the switch changes the seeded values once,
+    and the demo is rebuilt from scratch, so nothing has to match the old ones.
+    """
     joined = "|".join(str(part) for part in (SEED, *parts))
-    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:40]
 
 
 def commit_sha(repo_full_name: str, capability: str, age_days: int) -> str:
