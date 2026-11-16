@@ -74,6 +74,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.pipeline_steps import find
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 THEHUB = REPO_ROOT / "deploy" / "concourse" / "pipelines" / "thehub.yml"
@@ -378,7 +380,7 @@ class TestTheCommittedGate:
         that demo DAST and the API inventory are not inputs to its verdict."""
         config = yaml.safe_load(THEHUB.read_text(encoding="utf-8"))
         job = next(j for j in config["jobs"] if j["name"] == DEEPEST_GATE)
-        task = next(s for s in job["plan"] if s.get("task") == "evaluate")
+        task = find(job["plan"], "evaluate")
         script = task["config"]["run"]["args"][-1]
         assert "Not measured by this verdict" in script
         assert "dast" in script and "api-inventory" in script
@@ -655,7 +657,7 @@ def test_gate_smoke_runs_the_pr_gates_task_nightly_on_a_clock() -> None:
     assert resource["source"]["start"] == "3:00 AM"
 
     def gates(job: dict) -> dict:
-        return next(s for s in job["plan"] if isinstance(s, dict) and s.get("task") == "gates")
+        return find(job["plan"], "gates")
 
     assert gates(smoke) == gates(jobs["pr-gates"]), "the smoke must run the SAME gates task"
     reporters = [s for s in smoke["on_failure"]["do"] if s.get("task") == "report-to-hub"]

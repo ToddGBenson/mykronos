@@ -26,6 +26,7 @@ import textwrap
 
 import pytest
 
+from tests.pipeline_steps import find
 from tests.test_thehub_pr_process_gates import _develop, _inputs_block, _job, _judge, _script
 
 # A stand-in for develop's scripts/pr_deploy_gates.sh: it says whose it is,
@@ -153,7 +154,7 @@ def test_a_symlinked_requirements_file_is_refused(tmp_path) -> None:
 # -- AC2: no pip cache shared between runs ------------------------------------
 
 def test_the_gates_task_keeps_no_pip_cache_between_runs() -> None:
-    gates = next(s for s in _job()["plan"] if s.get("task") == "gates")
+    gates = find(_job()["plan"], "gates")
     assert "PIP_CACHE_DIR" not in json.dumps(gates.get("params") or {})
     assert not gates["config"].get("caches"), gates["config"].get("caches")
 

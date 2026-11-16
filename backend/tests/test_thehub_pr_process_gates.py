@@ -38,6 +38,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.pipeline_steps import find
+
 PIPELINE = Path(__file__).resolve().parents[2] / "deploy" / "concourse" / "pipelines" / "thehub.yml"
 JOB = "pr-gates"
 
@@ -52,7 +54,7 @@ def _job() -> dict[str, Any]:
 
 
 def _script(task: str) -> str:
-    step = next(s for s in _job()["plan"] if s.get("task") == task)
+    step = find(_job()["plan"], task)
     return step["config"]["run"]["args"][-1]
 
 

@@ -72,6 +72,15 @@ OOM_TASKS = {
     ("thehub.yml", "pr-gates", "integration"),
 }
 
+#: TheHub #61760. The hook that runs when a remote `linux` step's wrapper fails
+#: or errors. It installs nothing, and it writes infra/reason only when the
+#: remote step left no output at all, i.e. no worker ran it and nothing was
+#: judged; a step that ran and failed has its output, and stays a failure.
+LINUX_ABSENT_TASKS = {
+    ("thehub.yml", job, "linux-worker-absent")
+    for job in ("post-merge", "pr-gates", "gate-smoke", "container-tiers")
+}
+
 
 def _text(name: str) -> str:
     return (PIPELINES / name).read_text(encoding="utf-8")
@@ -251,7 +260,7 @@ def test_only_tasks_before_any_verdict_declare_infra() -> None:
         for job, task in _tasks(name)
         if any(o.get("name") == "infra" for o in task["config"].get("outputs") or [])
     }
-    assert declared == INFRA_TASKS | OOM_TASKS
+    assert declared == INFRA_TASKS | OOM_TASKS | LINUX_ABSENT_TASKS
 
 
 @pytest.mark.parametrize("name,job,task_name", sorted(OOM_TASKS))

@@ -513,6 +513,70 @@ anchors:
     done
     exit 75
 
+  # -- A `linux` step that never ran (operator decision 2026-11-16) ------
+  #
+  # The suites (`post-merge`, `container-tiers`) and `pr-gates`' two tasks
+  # run on the remote `linux` workers (see "The remote lanes" above `unit`).
+  # Concourse never falls back from a tagged step to an untagged worker, so
+  # with the remote host off each of them waits inside a wrapping `do:`
+  # whose `timeout:` bounds the wait, and then fails. A failure there is
+  # not a verdict: nothing was judged. This hook, on the wrapper's
+  # on_failure and on_error, says so in the one place every reporter
+  # already reads, `infra/reason`: `hub_report` then reports errored, not
+  # failed, and `check_run` reports cancelled, not failure, which `pick`
+  # asks again instead of remembering a false red on a pull request.
+  #
+  # `ran` is an output the remote task always declares, mapped per call
+  # site. Concourse registers a task's outputs when its process exits, so
+  # `ran` exists whenever the task ran to an exit code, pass or fail, and is
+  # missing when no worker took it or the wrapper's deadline interrupted it.
+  # Only the missing case writes a reason: a real failure keeps its verdict.
+  # `infra` is an input as well as the output, so a reason the task itself
+  # wrote (a memory kill) is carried through, never replaced by an empty one.
+  linux_absent: &linux_absent
+    task: linux-worker-absent
+    container_limits: {cpu: 512}
+    timeout: 2m
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: { repository: curlimages/curl, tag: "8.11.1" }
+      inputs:
+        - { name: ran, optional: true }
+        - { name: infra, optional: true }
+      outputs: [{ name: infra }]
+      run:
+        path: sh
+        args:
+          - -ec
+          - |
+            if [ -d ran ]; then
+              echo "The linux step ran to an exit code; its own verdict stands."
+              exit 0
+            fi
+            reason="INFRASTRUCTURE, NOT A VERDICT: no linux worker finished ${LINUX_STEP:-the remote step} within its wrapping timeout (the remote host was off, asleep or unreachable, or the step was interrupted), so nothing was judged. Re-run once fly workers lists linux-1 or linux-2 as running."
+            echo "::error:: ${reason}"
+            printf '%s\n' "$reason" > infra/reason
+
+  # The first `linux` step of each remote job: a no-op that only asks for a
+  # remote worker, in a short wrapper (5m: the first run on a worker also
+  # streams the task image to it). Without it a job whose remote host is off
+  # would hold its lane for the whole of its suite's wrapper (130m) on every
+  # tick, and the 10- and 30-minute clocks would queue builds faster than
+  # they could time out. With it a tick fails in 5m, before `pick` posts a
+  # `start` on any pull request, and `linux_absent` (with no `ran` to find)
+  # names the cause. Each call site sets `image:` to one of its own gets.
+  linux_probe: &linux_probe
+    task: linux-worker-probe
+    tags: [linux]
+    container_limits: {cpu: 512}
+    config:
+      platform: linux
+      run:
+        path: sh
+        args: [-c, "echo a linux worker took this build"]
+
   # -- A memory budget for the full pytest suites (TheHub #61106) ----------
   #
   # thehub/unit #360 (`Killed ... pytest tests/security`) and post-merge #1623
@@ -1699,11 +1763,13 @@ jobs:
   # anywhere.
   - name: post-merge
     public: true
-    # `pytest-memory` as well as its lane: it imports every test module of
-    # the unit, integration and security tiers (a collect-only run since
-    # TheHub #61321), and it must never run beside `unit` or `container-tiers`
-    # (TheHub #61106; see the note above `unit`).
-    serial_groups: [dast, pytest-memory]
+    # `linux-suites`, with `container-tiers`: `grade` runs on the remote
+    # `linux` workers (operator decision 2026-11-16), and it imports every
+    # test module of the unit, integration and security tiers, so it never
+    # runs beside the other full suite there (the #61106 rule, on the workers
+    # it now uses). It no longer holds `dast` or `pytest-memory`. See "The
+    # remote lanes" above `unit`.
+    serial_groups: [linux-suites]
     # Reports to TheHub on all four terminal states, per
     # `test_every_job_reports_all_four_terminal_states_per_stage`. This stage
     # is the LANE's own health: a stage that can only ever report success is a
@@ -1736,477 +1802,563 @@ jobs:
         attempts: *retry_fetch
       - <<: *preflight
         tags: [thehub]
-      - task: grade
-        tags: [thehub]
-        container_limits: {cpu: 512}
-        image: python
-        # Two tiers at a 45m soft cap each, plus the bootstrap and the report.
-        # The SOFT cap inside the task is the one that matters: a run killed by
-        # the hard cap produces no verdict at all, and a run that produced no
-        # verdict must say so rather than vanish. That is the entire third
-        # verdict, arriving as a timeout.
-        timeout: 120m
-        params:
-          <<: *hub_params
-          PIP_CACHE_DIR: /pipcache
-          # [#61106] The task's memory budget, enforced by memory-guard (see
-          # the anchor: `container_limits.memory` is refused on these
-          # workers). 2560 MiB of a 3g worker: past it, the worker's cgroup
-          # is about to kill something at random, so this is the last point
-          # at which the kill can still be named. Each run prints its peak.
-          MEMORY_GUARD: *memory_guard
-          MEMORY_BUDGET_MB: "2560"
-        config:
-          platform: linux
-          inputs: [{ name: source }]
-          # [#61106] `infra` at a path of its own, written only when a tier
-          # was killed for memory and so nothing was graded; the job's
-          # post_merge_check report then says errored, not failed.
-          outputs: [{ name: notify }, { name: infra, path: memory-infra }]
-          # /pipcache for the reason `unit` has one: a cold install of TheHub's
-          # dependency set is most of this lane's wall clock. /watermark is the
-          # last determinately-graded sha, one line.
-          caches:
-            - { path: /pipcache }
-            - { path: /watermark }
-          run:
-            path: bash
-            # `-c`, not `-ec`. Every verdict in this script is carried by a
-            # captured exit code, and `-e` would take the shell down at the
-            # first failing command -- before the classifier, before the
-            # report, and before the notify line. The `set` below is written
-            # out rather than inherited for the same reason.
-            args:
-              - -c
-              - |
-                set -uo pipefail
+      - do:
+          - <<: *linux_probe
+            image: python
+        timeout: 5m
+        on_failure:
+          <<: *linux_absent
+          params: { LINUX_STEP: the linux-worker probe }
+        on_error:
+          <<: *linux_absent
+          params: { LINUX_STEP: the linux-worker probe }
+      # [operator decision 2026-11-16] `grade` runs on the remote `linux`
+      # workers and is compute only: no credential, no host address. It
+      # writes its three-valued verdict to `verdict/`, and `report-verdict`
+      # (the `ensure:` below, on this host) posts it with the deploy token,
+      # so the token never reaches the remote host. Its Postgres is the
+      # task's own, on the task's 127.0.0.1, with a throwaway password and an
+      # empty database: no production data.
+      - do:
+          - task: grade
+            tags: [linux]
+            container_limits: {cpu: 512}
+            image: python
+            params:
+              # The branch, for the `tip of <branch>: <sha>` line TheHub's risk
+              # gate reads from this log (scripts/lib/risk_gate.py `_TIP`). A
+              # non-secret var from vars/thehub.yml, not a credential.
+              SCANNED_BRANCH: ((thehub-branch))
+              PIP_CACHE_DIR: /pipcache
+              # [#61106] The task's memory budget, enforced by memory-guard (see
+              # the anchor: `container_limits.memory` is refused on the host's
+              # workers). 2560 MiB, unchanged from the host's 3g worker; a
+              # remote worker is capped at 5g and runs one suite at a time
+              # (`linux-suites`), so this still names the kill before the
+              # worker's cgroup picks a victim. Each run prints its peak.
+              MEMORY_GUARD: *memory_guard
+              MEMORY_BUDGET_MB: "2560"
+            config:
+              platform: linux
+              inputs: [{ name: source }]
+              # [#61106] `infra` at a path of its own, written only when a tier
+              # was killed for memory and so nothing was graded; the job's
+              # post_merge_check report then says errored, not failed.
+              # `verdict` is what `report-verdict` posts; `notify` is also the
+              # `ran` marker `linux_absent` reads.
+              outputs: [{ name: notify }, { name: verdict }, { name: infra, path: memory-infra }]
+              # /pipcache for the reason `unit` has one: a cold install of TheHub's
+              # dependency set is most of this lane's wall clock. /watermark is the
+              # last determinately-graded sha, one line. Task caches are per
+              # worker: each remote worker starts cold and keeps its own
+              # watermark, so the first run on each re-grades a tip the host
+              # already graded. That costs one run, never a wrong verdict.
+              caches:
+                - { path: /pipcache }
+                - { path: /watermark }
+              run:
+                path: bash
+                # `-c`, not `-ec`. Every verdict in this script is carried by a
+                # captured exit code, and `-e` would take the shell down at the
+                # first failing command -- before the classifier, before the
+                # report, and before the notify line. The `set` below is written
+                # out rather than inherited for the same reason.
+                args:
+                  - -c
+                  - |
+                    set -uo pipefail
 
-                mkdir -p notify /watermark
-                WATERMARK=/watermark/last-graded-sha
-                SOFT_TIMEOUT_S=2700
+                    mkdir -p notify /watermark
+                    WATERMARK=/watermark/last-graded-sha
+                    SOFT_TIMEOUT_S=2700
 
-                # -- The tip, read WITHOUT git ------------------------------
-                #
-                # Concourse's git resource writes the checked-out sha to
-                # `.git/ref` and the subject to `.git/commit_message`, so the
-                # watermark comparison happens before anything is installed.
-                # A tick with nothing to grade therefore costs seconds, which
-                # is what makes a 30-minute cadence affordable at all.
-                TIP="$(tr -d '[:space:]' < source/.git/ref 2>/dev/null || true)"
-                MSG="$(head -1 source/.git/commit_message 2>/dev/null || true)"
-                LAST="$(tr -d '[:space:]' < "$WATERMARK" 2>/dev/null || true)"
+                    # -- The tip, read WITHOUT git ------------------------------
+                    #
+                    # Concourse's git resource writes the checked-out sha to
+                    # `.git/ref` and the subject to `.git/commit_message`, so the
+                    # watermark comparison happens before anything is installed.
+                    # A tick with nothing to grade therefore costs seconds, which
+                    # is what makes a 30-minute cadence affordable at all.
+                    TIP="$(tr -d '[:space:]' < source/.git/ref 2>/dev/null || true)"
+                    MSG="$(head -1 source/.git/commit_message 2>/dev/null || true)"
+                    LAST="$(tr -d '[:space:]' < "$WATERMARK" 2>/dev/null || true)"
 
-                if [ -z "$TIP" ]; then
-                  echo "::error::the checkout carries no .git/ref, so there is"
-                  echo "          no tip to grade and no watermark to compare"
-                  echo "          it against. This is the lane failing, not"
-                  echo "          develop."
-                  echo "*TheHub*: post-merge could not read the sha it was asked to grade - the checkout carries no .git/ref. Nothing was measured about develop and the previous verdict still stands. Atlas (DevOps) is accountable." > notify/message.txt
-                  exit 1
-                fi
-
-                echo "tip of ${SCANNED_BRANCH}:       ${TIP}"
-                echo "last determinate grading: ${LAST:-none}"
-
-                if [ "$TIP" = "${LAST:-}" ]; then
-                  echo "Nothing to grade: this tip already has a determinate"
-                  echo "verdict. should_grade() in check_post_merge.py is the"
-                  echo "same rule - if the tip moved, grade the tip."
-                  exit 0
-                fi
-
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-
-                # curl and jq first and on their own, because the verdict this
-                # lane most needs to deliver is the one where the REST of the
-                # bootstrap failed. A reporter installed inside the thing it
-                # reports on cannot report on it.
-                apt-get update -qq >/dev/null 2>&1
-                apt-get install -y -qq curl jq >/dev/null 2>&1 || true
-
-                # -- The environment tests/unit needs -----------------------
-                #
-                # A second copy of `unit`'s bootstrap, in a subshell under
-                # `set -e` so that ANY shortfall collapses into one exit code.
-                # It is read as INDETERMINATE below and never as RED:
-                # tests/unit on the SQLite fallback produces 258 failures and
-                # 113 errors, and filing that as "develop is red" is how a
-                # control comes to be ignored.
-                echo "--- building the environment (log tail follows) -------"
-                (
-                  set -e
-                  apt-get install -y -qq git build-essential postgresql postgresql-contrib
-
-                  cd source
-                  for req in requirements.txt requirements-dev.txt \
-                             */requirements.txt */requirements-dev.txt; do
-                    [ -f "$req" ] || continue
-                    echo "Installing $req"
-                    pip install --quiet -r "$req"
-                  done
-                  pip install --quiet pytest
-
-                  PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
-                  [ -n "$PGVER" ]
-                  apt-get install -y -qq "postgresql-${PGVER}-pgvector" >/dev/null 2>&1 \
-                    || echo "note: pgvector unavailable - vector-typed models will not build"
-
-                  service postgresql start >/dev/null 2>&1 \
-                    || pg_ctlcluster "$PGVER" main start
-                  for _ in $(seq 1 30); do
-                    su postgres -c "pg_isready -q" && break
-                    sleep 1
-                  done
-                  su postgres -c "pg_isready"
-
-                  su postgres -c "psql -q -c \"ALTER USER postgres PASSWORD 'test'\""
-                  su postgres -c "psql -q -c 'CREATE DATABASE thehub_test'"
-                  for ext in vector pgcrypto "uuid-ossp"; do
-                    su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'" \
-                      >/dev/null 2>&1 || echo "note: extension $ext unavailable"
-                  done
-
-                  # The native enum types, replayed from the migrations rather
-                  # than transcribed here, for the reason `unit` gives: a list
-                  # typed into this file is right until somebody adds a fifth.
-                  python - <<'ENUMS'
-                import glob, re, subprocess
-                pattern = re.compile(
-                    r"CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(([^)]*)\)",
-                    re.IGNORECASE | re.DOTALL,
-                )
-                seen = {}
-                paths = sorted(glob.glob("**/db/migrations/*.sql", recursive=True))
-                if not paths:
-                    print("  no db/migrations/*.sql found anywhere in the checkout")
-                for path in paths:
-                    with open(path, encoding="utf-8", errors="replace") as handle:
-                        for name, values in pattern.findall(handle.read()):
-                            seen.setdefault(name.lower(), " ".join(values.split()))
-                print(f"  found {len(seen)} enum type(s)")
-                for name, values in seen.items():
-                    subprocess.run(
-                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
-                        input=f"CREATE TYPE {name} AS ENUM ({values});",
-                        text=True,
-                        check=False,
-                    )
-                ENUMS
-
-                  MADE=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM pg_type WHERE typtype = 'e'\"")
-                  echo "  created ${MADE} enum type(s)"
-                  [ "${MADE:-0}" -gt 0 ]
-
-                  export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
-                  export TEST_DATABASE_URL="$DATABASE_URL"
-
-                  cd backend
-                  python scripts/init_db.py 2>&1 | tail -3
-
-                  applied=0; skipped=0
-                  for f in $(ls db/migrations/*.sql | sort -V); do
-                    if su postgres -c "psql -q -v ON_ERROR_STOP=1 -d thehub_test -f $PWD/$f" >/dev/null 2>&1; then
-                      applied=$((applied+1))
-                    else
-                      skipped=$((skipped+1))
+                    if [ -z "$TIP" ]; then
+                      echo "::error::the checkout carries no .git/ref, so there is"
+                      echo "          no tip to grade and no watermark to compare"
+                      echo "          it against. This is the lane failing, not"
+                      echo "          develop."
+                      echo "*TheHub*: post-merge could not read the sha it was asked to grade - the checkout carries no .git/ref. Nothing was measured about develop and the previous verdict still stands. Atlas (DevOps) is accountable." > notify/message.txt
+                      exit 1
                     fi
-                  done
-                  echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
 
-                  su postgres -c "psql -q -d thehub_test" <<'SEED' || true
-                INSERT INTO users (id, email, username, password_hash, is_active)
-                VALUES ('00000000-0000-0000-0000-000000000001',
-                        'ci@invalid.test', 'ci', 'x-not-a-hash', true)
-                ON CONFLICT DO NOTHING;
-                SEED
+                    echo "tip of ${SCANNED_BRANCH}:       ${TIP}"
+                    echo "last determinate grading: ${LAST:-none}"
 
-                  python - <<'DEFAULTS'
-                import subprocess
-                import models  # noqa: F401 - populates the metadata
-                from db.session import Base
-                from sqlalchemy import DateTime
+                    if [ "$TIP" = "${LAST:-}" ]; then
+                      echo "Nothing to grade: this tip already has a determinate"
+                      echo "verdict. should_grade() in check_post_merge.py is the"
+                      echo "same rule - if the tip moved, grade the tip."
+                      exit 0
+                    fi
 
+                    # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                    # route is dead, so this must land before apt opens a socket. See the
+                    # note at the top of `anchors:`.
+                    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 
-                def literal_for(d, col):
-                    """SQL literal for a Python-side default, or None to skip.
+                    # curl and jq first and on their own, because the verdict this
+                    # lane most needs to deliver is the one where the REST of the
+                    # bootstrap failed. A reporter installed inside the thing it
+                    # reports on cannot report on it.
+                    apt-get update -qq >/dev/null 2>&1
+                    apt-get install -y -qq curl jq >/dev/null 2>&1 || true
 
-                    bool before int on purpose: in Python False == 0, so a dict
-                    keyed on both collapses and every boolean column would emit
-                    SET DEFAULT 0, which Postgres refuses for a boolean.
-                    """
-                    if d is list:
-                        return "'[]'::jsonb"
-                    if d is dict:
-                        return "'{}'::jsonb"
-                    if callable(d):
-                        return "now()" if isinstance(col.type, DateTime) else None
-                    if isinstance(d, bool):
-                        return "true" if d else "false"
-                    if isinstance(d, int) and not isinstance(d, bool):
-                        return str(d)
-                    if isinstance(d, str):
-                        return "'" + d.replace("'", "''") + "'"
-                    return None
+                    # -- The environment tests/unit needs -----------------------
+                    #
+                    # A second copy of `unit`'s bootstrap, in a subshell under
+                    # `set -e` so that ANY shortfall collapses into one exit code.
+                    # It is read as INDETERMINATE below and never as RED:
+                    # tests/unit on the SQLite fallback produces 258 failures and
+                    # 113 errors, and filing that as "develop is red" is how a
+                    # control comes to be ignored.
+                    echo "--- building the environment (log tail follows) -------"
+                    (
+                      set -e
+                      apt-get install -y -qq git build-essential postgresql postgresql-contrib
 
+                      cd source
+                      for req in requirements.txt requirements-dev.txt \
+                                 */requirements.txt */requirements-dev.txt; do
+                        [ -f "$req" ] || continue
+                        echo "Installing $req"
+                        pip install --quiet -r "$req"
+                      done
+                      pip install --quiet pytest
 
-                stmts = []
-                for table in Base.metadata.tables.values():
-                    for col in table.columns:
-                        if col.nullable or col.server_default is not None:
-                            continue
-                        d = getattr(col.default, "arg", None)
-                        if d is None:
-                            continue
-                        literal = literal_for(d, col)
-                        if literal is None:
-                            continue
-                        stmts.append(
-                            f"ALTER TABLE {table.name} "
-                            f"ALTER COLUMN {col.name} SET DEFAULT {literal};"
+                      PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
+                      [ -n "$PGVER" ]
+                      apt-get install -y -qq "postgresql-${PGVER}-pgvector" >/dev/null 2>&1 \
+                        || echo "note: pgvector unavailable - vector-typed models will not build"
+
+                      service postgresql start >/dev/null 2>&1 \
+                        || pg_ctlcluster "$PGVER" main start
+                      for _ in $(seq 1 30); do
+                        su postgres -c "pg_isready -q" && break
+                        sleep 1
+                      done
+                      su postgres -c "pg_isready"
+
+                      su postgres -c "psql -q -c \"ALTER USER postgres PASSWORD 'test'\""
+                      su postgres -c "psql -q -c 'CREATE DATABASE thehub_test'"
+                      for ext in vector pgcrypto "uuid-ossp"; do
+                        su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'" \
+                          >/dev/null 2>&1 || echo "note: extension $ext unavailable"
+                      done
+
+                      # The native enum types, replayed from the migrations rather
+                      # than transcribed here, for the reason `unit` gives: a list
+                      # typed into this file is right until somebody adds a fifth.
+                      python - <<'ENUMS'
+                    import glob, re, subprocess
+                    pattern = re.compile(
+                        r"CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(([^)]*)\)",
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                    seen = {}
+                    paths = sorted(glob.glob("**/db/migrations/*.sql", recursive=True))
+                    if not paths:
+                        print("  no db/migrations/*.sql found anywhere in the checkout")
+                    for path in paths:
+                        with open(path, encoding="utf-8", errors="replace") as handle:
+                            for name, values in pattern.findall(handle.read()):
+                                seen.setdefault(name.lower(), " ".join(values.split()))
+                    print(f"  found {len(seen)} enum type(s)")
+                    for name, values in seen.items():
+                        subprocess.run(
+                            ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                            input=f"CREATE TYPE {name} AS ENUM ({values});",
+                            text=True,
+                            check=False,
                         )
+                    ENUMS
 
-                print(f"  {len(stmts)} column default(s) to mirror")
-                if stmts:
-                    subprocess.run(
-                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
-                        input="\n".join(stmts), text=True, check=False,
-                    )
-                DEFAULTS
+                      MADE=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM pg_type WHERE typtype = 'e'\"")
+                      echo "  created ${MADE} enum type(s)"
+                      [ "${MADE:-0}" -gt 0 ]
 
-                  TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
-                  echo "  schema has ${TABLES} table(s)"
-                  [ "${TABLES:-0}" -ge 50 ]
-                ) > /tmp/bootstrap.log 2>&1
-                BOOT_RC=$?
-                tail -40 /tmp/bootstrap.log
-                echo "--- bootstrap exit ${BOOT_RC} -------------------------"
+                      export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                      export TEST_DATABASE_URL="$DATABASE_URL"
 
-                # -- One graded run of the tier -----------------------------
-                #
-                # PYTEST_RC is appended so the classifier sees all three of the
-                # signals it was written to cross-check: the process exit code,
-                # pytest's own status, and pytest's summary line. TheHub's own
-                # runner emits that line, and the classifier refuses to let any
-                # one of the three decide alone -- the runner's container
-                # command once ended with `tail`, so it exited 0 for a run with
-                # real failures.
-                # [#61106] Each run is wrapped in memory-guard, which writes
-                # <log>.oom/reason when the tier was killed for memory.
-                run_tier() {
-                  rm -rf "${1%.log}.oom"
-                  (
-                    cd source/backend
-                    export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
-                    export TEST_DATABASE_URL="$DATABASE_URL"
-                    export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
-                    export CONFIG_DIR="$HUB_CONFIG_DIR"
-                    export MEMORY_GUARD_DIR="${1%.log}.oom"
-                    export MEMORY_GUARD_LABEL="pytest --collect-only tests/unit tests/integration tests/security"
-                    export MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S"
-                    export MEMORY_GUARD_EXPECTED_S=300
-                    # [TheHub #61321] COLLECT, do not re-run. `unit` and
-                    # `container-tiers` run the suite on every develop commit,
-                    # and develop is linear (squash merges), so the tip is
-                    # always a commit both of them grade and the risk gate
-                    # needs both green on it. What this lane still uniquely
-                    # sees, cheaply, is a landed tree -- any of the three test
-                    # trees the deploy runs -- that no longer imports:
-                    # a collection error is a red summary to the classifier
-                    # ("1 error in ..."), a clean collection has no pass/fail
-                    # summary and reads green on exit 0. ADR 0095 amendment.
-                    if command -v timeout >/dev/null 2>&1; then
-                      python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
-                        python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
-                    else
-                      python -c "$MEMORY_GUARD" python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
-                    fi
-                  ) > "$1" 2>&1
-                  rc=$?
-                  echo "PYTEST_RC=${rc}" >> "$1"
-                  return "$rc"
-                }
+                      cd backend
+                      python scripts/init_db.py 2>&1 | tail -3
 
-                # The classifier is IMPORTED FROM THE CHECKOUT, never
-                # reimplemented here. The three-verdict rule, the OOM
-                # signatures, the ANSI stripping and the precedence between the
-                # exit code, PYTEST_RC and the summary line all belong to
-                # TheHub, and a second opinion about what "red" means is how two
-                # controls come to disagree about one tree.
-                classify() {
-                  python - "$1" "$2" <<'CLASSIFY'
-                import importlib.util
-                import pathlib
-                import sys
+                      applied=0; skipped=0
+                      for f in $(ls db/migrations/*.sql | sort -V); do
+                        if su postgres -c "psql -q -v ON_ERROR_STOP=1 -d thehub_test -f $PWD/$f" >/dev/null 2>&1; then
+                          applied=$((applied+1))
+                        else
+                          skipped=$((skipped+1))
+                        fi
+                      done
+                      echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
 
-                spec = importlib.util.spec_from_file_location(
-                    "check_post_merge", "source/scripts/check_post_merge.py")
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
-                verdict, detail = module.classify_run(int(sys.argv[1]), text)
-                print(verdict + "|" + " ".join(detail.split())[:400])
-                CLASSIFY
-                }
+                      su postgres -c "psql -q -d thehub_test" <<'SEED' || true
+                    INSERT INTO users (id, email, username, password_hash, is_active)
+                    VALUES ('00000000-0000-0000-0000-000000000001',
+                            'ci@invalid.test', 'ci', 'x-not-a-hash', true)
+                    ON CONFLICT DO NOTHING;
+                    SEED
 
-                VERDICT=""
-                DETAIL=""
-                OOM=""
+                      python - <<'DEFAULTS'
+                    import subprocess
+                    import models  # noqa: F401 - populates the metadata
+                    from db.session import Base
+                    from sqlalchemy import DateTime
 
-                if [ "$BOOT_RC" -ne 0 ]; then
-                  VERDICT="indeterminate"
-                  DETAIL="the environment this lane needs was not built (bootstrap exited ${BOOT_RC}), so nothing was measured about develop"
-                else
-                  STARTED=$(date +%s)
-                  run_tier /tmp/run1.log
-                  RC1=$?
-                  ELAPSED=$(( $(date +%s) - STARTED ))
-                  tail -25 /tmp/run1.log
 
-                  # [#61106] A tier killed for memory measured nothing about
-                  # the tree. #1623's "PYTEST_RC=137 with no pytest summary"
-                  # reached the classifier and was filed as a red develop;
-                  # it is caught here first, and becomes INDETERMINATE.
-                  OOM=""
-                  if [ -s /tmp/run1.oom/reason ]; then
-                    OOM="$(head -1 /tmp/run1.oom/reason)"
-                    VERDICT="indeterminate"
-                    DETAIL="${OOM#INFRASTRUCTURE, NOT A VERDICT: }"
-                  elif [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
-                    # A partial run that happens to contain no failures reads
-                    # as a clean summary, so the timeout must be caught before
-                    # the classifier ever sees it. `unit` learned the same
-                    # thing at its own cap: a hard kill produces no verdict,
-                    # and a soft one produces a verdict about a fraction of
-                    # the suite.
-                    VERDICT="indeterminate"
-                    DETAIL="the unit tier did not finish within ${SOFT_TIMEOUT_S}s, so these results cover only the tests that ran"
-                  else
-                    LINE1="$(classify "$RC1" /tmp/run1.log | tail -1)"
-                    if [ -z "$LINE1" ]; then
+                    def literal_for(d, col):
+                        """SQL literal for a Python-side default, or None to skip.
+
+                        bool before int on purpose: in Python False == 0, so a dict
+                        keyed on both collapses and every boolean column would emit
+                        SET DEFAULT 0, which Postgres refuses for a boolean.
+                        """
+                        if d is list:
+                            return "'[]'::jsonb"
+                        if d is dict:
+                            return "'{}'::jsonb"
+                        if callable(d):
+                            return "now()" if isinstance(col.type, DateTime) else None
+                        if isinstance(d, bool):
+                            return "true" if d else "false"
+                        if isinstance(d, int) and not isinstance(d, bool):
+                            return str(d)
+                        if isinstance(d, str):
+                            return "'" + d.replace("'", "''") + "'"
+                        return None
+
+
+                    stmts = []
+                    for table in Base.metadata.tables.values():
+                        for col in table.columns:
+                            if col.nullable or col.server_default is not None:
+                                continue
+                            d = getattr(col.default, "arg", None)
+                            if d is None:
+                                continue
+                            literal = literal_for(d, col)
+                            if literal is None:
+                                continue
+                            stmts.append(
+                                f"ALTER TABLE {table.name} "
+                                f"ALTER COLUMN {col.name} SET DEFAULT {literal};"
+                            )
+
+                    print(f"  {len(stmts)} column default(s) to mirror")
+                    if stmts:
+                        subprocess.run(
+                            ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                            input="\n".join(stmts), text=True, check=False,
+                        )
+                    DEFAULTS
+
+                      TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
+                      echo "  schema has ${TABLES} table(s)"
+                      [ "${TABLES:-0}" -ge 50 ]
+                    ) > /tmp/bootstrap.log 2>&1
+                    BOOT_RC=$?
+                    tail -40 /tmp/bootstrap.log
+                    echo "--- bootstrap exit ${BOOT_RC} -------------------------"
+
+                    # -- One graded run of the tier -----------------------------
+                    #
+                    # PYTEST_RC is appended so the classifier sees all three of the
+                    # signals it was written to cross-check: the process exit code,
+                    # pytest's own status, and pytest's summary line. TheHub's own
+                    # runner emits that line, and the classifier refuses to let any
+                    # one of the three decide alone -- the runner's container
+                    # command once ended with `tail`, so it exited 0 for a run with
+                    # real failures.
+                    # [#61106] Each run is wrapped in memory-guard, which writes
+                    # <log>.oom/reason when the tier was killed for memory.
+                    run_tier() {
+                      rm -rf "${1%.log}.oom"
+                      (
+                        cd source/backend
+                        export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                        export TEST_DATABASE_URL="$DATABASE_URL"
+                        export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
+                        export CONFIG_DIR="$HUB_CONFIG_DIR"
+                        export MEMORY_GUARD_DIR="${1%.log}.oom"
+                        export MEMORY_GUARD_LABEL="pytest --collect-only tests/unit tests/integration tests/security"
+                        export MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S"
+                        export MEMORY_GUARD_EXPECTED_S=300
+                        # [TheHub #61321] COLLECT, do not re-run. `unit` and
+                        # `container-tiers` run the suite on every develop commit,
+                        # and develop is linear (squash merges), so the tip is
+                        # always a commit both of them grade and the risk gate
+                        # needs both green on it. What this lane still uniquely
+                        # sees, cheaply, is a landed tree -- any of the three test
+                        # trees the deploy runs -- that no longer imports:
+                        # a collection error is a red summary to the classifier
+                        # ("1 error in ..."), a clean collection has no pass/fail
+                        # summary and reads green on exit 0. ADR 0095 amendment.
+                        if command -v timeout >/dev/null 2>&1; then
+                          python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
+                            python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
+                        else
+                          python -c "$MEMORY_GUARD" python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
+                        fi
+                      ) > "$1" 2>&1
+                      rc=$?
+                      echo "PYTEST_RC=${rc}" >> "$1"
+                      return "$rc"
+                    }
+
+                    # The classifier is IMPORTED FROM THE CHECKOUT, never
+                    # reimplemented here. The three-verdict rule, the OOM
+                    # signatures, the ANSI stripping and the precedence between the
+                    # exit code, PYTEST_RC and the summary line all belong to
+                    # TheHub, and a second opinion about what "red" means is how two
+                    # controls come to disagree about one tree.
+                    classify() {
+                      python - "$1" "$2" <<'CLASSIFY'
+                    import importlib.util
+                    import pathlib
+                    import sys
+
+                    spec = importlib.util.spec_from_file_location(
+                        "check_post_merge", "source/scripts/check_post_merge.py")
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+                    verdict, detail = module.classify_run(int(sys.argv[1]), text)
+                    print(verdict + "|" + " ".join(detail.split())[:400])
+                    CLASSIFY
+                    }
+
+                    VERDICT=""
+                    DETAIL=""
+                    OOM=""
+
+                    if [ "$BOOT_RC" -ne 0 ]; then
                       VERDICT="indeterminate"
-                      DETAIL="scripts/check_post_merge.py could not be imported from the checkout, so this run has no classifier and therefore no verdict"
+                      DETAIL="the environment this lane needs was not built (bootstrap exited ${BOOT_RC}), so nothing was measured about develop"
                     else
-                      VERDICT="${LINE1%%|*}"
-                      DETAIL="${LINE1#*|}"
+                      STARTED=$(date +%s)
+                      run_tier /tmp/run1.log
+                      RC1=$?
+                      ELAPSED=$(( $(date +%s) - STARTED ))
+                      tail -25 /tmp/run1.log
+
+                      # [#61106] A tier killed for memory measured nothing about
+                      # the tree. #1623's "PYTEST_RC=137 with no pytest summary"
+                      # reached the classifier and was filed as a red develop;
+                      # it is caught here first, and becomes INDETERMINATE.
+                      OOM=""
+                      if [ -s /tmp/run1.oom/reason ]; then
+                        OOM="$(head -1 /tmp/run1.oom/reason)"
+                        VERDICT="indeterminate"
+                        DETAIL="${OOM#INFRASTRUCTURE, NOT A VERDICT: }"
+                      elif [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
+                        # A partial run that happens to contain no failures reads
+                        # as a clean summary, so the timeout must be caught before
+                        # the classifier ever sees it. `unit` learned the same
+                        # thing at its own cap: a hard kill produces no verdict,
+                        # and a soft one produces a verdict about a fraction of
+                        # the suite.
+                        VERDICT="indeterminate"
+                        DETAIL="the unit tier did not finish within ${SOFT_TIMEOUT_S}s, so these results cover only the tests that ran"
+                      else
+                        LINE1="$(classify "$RC1" /tmp/run1.log | tail -1)"
+                        if [ -z "$LINE1" ]; then
+                          VERDICT="indeterminate"
+                          DETAIL="scripts/check_post_merge.py could not be imported from the checkout, so this run has no classifier and therefore no verdict"
+                        else
+                          VERDICT="${LINE1%%|*}"
+                          DETAIL="${LINE1#*|}"
+                        fi
+                      fi
+
+                      # A RED IS CONFIRMED BEFORE IT IS ASSERTED. "develop is red"
+                      # is a claim about the TREE, and a failure that does not
+                      # reproduce on the identical tree is not evidence for it.
+                      # Measured on this control's first real run: 6a5ccd4f gave
+                      # "1 failed, 8857 passed" and the same tree re-run gave
+                      # "8858 passed" -- #59092's memory pressure surfacing through
+                      # the one test written to refuse a vacuous result.
+                      #
+                      # The finding is RECLASSIFIED, never discarded: the first
+                      # run's summary stays in the reason, and the watermark does
+                      # not advance, so the tip is graded again rather than marked
+                      # covered by a run nobody trusts.
+                      if [ "$VERDICT" = "red" ]; then
+                        echo "--- RED on the first run; re-running the identical tree ---"
+                        STARTED=$(date +%s)
+                        run_tier /tmp/run2.log
+                        RC2=$?
+                        ELAPSED=$(( $(date +%s) - STARTED ))
+                        tail -25 /tmp/run2.log
+                        if [ -s /tmp/run2.oom/reason ]; then
+                          OOM="$(head -1 /tmp/run2.oom/reason)"
+                          LINE2="indeterminate|${OOM#INFRASTRUCTURE, NOT A VERDICT: }"
+                        elif [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
+                          LINE2="indeterminate|the retry did not finish within ${SOFT_TIMEOUT_S}s"
+                        else
+                          LINE2="$(classify "$RC2" /tmp/run2.log | tail -1)"
+                          [ -n "$LINE2" ] || LINE2="indeterminate|the retry could not be classified"
+                        fi
+                        V2="${LINE2%%|*}"
+                        D2="${LINE2#*|}"
+                        if [ "$V2" = "red" ]; then
+                          DETAIL="${DETAIL} (confirmed on retry: ${D2})"
+                        else
+                          VERDICT="indeterminate"
+                          DETAIL="RED on the first run (${DETAIL}) and ${V2} on an immediate retry of the identical tree (${D2}) - not reproducible, so it is NOT reported as a red tree"
+                        fi
+                      fi
                     fi
-                  fi
 
-                  # A RED IS CONFIRMED BEFORE IT IS ASSERTED. "develop is red"
-                  # is a claim about the TREE, and a failure that does not
-                  # reproduce on the identical tree is not evidence for it.
-                  # Measured on this control's first real run: 6a5ccd4f gave
-                  # "1 failed, 8857 passed" and the same tree re-run gave
-                  # "8858 passed" -- #59092's memory pressure surfacing through
-                  # the one test written to refuse a vacuous result.
-                  #
-                  # The finding is RECLASSIFIED, never discarded: the first
-                  # run's summary stays in the reason, and the watermark does
-                  # not advance, so the tip is graded again rather than marked
-                  # covered by a run nobody trusts.
-                  if [ "$VERDICT" = "red" ]; then
-                    echo "--- RED on the first run; re-running the identical tree ---"
-                    STARTED=$(date +%s)
-                    run_tier /tmp/run2.log
-                    RC2=$?
-                    ELAPSED=$(( $(date +%s) - STARTED ))
-                    tail -25 /tmp/run2.log
-                    if [ -s /tmp/run2.oom/reason ]; then
-                      OOM="$(head -1 /tmp/run2.oom/reason)"
-                      LINE2="indeterminate|${OOM#INFRASTRUCTURE, NOT A VERDICT: }"
-                    elif [ "$ELAPSED" -ge "$SOFT_TIMEOUT_S" ]; then
-                      LINE2="indeterminate|the retry did not finish within ${SOFT_TIMEOUT_S}s"
-                    else
-                      LINE2="$(classify "$RC2" /tmp/run2.log | tail -1)"
-                      [ -n "$LINE2" ] || LINE2="indeterminate|the retry could not be classified"
+                    echo "=================================================="
+                    echo "VERDICT: ${VERDICT} - ${DETAIL}"
+                    echo "=================================================="
+
+                    # -- The three-valued row, and the exit code ----------------
+                    #
+                    # `errored` is TheHub's existing word for a stage that did not
+                    # reach a verdict, and it is the one the Slack hook already
+                    # gives different wording and a different instruction. That is
+                    # why INDETERMINATE lands there rather than on a fourth name
+                    # nothing downstream would recognise.
+                    case "$VERDICT" in
+                      green) STATUS=success; CODE=0 ;;
+                      red)   STATUS=failed;  CODE=1 ;;
+                      *)     STATUS=errored; CODE=2; VERDICT=indeterminate ;;
+                    esac
+
+                    # [#61106] Killed for memory and nothing graded: the job's own
+                    # post_merge_check report reads `infra` and says errored, with
+                    # this reason first, instead of failed.
+                    if [ "$VERDICT" = "indeterminate" ] && [ -n "$OOM" ]; then
+                      mkdir -p memory-infra
+                      printf '%s\n' "$OOM" > memory-infra/reason
+                      printf '137\n' > memory-infra/exit_code
                     fi
-                    V2="${LINE2%%|*}"
-                    D2="${LINE2#*|}"
-                    if [ "$V2" = "red" ]; then
-                      DETAIL="${DETAIL} (confirmed on retry: ${D2})"
-                    else
-                      VERDICT="indeterminate"
-                      DETAIL="RED on the first run (${DETAIL}) and ${V2} on an immediate retry of the identical tree (${D2}) - not reproducible, so it is NOT reported as a red tree"
+
+                    # [operator decision 2026-11-16] The verdict leaves as data.
+                    # This task runs on a remote worker with no credential and
+                    # no route to TheHub; `report-verdict`, on this host, posts
+                    # these six files as the post_merge_verdict row exactly as
+                    # this task used to.
+                    printf '%s' "$TIP" > verdict/tip
+                    printf '%s' "${MSG:-unknown}" > verdict/message
+                    printf '%s' "$STATUS" > verdict/status
+                    printf '%s' "$VERDICT" > verdict/verdict
+                    printf '%s' "$DETAIL" > verdict/detail
+                    printf '%s' "$CODE" > verdict/exit_code
+                    echo "Wrote post_merge_verdict=${STATUS} (${VERDICT}) for ${TIP}; report-verdict posts it."
+
+                    # Only a DETERMINATE grading advances the watermark, exactly as
+                    # in the script. An indeterminate run measured nothing, so the
+                    # next tick must try the same tip again.
+                    if [ "$VERDICT" = "green" ] || [ "$VERDICT" = "red" ]; then
+                      printf '%s' "$TIP" > "$WATERMARK"
                     fi
-                  fi
-                fi
 
-                echo "=================================================="
-                echo "VERDICT: ${VERDICT} - ${DETAIL}"
-                echo "=================================================="
+                    # The Slack line, written only when there is something to say
+                    # and DIFFERENT for the two non-green verdicts, because they
+                    # call for opposite actions. The hook uses it verbatim; "the
+                    # job failed" on its own sends nobody anywhere.
+                    if [ "$VERDICT" = "red" ]; then
+                      echo "*TheHub*: post-merge - DEVELOP IS RED at ${TIP} on ${SCANNED_BRANCH}. The unit tier failed on the tree AS IT LANDED and the failure reproduced on an immediate re-run of the identical tree: ${DETAIL}. This is the merged tree, not one commit - both sides' gates can have passed. Atlas (DevOps) is accountable. Re-triggering does not clear this." > notify/message.txt
+                    elif [ "$VERDICT" = "indeterminate" ]; then
+                      echo "*TheHub*: post-merge - NO VERDICT for ${TIP} on ${SCANNED_BRANCH}. ${DETAIL}. This is NOT a red develop and NOT a green one: nothing was learned, the previous verdict still stands, any open red stays open, and the tip is deliberately NOT marked graded so the next tick grades it again. Atlas (DevOps) is accountable. Re-triggering is the correct response here, and would be the wrong one for a red." > notify/message.txt
+                    fi
 
-                # -- The three-valued row, and the exit code ----------------
-                #
-                # `errored` is TheHub's existing word for a stage that did not
-                # reach a verdict, and it is the one the Slack hook already
-                # gives different wording and a different instruction. That is
-                # why INDETERMINATE lands there rather than on a fourth name
-                # nothing downstream would recognise.
-                case "$VERDICT" in
-                  green) STATUS=success; CODE=0 ;;
-                  red)   STATUS=failed;  CODE=1 ;;
-                  *)     STATUS=errored; CODE=2; VERDICT=indeterminate ;;
-                esac
+                    exit "$CODE"
+        # Two tiers at a 45m soft cap each, plus the bootstrap. The SOFT cap
+        # inside the task is the one that matters: a run killed by the hard cap
+        # produces no verdict at all, and a run that produced no verdict must
+        # say so rather than vanish. That is the entire third verdict, arriving
+        # as a timeout. 120m was the task's own cap; the wrapper carries it
+        # now, plus 10m, because a task's `timeout:` does not start until a
+        # worker is chosen and this one bounds the wait for a remote worker too.
+        timeout: 130m
+        on_failure:
+          <<: *linux_absent
+          input_mapping: { ran: notify }
+          params: { LINUX_STEP: post-merge/grade }
+        on_error:
+          <<: *linux_absent
+          input_mapping: { ran: notify }
+          params: { LINUX_STEP: post-merge/grade }
+        # The verdict row, from this host. Runs whatever `grade` did; with no
+        # `verdict/` (nothing to grade, the lane failed before grading, or no
+        # remote worker took it) it posts nothing, as `grade` posted nothing in
+        # those cases before, and post_merge_check carries the lane's state.
+        # Ends `exit 0` always: a verdict TheHub did not hear about is a
+        # reporting problem, never a different verdict.
+        ensure:
+          task: report-verdict
+          container_limits: {cpu: 512}
+          timeout: 5m
+          image: python
+          params: *hub_params
+          config:
+            platform: linux
+            inputs: [{ name: verdict, optional: true }]
+            run:
+              path: python
+              args:
+                - -c
+                - |
+                  import json, os, pathlib, sys, urllib.request
 
-                # [#61106] Killed for memory and nothing graded: the job's own
-                # post_merge_check report reads `infra` and says errored, with
-                # this reason first, instead of failed.
-                if [ "$VERDICT" = "indeterminate" ] && [ -n "$OOM" ]; then
-                  mkdir -p memory-infra
-                  printf '%s\n' "$OOM" > memory-infra/reason
-                  printf '137\n' > memory-infra/exit_code
-                fi
+                  d = pathlib.Path("verdict")
+                  if not (d / "status").is_file():
+                      print("grade wrote no verdict (nothing to grade, or it never graded); nothing to post.")
+                      sys.exit(0)
 
-                if [ -n "${HUB_URL:-}" ] && [ -n "${HUB_DEPLOY_TOKEN:-}" ] && command -v jq >/dev/null 2>&1; then
-                  BODY=$(jq -nc \
-                    --arg d "$TIP" --arg sha "$TIP" --arg br "${SCANNED_BRANCH:-develop}" \
-                    --arg msg "${MSG:-unknown}" --arg st "$STATUS" --arg v "$VERDICT" \
-                    --arg note "$DETAIL" --argjson ec "$CODE" \
-                    '{deploy_id: $d, stage: "post_merge_verdict", status: $st,
-                      git_sha: $sha, git_branch: $br, commit_message: $msg,
-                      actor: "concourse", target_env: "prod", exit_code: $ec,
-                      notes: $note,
-                      meta: {source: "concourse", pipeline: "thehub",
-                             verdict: $v, check: "post_merge"}}')
-                  # [#336] A red or indeterminate verdict is a failure report,
-                  # and every failure report carries a log_tail: the verdict's
-                  # own detail and the job link. Green is unchanged.
-                  if [ "$STATUS" != "success" ]; then
-                    LT_LINK="${CONCOURSE_URL:-http://localhost:8080}/teams/main/pipelines/thehub/jobs/post-merge"
-                    BODY=$(printf '%s' "$BODY" | jq -c \
-                      --arg lt "post-merge ${VERDICT}: ${DETAIL} -- ${LT_LINK}" \
-                      '. + {log_tail: $lt}')
-                  fi
-                  curl -sS --fail --max-time 20 -X POST \
-                    -H "Content-Type: application/json" \
-                    -H "X-Ops-Deploy-Token: $HUB_DEPLOY_TOKEN" \
-                    -d "$BODY" "$HUB_URL/api/ops/deploys" >/dev/null \
-                    && echo "Reported post_merge_verdict=${STATUS} (${VERDICT}) for ${TIP}." \
-                    || echo "Could not report the verdict to TheHub; the verdict stands."
-                else
-                  echo "TheHub reporting is not configured or jq is missing; the verdict is in this log only."
-                fi
+                  def read(name):
+                      path = d / name
+                      return path.read_text(encoding="utf-8") if path.is_file() else ""
 
-                # Only a DETERMINATE grading advances the watermark, exactly as
-                # in the script. An indeterminate run measured nothing, so the
-                # next tick must try the same tip again.
-                if [ "$VERDICT" = "green" ] || [ "$VERDICT" = "red" ]; then
-                  printf '%s' "$TIP" > "$WATERMARK"
-                fi
-
-                # The Slack line, written only when there is something to say
-                # and DIFFERENT for the two non-green verdicts, because they
-                # call for opposite actions. The hook uses it verbatim; "the
-                # job failed" on its own sends nobody anywhere.
-                if [ "$VERDICT" = "red" ]; then
-                  echo "*TheHub*: post-merge - DEVELOP IS RED at ${TIP} on ${SCANNED_BRANCH}. The unit tier failed on the tree AS IT LANDED and the failure reproduced on an immediate re-run of the identical tree: ${DETAIL}. This is the merged tree, not one commit - both sides' gates can have passed. Atlas (DevOps) is accountable. Re-triggering does not clear this." > notify/message.txt
-                elif [ "$VERDICT" = "indeterminate" ]; then
-                  echo "*TheHub*: post-merge - NO VERDICT for ${TIP} on ${SCANNED_BRANCH}. ${DETAIL}. This is NOT a red develop and NOT a green one: nothing was learned, the previous verdict still stands, any open red stays open, and the tip is deliberately NOT marked graded so the next tick grades it again. Atlas (DevOps) is accountable. Re-triggering is the correct response here, and would be the wrong one for a red." > notify/message.txt
-                fi
-
-                exit "$CODE"
+                  url = os.environ.get("HUB_URL", "")
+                  token = os.environ.get("HUB_DEPLOY_TOKEN", "")
+                  if not url or not token:
+                      print("TheHub reporting is not configured; the verdict is in grade's log only.")
+                      sys.exit(0)
+                  tip, status, verdict, detail = read("tip"), read("status"), read("verdict"), read("detail")
+                  code = read("exit_code").strip()
+                  body = {
+                      "deploy_id": tip, "stage": "post_merge_verdict", "status": status,
+                      "git_sha": tip, "git_branch": os.environ.get("SCANNED_BRANCH") or "develop",
+                      "commit_message": read("message") or "unknown",
+                      "actor": "concourse", "target_env": "prod",
+                      "exit_code": int(code) if code.isdigit() else 2,
+                      "notes": detail,
+                      "meta": {"source": "concourse", "pipeline": "thehub",
+                               "verdict": verdict, "check": "post_merge"},
+                  }
+                  # [#336] A red or indeterminate verdict is a failure report, and
+                  # every failure report carries a log_tail: the verdict's own
+                  # detail and the job link. Green is unchanged.
+                  if status != "success":
+                      link = (os.environ.get("CONCOURSE_URL") or "http://localhost:8080") \
+                          + "/teams/main/pipelines/thehub/jobs/post-merge"
+                      body["log_tail"] = f"post-merge {verdict}: {detail} -- {link}"
+                  request = urllib.request.Request(
+                      url + "/api/ops/deploys", data=json.dumps(body).encode(), method="POST",
+                      headers={"Content-Type": "application/json",
+                               "X-Ops-Deploy-Token": token})
+                  try:
+                      with urllib.request.urlopen(request, timeout=20):
+                          pass
+                      print(f"Reported post_merge_verdict={status} ({verdict}) for {tip}.")
+                  except Exception as exc:  # noqa: BLE001 - never fails the build
+                      print(f"Could not report the verdict to TheHub ({exc}); the verdict stands.")
+                  sys.exit(0)
 
   # Every build and scan job below is in exactly one of three serial lanes, so
   # at most three of them run at a time (TheHub #60928, D-172):
@@ -2217,11 +2369,12 @@ jobs:
   #   scanners    qa, secrets, sast, dependencies, iac, prompt-evals,
   #               ai-models, remediate. ~21m of median work, run while the
   #               unit tier does.
-  #   dast        every DAST lane plus the jobs off the commit's clock:
-  #               post-merge (half-hourly), image-refresh (daily) and
-  #               cicd-drift (quarterly), and container-tiers (TheHub
-  #               #61321), which is per commit but off its scan path. Idle for a commit's first ~35m,
-  #               until deploy-demo has passed.
+  #   dast        every DAST lane plus the host jobs off the commit's
+  #               clock: api-inventory, functional-demo, cicd-drift
+  #               (quarterly). Idle for a commit's first ~35m, until
+  #               deploy-demo has passed. post-merge, container-tiers,
+  #               pr-gates, gate-smoke and image-refresh were here too, and
+  #               left for the remote lanes below (2026-11-16).
   #
   # This was one `serial_groups: [worker]` for every job, and it was not
   # tidiness. Seven jobs trigger on the same commit and each one apt-gets and
@@ -2251,6 +2404,60 @@ jobs:
   # is that a post-merge run already under way when a commit lands delays that
   # commit's `unit` by up to its own run (p90 15.4m), which
   # test_thehub_serial_lanes.py bounds; a kill costs an hour and a hand re-run.
+  #
+  # -- The remote lanes (operator decision 2026-11-16, "heavy jobs to Linux") --
+  #
+  # Thirteen jobs shared `dast`, so a 20-45 minute post-merge grade or
+  # container-tiers run held every DAST lane, every PR verdict and the daily
+  # image refresh behind it. The heavy tasks of four jobs now run on the
+  # remote `linux` workers (linux-1 and linux-2, another machine on the LAN,
+  # 5g and 4 CPU each, containerd), and those jobs left `dast` and
+  # `pytest-memory` for lanes of their own:
+  #
+  #   linux-suites  post-merge (`grade`) and container-tiers (`tiers`): the
+  #                 two full suites, one at a time, so they never share one
+  #                 remote worker's 5g (the #61106 rule, where they now run).
+  #   linux-pr      pr-gates (`gates`, `integration`) and gate-smoke (the
+  #                 same `gates`), so a PR verdict waits for neither a suite
+  #                 nor a scan. With two remote workers and
+  #                 fewest-build-containers placement it normally runs on the
+  #                 worker the suite is not using; the worst case, both on one
+  #                 worker at their budgets, is 2560 + 2304 MiB under 5g.
+  #   image-refresh image-refresh (`build`, remote since #1169).
+  #
+  # These three are not host lanes. The bound of three concurrent heavy
+  # jobs on THIS host (D-172, MAX_LANES in test_thehub_serial_lanes.py)
+  # still holds: only unit-chain, scanners and dast run heavy work here, and
+  # `pytest-memory` keeps `unit`, the one full suite left on the host, apart
+  # from any suite that comes back to it.
+  #
+  # What runs remotely is compute only. No credential and no host address:
+  # every report and check run stays on this host (`preflight`, `pick`, the
+  # job hooks, post-merge's `report-verdict`). The suites' Postgres and
+  # Redis are the tasks' own, on the task's 127.0.0.1, with throwaway
+  # passwords and empty databases; no production data reaches the remote
+  # host. One address does: the two suites run in TheHub's image from the
+  # local registry, and an image_resource is fetched with its task's tags,
+  # i.e. by the remote worker, which cannot reach Docker Desktop's gateway
+  # (192.168.65.254, what `((registry))` names). So those two read
+  # `((remote-registry))`: the same registry at this host's LAN address,
+  # held in Vault at concourse/main/remote-registry so the address is not in
+  # this public file (D-180's recommended option).
+  #
+  # A tagged step never falls back to an untagged worker. Each remote task
+  # sits in a timed `do:` (a task's own timeout starts only after a worker
+  # is chosen), each remote job starts with `linux_probe` (5m), and
+  # `linux_absent` turns "no remote worker" into an infrastructure reason,
+  # so it reads as errored / cancelled, never as a red verdict. The cost of
+  # the decision, stated: container-tiers is GATING, so with the remote
+  # host off no deploy is judged until it is back.
+  #
+  # Two things this does not control. `linux-3` carries `linux,small`, so it
+  # takes `[linux]` steps too (Concourse has no negative tag): keeping the
+  # suites off it needs linux-1 and linux-2 re-registered with a further tag
+  # (say `large`) and these tasks tagged `[linux, large]`. And serial groups
+  # are per pipeline, so mykronos.yml's own remote lanes can run beside
+  # these on the same workers.
   # == Stage 1: quality =====================================================
 
   # -- `pr-gates`: the deploy's own gates, on every pull request (TheHub #61102)
@@ -2335,12 +2542,19 @@ jobs:
     # 90-minute unit run on develop. pip-audit's scratch install makes this a
     # heavy job, so it is serialised like every other.
     #
-    # [TheHub #61110] And `pytest-memory` (#61106), because the integration
-    # task starts Postgres, Redis and a pytest process: it never runs beside
-    # `unit`, `post-merge` or `container-tiers`. The price is that a tick
-    # arriving while one of those runs waits for it; the 10-minute budget is
-    # the job's own run time, which a build's start_time measures.
-    serial_groups: [dast, pytest-memory]
+    # [TheHub #61110] It was in `pytest-memory` (#61106) as well, because the
+    # integration task starts Postgres, Redis and a pytest process beside the
+    # host's other suites.
+    #
+    # [operator decision 2026-11-16] `gates` and `integration` now run on the
+    # remote `linux` workers, so the job holds neither `dast` nor
+    # `pytest-memory`: a pull request's verdict no longer queues behind a
+    # post-merge grade or a DAST scan. `linux-pr` is its own lane, not
+    # `linux-suites`, so it does not wait for a 45-minute container-tiers
+    # run either; with two remote workers and fewest-build-containers
+    # placement it normally runs on the worker the suite is not using. See
+    # "The remote lanes" above `unit`.
+    serial_groups: [linux-pr]
     on_success:
       do:
         - <<: *hub_report
@@ -2388,6 +2602,18 @@ jobs:
         attempts: *retry_fetch
       - <<: *preflight
         tags: [thehub]
+      # Before `pick`, so a tick with no remote worker fails in 5m and posts
+      # no `start` on any pull request (see `linux_probe`).
+      - do:
+          - <<: *linux_probe
+            image: python313
+        timeout: 5m
+        on_failure:
+          <<: *linux_absent
+          params: { LINUX_STEP: the linux-worker probe }
+        on_error:
+          <<: *linux_absent
+          params: { LINUX_STEP: the linux-worker probe }
       - task: pick
         tags: [thehub]
         container_limits: {cpu: 512}
@@ -2594,211 +2820,227 @@ jobs:
                   git -C pr archive "$BASE_SHA" | tar -x -C pr/.git/judge
                   # -- process-gate inputs, end
                 fi
+      # [operator decision 2026-11-16] On the remote `linux` workers, in a
+      # timed wrapper (see `linux_absent`). The anchor is the wrapper, so
+      # `gate-smoke` runs the same step, timeout and hooks included. `gates`
+      # is compute only already: no params, no cache, no host address (its
+      # inputs are data `pick` made on this host).
       - &pr_gates_task
-        task: gates
-        tags: [thehub]
-        container_limits: {cpu: 512}
-        image: python313
-        # pip-audit resolves the whole requirements set into a scratch venv:
-        # deploy.sh measured ~100s cold and ~30s warm in the same image. The
-        # shape tests are seconds. 20m is a ceiling for a cold cache on a busy
-        # worker, not a budget.
-        #
-        # [TheHub #61113] No cache and no params. A /pipcache that outlived
-        # the run was writable by the branch's code, so one pull request could
-        # plant a download that a later run installed. Every run is cold now
-        # (the tools are hash-pinned; ~35s in this image), and pip-audit, the
-        # one step that executes branch-supplied code (sdist builds while it
-        # resolves the requirements), runs as uid 65534 against a judge tree
-        # only root can write.
-        timeout: 20m
-        config:
-          platform: linux
-          inputs: [{ name: pr }, { name: live-pipeline }]
-          outputs: [{ name: hub_log }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                # [#336] This task's output and exit status, for the failure hook.
-                exec > >(tee hub_log/output.log) 2>&1
-                TEE_PID=$!
-                # [TheHub #61116] An absolute path: the trap runs wherever the script
-                # ends, and a task that cds into source/ made a relative write fail.
-                HUB_LOG_DIR="$PWD/hub_log"
-                trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
+        do:
+          - task: gates
+            tags: [linux]
+            container_limits: {cpu: 512}
+            image: python313
+            # pip-audit resolves the whole requirements set into a scratch venv:
+            # deploy.sh measured ~100s cold and ~30s warm in the same image. The
+            # shape tests are seconds. 20m is a ceiling for a cold cache on a busy
+            # worker, not a budget.
+            #
+            # [TheHub #61113] No cache and no params. A /pipcache that outlived
+            # the run was writable by the branch's code, so one pull request could
+            # plant a download that a later run installed. Every run is cold now
+            # (the tools are hash-pinned; ~35s in this image), and pip-audit, the
+            # one step that executes branch-supplied code (sdist builds while it
+            # resolves the requirements), runs as uid 65534 against a judge tree
+            # only root can write. The 20m cap is on the wrapper below.
+            config:
+              platform: linux
+              inputs: [{ name: pr }, { name: live-pipeline }]
+              outputs: [{ name: hub_log }]
+              run:
+                path: bash
+                args:
+                  - -ec
+                  - |
+                    set -euo pipefail
+                    # [#336] This task's output and exit status, for the failure hook.
+                    exec > >(tee hub_log/output.log) 2>&1
+                    TEE_PID=$!
+                    # [TheHub #61116] An absolute path: the trap runs wherever the script
+                    # ends, and a task that cds into source/ made a relative write fail.
+                    HUB_LOG_DIR="$PWD/hub_log"
+                    trap 'rc=$?; echo "$rc" > "$HUB_LOG_DIR/exit_code"; exec 1>&- 2>&-; wait "$TEE_PID" 2>/dev/null || true; exit "$rc"' EXIT
 
-                if [ ! -f pr/.git/HEAD ]; then
-                  echo "No pull request head needs judging on this run."
-                  exit 0
-                fi
-                echo "Pull request #$(cat pr/.git/pr-number) at $(cat pr/.git/HEAD)"
-
-                # [TheHub #61159] deploy.sh's process gates, DEV-B (#4944) and
-                # DEV-D (#4946), on the pull request's range. #531 merged green
-                # with two new backend/services modules tested in one combined
-                # file, and the first place DEV-D saw it was prod deploy 6710.
-                #
-                # Graded the way a squash merge lands, because that is the
-                # commit deploy.sh grades: the combined diff merge-base..head,
-                # against the bodies of every branch commit (TheHub squashes
-                # with COMMIT_MESSAGES, so each body is in the squash body, and
-                # a trailer on any branch commit is a trailer on the deploy's).
-                #
-                # None of the logic is the branch's. DEV-B is develop's
-                # scripts/lib/devb_gate.py, which deploy.sh's Step 2.5 also
-                # calls, read from the base commit by `pick`. DEV-D is inline in
-                # deploy.sh, so it is ported here, and develop's deploy.sh is
-                # checked for every line the port follows: a change there turns
-                # this red rather than letting the two disagree in silence.
-                # deploy.sh's own stages are untouched and still run at deploy.
-                #
-                # Every gate runs, and the verdict counts only after the deploy
-                # gates below have run too, so one red check names every reason.
-                PROCESS_RC=0
-                python3 -I - <<'PROCESS' || PROCESS_RC=$?
-                import os, re, subprocess, sys, tempfile
-
-                pg = os.path.join("pr", ".git", "process-gates")
-
-
-                def read(name):
-                    with open(os.path.join(pg, name), encoding="utf-8", errors="replace") as fh:
-                        return fh.read()
-
-
-                try:
-                    base, merge_base, head = read("range").split()
-                    deploy_sh = read("deploy.sh")
-                    changed = [ln.strip() for ln in read("changed").splitlines() if ln.strip()]
-                    added = [ln.strip() for ln in read("added").splitlines() if ln.strip()]
-                    bodies = read("bodies").replace("\r\n", "\n")
-                except (OSError, ValueError) as exc:
-                    print(f"::error::The process gates' inputs are missing ({exc}); failing closed.")
-                    sys.exit(1)
-
-                print(f"Process gates on {merge_base[:12]}..{head[:12]} "
-                      f"({len(changed)} changed path(s)), with the gate logic of {base[:12]}")
-                failed = False
-
-                # The lines of deploy.sh's Step 2.5 this port follows, verbatim.
-                PORTED = (
-                    r'grep -qE "^Bypass-Process-Gate:"',
-                    r'DEVB_COMMIT_MESSAGE="$COMMIT_BODY"',
-                    r"python3 scripts/lib/devb_gate.py",
-                    r"git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null"
-                    r" | grep -E '^backend/(services|api)/.+\.py$'",
-                    r'grep -qE "tests/.+/test_${base}\.py$|tests/test_${base}\.py$"',
-                )
-                drift = [line for line in PORTED if line not in deploy_sh]
-                if drift:
-                    failed = True
-                    print(f"::error::deploy.sh on {base[:12]} no longer reads the way pr-gates' process")
-                    print("          gates were ported from it. Missing:")
-                    for line in drift:
-                        print(f"            {line}")
-                    print("          Bring the port in mykronos's deploy/concourse/pipelines/thehub.yml")
-                    print("          (`pr-gates`, task `gates`) up to date with deploy.sh's Step 2.5.")
-
-                # -- DEV-B: deploy.sh's backstop invocation, on the squash -------
-                env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT") if k in os.environ}
-                env.update(PYTHONUTF8="1", DEVB_COMMIT_MESSAGE=bodies)
-                with tempfile.TemporaryDirectory() as empty:
-                    try:
-                        r = subprocess.run(
-                            [sys.executable, "-I", os.path.abspath(os.path.join(pg, "devb_gate.py"))],
-                            input="\n".join(changed) + "\n", env=env, cwd=empty,
-                            capture_output=True, text=True, timeout=120)
-                        code, out = r.returncode, (r.stdout + r.stderr).strip()
-                    except (OSError, subprocess.SubprocessError) as exc:
-                        code, out = 1, f"the gate could not run, failing closed: {exc}"
-                if code == 0:
-                    print(out or "DEV-B: no sensitive path in this pull request")
-                else:
-                    failed = True
-                    print("::error::DEV-B (#4944): this pull request touches a sensitive path and no")
-                    print("          branch commit carries a Threat-Model-MD: or Bypass-Process-Gate:")
-                    print("          trailer. deploy.sh would refuse the squash commit.")
-                    print(out)
-
-                # -- DEV-D: a new module in backend/services or backend/api ------
-                bypass = re.search(r"^Bypass-Process-Gate:[ \t]*(.*)$", bodies, re.M)
-                new_py = [f for f in added if re.search(r"^backend/(services|api)/.+\.py$", f)]
-                missing = []
-                for f in new_py:
-                    name = os.path.basename(f)[:-3]
-                    try:
-                        want = re.compile(rf"tests/.+/test_{name}\.py$|tests/test_{name}\.py$")
-                    except re.error:
-                        esc = re.escape(name)
-                        want = re.compile(rf"tests/.+/test_{esc}\.py$|tests/test_{esc}\.py$")
-                    if not any(want.search(c) for c in changed):
-                        missing.append(f"{f} has no test_{name}.py")
-                if not new_py:
-                    print("DEV-D: no new module under backend/services or backend/api")
-                elif not missing:
-                    print(f"DEV-D: {len(new_py)} new module(s), each with its test_<name>.py")
-                elif bypass:
-                    print(f"DEV-D: BYPASSED by Bypass-Process-Gate: {bypass.group(1).strip() or '(no reason given)'}")
-                    for line in missing:
-                        print(f"  {line}")
-                else:
-                    failed = True
-                    for line in missing:
-                        print(f"::error::DEV-D (#4946): {line} in this pull request")
-                    print("          deploy.sh wants a test_<name>.py, under tests/, for each new .py in")
-                    print("          backend/services or backend/api. Add one per module, or put")
-                    print("          'Bypass-Process-Gate: <reason>' on a branch commit.")
-
-                sys.exit(1 if failed else 0)
-                PROCESS
-
-                # [TheHub #61113] The deploy gates, judged by DEVELOP. The
-                # review of TheHub #559 found this ran the head's own
-                # pr_deploy_gates.sh, so a branch could edit it, or the
-                # harden_findings_report.py and shape tests it runs, to pass.
-                # The judge is the base commit's tree (`pick` extracted it);
-                # only the branch's DATA is laid over it: the requirements
-                # the dependency audit resolves and the mirror the shape tests
-                # read. Regular files only: a symlink could point the judge at
-                # anything in this container.
-                DEPLOY_RC=0
-                JUDGE="$(mktemp -d)"
-                if [ ! -f pr/.git/judge/scripts/pr_deploy_gates.sh ]; then
-                  echo "::error::The base branch has no scripts/pr_deploy_gates.sh (TheHub #61102),"
-                  echo "          so there is nothing to judge this pull request with."
-                  DEPLOY_RC=1
-                elif ! grep -q -- '--audit-as' pr/.git/judge/scripts/pr_deploy_gates.sh; then
-                  echo "::error::The base branch's scripts/pr_deploy_gates.sh predates --audit-as (TheHub"
-                  echo "          #61113), so the dependency audit would run the branch's build code with"
-                  echo "          the judge's privileges. Failing closed until TheHub's half of #61113 is on the base."
-                  DEPLOY_RC=1
-                else
-                  cp -R pr/.git/judge/. "$JUDGE/"
-                  for f in backend/requirements.txt concourse/pipelines/thehub.yml; do
-                    rm -f "$JUDGE/$f"
-                    if [ -L "pr/$f" ] || { [ -e "pr/$f" ] && [ ! -f "pr/$f" ]; }; then
-                      echo "::error::$f on this branch is not a regular file; refusing to judge it."
-                      DEPLOY_RC=1
-                    elif [ -f "pr/$f" ]; then
-                      mkdir -p "$JUDGE/$(dirname "$f")"
-                      cp "pr/$f" "$JUDGE/$f"
+                    if [ ! -f pr/.git/HEAD ]; then
+                      echo "No pull request head needs judging on this run."
+                      exit 0
                     fi
-                  done
-                  # Readable by the audit's uid (--audit-as), writable only by root.
-                  chmod -R go-w,a+rX "$JUDGE"
-                  if [ "$DEPLOY_RC" -eq 0 ]; then
-                    bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline" \
-                      --audit-as 65534 || DEPLOY_RC=$?
-                  fi
-                fi
-                if [ "$PROCESS_RC" -ne 0 ]; then
-                  echo "::error::deploy.sh's process gates refused this pull request (see above)."
-                  exit 1
-                fi
-                exit "$DEPLOY_RC"
+                    echo "Pull request #$(cat pr/.git/pr-number) at $(cat pr/.git/HEAD)"
+
+                    # [TheHub #61159] deploy.sh's process gates, DEV-B (#4944) and
+                    # DEV-D (#4946), on the pull request's range. #531 merged green
+                    # with two new backend/services modules tested in one combined
+                    # file, and the first place DEV-D saw it was prod deploy 6710.
+                    #
+                    # Graded the way a squash merge lands, because that is the
+                    # commit deploy.sh grades: the combined diff merge-base..head,
+                    # against the bodies of every branch commit (TheHub squashes
+                    # with COMMIT_MESSAGES, so each body is in the squash body, and
+                    # a trailer on any branch commit is a trailer on the deploy's).
+                    #
+                    # None of the logic is the branch's. DEV-B is develop's
+                    # scripts/lib/devb_gate.py, which deploy.sh's Step 2.5 also
+                    # calls, read from the base commit by `pick`. DEV-D is inline in
+                    # deploy.sh, so it is ported here, and develop's deploy.sh is
+                    # checked for every line the port follows: a change there turns
+                    # this red rather than letting the two disagree in silence.
+                    # deploy.sh's own stages are untouched and still run at deploy.
+                    #
+                    # Every gate runs, and the verdict counts only after the deploy
+                    # gates below have run too, so one red check names every reason.
+                    PROCESS_RC=0
+                    python3 -I - <<'PROCESS' || PROCESS_RC=$?
+                    import os, re, subprocess, sys, tempfile
+
+                    pg = os.path.join("pr", ".git", "process-gates")
+
+
+                    def read(name):
+                        with open(os.path.join(pg, name), encoding="utf-8", errors="replace") as fh:
+                            return fh.read()
+
+
+                    try:
+                        base, merge_base, head = read("range").split()
+                        deploy_sh = read("deploy.sh")
+                        changed = [ln.strip() for ln in read("changed").splitlines() if ln.strip()]
+                        added = [ln.strip() for ln in read("added").splitlines() if ln.strip()]
+                        bodies = read("bodies").replace("\r\n", "\n")
+                    except (OSError, ValueError) as exc:
+                        print(f"::error::The process gates' inputs are missing ({exc}); failing closed.")
+                        sys.exit(1)
+
+                    print(f"Process gates on {merge_base[:12]}..{head[:12]} "
+                          f"({len(changed)} changed path(s)), with the gate logic of {base[:12]}")
+                    failed = False
+
+                    # The lines of deploy.sh's Step 2.5 this port follows, verbatim.
+                    PORTED = (
+                        r'grep -qE "^Bypass-Process-Gate:"',
+                        r'DEVB_COMMIT_MESSAGE="$COMMIT_BODY"',
+                        r"python3 scripts/lib/devb_gate.py",
+                        r"git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null"
+                        r" | grep -E '^backend/(services|api)/.+\.py$'",
+                        r'grep -qE "tests/.+/test_${base}\.py$|tests/test_${base}\.py$"',
+                    )
+                    drift = [line for line in PORTED if line not in deploy_sh]
+                    if drift:
+                        failed = True
+                        print(f"::error::deploy.sh on {base[:12]} no longer reads the way pr-gates' process")
+                        print("          gates were ported from it. Missing:")
+                        for line in drift:
+                            print(f"            {line}")
+                        print("          Bring the port in mykronos's deploy/concourse/pipelines/thehub.yml")
+                        print("          (`pr-gates`, task `gates`) up to date with deploy.sh's Step 2.5.")
+
+                    # -- DEV-B: deploy.sh's backstop invocation, on the squash -------
+                    env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT") if k in os.environ}
+                    env.update(PYTHONUTF8="1", DEVB_COMMIT_MESSAGE=bodies)
+                    with tempfile.TemporaryDirectory() as empty:
+                        try:
+                            r = subprocess.run(
+                                [sys.executable, "-I", os.path.abspath(os.path.join(pg, "devb_gate.py"))],
+                                input="\n".join(changed) + "\n", env=env, cwd=empty,
+                                capture_output=True, text=True, timeout=120)
+                            code, out = r.returncode, (r.stdout + r.stderr).strip()
+                        except (OSError, subprocess.SubprocessError) as exc:
+                            code, out = 1, f"the gate could not run, failing closed: {exc}"
+                    if code == 0:
+                        print(out or "DEV-B: no sensitive path in this pull request")
+                    else:
+                        failed = True
+                        print("::error::DEV-B (#4944): this pull request touches a sensitive path and no")
+                        print("          branch commit carries a Threat-Model-MD: or Bypass-Process-Gate:")
+                        print("          trailer. deploy.sh would refuse the squash commit.")
+                        print(out)
+
+                    # -- DEV-D: a new module in backend/services or backend/api ------
+                    bypass = re.search(r"^Bypass-Process-Gate:[ \t]*(.*)$", bodies, re.M)
+                    new_py = [f for f in added if re.search(r"^backend/(services|api)/.+\.py$", f)]
+                    missing = []
+                    for f in new_py:
+                        name = os.path.basename(f)[:-3]
+                        try:
+                            want = re.compile(rf"tests/.+/test_{name}\.py$|tests/test_{name}\.py$")
+                        except re.error:
+                            esc = re.escape(name)
+                            want = re.compile(rf"tests/.+/test_{esc}\.py$|tests/test_{esc}\.py$")
+                        if not any(want.search(c) for c in changed):
+                            missing.append(f"{f} has no test_{name}.py")
+                    if not new_py:
+                        print("DEV-D: no new module under backend/services or backend/api")
+                    elif not missing:
+                        print(f"DEV-D: {len(new_py)} new module(s), each with its test_<name>.py")
+                    elif bypass:
+                        print(f"DEV-D: BYPASSED by Bypass-Process-Gate: {bypass.group(1).strip() or '(no reason given)'}")
+                        for line in missing:
+                            print(f"  {line}")
+                    else:
+                        failed = True
+                        for line in missing:
+                            print(f"::error::DEV-D (#4946): {line} in this pull request")
+                        print("          deploy.sh wants a test_<name>.py, under tests/, for each new .py in")
+                        print("          backend/services or backend/api. Add one per module, or put")
+                        print("          'Bypass-Process-Gate: <reason>' on a branch commit.")
+
+                    sys.exit(1 if failed else 0)
+                    PROCESS
+
+                    # [TheHub #61113] The deploy gates, judged by DEVELOP. The
+                    # review of TheHub #559 found this ran the head's own
+                    # pr_deploy_gates.sh, so a branch could edit it, or the
+                    # harden_findings_report.py and shape tests it runs, to pass.
+                    # The judge is the base commit's tree (`pick` extracted it);
+                    # only the branch's DATA is laid over it: the requirements
+                    # the dependency audit resolves and the mirror the shape tests
+                    # read. Regular files only: a symlink could point the judge at
+                    # anything in this container.
+                    DEPLOY_RC=0
+                    JUDGE="$(mktemp -d)"
+                    if [ ! -f pr/.git/judge/scripts/pr_deploy_gates.sh ]; then
+                      echo "::error::The base branch has no scripts/pr_deploy_gates.sh (TheHub #61102),"
+                      echo "          so there is nothing to judge this pull request with."
+                      DEPLOY_RC=1
+                    elif ! grep -q -- '--audit-as' pr/.git/judge/scripts/pr_deploy_gates.sh; then
+                      echo "::error::The base branch's scripts/pr_deploy_gates.sh predates --audit-as (TheHub"
+                      echo "          #61113), so the dependency audit would run the branch's build code with"
+                      echo "          the judge's privileges. Failing closed until TheHub's half of #61113 is on the base."
+                      DEPLOY_RC=1
+                    else
+                      cp -R pr/.git/judge/. "$JUDGE/"
+                      for f in backend/requirements.txt concourse/pipelines/thehub.yml; do
+                        rm -f "$JUDGE/$f"
+                        if [ -L "pr/$f" ] || { [ -e "pr/$f" ] && [ ! -f "pr/$f" ]; }; then
+                          echo "::error::$f on this branch is not a regular file; refusing to judge it."
+                          DEPLOY_RC=1
+                        elif [ -f "pr/$f" ]; then
+                          mkdir -p "$JUDGE/$(dirname "$f")"
+                          cp "pr/$f" "$JUDGE/$f"
+                        fi
+                      done
+                      # Readable by the audit's uid (--audit-as), writable only by root.
+                      chmod -R go-w,a+rX "$JUDGE"
+                      if [ "$DEPLOY_RC" -eq 0 ]; then
+                        bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline" \
+                          --audit-as 65534 || DEPLOY_RC=$?
+                      fi
+                    fi
+                    if [ "$PROCESS_RC" -ne 0 ]; then
+                      echo "::error::deploy.sh's process gates refused this pull request (see above)."
+                      exit 1
+                    fi
+                    exit "$DEPLOY_RC"
+        # The task's own 20m, plus 5m for the wait for a remote worker, which
+        # a task-level timeout would not bound.
+        timeout: 25m
+        on_failure:
+          <<: *linux_absent
+          input_mapping: { ran: hub_log }
+          params: { LINUX_STEP: gates }
+        on_error:
+          <<: *linux_absent
+          input_mapping: { ran: hub_log }
+          params: { LINUX_STEP: gates }
       - load_var: image_sha
         file: image/sha
         format: raw
@@ -2807,126 +3049,140 @@ jobs:
       # the job's header. Measured parts in container-tiers (2026-11-05): the
       # Postgres/Redis install ~1.5m, the bootstrap ~0.5m, the scratch
       # database ~0.75m; the subset is four modules.
-      - task: integration
-        tags: [thehub]
-        container_limits: {cpu: 512}
-        timeout: 9m
-        params:
-          CONTAINER_TIERS_DISPOSABLE: "1"
-          # The subset's soft cap: SIGINT lets pytest write its summary, and
-          # TheHub's script turns a run that hit it into "partial", never green.
-          TIER_SOFT_TIMEOUT_S: "300"
-          # [#61106] container-tiers' budget: this task's Postgres and Redis
-          # live beside pytest in the same worker.
-          MEMORY_GUARD: *memory_guard
-          MEMORY_BUDGET_MB: "2304"
-          # [#61606] MEMORY_GUARD_SOFT_TIMEOUT_S is deliberately not set, so the
-          # guard never re-runs a kill here: this task has a 9m hard cap and a
-          # 300s soft cap, and a wait plus a second run fits in neither.
-        config:
-          platform: linux
-          # `insecure`: the registry is plain HTTP on the LAN (spec 15 section
-          # 5), as container-tiers' and kaniko's `--insecure` say.
-          image_resource:
-            type: registry-image
-            source:
-              repository: ((registry))/thehub
-              tag: ((.:image_sha))
-              insecure: true
-          inputs: [{ name: pr }]
-          # [#61106] Written only when the subset was killed for memory; the
-          # failure hooks then report errored / cancelled, not a verdict.
-          outputs: [{ name: infra, path: memory-infra }]
-          run:
-            path: bash
-            args:
-              - -c
-              - |
-                set -uo pipefail
-                if [ ! -f pr/.git/HEAD ]; then
-                  echo "No pull request head needs judging on this run."
-                  exit 0
-                fi
-                echo "Pull request #$(cat pr/.git/pr-number): the integration subset, in the cached develop image"
-                # A branch from before TheHub's half of #61110 has no list and
-                # no subset tier, so it cannot be judged, and says so.
-                if [ ! -f pr/config/ci/pr-integration-subset.txt ]; then
-                  echo "::error::This branch predates config/ci/pr-integration-subset.txt (TheHub #61110),"
-                  echo "::error::so its integration subset cannot be run. Rebase it onto develop."
-                  exit 1
-                fi
-                # The image's entrypoint is not run: this is not the server.
-                export CONTAINER_TIERS_OUT=/tmp/container-tiers
-                # [TheHub #61636] A pull request that changes requirements.txt
-                # makes container-tiers `pip install -r` the checkout's file
-                # into this cached image, and the image has python but no pip
-                # ("No module named pip"): TheHub #692 (a dependency floor) got
-                # NO VERDICT and was reported failed by construction. Bootstrap
-                # pip from the interpreter's own ensurepip first. If that too
-                # cannot run, container-tiers says NO VERDICT and the report
-                # below says unjudged, not failed.
-                PY="$(command -v python3 || command -v python || true)"
-                REQ_CHANGED=0
-                BOOTSTRAP_FAILED=0
-                if [ -f pr/backend/requirements.txt ] && ! cmp -s pr/backend/requirements.txt "${APP_DIR:-/app}/requirements.txt"; then
-                  REQ_CHANGED=1
-                fi
-                if [ "$REQ_CHANGED" -eq 1 ] && [ -n "$PY" ] && ! "$PY" -m pip --version >/dev/null 2>&1; then
-                  echo "pr-gates: the cached image has no pip; bootstrapping it with ensurepip"
-                  "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
-                fi
-                bash pr/scripts/ci/container-tiers.sh pr subset 2>&1 | tee /tmp/container-tiers.log
-                RC=${PIPESTATUS[0]}
-                # [TheHub #61636] A failed `pip install -r` of the checkout's own
-                # requirements.txt is usually the pull request's fault (a pin
-                # nothing satisfies), so it is a verdict: failure, with pip's
-                # error (container-tiers tails pip.log above). Only when the pip
-                # bootstrap itself failed is it the environment's fault.
-                if [ "$RC" -eq 2 ] && [ "$BOOTSTRAP_FAILED" -eq 0 ] \
-                   && grep -q "could not install the checkout's requirements.txt" /tmp/container-tiers.log; then
-                  echo "::error::this pull request's backend/requirements.txt could not be installed (pip's error is above): a real failure, not an outage"
-                  RC=1
-                fi
-                if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
-                  mkdir -p memory-infra
-                  cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
-                  printf '137\n' > memory-infra/exit_code
-                fi
-                # [TheHub #61636] Exit 2 is "NO VERDICT: the environment was not
-                # built". That is an outage, not a test failure: leave the same
-                # infra marker a memory kill leaves, so the hooks report the Hub
-                # stage `errored` and the check run `cancelled` (could not run,
-                # nothing judged) instead of failed. Exit 1 stays a real failure.
-                if [ "$RC" -eq 2 ]; then
-                  mkdir -p memory-infra
-                  printf '%s\n' "NO VERDICT: the integration subset's environment was not built (container-tiers exit 2), so this pull request's code was not judged. Not a test failure." > memory-infra/reason
-                  printf '2\n' > memory-infra/exit_code
-                fi
-                # [TheHub #61636] A requirements.txt change must also satisfy the
-                # committed SBOM (TheHub #692 merged without regenerating
-                # docs/sbom/latest-python.cdx.json and broke develop's unit
-                # lane). A pure file check, so it runs from the checkout. Only
-                # once the subset reached a verdict; a miss is a real failure.
-                if [ "$RC" -le 1 ] && [ -n "$PY" ] && { [ "$REQ_CHANGED" -eq 1 ] || grep -qx 'backend/requirements.txt' pr/.git/process-gates/changed 2>/dev/null; }; then
-                  SBOM_TEST=pr/backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py
-                  if [ -f "$SBOM_TEST" ]; then
-                    echo "pr-gates: requirements.txt changed; running the committed-SBOM test"
-                    if ! "$PY" -m pytest "$SBOM_TEST" --noconftest -c /dev/null --rootdir pr -p no:cacheprovider -q; then
-                      echo "::error::backend/requirements.txt changed but docs/sbom/latest-python.cdx.json does not satisfy it: regenerate the SBOM in the same pull request"
+      - do:
+          - task: integration
+            tags: [linux]
+            container_limits: {cpu: 512}
+            params:
+              CONTAINER_TIERS_DISPOSABLE: "1"
+              # The subset's soft cap: SIGINT lets pytest write its summary, and
+              # TheHub's script turns a run that hit it into "partial", never green.
+              TIER_SOFT_TIMEOUT_S: "300"
+              # [#61106] container-tiers' budget: this task's Postgres and Redis
+              # live beside pytest in the same worker.
+              MEMORY_GUARD: *memory_guard
+              MEMORY_BUDGET_MB: "2304"
+              # [#61606] MEMORY_GUARD_SOFT_TIMEOUT_S is deliberately not set, so the
+              # guard never re-runs a kill here: this task has a 9m hard cap and a
+              # 300s soft cap, and a wait plus a second run fits in neither.
+            config:
+              platform: linux
+              # `insecure`: the registry is plain HTTP on the LAN (spec 15 section
+              # 5), as container-tiers' and kaniko's `--insecure` say.
+              # `remote-registry`, not `registry`: an image_resource is checked
+              # and fetched with the task's tags, so on a remote worker, which
+              # cannot reach Docker Desktop's gateway. See "The remote lanes".
+              image_resource:
+                type: registry-image
+                source:
+                  repository: ((remote-registry))/thehub
+                  tag: ((.:image_sha))
+                  insecure: true
+              inputs: [{ name: pr }]
+              # [#61106] Written only when the subset was killed for memory; the
+              # failure hooks then report errored / cancelled, not a verdict.
+              # `ran`: empty, registered whenever the task exits (linux_absent).
+              outputs: [{ name: infra, path: memory-infra }, { name: ran }]
+              run:
+                path: bash
+                args:
+                  - -c
+                  - |
+                    set -uo pipefail
+                    if [ ! -f pr/.git/HEAD ]; then
+                      echo "No pull request head needs judging on this run."
+                      exit 0
+                    fi
+                    echo "Pull request #$(cat pr/.git/pr-number): the integration subset, in the cached develop image"
+                    # A branch from before TheHub's half of #61110 has no list and
+                    # no subset tier, so it cannot be judged, and says so.
+                    if [ ! -f pr/config/ci/pr-integration-subset.txt ]; then
+                      echo "::error::This branch predates config/ci/pr-integration-subset.txt (TheHub #61110),"
+                      echo "::error::so its integration subset cannot be run. Rebase it onto develop."
+                      exit 1
+                    fi
+                    # The image's entrypoint is not run: this is not the server.
+                    export CONTAINER_TIERS_OUT=/tmp/container-tiers
+                    # [TheHub #61636] A pull request that changes requirements.txt
+                    # makes container-tiers `pip install -r` the checkout's file
+                    # into this cached image, and the image has python but no pip
+                    # ("No module named pip"): TheHub #692 (a dependency floor) got
+                    # NO VERDICT and was reported failed by construction. Bootstrap
+                    # pip from the interpreter's own ensurepip first. If that too
+                    # cannot run, container-tiers says NO VERDICT and the report
+                    # below says unjudged, not failed.
+                    PY="$(command -v python3 || command -v python || true)"
+                    REQ_CHANGED=0
+                    BOOTSTRAP_FAILED=0
+                    if [ -f pr/backend/requirements.txt ] && ! cmp -s pr/backend/requirements.txt "${APP_DIR:-/app}/requirements.txt"; then
+                      REQ_CHANGED=1
+                    fi
+                    if [ "$REQ_CHANGED" -eq 1 ] && [ -n "$PY" ] && ! "$PY" -m pip --version >/dev/null 2>&1; then
+                      echo "pr-gates: the cached image has no pip; bootstrapping it with ensurepip"
+                      "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
+                    fi
+                    bash pr/scripts/ci/container-tiers.sh pr subset 2>&1 | tee /tmp/container-tiers.log
+                    RC=${PIPESTATUS[0]}
+                    # [TheHub #61636] A failed `pip install -r` of the checkout's own
+                    # requirements.txt is usually the pull request's fault (a pin
+                    # nothing satisfies), so it is a verdict: failure, with pip's
+                    # error (container-tiers tails pip.log above). Only when the pip
+                    # bootstrap itself failed is it the environment's fault.
+                    if [ "$RC" -eq 2 ] && [ "$BOOTSTRAP_FAILED" -eq 0 ] \
+                       && grep -q "could not install the checkout's requirements.txt" /tmp/container-tiers.log; then
+                      echo "::error::this pull request's backend/requirements.txt could not be installed (pip's error is above): a real failure, not an outage"
                       RC=1
                     fi
-                  else
-                    echo "::warning::this branch has no $SBOM_TEST; the committed SBOM was not checked"
-                  fi
-                fi
-                case "$RC" in
-                  0) echo "pr-gates: the integration subset passed on this pull request's code" ;;
-                  1) echo "::error::the integration subset failed: deploy.sh's integration tier would fail this code after the swap" ;;
-                  2) echo "::error::the environment was not built; the integration subset was not judged (reported unjudged, not failed)" ;;
-                  124) echo "::error::the integration subset hit its soft timeout; its results are partial" ;;
-                  137) echo "::error::the integration subset was killed for memory; nothing was judged" ;;
-                esac
-                exit "$RC"
+                    if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
+                      mkdir -p memory-infra
+                      cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
+                      printf '137\n' > memory-infra/exit_code
+                    fi
+                    # [TheHub #61636] Exit 2 is "NO VERDICT: the environment was not
+                    # built". That is an outage, not a test failure: leave the same
+                    # infra marker a memory kill leaves, so the hooks report the Hub
+                    # stage `errored` and the check run `cancelled` (could not run,
+                    # nothing judged) instead of failed. Exit 1 stays a real failure.
+                    if [ "$RC" -eq 2 ]; then
+                      mkdir -p memory-infra
+                      printf '%s\n' "NO VERDICT: the integration subset's environment was not built (container-tiers exit 2), so this pull request's code was not judged. Not a test failure." > memory-infra/reason
+                      printf '2\n' > memory-infra/exit_code
+                    fi
+                    # [TheHub #61636] A requirements.txt change must also satisfy the
+                    # committed SBOM (TheHub #692 merged without regenerating
+                    # docs/sbom/latest-python.cdx.json and broke develop's unit
+                    # lane). A pure file check, so it runs from the checkout. Only
+                    # once the subset reached a verdict; a miss is a real failure.
+                    if [ "$RC" -le 1 ] && [ -n "$PY" ] && { [ "$REQ_CHANGED" -eq 1 ] || grep -qx 'backend/requirements.txt' pr/.git/process-gates/changed 2>/dev/null; }; then
+                      SBOM_TEST=pr/backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py
+                      if [ -f "$SBOM_TEST" ]; then
+                        echo "pr-gates: requirements.txt changed; running the committed-SBOM test"
+                        if ! "$PY" -m pytest "$SBOM_TEST" --noconftest -c /dev/null --rootdir pr -p no:cacheprovider -q; then
+                          echo "::error::backend/requirements.txt changed but docs/sbom/latest-python.cdx.json does not satisfy it: regenerate the SBOM in the same pull request"
+                          RC=1
+                        fi
+                      else
+                        echo "::warning::this branch has no $SBOM_TEST; the committed SBOM was not checked"
+                      fi
+                    fi
+                    case "$RC" in
+                      0) echo "pr-gates: the integration subset passed on this pull request's code" ;;
+                      1) echo "::error::the integration subset failed: deploy.sh's integration tier would fail this code after the swap" ;;
+                      2) echo "::error::the environment was not built; the integration subset was not judged (reported unjudged, not failed)" ;;
+                      124) echo "::error::the integration subset hit its soft timeout; its results are partial" ;;
+                      137) echo "::error::the integration subset was killed for memory; nothing was judged" ;;
+                    esac
+                    exit "$RC"
+        # The task's own 9m, plus 6m for the wait for a remote worker (the
+        # probe has already found one) and the cached image's first fetch
+        # over the LAN, which the host's worker never paid.
+        timeout: 15m
+        on_failure:
+          <<: *linux_absent
+          params: { LINUX_STEP: integration }
+        on_error:
+          <<: *linux_absent
+          params: { LINUX_STEP: integration }
       # Last, so a refused report is a failed job and the hooks above say so
       # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
       # owes no report.
@@ -2961,8 +3217,11 @@ jobs:
   # image and is not what broke.
   - name: gate-smoke
     public: true
-    # `pr-gates`' own lane, for pip-audit's scratch install.
-    serial_groups: [dast]
+    # `pr-gates`' own lane, for pip-audit's scratch install. That lane is
+    # `linux-pr` since the operator decision of 2026-11-16: `gates` runs on
+    # the remote `linux` workers, wrapper and hooks included, by the same
+    # anchor, so this job no longer holds `dast` either.
+    serial_groups: [linux-pr]
     # All four terminal states are reported, as for every other job (the
     # four-terminal-states shape test, TheHub #61639): a green night is a
     # `success` row and an abort an `aborted` one.
@@ -5197,13 +5456,20 @@ jobs:
   # GATING in TheHub's config/release-gates.yml (ADR 0095 amendment): a red
   # here refuses the deploy before the swap instead of rolling back after it.
   #
-  # Lanes: `dast`, because the commit's critical path (unit-chain) and the
-  # scanners must not queue behind a 45-minute job, and `pytest-memory`, so it
-  # never runs beside `unit` or `post-merge` (#61106). The DAST lanes it can
-  # delay are advisory.
+  # Lanes: it was `dast`, because the commit's critical path (unit-chain) and
+  # the scanners must not queue behind a 45-minute job, and `pytest-memory`,
+  # so it never ran beside `unit` or `post-merge` (#61106).
+  #
+  # [operator decision 2026-11-16] `tiers` runs on the remote `linux`
+  # workers, so the job is in `linux-suites` with `post-merge` (the two full
+  # suites never share a remote worker) and holds neither `dast` nor
+  # `pytest-memory`. Still GATING: with the remote host off, `tiers` is not
+  # run, the report says errored with the reason, and the risk gate refuses
+  # the deploy as it does for any unjudged gating lane. See "The remote
+  # lanes" above `unit`.
   - name: container-tiers
     public: true
-    serial_groups: [dast, pytest-memory]
+    serial_groups: [linux-suites]
     # A stage of its own, not `integration_tests`: that is `unit`'s stage, and
     # a green report there advances stories.
     on_success:
@@ -5260,76 +5526,98 @@ jobs:
         format: raw
         reveal: true
 
-      - task: tiers
-        tags: [thehub]
-        container_limits: {cpu: 512}
+      - do:
+          - <<: *linux_probe
+            image: python
+        timeout: 5m
+        on_failure:
+          <<: *linux_absent
+          params: { LINUX_STEP: the linux-worker probe }
+        on_error:
+          <<: *linux_absent
+          params: { LINUX_STEP: the linux-worker probe }
+      - do:
+          - task: tiers
+            tags: [linux]
+            container_limits: {cpu: 512}
+            params:
+              CONTAINER_TIERS_DISPOSABLE: "1"
+              EXPECTED_SHA: ((.:sha))
+              TIER_SOFT_TIMEOUT_S: "3000"
+              # [#61106] Enforced by memory-guard (`container_limits.memory` is
+              # refused on the host's workers). 2304 MiB, not `unit`'s 2560: the
+              # guard counts pytest's process tree, and this task's Postgres and
+              # Redis (~250 MiB) live beside it. Unchanged on a 5g remote worker.
+              MEMORY_GUARD: *memory_guard
+              MEMORY_BUDGET_MB: "2304"
+              # [#61606] No MEMORY_GUARD_SOFT_TIMEOUT_S: TheHub's tier runner
+              # forces its own 124 at TIER_SOFT_TIMEOUT_S and cannot see a wait, so
+              # the guard does not re-run a kill here; it reports it as before.
+            config:
+              platform: linux
+              # The commit's own image, the one `build` pushed and `containers`
+              # scanned. `insecure`: the registry is plain HTTP on the LAN (spec
+              # 15 section 5), as kaniko's `--insecure` and trivy's say.
+              # `remote-registry`: the same registry, at the address a remote
+              # worker reaches (see "The remote lanes" above `unit`).
+              image_resource:
+                type: registry-image
+                source:
+                  repository: ((remote-registry))/thehub
+                  tag: ((.:sha))
+                  insecure: true
+              inputs: [{ name: source }]
+              # [#61106] `infra` at a path of its own, written only when a tier
+              # was killed for memory and no tier reached a verdict; the job's
+              # failure report then says errored, not failed.
+              # `ran`: empty, registered whenever the task exits (linux_absent).
+              outputs: [{ name: infra, path: memory-infra }, { name: ran }]
+              run:
+                path: bash
+                args:
+                  - -c
+                  - |
+                    set -uo pipefail
+                    # The image's entrypoint is not run: this is not the server,
+                    # and the script bootstraps the database the way it does.
+                    export CONTAINER_TIERS_OUT=/tmp/container-tiers
+                    # A commit from before TheHub #61321 has no script to run. It
+                    # cannot be judged, and says so: this pipeline change merges
+                    # before TheHub's half, so develop's tip is that commit for a
+                    # while (see ADR 0095's amendment, "Order of merges").
+                    if [ ! -f source/scripts/ci/container-tiers.sh ]; then
+                      echo "::error::This commit predates scripts/ci/container-tiers.sh (TheHub #61321),"
+                      echo "::error::so its deploy tiers cannot be run in its image. Judge a newer commit."
+                      exit 2
+                    fi
+                    bash source/scripts/ci/container-tiers.sh source all
+                    RC=$?
+                    if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
+                      mkdir -p memory-infra
+                      cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
+                      printf '137\n' > memory-infra/exit_code
+                    fi
+                    case "$RC" in
+                      0) echo "container-tiers: both tiers passed in the commit's image" ;;
+                      1) echo "::error::a deploy tier failed in the commit's own image: this commit would fail deploy.sh after the swap" ;;
+                      2) echo "::error::the environment was not built; nothing was judged" ;;
+                      124) echo "::error::a tier hit its soft timeout; its results are partial" ;;
+                      137) echo "::error::a tier was killed for memory; nothing was judged" ;;
+                    esac
+                    exit "$RC"
         # Two tiers at a 50m soft cap each (TIER_SOFT_TIMEOUT_S), plus the
         # service install and the bootstrap. The soft cap is the one that
         # matters: SIGINT lets pytest write its summary, and the script turns
-        # a run that hit it into "partial", never into a green.
-        timeout: 120m
-        params:
-          CONTAINER_TIERS_DISPOSABLE: "1"
-          EXPECTED_SHA: ((.:sha))
-          TIER_SOFT_TIMEOUT_S: "3000"
-          # [#61106] Enforced by memory-guard (`container_limits.memory` is
-          # refused on these workers). 2304 MiB, not `unit`'s 2560: the guard
-          # counts pytest's process tree, and this task's Postgres and Redis
-          # (~250 MiB) live beside it in the same 3g worker.
-          MEMORY_GUARD: *memory_guard
-          MEMORY_BUDGET_MB: "2304"
-          # [#61606] No MEMORY_GUARD_SOFT_TIMEOUT_S: TheHub's tier runner
-          # forces its own 124 at TIER_SOFT_TIMEOUT_S and cannot see a wait, so
-          # the guard does not re-run a kill here; it reports it as before.
-        config:
-          platform: linux
-          # The commit's own image, the one `build` pushed and `containers`
-          # scanned. `insecure`: the registry is plain HTTP on the LAN (spec
-          # 15 section 5), as kaniko's `--insecure` and trivy's say.
-          image_resource:
-            type: registry-image
-            source:
-              repository: ((registry))/thehub
-              tag: ((.:sha))
-              insecure: true
-          inputs: [{ name: source }]
-          # [#61106] `infra` at a path of its own, written only when a tier
-          # was killed for memory and no tier reached a verdict; the job's
-          # failure report then says errored, not failed.
-          outputs: [{ name: infra, path: memory-infra }]
-          run:
-            path: bash
-            args:
-              - -c
-              - |
-                set -uo pipefail
-                # The image's entrypoint is not run: this is not the server,
-                # and the script bootstraps the database the way it does.
-                export CONTAINER_TIERS_OUT=/tmp/container-tiers
-                # A commit from before TheHub #61321 has no script to run. It
-                # cannot be judged, and says so: this pipeline change merges
-                # before TheHub's half, so develop's tip is that commit for a
-                # while (see ADR 0095's amendment, "Order of merges").
-                if [ ! -f source/scripts/ci/container-tiers.sh ]; then
-                  echo "::error::This commit predates scripts/ci/container-tiers.sh (TheHub #61321),"
-                  echo "::error::so its deploy tiers cannot be run in its image. Judge a newer commit."
-                  exit 2
-                fi
-                bash source/scripts/ci/container-tiers.sh source all
-                RC=$?
-                if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
-                  mkdir -p memory-infra
-                  cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
-                  printf '137\n' > memory-infra/exit_code
-                fi
-                case "$RC" in
-                  0) echo "container-tiers: both tiers passed in the commit's image" ;;
-                  1) echo "::error::a deploy tier failed in the commit's own image: this commit would fail deploy.sh after the swap" ;;
-                  2) echo "::error::the environment was not built; nothing was judged" ;;
-                  124) echo "::error::a tier hit its soft timeout; its results are partial" ;;
-                  137) echo "::error::a tier was killed for memory; nothing was judged" ;;
-                esac
-                exit "$RC"
+        # a run that hit it into "partial", never into a green. 120m was the
+        # task's own cap; the wrapper adds 10m for the wait for a remote
+        # worker and the commit image's first fetch over the LAN.
+        timeout: 130m
+        on_failure:
+          <<: *linux_absent
+          params: { LINUX_STEP: container-tiers/tiers }
+        on_error:
+          <<: *linux_absent
+          params: { LINUX_STEP: container-tiers/tiers }
 
 
   # == Stage 4: the gate ====================================================
@@ -7941,7 +8229,11 @@ jobs:
   # verdict this job prints is the evidence for that change.
   - name: image-refresh
     public: true
-    serial_groups: [dast]
+    # Its own lane since the operator decision of 2026-11-16: `build` runs
+    # on the remote `linux` workers, and the host steps around it (`plan`,
+    # `scan`, `publish`, `deploy-demo`) are short and daily, so holding
+    # `dast` for the whole run only made the DAST lanes wait.
+    serial_groups: [image-refresh]
     # Every terminal state reports to TheHub, as every job here does
     # (TheHub's test_no_job_is_silent). `demo` because demo is the only
     # environment this job can change.
@@ -8013,14 +8305,14 @@ jobs:
             # it); the images leave as tarballs in `images`. `scan` reads the
             # registry and `publish` pushes to it, so both stay on the host.
             #
-            # Only non-gating lanes go to `linux`: a tagged step never falls back
-            # to an untagged worker. The timeout is on this `do:`, not on the
+            # A tagged step never falls back to an untagged worker (see "The
+            # remote lanes" above `unit` for the gating lanes that moved since,
+            # by operator decision). The timeout is on this `do:`, not on the
             # task, because a task's own `timeout:` starts only once a worker is
             # chosen (Concourse 8.3.3 task_step: FindOrSelectWorker, which loops
             # until a worker appears, runs before MaybeTimeout). The wrapper's
             # timeout bounds the wait for a worker too, so with the remote host
-            # offline the run fails after 20m instead of holding `dast` (shared
-            # with pr-gates, post-merge, container-tiers and the DAST lanes)
+            # offline the run fails after 20m instead of holding its lane
             # indefinitely. Measured on the host worker over the last 14 green
             # runs (builds 20-33): 72-237s; 20m is 5x the slowest plus the
             # streaming of `source`, the kaniko image and the tarballs.

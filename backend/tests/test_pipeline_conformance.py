@@ -633,7 +633,10 @@ TEAM_VAULT_VARS = frozenset({"slack-bot-token", "slack-alert-channel"})
 EXTRA_VAULT_VARS = {
     # "The key itself is in Vault (concourse/main/thehub/source-deploy-key), so
     # it never appears in `fly get-pipeline` output" -- pipelines/thehub.yml.
-    "thehub": frozenset({"source-deploy-key"}),
+    # TheHub #61760: the registry at this host's LAN address, for the image
+    # a remote `linux` worker fetches. Held at concourse/main/remote-registry
+    # so the address is not in this public repo; seeded before the merge.
+    "thehub": frozenset({"source-deploy-key", "remote-registry"}),
 }
 
 #: Vars a `set_pipeline` step cannot supply and Vault does not hold, so the
