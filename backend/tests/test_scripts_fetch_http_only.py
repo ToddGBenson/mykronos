@@ -1,4 +1,4 @@
-"""Three scripts fetch only http(s), and two Semgrep mediums are closed at the source (TheHub #61512).
+"""Three scripts fetch only http(s); two more Semgrep mediums closed at source (TheHub #61512).
 
 Semgrep's `dynamic-urllib-use-detected` (medium) was open on
 `scripts/runsheet_compare.py`, `scripts/time_travel_report.py` and
@@ -74,8 +74,11 @@ class _Server:
                 self.end_headers()
                 self.wfile.write(body)
 
-            do_GET = _answer
-            do_POST = _answer
+            def do_GET(self) -> None:  # noqa: N802 - the stdlib's handler name
+                self._answer()
+
+            def do_POST(self) -> None:  # noqa: N802 - the stdlib's handler name
+                self._answer()
 
             def log_message(self, *args: object) -> None:
                 pass
