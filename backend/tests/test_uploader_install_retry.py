@@ -53,6 +53,10 @@ INFRA_TASKS = {
     ("thehub.yml", "image-refresh", "plan"),
     # Since #1045 this job reports to TheHub; the install precedes pytest.
     ("thehub.yml", "functional-demo", "run-functional"),
+    # TheHub #61769: checkov runs with --soft-fail, so this task renders no
+    # verdict; a scan that wrote no report still fails without a marker. It
+    # writes infra/reason itself when checkov overruns its own budget.
+    ("personal-soc.yml", "iac", "checkov"),
 }
 
 #: TheHub #61106. These declare `infra` for a different fault, a pytest tier
