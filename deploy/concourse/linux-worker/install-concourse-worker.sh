@@ -40,7 +40,7 @@
 #   --runtime NAME         containerd (Concourse 8's default) or guardian
 #   --memory-max SIZE      systemd MemoryMax for the whole worker, e.g. 6G
 #   --dns A,B              resolvers handed to task containers (default
-#                          1.1.1.1,8.8.8.8, or what /etc/concourse/worker.env
+#                          8.8.8.8,1.1.1.1, or what /etc/concourse/worker.env
 #                          already names on a re-run)
 #   --no-systemd           install everything but the unit; print the
 #                          foreground command instead
@@ -61,8 +61,10 @@ SHA256_arm64="fa459cf89446559cdb12e9b4f7bd191f5138ce50dbc25b349e48c7f7077258c5"
 RELEASES="https://github.com/concourse/concourse/releases/download"
 # Task containers get these resolvers, as the compose workers do: on a host
 # running systemd-resolved they would otherwise inherit 127.0.0.53, which is
-# unreachable from inside a container.
-DEFAULT_DNS="1.1.1.1,8.8.8.8"
+# unreachable from inside a container. 8.8.8.8 first: on the estate's LAN,
+# UDP/53 to 1.1.1.1 times out from one Linux box (measured 2026-11-16), and a
+# first resolver that times out makes every lookup wait before the second.
+DEFAULT_DNS="8.8.8.8,1.1.1.1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_DIR="/etc/concourse"
