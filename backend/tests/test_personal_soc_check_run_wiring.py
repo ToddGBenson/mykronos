@@ -29,6 +29,8 @@ GATE = "all-lanes"
 FIRST = "guard"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
+CHECKOV_DIGEST = "sha256:888060aaaa6f4499fd3b00a1a03185ed760937b049d438fa6e00b3203a5d613e"
+
 #: Every job whose pass or fail is a verdict on the commit.
 VERIFYING = {"guard", "secrets", "iac", "oracle", "lint", "functional", "skill-integrity"}
 #: Commit- or clock-triggered jobs that are deliberately not part of the verdict.
@@ -123,8 +125,15 @@ def test_the_gate_reports_success_as_its_last_step() -> None:
     assert last["params"]["JOB"] == GATE
 
 
-@pytest.mark.parametrize("hook", ["on_failure", "on_error"])
-def test_every_lane_up_to_the_gate_reports_failure(hook: str) -> None:
+#: What each hook tells the check (TheHub #61769). A failed build is a task
+#: that exited non-zero, a verdict. An errored build is Concourse unable to run
+#: a step at all, so nothing was judged: Mykronos's `CheckRunReport` takes only
+#: success, failure and cancelled, and cancelled is the one that says so.
+HOOK_CONCLUSION = {"on_failure": "failure", "on_error": "cancelled"}
+
+
+@pytest.mark.parametrize("hook", sorted(HOOK_CONCLUSION))
+def test_every_lane_up_to_the_gate_reports_its_end(hook: str) -> None:
     jobs = _jobs()
     for name in sorted(VERIFYING | {GATE}):
         steps = jobs[name].get(hook, {}).get("do", [])
@@ -138,8 +147,44 @@ def test_every_lane_up_to_the_gate_reports_failure(hook: str) -> None:
         assert (params["JOB"], params["PHASE"], params["CONCLUSION"]) == (
             name,
             "end",
-            "failure",
+            HOOK_CONCLUSION[hook],
         ), f"{name}.{hook}"
+
+
+def test_every_hook_conclusion_is_one_mykronos_accepts() -> None:
+    """A value the schema refuses is a 422, and the check is left in progress."""
+    from typing import get_args
+
+    from mykronos.schemas import CheckRunReport
+
+    # Literal["success", "failure", "cancelled"] | None
+    accepted = {
+        value
+        for member in get_args(CheckRunReport.model_fields["conclusion"].annotation)
+        for value in get_args(member)
+        if isinstance(value, str)
+    }
+    sent = {
+        step["params"]["CONCLUSION"]
+        for step in _reporters(_doc()["jobs"])
+        if "CONCLUSION" in step["params"]
+    }
+    assert sent == {"success", "failure", "cancelled"}
+    assert sent <= accepted
+
+
+def test_the_report_outlasts_a_slow_container_start() -> None:
+    """personal-soc/iac #21: five minutes went to starting the hook's container,
+    and the 5m cap killed it six seconds into its script, before it posted."""
+    for step in _reporters(_doc()["jobs"]):
+        value = str(step["timeout"])
+        assert value.endswith("m") and int(value[:-1]) >= 10, step["timeout"]
+
+
+def test_the_reporter_can_read_the_infra_marker() -> None:
+    for step in _reporters(_doc()["jobs"]):
+        inputs = {i["name"]: i for i in step["config"]["inputs"]}
+        assert inputs.get("infra", {}).get("optional") is True
 
 
 def test_jobs_outside_the_verdict_never_report() -> None:
@@ -259,8 +304,227 @@ def test_a_refused_report_fails_the_step(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("head", [None, "ref: refs/heads/main", "abc1234"])
-def test_no_commit_to_name_fails_rather_than_guessing(tmp_path: Path, head: str | None) -> None:
-    r = _run(tmp_path, head, JOB="guard", PHASE="end", CONCLUSION="failure")
+def test_a_start_with_no_commit_to_name_fails_rather_than_guessing(
+    tmp_path: Path, head: str | None
+) -> None:
+    r = _run(tmp_path, head, JOB="guard", PHASE="start")
 
     assert r.returncode != 0
     assert not (tmp_path / "body.json").exists()
+
+
+@pytest.mark.parametrize("head", [None, "ref: refs/heads/main", "abc1234"])
+def test_an_end_with_no_commit_says_so_and_never_guesses(tmp_path: Path, head: str | None) -> None:
+    """TheHub #61769. A hook ends a lane that is already red; failing it too
+    added a second red step that read as a second fault. It still posts
+    nothing it cannot pin to a commit, and says exactly that."""
+    r = _run(tmp_path, head, JOB="iac", PHASE="end", CONCLUSION="failure")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / "body.json").exists()
+    assert "no checked-out commit" in r.stdout
+    assert "iac could not post 'failure'" in r.stdout
+    assert "Nothing was posted" in r.stdout
+
+
+def test_the_fetched_version_names_the_commit_when_head_does_not(tmp_path: Path) -> None:
+    """The git resource writes the version it fetched to .git/ref."""
+    git = tmp_path / "source" / ".git"
+    git.mkdir(parents=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git / "ref").write_text(SHA + "\n", encoding="utf-8")
+
+    r = _run(tmp_path, None, JOB="iac", PHASE="end", CONCLUSION="failure")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    body = json.loads((tmp_path / "body.json").read_text(encoding="utf-8"))
+    assert (body["commit_sha"], body["conclusion"]) == (SHA, "failure")
+
+
+def _infra(tmp_path: Path) -> None:
+    (tmp_path / "infra").mkdir()
+    (tmp_path / "infra" / "reason").write_text(
+        "INFRASTRUCTURE, NOT A VERDICT: checkov did not finish inside its 8m budget.\n",
+        encoding="utf-8",
+    )
+
+
+def test_an_infrastructure_failure_is_a_cancelled_check(tmp_path: Path) -> None:
+    _infra(tmp_path)
+    r = _run(tmp_path, SHA, JOB="iac", PHASE="end", CONCLUSION="failure")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    body = json.loads((tmp_path / "body.json").read_text(encoding="utf-8"))
+    assert body["conclusion"] == "cancelled"
+    assert "8m budget" in r.stdout
+
+
+def test_an_errored_build_is_a_cancelled_check(tmp_path: Path) -> None:
+    r = _run(tmp_path, SHA, JOB="iac", PHASE="end", CONCLUSION="cancelled")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    body = json.loads((tmp_path / "body.json").read_text(encoding="utf-8"))
+    assert body["conclusion"] == "cancelled"
+
+
+_CURL_SEQ = """curl() {
+  n=$(( $(cat "$CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$CURL_COUNT"
+  while [ $# -gt 0 ]; do
+    case "$1" in -d) printf '%s\\n' "$2" >> "$CAPTURE" ;; esac
+    shift
+  done
+  eval "rc=\\${CURL_RC_$n:-0}"
+  return "$rc"
+}
+"""
+
+
+def _run_seq(tmp_path: Path, **params: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    sh = shutil.which("sh")
+    assert sh, "sh is required to execute the reporter script"
+    (tmp_path / "source" / ".git").mkdir(parents=True)
+    (tmp_path / "source" / ".git" / "HEAD").write_text(SHA + "\n", encoding="utf-8")
+    capture = tmp_path / "bodies.jsonl"
+    r = subprocess.run(
+        [sh, "-s"],
+        input=_CURL_SEQ + _script(),
+        env={
+            **os.environ,
+            "CAPTURE": str(capture),
+            "CURL_COUNT": str(tmp_path / "curls"),
+            "MYKRONOS_URL": "http://mykronos.test",
+            "MYKRONOS_TOKEN": "tok",
+            "REPO_FULL_NAME": "ToddGBenson/personal-soc",
+            "JOB": "iac",
+            "PHASE": "end",
+            **params,
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    sent = (
+        [json.loads(x)["conclusion"] for x in capture.read_text(encoding="utf-8").splitlines() if x]
+        if capture.exists()
+        else []
+    )
+    return r, sent
+
+
+def test_a_mykronos_that_refuses_cancelled_gets_failure_not_silence(tmp_path: Path) -> None:
+    """A 422 must not leave the check in progress."""
+    r, sent = _run_seq(tmp_path, CONCLUSION="cancelled", CURL_RC_1="22")
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert sent == ["cancelled", "failure"]
+
+
+def test_an_unreachable_mykronos_still_fails_the_step(tmp_path: Path) -> None:
+    r, sent = _run_seq(tmp_path, CONCLUSION="cancelled", CURL_RC_1="7")
+
+    assert r.returncode == 7
+    assert sent == ["cancelled"]
+
+
+def test_a_refused_failure_is_never_retried(tmp_path: Path) -> None:
+    r, sent = _run_seq(tmp_path, CONCLUSION="failure", CURL_RC_1="22")
+
+    assert r.returncode == 22
+    assert sent == ["failure"]
+
+
+# -- the iac lane (TheHub #61769) ---------------------------------------------
+#
+# personal-soc/iac #21 and #23 spent their whole 15m installing git and an
+# unpinned checkov on python:slim and were killed with no scan; #22 died in apt.
+# Each then told the commit's check `failure`, though nothing was judged.
+
+
+def _resources() -> dict[str, dict[str, Any]]:
+    return {r["name"]: r for r in _doc()["resources"]}
+
+
+def _iac_task() -> dict[str, Any]:
+    (task,) = [s for s in _jobs()["iac"]["plan"] if s.get("task") == "checkov"]
+    return task
+
+
+def test_checkov_runs_on_a_digest_pinned_image() -> None:
+    resource = _resources()["checkov"]
+    assert resource["type"] == "registry-image"
+    assert resource["source"]["repository"] == "bridgecrew/checkov"
+    assert resource["version"] == {"digest": CHECKOV_DIGEST}
+    assert _iac_task()["image"] == "checkov"
+    gets = [s["get"] for s in _jobs()["iac"]["plan"] if "get" in s]
+    assert "checkov" in gets
+
+
+def test_checkov_is_the_version_the_other_iac_lanes_run() -> None:
+    """One checkov version across the estate's iac lanes."""
+    for name in ("mykronos.yml", "thehub.yml"):
+        doc = yaml.safe_load((PIPELINE.parent / name).read_text(encoding="utf-8"))
+        (other,) = [r for r in doc["resources"] if r["name"] == "checkov"]
+        assert other["source"] == _resources()["checkov"]["source"], name
+
+
+def test_the_iac_task_installs_neither_apt_packages_nor_the_scanner() -> None:
+    script = _iac_task()["config"]["run"]["args"][-1]
+    assert "apt-get" not in script
+    assert "pip install" not in script
+
+
+def test_checkov_has_a_budget_inside_the_task_cap() -> None:
+    task = _iac_task()
+    script = task["config"]["run"]["args"][-1]
+    assert "timeout --kill-after=30s 8m" in script
+    assert int(str(task["timeout"]).rstrip("m")) > 8
+    assert "infra" in {o["name"] for o in task["config"]["outputs"]}
+
+
+# Stubs for every tool the task (old or new) reaches for, so the script never
+# touches the machine running the test: no `git config --global`, and no real
+# apt or pip install. Run with `-e`, as Concourse runs it (`bash -ec`).
+_IAC_STUBS = """checkov() { echo "checkov stub $*"; }
+git() { :; }
+python3() { echo 0; }
+python() { :; }
+pip() { :; }
+apt-get() { :; }
+timeout() { return "${TIMEOUT_RC:-0}"; }
+"""
+
+
+def _run_iac(tmp_path: Path, timeout_rc: int) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required to execute the iac task")
+    for d in ("source", "infra", "notify"):
+        (tmp_path / d).mkdir()
+    return subprocess.run(
+        [bash, "-e", "-s"],
+        input=_IAC_STUBS + _iac_task()["config"]["run"]["args"][-1],
+        env={**os.environ, "TIMEOUT_RC": str(timeout_rc), "MYKRONOS_TOKEN": ""},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.parametrize("rc", [124, 137])
+def test_a_scan_that_runs_out_of_time_is_an_infrastructure_fault(tmp_path: Path, rc: int) -> None:
+    r = _run_iac(tmp_path, rc)
+
+    assert r.returncode == 75, r.stdout + r.stderr
+    reason = (tmp_path / "infra" / "reason").read_text(encoding="utf-8")
+    assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: checkov did not finish")
+    assert "nothing on this commit was scanned or judged" in reason
+
+
+def test_a_scan_that_finishes_leaves_no_marker(tmp_path: Path) -> None:
+    """Whatever it found, or whether it wrote a report, is not an outage."""
+    _run_iac(tmp_path, 0)
+
+    assert not (tmp_path / "infra" / "reason").exists()
