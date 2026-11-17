@@ -37,14 +37,36 @@ EXIT_NOT_MEASURED = 3
 Post = Callable[[str, dict[str, Any], str], Any]
 
 
+def _http_only_opener() -> urllib.request.OpenerDirector:
+    """An opener that speaks only HTTP(S).
+
+    `urllib.request.urlopen` also opens `file://` and `ftp://`, so a mistyped
+    or planted platform URL would read a local file and parse it as the answer.
+    This opener has no FileHandler and no FTPHandler: any other scheme raises
+    URLError ("unknown url type"). Proxy variables are honoured as before.
+    """
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPSHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPRedirectHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
 def _post(url: str, body: dict[str, Any], token: str) -> Any:
-    request = urllib.request.Request(  # noqa: S310 - the URL is the pipeline's own var
+    request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
+    with _http_only_opener().open(request, timeout=120) as response:
         text = response.read().decode("utf-8", errors="replace")
     try:
         return json.loads(text)
