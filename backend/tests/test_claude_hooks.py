@@ -123,11 +123,11 @@ def estate(tmp_path: Path) -> Estate:
 
 
 def run_hook(
-    hook: str, payload: dict[str, Any], env: dict[str, str]
+    hook: str, payload: dict[str, Any], env: dict[str, str], hooks: Path = HOOKS
 ) -> subprocess.CompletedProcess[str]:
     assert BASH is not None
     return subprocess.run(
-        [BASH, str(HOOKS / hook)],
+        [BASH, str(hooks / hook)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -1214,6 +1214,277 @@ def test_the_fail_open_cases_are_documented() -> None:
     text = section[1].lower()
     for needle in ("bash", "timeout", "deadline", "exit"):
         assert needle in text, needle
+
+
+# ── 11. A failing helper or policy engine blocks (TheHub #61831) ────────────
+#
+# The fallbacks read the payload through tr, grep, sed and cat, and nothing checked
+# that those helpers ran: one that failed left a capture empty, no rule matched, and
+# the hook allowed. A failing cat or dirname did it even with Python present. A Python
+# that started but exited with anything other than 0 or 2 went to the coarse fallback,
+# which allows whatever it does not recognise. And Claude Code runs the call on any
+# hook exit other than 2. After keel #179 (TheHub #61794); _guard-common.sh has the
+# design.
+#
+# A failing helper is planted twice: as a shim first on PATH, which is what the hooks
+# used before they pinned PATH, and in MYKRONOS_HOOK_FAULT_INJECT, which is the only
+# way to make a helper fail once they do. Every input is built here.
+
+FAILING_HELPERS = ["tr", "grep", "sed", "cat", "head", "dirname", "mktemp"]
+
+# (case, command, tool): one refused command per fallback rule, from the lists above.
+FALLBACK_REFUSED = [
+    ("ruff-format", "ruff format .", "Bash"),
+    ("git-in-the-checkout", GIT_BYPASSES[1][1], "Bash"),
+    ("redirect-into-the-checkout", SHELL_WRITE_BYPASSES[0][1], "Bash"),
+    ("cmdlet-into-the-checkout", POWERSHELL_WRITE_BYPASSES[0][1], "PowerShell"),
+]
+
+
+def _no_python(env: dict[str, str], estate: Estate) -> dict[str, str]:
+    return {**env, "MYKRONOS_HOOK_PYTHON": str(estate.profile / "no-such-python")}
+
+
+def _script(path: Path, body: str) -> Path:
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+    return path
+
+
+def _planted(
+    env: dict[str, str], tmp_path: Path, helper: str, exit_code: int = 2, inject: bool = True
+) -> dict[str, str]:
+    """`helper` first on PATH as a shim that prints nothing and exits `exit_code`."""
+    shims = tmp_path / f"shim-{helper}"
+    shims.mkdir(exist_ok=True)
+    _script(shims / helper, f"exit {exit_code}\n")
+    out = {**env, "PATH": str(shims) + os.pathsep + env.get("PATH", "")}
+    if inject:
+        out["MYKRONOS_HOOK_FAULT_INJECT"] = helper
+    return out
+
+
+def _refused_write(estate: Estate) -> str:
+    return estate.fill(WRITE_BYPASSES[1][2])
+
+
+@pytest.mark.parametrize("python", ["python", "no-python"])
+@pytest.mark.parametrize("helper", FAILING_HELPERS)
+@pytest.mark.parametrize(("case", "command", "tool"), cases(FALLBACK_REFUSED))
+def test_a_failing_helper_never_lets_a_refused_command_through(
+    estate: Estate, tmp_path: Path, case: str, command: str, tool: str, helper: str, python: str
+) -> None:
+    env = estate.env if python == "python" else _no_python(estate.env, estate)
+    env = _planted(env, tmp_path, helper)
+    command = estate.fill(command)
+    assert_blocked(guard_bash(estate, command, tool=tool, env=env), f"{case}, {helper} failing")
+
+
+@pytest.mark.parametrize("python", ["python", "no-python"])
+@pytest.mark.parametrize("helper", FAILING_HELPERS)
+def test_a_failing_helper_never_lets_a_refused_write_through(
+    estate: Estate, tmp_path: Path, helper: str, python: str
+) -> None:
+    env = estate.env if python == "python" else _no_python(estate.env, estate)
+    env = _planted(env, tmp_path, helper)
+    path = _refused_write(estate)
+    r = guard_write(estate, "Write", path, str(estate.mykronos), env=env)
+    assert_blocked(r, f"{path}, {helper} failing")
+
+
+def test_a_payload_that_could_not_be_read_blocks_even_a_harmless_call(
+    estate: Estate, tmp_path: Path
+) -> None:
+    env = _planted(estate.env, tmp_path, "cat")
+    r = guard_bash(estate, "ruff check .", env=env)
+    assert_blocked(r, "ruff check . with cat failing")
+    assert "internal error" in r.stderr
+    path = estate.fill("<MYK>/backend/x.py")
+    assert_blocked(guard_write(estate, "Write", path, str(estate.mykronos), env=env), path)
+
+
+@pytest.mark.parametrize("python", ["python", "no-python"])
+@pytest.mark.parametrize("stdin", ["", "\n", " \r\n\t"], ids=["empty", "newline", "whitespace"])
+@pytest.mark.parametrize("hook", ["guard-bash.sh", "guard-write.sh"])
+def test_an_empty_payload_blocks(estate: Estate, hook: str, stdin: str, python: str) -> None:
+    # Claude Code always sends a JSON object, so a payload with no text in it means the
+    # read failed (a capture emptied without cat failing visibly), not a harmless call.
+    env = estate.env if python == "python" else _no_python(estate.env, estate)
+    assert BASH is not None
+    r = subprocess.run(
+        [BASH, str(HOOKS / hook)],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=60,
+    )
+    assert_blocked(r, f"{hook} with stdin {stdin!r}")
+    assert "internal error" in r.stderr, r.stderr
+
+
+def test_with_no_fault_the_rules_decide(estate: Estate, tmp_path: Path) -> None:
+    # The wrappers must not turn grep's "no match" (1) into a fault.
+    for env in (estate.env, _no_python(estate.env, estate)):
+        assert_allowed(guard_bash(estate, "ruff check .", env=env), "ruff check .")
+        path = estate.fill("<MYK>/backend/x.py")
+        assert_allowed(guard_write(estate, "Write", path, str(estate.mykronos), env=env), path)
+
+
+# A helper planted earlier on PATH that prints nothing and reports success (or, for
+# grep, "no match") records no fault; only a pinned PATH keeps it from answering.
+@pytest.mark.parametrize(("helper", "exit_code"), [("tr", 0), ("grep", 1), ("sed", 0), ("cat", 0)])
+def test_a_helper_planted_earlier_on_path_is_not_used(
+    estate: Estate, tmp_path: Path, helper: str, exit_code: int
+) -> None:
+    env = _planted(_no_python(estate.env, estate), tmp_path, helper, exit_code, inject=False)
+    for case, command, tool in FALLBACK_REFUSED:
+        command = estate.fill(command)
+        assert_blocked(guard_bash(estate, command, tool=tool, env=env), f"{case}, planted {helper}")
+    path = _refused_write(estate)
+    r = guard_write(estate, "Write", path, str(estate.mykronos), env=env)
+    assert_blocked(r, f"{path}, planted {helper}")
+
+
+def test_python_is_still_found_on_the_path_the_hook_inherited(
+    estate: Estate, tmp_path: Path
+) -> None:
+    # PATH is pinned for the shell helpers only: the interpreter is looked up on the
+    # inherited PATH and runs with it (estate_guard.py resolves command words with it).
+    shims = tmp_path / "inherited-path-61831"
+    shims.mkdir()
+    seen = tmp_path / "python-ran.txt"
+    real = Path(sys.executable).as_posix()
+    body = f'printf "%s\\n" "$PATH" >> "{seen.as_posix()}"\nexec "{real}" "$@"\n'
+    _script(shims / "python3", body)
+    env = {**estate.env, "PATH": str(shims) + os.pathsep + estate.env.get("PATH", "")}
+    command = estate.fill(UNRESOLVED_BYPASSES[0][1])  # a rule only estate_guard.py has
+    r = guard_bash(estate, command, env=env)
+    assert_blocked(r, command)
+    assert "coarse fallback" not in r.stderr, r.stderr
+    assert_allowed(guard_bash(estate, "ruff check .", env=env), "ruff check .")
+    runs = seen.read_text(encoding="utf-8").splitlines()
+    assert len(runs) == 2, runs
+    assert all("inherited-path-61831" in p for p in runs), runs
+
+
+@pytest.mark.parametrize("code", [1, 3])
+def test_a_policy_engine_that_exits_without_a_verdict_blocks(
+    estate: Estate, tmp_path: Path, code: int
+) -> None:
+    stub = _script(tmp_path / f"python-exits-{code}", f"cat >/dev/null\nexit {code}\n")
+    env = {**estate.env, "MYKRONOS_HOOK_PYTHON": stub.as_posix()}
+    r = guard_bash(estate, "ruff check .", env=env)
+    assert_blocked(r, f"ruff check . with Python exiting {code}")
+    assert "internal error" in r.stderr
+    path = estate.fill("<MYK>/backend/x.py")
+    assert_blocked(guard_write(estate, "Write", path, str(estate.mykronos), env=env), path)
+
+
+# A fault injected into a copy of the hook, just before it asks Python. Every exit but
+# 0 and 2 must leave as a block; so must a fault file emptied or removed mid-run.
+INJECTED = [
+    ("exit-1", "exit 1"),
+    ("exit-3", "exit 3"),
+    ("exit-127", "exit 127"),
+    ("unbound-variable", ': "$no_such_variable_61831"'),
+    ("fault-file-emptied", ': > "$guard_faults"'),
+    ("fault-file-removed", 'command rm -f "$guard_faults"'),
+]
+
+
+@pytest.mark.parametrize(("case", "line"), INJECTED)
+@pytest.mark.parametrize("hook", ["guard-bash.sh", "guard-write.sh"])
+def test_an_exit_other_than_0_or_2_blocks(
+    estate: Estate, tmp_path: Path, hook: str, case: str, line: str
+) -> None:
+    copy = tmp_path / "hooks"
+    shutil.copytree(HOOKS, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    mode = "bash" if hook == "guard-bash.sh" else "write"
+    text = (copy / hook).read_text(encoding="utf-8")
+    anchor = f"\nrun_guard {mode}\n"
+    assert text.count(anchor) == 1, f"{hook} no longer calls run_guard {mode} once"
+    (copy / hook).write_text(
+        text.replace(anchor, f"\n{line}\n{anchor[1:]}"), encoding="utf-8", newline="\n"
+    )
+    if mode == "bash":
+        payload = bash_payload("ruff check .", str(estate.mykronos))
+    else:
+        payload = write_payload("Write", estate.fill("<MYK>/backend/x.py"), str(estate.mykronos))
+    assert_blocked(run_hook(hook, payload, estate.env, hooks=copy), f"{hook} with {case}")
+
+
+# Large inputs (keel #179 review, finding 1): `printf | grep -q` under pipefail can read
+# a match as "no match" once the input passes the pipe buffer. One refused command per
+# rule, padded with comment lines to just under 400 KB; Python's rules with Python, the
+# fallback's without it.
+PAD_SIZES = [70_000, 399_000]
+
+# (case, command, cwd, tool, judged by the fallback too)
+PADDED_REFUSED = [
+    ("ruff-format", RUFF_FORMAT_BYPASSES[1][1], "<MYK>", "Bash", True),
+    ("ruff-format-powershell", POWERSHELL_TOOL_RUFF[0][1], "<MYK>", "PowerShell", True),
+    ("git-in-the-checkout", GIT_BYPASSES[1][1], GIT_BYPASSES[1][2], "Bash", True),
+    ("git-allow-list", "git -C <PF> " + PROTECTED_DENIED[0][1], "<MYK>", "Bash", True),
+    ("shell-write", SHELL_WRITE_BYPASSES[0][1], SHELL_WRITE_BYPASSES[0][2], "Bash", True),
+    ("cmdlet-write", POWERSHELL_WRITE_BYPASSES[0][1], "<MYK>", "PowerShell", True),
+    ("piped-into-an-interpreter", PIPED_BYPASSES[0][1], "<MYK>", PIPED_BYPASSES[0][2], False),
+    ("unresolved-word", UNRESOLVED_BYPASSES[0][1], UNRESOLVED_BYPASSES[0][2], "Bash", False),
+    ("wrapper-flags", WRAPPER_BYPASSES[0][1], "<MYK>", "Bash", False),
+]
+
+
+def _padded(command: str, size: int) -> str:
+    out = [command]
+    total, i = len(command), 0
+    while total < size:
+        line = f"\n# padding line {i:06d} " + "x" * 60
+        out.append(line)
+        total += len(line)
+        i += 1
+    return "".join(out)
+
+
+def _padded_cases() -> list[Any]:
+    out = []
+    for case, command, cwd, tool, fallback in PADDED_REFUSED:
+        for python in ("python", "no-python") if fallback else ("python",):
+            for size in PAD_SIZES:
+                case_id = f"{case}-{python}-{size}"
+                out.append(pytest.param(command, cwd, tool, python, size, id=case_id))
+    return out
+
+
+@pytest.mark.parametrize(("command", "cwd", "tool", "python", "size"), _padded_cases())
+def test_a_large_command_is_still_refused(
+    estate: Estate, command: str, cwd: str, tool: str, python: str, size: int
+) -> None:
+    env = estate.env if python == "python" else _no_python(estate.env, estate)
+    command = _padded(estate.fill(command), size)
+    assert len(command) <= 400_000
+    r = guard_bash(estate, command, estate.fill(cwd), tool=tool, env=env)
+    assert r.returncode == 2 and "BLOCKED" in r.stderr, (
+        f"a {len(command)}-character command was not blocked (exit {r.returncode})"
+    )
+
+
+@pytest.mark.parametrize("python", ["python", "no-python"])
+@pytest.mark.parametrize("size", PAD_SIZES)
+def test_a_large_payload_is_judged_like_a_small_one(
+    estate: Estate, python: str, size: int
+) -> None:
+    env = estate.env if python == "python" else _no_python(estate.env, estate)
+    r = guard_bash(estate, _padded("ruff check .", size), env=env)
+    assert r.returncode == 0, f"a padded ruff check was blocked (exit {r.returncode}): {r.stderr}"
+    for path, verdict in (
+        (_refused_write(estate), 2),
+        (estate.fill("<MYK>/backend/x.py"), 0),
+    ):
+        payload = write_payload("Write", path, str(estate.mykronos))
+        payload["tool_input"]["content"] = "x = 1\n" * (size // 6)
+        r = run_hook("guard-write.sh", payload, env)
+        assert r.returncode == verdict, f"{path} with {size} bytes of content: exit {r.returncode}"
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────────
