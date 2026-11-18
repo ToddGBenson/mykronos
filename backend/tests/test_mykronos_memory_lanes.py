@@ -45,6 +45,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.pipeline_steps import find, holder
+
 ROOT = Path(__file__).resolve().parents[2]
 PIPELINE = ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
 SCRIPT = ROOT / "scripts" / "memory_kill.py"
@@ -53,6 +55,11 @@ MEMORY_GROUP = "pytest-memory"
 # Every job that runs the full backend suite, plus mypy, which #462 and #466
 # showed is big enough to tip a worker that is also running the suite.
 MEMORY_JOBS = {"unit", "coverage", "time-travel", "lint-and-types"}
+# Since 2026-11-16 (TheHub #61761) coverage and time-travel run their suites on
+# the remote `linux` workers, in serial group `linux-suites`, so the two never
+# share one remote worker and neither shares this host's memory with `unit`.
+REMOTE_MEMORY_JOBS = {"coverage", "time-travel"}
+REMOTE_MEMORY_GROUP = "linux-suites"
 # The step that turns "no verdict" into ERRORED. Its name is what the build
 # page shows as the errored step, so it says what to do.
 ERRORED_STEP = "killed-for-memory-not-a-test-failure-re-run"
@@ -81,7 +88,7 @@ def _job(name: str) -> dict[str, Any]:
 
 
 def _task(job: str, name: str) -> dict[str, Any]:
-    return next(s for s in _job(job)["plan"] if s.get("task") == name)
+    return find(_job(job)["plan"], name)
 
 
 def _script(task: dict[str, Any]) -> str:
@@ -137,7 +144,8 @@ class TestTheyNeverShareAWorker:
         missing = {
             name
             for name in MEMORY_JOBS
-            if MEMORY_GROUP not in (_job(name).get("serial_groups") or [])
+            if (REMOTE_MEMORY_GROUP if name in REMOTE_MEMORY_JOBS else MEMORY_GROUP)
+            not in (_job(name).get("serial_groups") or [])
         }
         assert not missing, (
             f"{sorted(missing)} can run beside another full suite or mypy on one 3 GiB "
@@ -322,10 +330,18 @@ class TestTheJobErrorsInsteadOfFailing:
         self, job: str, task: str
     ) -> None:
         plan = _job(job)["plan"]
-        i = next(n for n, s in enumerate(plan) if s.get("task") == task)
-        outputs = {o["name"] for o in plan[i]["config"].get("outputs") or []}
+        # The top-level step holding the task: a remote task sits in a timed `do:`.
+        i = holder(plan, task)
+        outputs = {o["name"] for o in find(plan, task)["config"].get("outputs") or []}
         assert "judged" in outputs, f"{job}/{task} has no `judged` output for the verdict"
-        after = plan[i + 1] if i + 1 < len(plan) else {}
+        # A remote suite's host-side check (`remote-result` and its load_var,
+        # review of #1178) may come first: it errors the build as well.
+        j = i + 1
+        while j < len(plan) and (
+            plan[j].get("task") == "remote-result" or plan[j].get("file") == "checked/ok"
+        ):
+            j += 1
+        after = plan[j] if j < len(plan) else {}
         assert after.get("load_var") == ERRORED_STEP and after.get("file") == "judged/verdict", (
             f"{job}: the step after {task} must be `load_var: {ERRORED_STEP}` reading "
             "judged/verdict, so a run with no verdict ERRORS instead of failing"
