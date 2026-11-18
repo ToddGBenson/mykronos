@@ -141,6 +141,14 @@ construction then have to be set by hand, and all three fail quietly. The
 first and third are handled by `cgroup-wrapper.sh` beside this README: mount
 it read-only and set `entrypoint: ["dumb-init", "/cgroup-wrapper.sh"]`.
 
+Rollout, as of 2026-11-18: no worker mounts this file yet. linux-3 mounts a
+hand-kept copy, `~/concourse-worker/cgroup-wrapper.sh` on its host, whose
+commands match this file up to 2026-11-18 (the stale-state clear was added
+there by hand that day). linux-1 and linux-2 run their own hand-kept copies
+with the cgroup delegation only, so they are not yet protected from the
+stale-state loop below. Each host's compose file has to mount this file in
+place of its copy.
+
 - **cgroup v2 delegation.** The image's entrypoint moves only PID 1 out of
   the container's root cgroup. The root keeps processes, so it cannot hand
   `cpu`/`memory` to `garden/`, and every job container fails with
@@ -167,8 +175,11 @@ it read-only and set `entrypoint: ["dumb-init", "/cgroup-wrapper.sh"]`.
   `dial unix /run/containerd/containerd.sock: connect: connection refused`,
   and the worker restart-loops without ever running a job (linux-3: 1775
   restarts in 30 h after an abrupt shutdown, 2026-11-16/17). The wrapper
-  removes `/run/containerd` before the image's entrypoint runs. Without it,
-  `docker compose up -d --force-recreate` recovers a looping worker once.
+  removes `/run/containerd` before the image's entrypoint runs (or empties
+  it, if something is mounted exactly there), and leaves it alone if a
+  containerd is already running, so running it by hand in a live worker
+  deletes nothing. Without it, `docker compose up -d --force-recreate`
+  recovers a looping worker once.
 
 To check a worker, enter a running job container's network namespace from
 inside the worker (`nsenter -t <pid> -n`, the pid from

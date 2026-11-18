@@ -18,6 +18,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -247,11 +248,11 @@ class TestTheDockerWorkerWrapper:
         assert raw.startswith(b"#!/bin/sh\n"), "the image has no bash at dumb-init time"
         assert b"\r" not in raw
         assert all(b < 0x80 for b in raw)
-        assert b"\nset -e\n" in raw
+        assert b"\nset -eu\n" in raw
 
     def test_clears_the_containerd_state_before_the_image_entrypoint(self) -> None:
         lines = [ln.strip() for ln in WRAPPER.read_text(encoding="utf-8").splitlines()]
-        clear = lines.index("rm -rf /run/containerd")
+        clear = next(i for i, ln in enumerate(lines) if ln.startswith("rm -rf /run/containerd"))
         start = lines.index('exec /usr/local/bin/entrypoint.sh "$@"')
         assert clear < start
         assert start == max(i for i, ln in enumerate(lines) if ln), "exec is the last step"
@@ -261,46 +262,114 @@ class TestTheDockerWorkerWrapper:
         assert "/sys/fs/cgroup/init/cgroup.procs" in text
         assert "/sys/fs/cgroup/cgroup.subtree_control" in text
 
-    def test_the_readme_names_the_wrapper_and_the_stale_state(self) -> None:
+    def test_the_readme_names_the_wrapper_the_stale_state_and_the_rollout(self) -> None:
         readme = README.read_text(encoding="utf-8")
         assert '"/cgroup-wrapper.sh"' in readme
         assert "/run/containerd" in readme and "--force-recreate" in readme
+        assert "hand-kept" in readme and "linux-3" in readme
 
-    @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh")
-    def test_a_run_removes_stale_state_and_hands_over_its_arguments(self, tmp_path: Path) -> None:
-        cg = tmp_path / "cgroup"
-        cg.mkdir()
-        (cg / "cgroup.controllers").write_text("cpu memory pids\n", encoding="utf-8")
-        (cg / "cgroup.procs").write_text("", encoding="utf-8")
-        run = tmp_path / "run" / "containerd"
-        task = run / "io.containerd.runtime.v2.task" / "concourse" / "dead"
+
+# The wrapper only ever runs in a Linux container. On Windows, Git Bash's sh
+# gets backslash paths from tmp_path and cannot exec the fake entrypoint, so
+# the runs are skipped there, visibly, rather than reported as wrapper defects.
+needs_posix_sh = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason="runs the wrapper under a POSIX sh; the wrapper is Linux-only",
+)
+
+
+class _FakeWorker:
+    """A fake container start: cgroup root, /run/containerd, /proc, mounts."""
+
+    def __init__(self, tmp_path: Path, controllers: str = "cpu memory pids") -> None:
+        self.cg = tmp_path / "cgroup"
+        self.cg.mkdir()
+        (self.cg / "cgroup.controllers").write_text(controllers + "\n", encoding="utf-8")
+        (self.cg / "cgroup.procs").write_text("", encoding="utf-8")
+        self.run = tmp_path / "run" / "containerd"
+        task = self.run / "io.containerd.runtime.v2.task" / "concourse" / "dead"
         task.mkdir(parents=True)
         (task / "init.pid").write_text("4242\n", encoding="utf-8")
-        entry = tmp_path / "entrypoint.sh"
-        entry.write_text(
-            f'#!/bin/sh\n[ -e "{run}" ] && echo STALE || echo CLEAN\necho "args=$*"\n',
+        self.proc = tmp_path / "proc"
+        (self.proc / "1").mkdir(parents=True)
+        (self.proc / "1" / "comm").write_text("dumb-init\n", encoding="utf-8")
+        self.mounts = tmp_path / "mounts"
+        self.mounts.write_text("overlay / overlay rw 0 0\n", encoding="utf-8")
+        self.entry = tmp_path / "entrypoint.sh"
+        self.entry.write_text(
+            f'#!/bin/sh\n[ -e "{self.run}/io.containerd.runtime.v2.task" ]'
+            ' && echo STALE || echo CLEAN\necho "args=$*"\n',
             encoding="utf-8",
         )
-        entry.chmod(0o755)
+        self.entry.chmod(0o755)
+
+    def start(self) -> subprocess.CompletedProcess[str]:
         script = (
             WRAPPER.read_text(encoding="utf-8")
-            .replace("/sys/fs/cgroup", str(cg))
-            .replace("/run/containerd", str(run))
-            .replace("/usr/local/bin/entrypoint.sh", str(entry))
+            .replace("/sys/fs/cgroup", str(self.cg))
+            .replace("/run/containerd", str(self.run))
+            .replace("/proc/[0-9]*/comm", f"{self.proc}/[0-9]*/comm")
+            .replace("/proc/self/mounts", str(self.mounts))
+            .replace("/usr/local/bin/entrypoint.sh", str(self.entry))
         )
-        out = subprocess.run(
+        return subprocess.run(
             ["sh", "-c", script, "cgroup-wrapper.sh", "worker"],
             capture_output=True,
             text=True,
             check=True,
-        ).stdout
-        assert "CLEAN" in out and "args=worker" in out
-        assert not run.exists()
-        assert (cg / "cgroup.subtree_control").read_text(encoding="utf-8").split() == [
+        )
+
+
+@needs_posix_sh
+class TestTheDockerWorkerWrapperRuns:
+    def test_a_start_removes_stale_state_and_hands_over_its_arguments(self, tmp_path: Path) -> None:
+        w = _FakeWorker(tmp_path)
+        run = w.start()
+        assert "CLEAN" in run.stdout and "args=worker" in run.stdout
+        assert not w.run.exists()
+        assert run.stderr == ""
+        assert (w.cg / "cgroup.subtree_control").read_text(encoding="utf-8").split() == [
             "+cpu",
             "+memory",
             "+pids",
         ]
+
+    def test_every_root_pid_is_moved_and_a_root_that_keeps_one_is_reported(
+        self, tmp_path: Path
+    ) -> None:
+        w = _FakeWorker(tmp_path)
+        # A plain file never drains the way the kernel's cgroup.procs does, so
+        # the root keeps its pids: the loop runs all five passes, then warns.
+        (w.cg / "cgroup.procs").write_text("7\n8\n", encoding="utf-8")
+        run = w.start()
+        assert (w.cg / "init" / "cgroup.procs").read_text(encoding="utf-8").split() == ["8"]
+        assert "still holds pids 7 8" in run.stderr
+
+    def test_empty_controllers_are_reported_not_written_as_a_bare_plus(
+        self, tmp_path: Path
+    ) -> None:
+        w = _FakeWorker(tmp_path, controllers="")
+        run = w.start()
+        assert "cgroup.controllers is empty" in run.stderr
+        assert not (w.cg / "cgroup.subtree_control").exists()
+        assert "CLEAN" in run.stdout
+
+    def test_a_live_containerd_keeps_its_state(self, tmp_path: Path) -> None:
+        w = _FakeWorker(tmp_path)
+        (w.proc / "99").mkdir()
+        (w.proc / "99" / "comm").write_text("containerd\n", encoding="utf-8")
+        run = w.start()
+        assert "STALE" in run.stdout, "a hand run in a live worker must not delete live state"
+        assert "containerd is running" in run.stderr
+
+    def test_a_mountpoint_is_emptied_not_removed(self, tmp_path: Path) -> None:
+        w = _FakeWorker(tmp_path)
+        w.mounts.write_text(
+            f"overlay / overlay rw 0 0\ntmpfs {w.run} tmpfs rw 0 0\n", encoding="utf-8"
+        )
+        run = w.start()
+        assert "CLEAN" in run.stdout and "emptied" in run.stdout
+        assert w.run.is_dir() and not any(w.run.iterdir())
 
 
 class TestTheWindowsScript:
