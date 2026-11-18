@@ -61,7 +61,8 @@ def test_a_red_end_with_no_commit_still_finishes(tmp_path: Path, conclusion: str
 
 # -- F3 / PS-3 ----------------------------------------------------------------
 
-_STUBS = """git() { :; }
+_STUBS = """checkov() { :; }
+git() { :; }
 pip() { :; }
 apt-get() { :; }
 python3() { echo 0; }
@@ -166,13 +167,15 @@ def _all_tasks() -> list[tuple[str, dict[str, Any]]]:
 
 def test_every_uploader_install_has_network_deadlines() -> None:
     """netassess-freshness #19 spent its whole 10m `upload-network-findings`
-    budget in this install and was killed before the uploader sent a byte."""
-    sites = [(j, t) for j, t in _all_tasks() if 'bash -c "$MYKRONOS_INSTALL_UPLOADER"' in _script(t)]
+    budget in this install and was killed before the uploader sent a byte.
+    Every task in the file, so the next lane cannot leave it out."""
+    call = 'bash -c "$MYKRONOS_INSTALL_UPLOADER"'
+    sites = [(j, t) for j, t in _all_tasks() if call in _script(t)]
     assert sites
     for job, task in sites:
         script = _script(task)
         where = f"{job}/{task['task']}"
-        before = script.split('bash -c "$MYKRONOS_INSTALL_UPLOADER"')[0]
+        before = script.split(call)[0]
         for setting in (
             "PIP_DEFAULT_TIMEOUT=",
             "PIP_RETRIES=",
@@ -233,7 +236,7 @@ def test_every_digest_pin_records_its_date() -> None:
         if not re.match(r"^\s*version: \{ digest: ", line):
             continue
         match = _PINNED.match(lines[i - 1])
-        assert match, f"{path.name}:{i + 1} pins a digest with no '# pinned: YYYY-MM-DD' line above it"
+        assert match, f"{path.name}:{i + 1} pins a digest with no '# pinned: YYYY-MM-DD' line"
         day = dt.date.fromisoformat(match.group(1))
         assert day <= dt.date.today(), f"{path.name}:{i} is pinned in the future"
     assert len(pinned) == sum(

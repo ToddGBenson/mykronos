@@ -696,6 +696,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
                 cd source
                 git config --global --add safe.directory "$PWD"
@@ -837,6 +838,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq curl git >/dev/null
                 curl -sSfL -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
@@ -944,6 +946,7 @@ jobs:
                   echo "  mykronos rotate-token ToddGBenson/personal-soc"
                   echo "=================================================="
                 else
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   MYKRONOS_JOB=secrets python -m mykronos.upload \
@@ -1104,6 +1107,7 @@ jobs:
                   # touch the versions checkov was built and tested with.
                   python -m venv /tmp/uploader
                   export PATH="/tmp/uploader/bin:$PATH"
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
@@ -1207,6 +1211,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
                 git config --global --add safe.directory "$PWD"
 
@@ -1566,6 +1571,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
 
                 cat > tests.ps1 <<'PS'
@@ -2302,6 +2308,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
@@ -2420,6 +2427,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
 
                 cd source
@@ -2531,6 +2539,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null
 
                 # TheHub #60852 (option C). This lane used to print "Ports are
@@ -2774,6 +2783,7 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq unzip curl >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
