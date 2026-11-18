@@ -233,6 +233,7 @@ _CURL_STUB = """curl() {
     case "$1" in -d|--data) printf '%s' "$2" > "$CAPTURE" ;; esac
     shift
   done
+  printf '%s' "${CURL_BODY:-}"
   return "${CURL_RC:-0}"
 }
 """
@@ -295,6 +296,26 @@ def test_a_failure_sends_the_conclusion(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stdout + r.stderr
     body = json.loads((tmp_path / "body.json").read_text(encoding="utf-8"))
     assert (body["job"], body["phase"], body["conclusion"]) == ("oracle", "end", "failure")
+
+
+def test_a_kept_failure_is_reported_as_kept_not_as_cancelled(tmp_path: Path) -> None:
+    """TheHub #61842. Mykronos answers a cancelled against a stored failure
+    with `unchanged`; the log must not say the check is now cancelled."""
+    body = '{"name": "Concourse / personal-soc", "check_run_id": "1", "status": "completed",'
+    body += ' "conclusion": "failure", "outcome": "unchanged"}'
+    r = _run(tmp_path, SHA, JOB="iac", PHASE="end", CONCLUSION="cancelled", CURL_BODY=body)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Mykronos left the check at 'failure'" in r.stdout
+    assert "Reported end cancelled" not in r.stdout
+
+
+def test_a_posted_end_is_reported_as_sent(tmp_path: Path) -> None:
+    body = '{"conclusion": "cancelled", "outcome": "updated"}'
+    r = _run(tmp_path, SHA, JOB="iac", PHASE="end", CONCLUSION="cancelled", CURL_BODY=body)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"Reported end cancelled for iac on {SHA}." in r.stdout
 
 
 def test_a_refused_report_fails_the_step(tmp_path: Path) -> None:

@@ -11,6 +11,13 @@ risk decision and ``independent-review`` already do.
 and every later one updates it, so a lane that fails, is re-run and passes ends
 as one check with the latest answer rather than a red and a green side by side.
 
+**A cancelled never replaces a failure (TheHub #61842).** Every lane on a
+commit reports into that one check, and every `on_error:` hook sends
+`cancelled`. So a lane that errored after another lane failed would turn a
+refused commit into a not-judged one. Against a stored failure, a later
+cancelled is answered `unchanged` and nothing is sent to GitHub. A success
+still replaces a failure: that is a re-run passing.
+
 **A start never reopens a verdict.** A re-run of the first lane on a commit
 that already has an answer leaves that answer where it is. The re-run's own end
 replaces it.
