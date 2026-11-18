@@ -68,7 +68,10 @@ apt-get() { :; }
 python3() { echo 0; }
 python() {
   case "$*" in
-    *mykronos.upload*) echo called > "$UPLOAD_MARK"; return "${UPLOAD_RC:-0}" ;;
+    *mykronos.upload*)
+      echo called > "$UPLOAD_MARK"
+      [ "${UPLOAD_ACCEPTED:-1}" = 1 ] && echo "Uploaded 0 finding(s) for scan run r1 (failure)"
+      return "${UPLOAD_RC:-0}" ;;
   esac
 }
 timeout() {
@@ -80,7 +83,9 @@ timeout() {
 """
 
 
-def _run_iac(tmp_path: Path, *, sarif: bool, upload_rc: int) -> subprocess.CompletedProcess[str]:
+def _run_iac(
+    tmp_path: Path, *, sarif: bool, upload_rc: int, accepted: bool = True
+) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("bash is required to execute the iac task")
@@ -99,6 +104,7 @@ def _run_iac(tmp_path: Path, *, sarif: bool, upload_rc: int) -> subprocess.Compl
             "MYKRONOS_INSTALL_UPLOADER": ":",
             "UPLOAD_MARK": str(tmp_path / "uploaded"),
             "UPLOAD_RC": str(upload_rc),
+            "UPLOAD_ACCEPTED": "1" if accepted else "0",
             "WRITE_SARIF": "1" if sarif else "0",
             "RESULTS": str(results),
         },
@@ -109,23 +115,41 @@ def _run_iac(tmp_path: Path, *, sarif: bool, upload_rc: int) -> subprocess.Compl
     )
 
 
-def test_an_iac_upload_that_fails_fails_the_task(tmp_path: Path) -> None:
-    r = _run_iac(tmp_path, sarif=True, upload_rc=1)
+def test_an_iac_upload_never_accepted_is_an_infrastructure_fault(tmp_path: Path) -> None:
+    """Nothing was ingested, so nothing was judged: infra/reason and 75, and
+    the check hook says `cancelled` (Fable nit 5 on #1191)."""
+    r = _run_iac(tmp_path, sarif=True, upload_rc=1, accepted=False)
 
     assert (tmp_path / "uploaded").exists()
+    assert r.returncode == 75, r.stdout + r.stderr
+    reason = (tmp_path / "infra" / "reason").read_text()
+    assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: Mykronos did not accept")
+    message = (tmp_path / "notify" / "message.txt").read_text()
+    assert "never accepted its upload" in message
+
+
+def test_an_iac_upload_filed_as_degraded_is_a_failure_and_says_it_was_filed(
+    tmp_path: Path,
+) -> None:
+    """The uploader exits 1 on a degraded scan it DID file. The message must
+    not say nothing was ingested (Fable nit 3 on #1191), and it is a verdict."""
+    r = _run_iac(tmp_path, sarif=True, upload_rc=1, accepted=True)
+
     assert r.returncode == 1, r.stdout + r.stderr
-    assert "nothing from this scan was ingested" in r.stdout
-    assert "upload to Mykronos failed" in (tmp_path / "notify" / "message.txt").read_text()
+    assert "accepted the IaC upload but filed it as a failed or degraded scan" in r.stdout
+    assert "nothing from this scan was ingested" not in r.stdout
+    assert not (tmp_path / "infra" / "reason").exists()
 
 
 def test_an_iac_scan_with_no_report_still_uploads_and_still_fails(tmp_path: Path) -> None:
     """PS-3: the uploader files a missing report as a failed scan, so the
     upload has to run for Mykronos to hear that the scan broke."""
-    r = _run_iac(tmp_path, sarif=False, upload_rc=0)
+    r = _run_iac(tmp_path, sarif=False, upload_rc=1, accepted=True)
 
     assert (tmp_path / "uploaded").exists(), r.stdout + r.stderr
     assert r.returncode == 1
     assert "checkov wrote no SARIF report" in r.stdout
+    assert not (tmp_path / "infra" / "reason").exists()
 
 
 def test_an_iac_scan_that_uploads_passes(tmp_path: Path) -> None:
@@ -196,16 +220,78 @@ def test_every_apt_task_has_acquire_deadlines() -> None:
             assert setting in before, f"{where} runs apt with no {setting}"
 
 
-def test_every_mc_download_and_listing_is_bounded() -> None:
+_CURL_START = re.compile(r"(?:^|[;&|(]\s*|\$\(\s*|\bif\s+|\bthen\s+)curl\s")
+
+
+def test_every_curl_and_mc_call_is_bounded() -> None:
+    """Fable nit 1 on #1191: every curl a task starts carries --max-time, and
+    every mc call runs under `timeout`, not only the ones on the #19 path."""
+    curls = mcs = 0
     for job, task in _all_tasks():
         for line in _script(task).splitlines():
             if line.lstrip().startswith("#"):
                 continue
             where = f"{job}/{task['task']}: {line.strip()}"
-            if "curl" in line and "/usr/local/bin/mc" in line:
-                assert "--max-time" in line and "--connect-timeout" in line, where
-            if re.search(r"\bmc --quiet ls\b", line) and "LISTING=" in line:
-                assert "timeout " in line, where
+            if _CURL_START.search(line.strip()):
+                curls += 1
+                assert "--max-time" in line, where
+            if re.search(r"\bmc --quiet (ls|cp|mb)\b", line):
+                mcs += 1
+                assert "timeout --kill-after=10s" in line, where
+    assert curls and mcs
+
+
+_APT_DEADLINE = re.compile(r"timeout --kill-after=10s \d+s sh -c 'apt-get update")
+_INSTALL_DEADLINE = re.compile(r"if timeout --kill-after=10s \d+s bash -ec '$")
+
+
+def test_every_apt_and_uploader_install_has_a_hard_deadline() -> None:
+    """Fable nit 2 on #1191. The stall deadlines alone measured 354s for apt
+    against a live WAN blackhole (2026-11-18), so each install also runs
+    under `timeout`."""
+    call = 'bash -c "$MYKRONOS_INSTALL_UPLOADER"'
+    apts = installs = 0
+    for job, task in _all_tasks():
+        lines = _script(task).splitlines()
+        for i, line in enumerate(lines):
+            where = f"{job}/{task['task']}: {line.strip()}"
+            if "apt-get update" in line and not line.lstrip().startswith("#"):
+                apts += 1
+                assert _APT_DEADLINE.search(line), where
+            if line.strip() == call:
+                installs += 1
+                assert _INSTALL_DEADLINE.match(lines[i - 1].strip()), where
+    assert apts == 15 and installs == 7, (apts, installs)
+
+
+def _deadline(script: str, pattern: str) -> int:
+    m = re.search(pattern, script)
+    assert m, pattern
+    return int(m.group(1))
+
+
+#: The slowest container creation measured on this worker (builds 1333-1341),
+#: which a task's clock includes.
+WORST_CREATION_S = 130
+KILL_GRACE_S = 10
+
+
+@pytest.mark.parametrize("job", ["external-exposure", "netassess-ingest", "netassess-freshness"])
+def test_the_network_hooks_worst_case_fits_its_cap(job: str) -> None:
+    """Fable nit 2 on #1191: the sum, as a fact. With the network black-holed,
+    the slowest container creation plus every install deadline and its KILL
+    grace ends inside the hook's cap, so the hook fails and names itself
+    rather than being killed by Concourse. The upload is not reached then."""
+    (hook,) = [
+        t["ensure"] for t in _tasks(_jobs()[job]) if isinstance(t.get("ensure"), dict)
+    ]
+    script = _script(hook)
+    apt = _deadline(script, r"timeout --kill-after=10s (\d+)s sh -c 'apt-get")
+    install = _deadline(script, r"if timeout --kill-after=10s (\d+)s bash -ec '")
+    worst = WORST_CREATION_S + apt + install + 2 * KILL_GRACE_S
+    cap = int(str(hook["timeout"]).rstrip("m")) * 60
+    assert worst <= cap, (worst, cap)
+    assert (apt, install, worst, cap) == (150, 240, 540, 600)
 
 
 def test_the_freshness_task_deadlines_fit_inside_its_cap() -> None:
@@ -213,7 +299,7 @@ def test_the_freshness_task_deadlines_fit_inside_its_cap() -> None:
     assert int(str(task["timeout"]).rstrip("m")) == 15
     script = _script(task)
     assert "--max-time 180" in script  # 3m download
-    assert "timeout --kill-after=10s 120s mc" in script  # 2m listing
+    assert "timeout --kill-after=10s 120s mc --quiet ls" in script  # 2m listing
 
 
 # -- F4 -----------------------------------------------------------------------
