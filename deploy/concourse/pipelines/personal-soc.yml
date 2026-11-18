@@ -103,6 +103,26 @@ resources:
     icon: language-python
     source: { repository: python, tag: "3.13-slim" }
 
+  # The `iac` lane's scanner, prebuilt (TheHub #61769). The task used to run
+  # `apt-get install git` and an unpinned `pip install checkov` on python:slim
+  # every build, inside its 15m budget: personal-soc/iac #21 and #23 spent
+  # that whole budget installing and were killed with no scan, and #22 died in
+  # apt. This image already carries checkov, git, curl and pip, so the lane
+  # runs no apt and installs no scanner.
+  #
+  # The same repository and tag mykronos.yml and thehub.yml run their `iac`
+  # lanes on, so the estate scans IaC with one checkov version and the worker
+  # already holds these layers. `version:` holds it to one digest (the image
+  # index, as the resource records it), the D-114 pattern thehub.yml uses for
+  # ZAP: the tag moving upstream changes nothing here until a reviewed edit
+  # moves this line. image-refresh does not cover it: that job rebuilds the
+  # compose stack's own images, not pipeline task images.
+  - name: checkov
+    type: registry-image
+    icon: file-cog-outline
+    source: { repository: bridgecrew/checkov, tag: "3.2.334" }
+    version: { digest: "sha256:888060aaaa6f4499fd3b00a1a03185ed760937b049d438fa6e00b3203a5d613e" }
+
   # The scanning jobs have no commit to react to - the network changes, not
   # the code - so they are driven by the clock instead. One resource for both:
   # they are the same weekly sweep, and a second timer would let them drift
@@ -375,10 +395,18 @@ anchors:
   # `skill-integrity`, all of which wait on `guard`. No existing job sat
   # downstream of all of them, which is why `all-lanes` exists.
   #
-  # Every one of those jobs reports failure from `on_failure:` and
-  # `on_error:`, LAST in each hook, so a red lane is a red check and not a check
-  # left in progress, and a refused report cannot stop the Slack alert ahead of
-  # it.
+  # Every one of those jobs reports from `on_failure:` and `on_error:`, LAST in
+  # each hook, so a red lane is a red check and not a check left in progress,
+  # and a refused report cannot stop the Slack alert ahead of it.
+  #
+  # `on_failure:` says `failure`: a task exited non-zero, which is a verdict.
+  # `on_error:` says `cancelled` (TheHub #61769): Concourse errors a build when
+  # it could not run a step at all -- no worker, an image or a fetch that would
+  # not resolve -- and nothing was judged. It used to say `failure`, so an
+  # outage read on the commit as a failed verdict. A step killed by its
+  # `timeout:` is a FAILED build in Concourse, not an errored one, so it goes
+  # through `on_failure:`; the `iac` task turns its own overrun into infra/reason
+  # first, and the reporter downgrades that to `cancelled` too.
   #
   # NOT wired, and the reason for each: `package` is delivery to the host, and
   # whether a Scheduled Task acknowledged an install is not a verdict on the
@@ -401,8 +429,15 @@ anchors:
 
   check_run: &check_run
     task: report-check-run
-    # PS-7. Three attempts of 45s plus two 5s delays is 145s; 5m is twice that.
-    timeout: 5m
+    # PS-7. Three attempts of 45s plus two 5s delays is 145s, and a cancelled
+    # refused by an old Mykronos posts once more as failure.
+    #
+    # 10m, not 5m (TheHub #61769): the cap counts the time Concourse spends
+    # finding a worker and starting the container, not only the script. On
+    # personal-soc/iac #21 that took five minutes under load, and the hook was
+    # killed six seconds after its script started, before it printed a line,
+    # so the commit's check was never told the lane had ended.
+    timeout: 10m
     config:
       platform: linux
       # The notifier's image: already on the worker, and needs no checkout,
@@ -415,6 +450,10 @@ anchors:
       # runs and says why it could not report.
       inputs:
         - { name: source, optional: true }
+        # [#61007, #61769] infra/reason means the job stopped on an outage or
+        # its own time budget before anything was judged (see
+        # `install_uploader` and the `iac` task). Optional, like `source`.
+        - { name: infra, optional: true }
       params: *check_params
       run:
         path: sh
@@ -423,39 +462,89 @@ anchors:
           - |
             set -eu
             # The git resource leaves a detached HEAD, so .git/HEAD holds the
-            # sha itself. Anything else (no checkout, a branch ref) is refused,
-            # not guessed: a check on the wrong commit is worse than none.
+            # sha itself, and writes the version it fetched to .git/ref. Either
+            # is used only if it is a full hex sha. Anything else (no checkout,
+            # a branch ref) is refused, not guessed: a check on the wrong
+            # commit is worse than none.
             SHA=""
-            if [ -f source/.git/HEAD ]; then
-              SHA=$(tr -d ' \n\r\t' < source/.git/HEAD)
-            fi
-            case "$SHA" in
-              *[!0-9a-f]*) SHA="" ;;
-            esac
+            for f in source/.git/HEAD source/.git/ref; do
+              if [ -f "$f" ]; then
+                SHA=$(tr -d ' \n\r\t' < "$f")
+                case "$SHA" in
+                  *[!0-9a-f]*) SHA="" ;;
+                esac
+                [ "${#SHA}" -eq 40 ] && break
+                SHA=""
+              fi
+            done
             if [ "${#SHA}" -ne 40 ]; then
+              if [ "${PHASE:-}" = "end" ]; then
+                # [TheHub #61769] A hook is the end of a lane that has already
+                # gone red, usually because it never checked out. Failing the
+                # hook as well only adds a second red step that reads as a
+                # second fault. Say exactly what was not posted, and finish.
+                echo "::warning:: no checked-out commit: source/.git/HEAD and source/.git/ref are missing or not a full sha."
+                echo "${JOB:-this job} could not post '${CONCLUSION:-}' to the Concourse / personal-soc check, because the"
+                echo "check is keyed by commit and none can be named without guessing. Nothing was posted."
+                echo "The lane's own red state still reaches Mykronos through its red-main poll; re-run the job"
+                echo "once its checkout succeeds to post the check."
+                exit 0
+              fi
               echo "No checked-out commit to report on, so ${JOB:-this job} posted nothing."
               echo "The check stays as it was, and one still in progress blocks."
               exit 1
             fi
 
-            if [ "${PHASE:-}" = "start" ]; then
-              CONCLUSION_JSON=null
-            else
-              CONCLUSION_JSON="\"${CONCLUSION:-}\""
+            # [#61007, #61769] A failure that left infra/reason never reached
+            # a verdict: the check says `cancelled` ("could not run, nothing
+            # was judged"), not `failure`. GitHub still counts it as not
+            # passing. Mykronos accepts success, failure and cancelled only
+            # (CheckRunReport), so `cancelled` is also what an `on_error:`
+            # hook sends: errored and timed_out are not values it takes.
+            if [ "${PHASE:-}" = "end" ] && [ "${CONCLUSION:-}" = "failure" ] && [ -s infra/reason ]; then
+              CONCLUSION=cancelled
+              echo "Infrastructure fault, not a verdict: reporting cancelled, not failure."
+              cat infra/reason
             fi
-            # Every value is fixed by this file or is the hex sha checked
-            # above, so nothing here needs escaping.
-            BODY=$(printf '{"repo_full_name":"%s","commit_sha":"%s","job":"%s","phase":"%s","conclusion":%s}' \
-              "$REPO_FULL_NAME" "$SHA" "$JOB" "$PHASE" "$CONCLUSION_JSON")
+            body_for() {
+              if [ "${PHASE:-}" = "start" ]; then
+                CONCLUSION_JSON=null
+              else
+                CONCLUSION_JSON="\"$1\""
+              fi
+              # Every value is fixed by this file or is the hex sha checked
+              # above, so nothing here needs escaping.
+              printf '{"repo_full_name":"%s","commit_sha":"%s","job":"%s","phase":"%s","conclusion":%s}' \
+                "$REPO_FULL_NAME" "$SHA" "$JOB" "$PHASE" "$CONCLUSION_JSON"
+            }
+            post_check() {
+              curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 45 \
+                --retry 2 --retry-delay 5 --retry-connrefused \
+                -X POST \
+                -H "Authorization: Bearer $MYKRONOS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$1" "$MYKRONOS_URL/api/ingest/check-runs"
+            }
 
-            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 45 \
-              --retry 2 --retry-delay 5 --retry-connrefused \
-              -X POST \
-              -H "Authorization: Bearer $MYKRONOS_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "$BODY" "$MYKRONOS_URL/api/ingest/check-runs"
+            # if/else, not an or-assignment of $?: check_pipeline_conformance.py
+            # reads that form as a job's scanner capture for PS-3, and this
+            # hook is in every job.
+            if post_check "$(body_for "${CONCLUSION:-}")"; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              # A Mykronos older than #61007 refuses `cancelled` with a 422
+              # (curl 22). Then say `failure`, as before, rather than leave
+              # the check in progress. Any other refusal, or no answer at
+              # all, fails the step as it always did.
+              if [ "${CONCLUSION:-}" != "cancelled" ] || [ "$rc" -ne 22 ]; then
+                exit "$rc"
+              fi
+              echo
+              echo "Mykronos refused 'cancelled'; reporting failure instead."
+              CONCLUSION=failure
+              post_check "$(body_for failure)"
+            fi
             echo
-            echo "Reported ${PHASE} for ${JOB} on ${SHA}."
+            echo "Reported ${PHASE} ${CONCLUSION:-} for ${JOB} on ${SHA}."
 
 jobs:
 
@@ -567,7 +656,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: guard, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: guard, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -694,7 +783,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: secrets, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -892,23 +981,27 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: iac, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
         trigger: true
         passed: [guard]
-      - get: python
+      - get: checkov
         attempts: *retry_fetch
       # PS-2, and D-151: this job's hooks report to Mykronos.
       - *preflight
       - task: checkov
-        image: python
+        image: checkov
         # PS-7, and this pipeline is the only one in the estate whose tasks
         # carry none - 12 of 12 work tasks here have no timeout, against 0 of
         # 28 in mykronos.yml. There is ONE worker shared by every pipeline, so
         # a task that hangs here holds mykronos and thehub behind it. This job
         # is not going to be the thirteenth. B-059.
+        #
+        # The 15m stays the hang guard. Inside it, checkov gets 8m of its own
+        # (TheHub #61769, below), which leaves the uploader's three install
+        # attempts and the upload room to finish before this cap.
         timeout: 15m
         params:
           MYKRONOS_INSTALL_UPLOADER: *install_uploader
@@ -918,19 +1011,22 @@ jobs:
         config:
           platform: linux
           inputs: [{ name: source }]
-          outputs: [{ name: notify }]
+          # `infra`: this task renders no verdict of its own (checkov runs with
+          # --soft-fail and the severity decision is Mykronos's), so a marker
+          # here can never launder a failed verdict into an outage. It is
+          # written by the uploader's install when GitHub is unreachable, and
+          # by the checkov budget below.
+          outputs: [{ name: notify }, { name: infra }]
           run:
             path: bash
             args:
               - -ec
               - |
                 set -uo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
-                pip install --quiet checkov
+                # TheHub #61769: no apt, and the scanner is not installed per
+                # run. The `checkov` image carries it, git and pip, so the 15m
+                # budget is spent scanning rather than installing.
+                checkov --version
 
                 cd source
                 git config --global --add safe.directory "$PWD"
@@ -945,10 +1041,28 @@ jobs:
                 # --soft-fail because the severity decision belongs to Mykronos
                 # (spec 04 section 5), not to the scanner. A finding is still a
                 # finding; whether it stops anything is decided downstream.
+                #
+                # [TheHub #61769] Its own 8m budget, inside the task's 15m. A
+                # step Concourse kills for its `timeout:` is a FAILED build, so
+                # the hook would say `failure` about a commit nothing judged --
+                # #21 and #23 did exactly that. Overrunning here instead is an
+                # infrastructure fault, written to infra/reason, and the check
+                # says `cancelled`. Any other exit falls through to the SARIF
+                # check below, unchanged.
                 echo "== checkov, github_actions framework =="
-                checkov --directory . --framework github_actions \
+                # (if/else: a scan that writes no report below still skips the
+                # upload, so personal-soc.yml:iac PS-3 stays a recorded gap.)
+                if timeout --kill-after=30s 8m \
+                  checkov --directory . --framework github_actions \
                   --output sarif --output-file-path /tmp/results \
-                  --soft-fail --compact --quiet || true
+                  --soft-fail --compact --quiet; then rc=0; else rc=$?; fi
+                if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+                  reason="INFRASTRUCTURE, NOT A VERDICT: checkov did not finish inside its 8m budget (exit ${rc}), so nothing on this commit was scanned or judged. The worker was most likely under load. Re-run the job."
+                  echo "::error:: ${reason}"
+                  printf '%s\n' "$reason" > ../infra/reason
+                  echo "*personal-soc / iac*: the IaC scan ran out of time." > ../notify/message.txt
+                  exit 75
+                fi
 
                 # A missing report is "did not run", which is not "found
                 # nothing" - docs/lessons/0001, and the same check the secrets
@@ -969,6 +1083,10 @@ jobs:
                   echo "  mykronos rotate-token ToddGBenson/personal-soc"
                   echo "=================================================="
                 else
+                  # Into a venv of its own, so the uploader's dependencies never
+                  # touch the versions checkov was built and tested with.
+                  python -m venv /tmp/uploader
+                  export PATH="/tmp/uploader/bin:$PATH"
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
@@ -1023,7 +1141,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: oracle, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: oracle, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1157,7 +1275,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: lint, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: lint, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1360,7 +1478,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: functional, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: functional, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -1814,7 +1932,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: skill-integrity, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: skill-integrity, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch
@@ -2047,7 +2165,7 @@ jobs:
     on_error:
       do:
         - <<: *check_run
-          params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: failure }
+          params: { <<: *check_params, JOB: all-lanes, PHASE: end, CONCLUSION: cancelled }
     plan:
       - get: source
         attempts: *retry_fetch

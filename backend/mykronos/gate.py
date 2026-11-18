@@ -82,6 +82,7 @@ EXEMPT = re.compile(
       | /api/oracle/evaluate          # per-repo ingestion token + oracle grant
       | /api/oracle/decisions/by-commit/[0-9a-fA-F]{7,40}
                                       # [#60495] principal auth (PrincipalDep)
+      | /api/oracle/deploy-gate       # D-183, principal auth (PrincipalDep)
       | /api/patchwork/run            # per-repo ingestion token + patchwork grant
       | /api/repo-read/posture-summary
                                       # per-repo read token (api/repo_read.py)

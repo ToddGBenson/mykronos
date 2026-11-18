@@ -31,6 +31,7 @@ from mykronos.adapters.dast_zap import INCOMPLETE_MARKER
 from mykronos.adapters.dast_zap import normalize as zap_normalize
 from mykronos.adapters.registry import normalize_results
 from mykronos.schemas import ScanStatus
+from tests.pipeline_steps import flat
 
 ROOT = Path(__file__).resolve().parents[2]
 PIPELINE = ROOT / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
@@ -44,7 +45,7 @@ def _pipeline() -> dict[str, Any]:
 
 def _script(job_name: str, task_name: str) -> str:
     job = next(j for j in _pipeline()["jobs"] if j["name"] == job_name)
-    task = next(step for step in job["plan"] if step.get("task") == task_name)
+    task = next(step for step in flat(job["plan"]) if step.get("task") == task_name)
     script: str = task["config"]["run"]["args"][-1]
     return script
 
@@ -199,11 +200,18 @@ class TestDependenciesRefusesAnUnscannedManifest:
         assert "functional/package-lock.json" in out.stdout
 
     def test_the_verdict_is_decided_after_the_upload(self) -> None:
-        """PS-3: a failed check must not cost the findings that were found."""
-        script = _script("dependencies", "osv-scanner")
+        """PS-3: a failed check must not cost the findings that were found.
+
+        Since 2026-11-16 the scan runs remotely and hands its two exit codes to
+        `upload-osv` on this host, which uploads first and decides after."""
+        scan = _script("dependencies", "osv-scanner")
+        assert "manifests_rc=0" in scan
+        assert "python -m mykronos.upload" not in scan, "the remote scan holds no token"
+        assert '> ../osv-results/manifests_rc' in scan
+        script = _script("dependencies", "upload-osv")
         upload = script.index("python -m mykronos.upload")
-        assert script.index("manifests_rc=0") < upload
         assert script.index('if [ "$manifests_rc" -ne 0 ]; then') > upload
+        assert script.index('if [ "$rc" -gt 1 ]; then') > upload
 
 
 # -- 3. insider: a refused lookup is not "no pull request" ----------------------
@@ -248,7 +256,7 @@ class TestInsiderFailsWhenGitHubDidNotAnswer:
     ("job", "task"),
     [
         ("unit", "pytest"),
-        ("coverage", "pytest-cov"),
+        ("coverage", "upload-coverage"),
         ("lint-and-types", "ruff-and-mypy"),
         ("qa-spec-links", "check-links"),
     ],

@@ -66,7 +66,13 @@ def _build_environment(directory: Path) -> Environment:
     `StrictUndefined` makes a missing render variable an error rather than an
     empty string, so a typo produces a failed install instead of a workflow
     that silently posts to nowhere.
+
+    The rule `mykronos-jinja2-autoescape-disabled` is Patchwork's own, written
+    for HTML renderers; its mechanical fix (autoescape=True) would turn every
+    `&` and `<` in a rendered workflow into an HTML entity and break the
+    install. The suppression below names that one rule and nothing else.
     """
+    # nosemgrep: backend.mykronos.patchwork.mykronos-jinja2-autoescape-disabled
     return Environment(
         loader=FileSystemLoader(directory),
         variable_start_string="<<",

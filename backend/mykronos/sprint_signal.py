@@ -68,6 +68,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 
 from mykronos.jobs import SIGNAL_FILING_JOB, JobNotDue, JobSkipped, _succeeded_today
+from mykronos.product_owner import default_tag
 from mykronos.schemas import utcnow
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
@@ -760,7 +761,13 @@ def story_payload(candidate: Candidate, *, rank_at: int) -> dict[str, Any]:
         "title": story_title(candidate.title),
         "detail": detail,
         "bucket": "backlog",
-        "tags": [SIGNAL_TAG, key_tag(candidate.signal_key), f"repo:{candidate.repo_full_name}"],
+        # The Hub convention is one lowercase short repo tag (TheHub #61767);
+        # the dedupe key is the `briefing-signal:<hash>` tag, not this one.
+        "tags": [
+            SIGNAL_TAG,
+            key_tag(candidate.signal_key),
+            default_tag(candidate.repo_full_name),
+        ],
         "source_kind": SOURCE_KIND,
         "source_ref": key_tag(candidate.signal_key),
         "acceptance_criteria": criteria,
@@ -786,8 +793,18 @@ def _risk_of(story: dict[str, Any]) -> float:
 _REF_IN_CRITERION = re.compile(r"\(([a-z_]+:[^()]+)\)\.?\s*$")
 
 
+#: The repository a filed fix story's criterion names: "A re-scan of {repo} ...".
+_REPO_IN_CRITERION = re.compile(r"^A re-scan of (\S+/\S+) no longer reports")
+
+
 def _target(story: dict[str, Any]) -> tuple[str, str] | None:
-    """(repository, fix id) a filed fix story is about, or None (a lane)."""
+    """(repository, fix id) a filed fix story is about, or None (a lane).
+
+    The repository is the full `owner/name` the lake keys assets by. The
+    story's `repo:` tag is the Hub's short name since TheHub #61767, so the
+    full name is read from the criterion that names it; the tag is the
+    fallback for a story filed before the change.
+    """
     repo = next(
         (
             tag[len("repo:"):]
@@ -798,8 +815,9 @@ def _target(story: dict[str, Any]) -> tuple[str, str] | None:
     )
     for criterion in story.get("acceptance_criteria") or []:
         match = _REF_IN_CRITERION.search(str(criterion))
-        if match and repo:
-            return repo, match.group(1)
+        named = _REPO_IN_CRITERION.search(str(criterion))
+        if match and (named or repo):
+            return (named.group(1) if named else str(repo)), match.group(1)
     return None
 
 

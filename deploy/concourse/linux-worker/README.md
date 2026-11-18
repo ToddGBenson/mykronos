@@ -111,12 +111,17 @@ compute task writing to an output and a separate upload task on this host.
 | Health | `curl http://127.0.0.1:8888/` |
 | Release cache | `/var/cache/concourse/` |
 
-Task containers resolve names through 1.1.1.1 and 8.8.8.8, the same
+Task containers resolve names through 8.8.8.8 and 1.1.1.1, in that order, the same
 resolvers the compose workers hand theirs (a host on systemd-resolved would
 otherwise give them 127.0.0.53, which a container cannot reach). Change
 them with `--dns <a,b>` or `DNS_SERVERS=` in `worker.conf`, or edit
 `CONCOURSE_CONTAINERD_DNS_SERVER` in `/etc/concourse/worker.env` and restart
 the unit; a re-run of the installer keeps the value it finds there.
+8.8.8.8 comes first because on this LAN UDP/53 to 1.1.1.1 timed out from one
+Linux box (2026-11-16) while 8.8.8.8 and the router answered: a first
+resolver that times out makes every lookup wait before trying the second. A
+worker installed before that keeps `1.1.1.1,8.8.8.8` until its
+`worker.env` is edited.
 
 The unit stops the worker with SIGUSR2 and `KillMode=mixed`: the signal
 retires the worker (the web node forgets it), and only the worker process
@@ -126,6 +131,38 @@ gets it, not containerd or the task processes.
 removes the install and the config. The work dir is kept unless
 `--remove-work-dir` is given too. `--help` lists the flags; `--runtime
 guardian` is there for a kernel that containerd's runtime refuses.
+
+## Running the worker in Docker instead of the installer
+
+The installer is the supported path. A worker can also run as the
+`concourse/concourse` image under Docker on the Linux box (linux-1 and
+linux-2 did, from 2026-11-14). Two things the installer gets right by
+construction then have to be set by hand, and both fail quietly:
+
+- **cgroup v2 delegation.** The image's entrypoint moves only PID 1 out of
+  the container's root cgroup. The root keeps processes, so it cannot hand
+  `cpu`/`memory` to `garden/`, and every job container fails with
+  `openat2 /sys/fs/cgroup/garden/<id>/cpu.weight: no such file or directory`.
+  Wrap the entrypoint so it moves every process into a child cgroup and
+  enables all controllers on the root before running the image's
+  `entrypoint.sh`. Keep the cgroup namespace private (not `cgroup: host`),
+  so the container's `mem_limit`/`cpus` still bound its jobs.
+- **DNS for task containers.** Inside a Docker container `/etc/resolv.conf`
+  names Docker's embedded resolver, 127.0.0.11, which answers only on that
+  container's loopback. The containerd runtime hands task containers the
+  worker's own address instead, and nothing answers there: every `get`
+  fails, and git reports it as `fatal: Could not read from remote
+  repository`, which looks like a key or port problem. Set either
+  `CONCOURSE_CONTAINERD_DNS_SERVER` (explicit resolvers, as the installer
+  and `../docker-compose.yml` do) or
+  `CONCOURSE_CONTAINERD_DNS_PROXY_ENABLE=true` (the worker answers on its
+  address and forwards to Docker's resolver). linux-1 and linux-2 use the
+  proxy since 2026-11-16.
+
+To check a worker, enter a running job container's network namespace from
+inside the worker (`nsenter -t <pid> -n`, the pid from
+`/sys/fs/cgroup/garden/<id>/cgroup.procs`) and send a DNS query to the
+`nameserver` in `/worker-state/networkmounts/<id>/resolv.conf`.
 
 ## Why the Windows side looks like it does
 

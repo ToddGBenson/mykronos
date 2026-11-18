@@ -238,6 +238,28 @@ def story_payload(run: Run, *, offset: str, commit: str) -> dict[str, Any]:
 Send = Callable[[str, str, dict[str, Any] | None], tuple[int, Any]]
 
 
+def _http_only_opener() -> urllib.request.OpenerDirector:
+    """An opener that speaks only HTTP(S).
+
+    `urllib.request.urlopen` also opens `file://` and `ftp://`, so a mistyped
+    or planted TheHub URL would read a local file and parse it as the answer.
+    This opener has no FileHandler and no FTPHandler: any other scheme raises
+    URLError ("unknown url type"). Proxy variables are honoured as before.
+    """
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPSHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPRedirectHandler(),
+        urllib.request.HTTPErrorProcessor(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
 def http_sender(base_url: str, token: str, *, timeout: float = 20.0) -> Send:
     base = base_url.rstrip("/")
 
@@ -250,7 +272,7 @@ def http_sender(base_url: str, token: str, *, timeout: float = 20.0) -> Send:
             headers={"X-Hub-Token": token, "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - a configured URL
+            with _http_only_opener().open(request, timeout=timeout) as response:
                 raw = response.read()
                 status = response.status
         except urllib.error.HTTPError as exc:

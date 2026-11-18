@@ -16,8 +16,10 @@ see exactly how the number was produced.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
@@ -35,6 +37,7 @@ from mykronos.db.models import CapabilityConfig, RepoOnboarding
 from mykronos.knowledge.capture import capture_override, safe_capture
 from mykronos.logsafe import scrub
 from mykronos.notify import Notification
+from mykronos.oracle import deploy_gate
 from mykronos.oracle.service import OracleService, PublishedDecision, decision_to_row
 from mykronos.schemas import utcnow
 
@@ -233,6 +236,8 @@ async def evaluate(
     if disclosure:
         reasoning = f"{reasoning} {disclosure}".strip()
 
+    _note_ratchet_score(request, token.repo_full_name, published, body.commit_sha)
+
     note = _gate_notice(
         request,
         token.repo_full_name,
@@ -259,6 +264,32 @@ async def evaluate(
         remediates=remediates,
         introduced_blocking=introduced_blocking,
     )
+
+
+def _note_ratchet_score(
+    request: Request, repo_full_name: str, published: PublishedDecision, commit_sha: str
+) -> None:
+    """Latch the deploy ratchet when a recorded score is the repository's first
+    below No-Go (D-183 (b)). Best effort: a store that cannot be written here
+    leaves the latch for the next decision or the next ratchet check, and the
+    gate's answer to the pipeline must not depend on it."""
+    totals = (published.decision.inputs_snapshot or {}).get("totals") or {}
+    if "raw_score" not in totals:
+        return
+    try:
+        deploy_gate.note_score(
+            request.app.state.db,
+            repo_full_name,
+            raw_score=float(totals["raw_score"]),
+            recommendation=published.decision.recommendation,
+            policy=request.app.state.oracle_policy,
+            commit_sha=commit_sha,
+            source="decision",
+        )
+    except Exception:
+        logger.exception(
+            "Could not record the deploy ratchet's latch for %s.", scrub(repo_full_name)
+        )
 
 
 def _gate_notice(
@@ -572,6 +603,256 @@ class CommitDecisionOut(BaseModel):
             "as recorded, labelled as posture (D-048). It describes the whole "
             "backlog, not this commit. Null when `found` is false."
         ),
+    )
+
+
+class DeployGateReason(BaseModel):
+    code: str = Field(
+        description=(
+            "Stable. Refusals: `no_decision`, `not_assessed`, `baseline_unknown`, "
+            "`baseline_disagrees`, `evaluation_failed`, `introduced_blocking`, "
+            "`score_raised`, `latched_no_go`, `not_enforceable`. Allows: `not_raised`, `lowered`, "
+            "`unchanged_while_no_go`, `lowered_while_no_go`, `lowered_while_latched`."
+        )
+    )
+    message: str
+
+
+class DeployGateLatch(BaseModel):
+    latched: bool = Field(
+        description=(
+            "Whether the repository's score has ever been below the No-Go threshold. "
+            "Once true, a No-Go deploy is a hard refusal (D-183 (b))."
+        )
+    )
+    latched_at: str | None = None
+    commit_sha: str | None = None
+    raw_score: float | None = None
+    source: str | None = None
+
+
+class DeployGateOut(BaseModel):
+    """The deploy ratchet's answer about one deploy (D-183)."""
+
+    repo_full_name: str
+    commit_sha: str = Field(description="The commit to deploy, full when the lake knows it.")
+    deployed_sha: str | None = Field(
+        default=None, description="The baseline: the commit the repository runs now."
+    )
+    baseline_source: str = Field(
+        description=(
+            "Where `deployed_sha` came from: `caller`, `deployment probe`, or, for this "
+            "platform's own repository, `this process (MYKRONOS_BUILD_SHA)`."
+        )
+    )
+    probe_revision: str | None = Field(
+        default=None,
+        description="The deployment probe's last reading, reported beside a caller's claim.",
+    )
+    verdict: str = Field(description="`allow` or `refuse`. Anything else is a refusal.")
+    allow: bool
+    reasons: list[DeployGateReason]
+    candidate_score: float | None = Field(
+        default=None, description="The commit's unclamped raw score, measured now."
+    )
+    baseline_score: float | None = Field(
+        default=None,
+        description=(
+            "The deployed commit's raw score over the SAME findings snapshot: the "
+            "candidate's score with the range's introduced findings removed and its "
+            "fixes put back. Never a stored decision's score."
+        ),
+    )
+    score_delta: float | None = None
+    tolerance: float = Field(
+        description=(
+            "The total rise deploys may add, summed across deploys: `score_raised` "
+            "refuses when `accepted_creep` plus this deploy's rise exceeds it."
+        )
+    )
+    accepted_creep: float | None = Field(
+        default=None,
+        description=(
+            "The rise earlier allowed deploys already shipped (the creep ledger), "
+            "confirmed when their commit was later seen running. Null when not read."
+        ),
+    )
+    fix_credit_pending: int = Field(
+        default=0,
+        description=(
+            "Open findings this commit's latest scan no longer reports that absence "
+            "reconciliation has not closed yet: not credited until a second scan."
+        ),
+    )
+    error_id: str | None = Field(
+        default=None,
+        description=(
+            "Set on `evaluation_failed` from an exception: the backend log carries the "
+            "detail under this id. The response never carries the exception text."
+        ),
+    )
+    no_go_threshold: float
+    policy_version: str
+    direction: str = Field(description="`forward`, `rollback` or `same`.")
+    branch: str | None = None
+    range_commits: list[str] = Field(
+        default_factory=list, description="Commits between the baseline and the candidate."
+    )
+    introduced: dict[str, int] = Field(
+        default_factory=dict,
+        description="Open findings the deploy brings that the running commit lacks, by severity.",
+    )
+    fixed: dict[str, int] = Field(
+        default_factory=dict,
+        description="Findings the running commit carries that the deploy removes, by severity.",
+    )
+    introduced_blocking_ids: list[str] = Field(
+        default_factory=list,
+        description="The critical and high finding ids in `introduced`; any refuses.",
+    )
+    candidate_decision: dict[str, Any] | None = Field(
+        default=None, description="The newest recorded decision for the commit, for reference."
+    )
+    baseline_decision: dict[str, Any] | None = Field(
+        default=None, description="The newest recorded decision for the baseline, if any."
+    )
+    latch: DeployGateLatch
+    evaluated_at: str
+
+
+@router.get("/deploy-gate", response_model=DeployGateOut)
+async def deploy_gate_check(
+    request: Request,
+    principal: PrincipalDep,
+    repo: Annotated[str, Query(min_length=3, max_length=255, pattern=r"^[\w.-]+/[\w.-]+$")],
+    commit: Annotated[str, Query(pattern=r"^[0-9a-fA-F]{7,40}$")],
+    deployed: Annotated[str | None, Query(max_length=64)] = None,
+) -> DeployGateOut:
+    """May this commit be deployed over what the repository runs now? (D-183)
+
+    The deploy ratchet. Refuses a deploy that raises the repository's risk
+    score beyond a 0.5 tolerance (summed across deploys) or brings an open
+    critical or high the running commit lacks (by severity, KEV boost or a
+    toxic combination); once the repository has been below No-Go, refuses a
+    No-Go unless it lowers the score by more than the tolerance and brings no
+    critical or high; allows a fix that lowers the score while it is still
+    No-Go.
+
+    **MyKronos only, for now.** Any other repository is refused
+    `not_enforceable`: its baseline would be the caller's word, and its scan
+    history (feature-branch pushes, pull requests) cannot yet be placed.
+
+    **Fails closed, and says why.** No recorded decision for the commit, an
+    unknown or disputed baseline, or an evaluation error is `allow: false`
+    with a named `reasons[].code`, always 200: a caller must read `allow`,
+    and must treat a non-200, an unparseable body or a missing `allow` as a
+    refusal too.
+
+    Both scores are measured over one findings snapshot, now, so a CVE
+    published since the deployed commit was scanned moves both equally.
+
+    Readable by viewers as `/decisions/by-commit` is (the deploy host holds a
+    viewer token). Can set the repository's latch as a side effect, which is
+    monotonic and idempotent, and records an allowed rise in the creep ledger
+    until the commit is seen running.
+
+    An answer is reused for a few seconds while nothing it read has changed
+    (the lake's files, the latch, the creep ledger), so a caller polling it
+    cannot make the backend evaluate the whole backlog on every request.
+    Database-side inputs (KEV matches, risk acceptances, remediation in
+    flight, the policy) are not in the key; the 15-second lifetime bounds
+    how stale they can be.
+    """
+    key = _deploy_gate_key(request, repo, commit, deployed)
+    cache: dict[Any, tuple[float, DeployGateOut]] = _deploy_gate_cache(request)
+    hit = cache.get(key) if key is not None else None
+    if hit is not None and hit[0] > time.monotonic():
+        return hit[1]
+    service = _service(request)
+    # Off the event loop: a full evaluation reads the lake for seconds.
+    gate = await asyncio.to_thread(
+        deploy_gate.evaluate,
+        service.engine,
+        DashboardQueries(request.app.state.catalog),
+        request.app.state.db,
+        repo,
+        commit,
+        deployed,
+        self_build_sha=str(getattr(request.app.state.settings, "build_sha", "") or ""),
+    )
+    out = DeployGateOut(
+        repo_full_name=gate.repo_full_name,
+        commit_sha=gate.commit_sha,
+        deployed_sha=gate.deployed_sha,
+        baseline_source=gate.baseline_source,
+        probe_revision=gate.probe_revision,
+        verdict=gate.verdict,
+        allow=gate.allow,
+        reasons=[DeployGateReason(**r.to_json()) for r in gate.reasons],
+        candidate_score=gate.candidate_score,
+        baseline_score=gate.baseline_score,
+        score_delta=gate.score_delta,
+        tolerance=gate.tolerance,
+        accepted_creep=gate.accepted_creep,
+        fix_credit_pending=gate.fix_credit_pending,
+        error_id=gate.error_id,
+        no_go_threshold=gate.no_go_threshold,
+        policy_version=gate.policy_version,
+        direction=gate.direction,
+        branch=gate.branch,
+        range_commits=gate.range_commits,
+        introduced=gate.introduced,
+        fixed=gate.fixed,
+        introduced_blocking_ids=gate.introduced_blocking_ids,
+        candidate_decision=gate.candidate_decision,
+        baseline_decision=gate.baseline_decision,
+        latch=DeployGateLatch(**gate.latch.to_json()),
+        evaluated_at=gate.evaluated_at.isoformat(),
+    )
+    if key is not None:
+        for stale in [k for k, (until, _) in cache.items() if until <= time.monotonic()]:
+            cache.pop(stale, None)
+        if len(cache) < _DEPLOY_GATE_CACHE_MAX:
+            # Keyed on what it read after this call's own writes (a latch, a
+            # pending rise), so the next identical question is a hit.
+            after = _deploy_gate_key(request, repo, commit, deployed)
+            if after is not None:
+                cache[after] = (time.monotonic() + _DEPLOY_GATE_TTL_SECONDS, out)
+    return out
+
+
+#: How long a deploy-gate answer is reused while nothing it read changed.
+_DEPLOY_GATE_TTL_SECONDS = 15.0
+_DEPLOY_GATE_CACHE_MAX = 256
+
+
+def _deploy_gate_cache(request: Request) -> dict[Any, tuple[float, DeployGateOut]]:
+    cache = getattr(request.app.state, "deploy_gate_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        request.app.state.deploy_gate_cache = cache
+    return cache
+
+
+def _deploy_gate_key(
+    request: Request, repo: str, commit: str, deployed: str | None
+) -> tuple[Any, ...] | None:
+    """What a deploy-gate answer depends on, cheaply: the question, the build
+    answering, the lake's files, and the two ratchet rows. None (no caching)
+    when any of it cannot be read."""
+    try:
+        catalog = request.app.state.catalog
+        stamp: list[Any] = []
+        for table in ("findings", "scan_runs", "risk_decisions", "remediation_events"):
+            files = catalog.all_files(table)
+            stamp.append((len(files), max((f.stat().st_mtime_ns for f in files), default=0)))
+        latch, creep = deploy_gate.ratchet_state(request.app.state.db, repo)
+    except Exception:
+        return None
+    return (
+        repo, commit.lower(), (deployed or "").strip().lower(),
+        str(getattr(request.app.state.settings, "build_sha", "") or ""),
+        tuple(stamp), latch, creep,
     )
 
 

@@ -179,7 +179,7 @@ class TestTheInstallScript:
             "CONCOURSE_BAGGAGECLAIM_DRIVER=overlay",
             "CONCOURSE_BAGGAGECLAIM_VOLUME_SWEEPER_MAX_IN_FLIGHT=5",
             "CONCOURSE_HEALTHCHECK_BIND_IP=127.0.0.1",
-            'DEFAULT_DNS="1.1.1.1,8.8.8.8"',
+            'DEFAULT_DNS="8.8.8.8,1.1.1.1"',
             "CONCOURSE_CONTAINERD_DNS_SERVER=$DNS_SERVERS",
             "CONCOURSE_GARDEN_DNS_SERVER=$DNS_SERVERS",
         ):
@@ -192,7 +192,18 @@ class TestTheInstallScript:
         before_default = text.split('DNS_SERVERS="${DNS_SERVERS:-$DEFAULT_DNS}"')[0]
         assert '"$CONF_DIR/worker.env"' in before_default, "a re-run keeps the installed value"
         readme = README.read_text(encoding="utf-8")
-        assert "1.1.1.1 and 8.8.8.8" in readme and "--dns" in readme
+        assert "8.8.8.8 and 1.1.1.1, in that order" in readme and "--dns" in readme
+
+    def test_the_first_default_resolver_is_one_this_lan_answers(self) -> None:
+        """UDP/53 to 1.1.1.1 timed out from a Linux box on this LAN (2026-11-16)
+        while 8.8.8.8 answered; with 1.1.1.1 first, every task-container lookup
+        waited out a timeout before the second resolver."""
+        text = INSTALL.read_text(encoding="utf-8")
+        default = text.split('DEFAULT_DNS="', 1)[1].split('"', 1)[0].split(",")
+        assert default[0] == "8.8.8.8", default
+        assert "1.1.1.1" in default, "the second resolver is kept as a fallback"
+        readme = README.read_text(encoding="utf-8")
+        assert "timed out" in readme and "8.8.8.8 comes first" in readme
 
     def test_the_work_dir_must_be_on_a_real_filesystem(self) -> None:
         """Overlay volumes on overlayfs fail every task with "failed to create

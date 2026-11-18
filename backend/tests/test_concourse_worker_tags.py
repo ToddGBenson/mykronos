@@ -103,11 +103,21 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         ("thehub", "gate-smoke", "gates"),
         ("thehub", "container-tiers", "linux-worker-probe"),
         ("thehub", "container-tiers", "tiers"),
+        ("mykronos", "coverage", "pytest-cov"),
+        ("mykronos", "time-travel", "pytest-time-travel"),
+        ("mykronos", "sast", "semgrep"),
+        ("mykronos", "dependencies", "osv-scanner"),
+        ("mykronos", "coverage", "linux-worker-probe"),
+        ("mykronos", "time-travel", "linux-worker-probe"),
+        ("mykronos", "sast", "linux-worker-probe"),
+        ("mykronos", "dependencies", "linux-worker-probe"),
     }
 )
 
 # The pipeline vars a remote step may carry, from vars/*.yml: none is a
-# credential and none names a host service.
+# credential and none names a host service. #1178 also allowed
+# `remote-registry` and `thehub-branch`: the review of #1177 keeps the registry
+# off the LAN, and no remote step carries either, so neither is allowed.
 REMOTE_VARS = frozenset({"time-travel-offset", "mykronos-ref"})
 # A param whose name says it is a credential, whatever its value.
 CREDENTIAL_PARAM = re.compile(r"TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY", re.IGNORECASE)
@@ -530,6 +540,9 @@ def test_the_compute_only_check_can_fail() -> None:
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl http://10.0.0.5/"]}}},
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "ping 172.20.1.1"]}}},
         {**ok, "image": "thehub"},  # an artifact this host did not make
+        # #1178's case, still refused: the remote registry is a var no remote
+        # step may carry.
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl ((remote-registry))/v2/"]}}},
     ]
     def run(script: str) -> dict[str, Any]:
         return {**ok, "config": {"run": {"path": "sh", "args": ["-c", script]}}}

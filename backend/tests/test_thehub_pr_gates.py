@@ -51,7 +51,8 @@ def _step(task: str) -> dict[str, Any]:
 
 def _hooks() -> list[dict[str, Any]]:
     job = _job()
-    return [s for hook in ("on_success", "on_failure", "on_error", "on_abort")
+    # A step inside `try:` is still the hook's step: unwrap it.
+    return [s.get("try", s) for hook in ("on_success", "on_failure", "on_error", "on_abort")
             for s in job.get(hook, {}).get("do", [])]
 
 
@@ -312,8 +313,8 @@ def test_a_tick_that_judged_nothing_files_nothing_in_thehub(tmp_path) -> None:
 # -- and TheHub's script lays the pull request's backend/ over it and runs only
 # config/ci/pr-integration-subset.txt.
 
-INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "MEMORY_GUARD",
-                      "MEMORY_BUDGET_MB"}
+INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "TIER_HARD_BUDGET_S",
+                      "MEMORY_GUARD", "MEMORY_BUDGET_MB"}
 
 
 def _memory_guard_anchor() -> str:
@@ -428,7 +429,9 @@ def _integration(tmp_path: Path, tiers_rc: int | None, *, head: bool = True,
             (pr / "config" / "ci" / "pr-integration-subset.txt").write_text("x  # y\n")
     script = _step("integration")["config"]["run"]["args"][-1].replace(
         "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
-    return subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+    # From a file, not `bash -c`: Git Bash on Windows truncates a long argv.
+    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
+    return subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
                           timeout=60)
 
 
@@ -450,7 +453,8 @@ def test_a_red_subset_fails_the_job(tmp_path) -> None:
     assert r.returncode == 1, r.stdout + r.stderr
     assert "::error::" in r.stdout
     assert not (tmp_path / "memory-infra").exists(), "a real failure is a verdict, not an outage"
-    fail = [s for s in _job()["on_failure"]["do"] if s.get("task") == "report-check-run"]
+    fail = [s.get("try", s) for s in _job()["on_failure"]["do"]
+            if s.get("try", s).get("task") == "report-check-run"]
     assert fail and fail[0]["params"]["CONCLUSION"] == "failure"
 
 
@@ -522,7 +526,8 @@ def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int =
         "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
     env = {**os.environ, "PATH": f"{stubs.as_posix()}:{os.environ['PATH']}",
            "APP_DIR": app.as_posix()}
-    r = subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
+    r = subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
                        timeout=60, env=env)
     calls = log.read_text().splitlines() if log.exists() else []
     return r, calls
