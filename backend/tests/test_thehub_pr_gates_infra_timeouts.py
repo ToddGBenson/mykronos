@@ -55,7 +55,32 @@ def _hook_steps(hook: str) -> list[dict[str, Any]]:
 
 
 def _step(task: str) -> dict[str, Any]:
-    return next(s for s in _job()["plan"] if s.get("task") == task)
+    """A plan step by task name, inside a `do:` wrapper too (#1177 wraps the
+    remote `integration` in one so its timeout also bounds the worker wait)."""
+    for s in _job()["plan"]:
+        if s.get("task") == task:
+            return s
+        for inner in s.get("do") or []:
+            if inner.get("task") == task:
+                return inner
+    raise AssertionError(f"no {task!r} step in {JOB}")
+
+
+# [#1177] `integration` runs on a remote worker inside a `do:` whose timeout
+# also covers the wait for that worker and the stream of TheHub's image to it
+# (~1.45 GB). That allowance is 11m; what is left of the wrapper's clock is
+# the task's own run time, which is what this file's margins are about.
+REMOTE_WAIT_S = 11 * 60
+
+
+def _run_clock_s(task: str) -> int:
+    """The seconds a task has to run: its own `timeout:`, or its wrapper's
+    minus the remote wait."""
+    step = _step(task)
+    if "timeout" in step:
+        return _seconds(step["timeout"])
+    wrapper = next(s for s in _job()["plan"] if step in (s.get("do") or []))
+    return _seconds(wrapper["timeout"]) - REMOTE_WAIT_S
 
 
 def _seconds(duration: str) -> int:
@@ -74,7 +99,7 @@ def test_the_budget_ends_before_concourse_does_even_on_a_starved_worker() -> Non
     and the hooks post `failure` (review of #1175, B1)."""
     task = _step("integration")
     budget = int(task["params"]["TIER_HARD_BUDGET_S"])
-    margin = _seconds(task["timeout"]) - budget
+    margin = _run_clock_s("integration") - budget
     assert margin >= WORST_CREATION_S + ENSUREPIP_S + KILL_GRACE_S + 60, margin
     script = task["config"]["run"]["args"][-1]
     assert '-s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset' in script
@@ -303,10 +328,12 @@ def test_a_refused_check_post_cannot_skip_the_hub_report(hook: str) -> None:
 
 def test_the_caps_sit_above_the_starved_runs_and_the_soft_cap_holds() -> None:
     integration = _step("integration")
-    assert integration["timeout"] == "18m"
+    # 18m of run time: the `do:`'s 29m minus the 11m remote wait (#1177),
+    # = TIER_HARD_BUDGET_S 840s + 240s.
+    assert _run_clock_s("integration") == 18 * 60
     assert integration["params"]["TIER_SOFT_TIMEOUT_S"] == "300"
     assert _step("pick")["timeout"] == "15m"
     # PS-7 / the timeout audit: a cap more than 30% above the worst run. The
     # worst green integration run was 6m35s with container creation; the
     # starved environment phase alone measured 10-12m.
-    assert _seconds(integration["timeout"]) >= 12 * 60 * 1.3
+    assert _run_clock_s("integration") >= 12 * 60 * 1.3

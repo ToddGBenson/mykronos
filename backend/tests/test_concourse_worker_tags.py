@@ -115,10 +115,11 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
 )
 
 # The pipeline vars a remote step may carry, from vars/*.yml: none is a
-# credential and none names a host service. #1178 also allowed
-# `remote-registry` and `thehub-branch`: the review of #1177 keeps the registry
-# off the LAN, and no remote step carries either, so neither is allowed.
-REMOTE_VARS = frozenset({"time-travel-offset", "mykronos-ref"})
+# credential and none names a host service. `thehub-branch` is #1178's: the
+# branch name, used by this pipeline's host steps. `remote-registry`, also
+# #1178's, is not allowed: the review of #1177 keeps the registry off the LAN,
+# and nothing in any pipeline references it.
+REMOTE_VARS = frozenset({"thehub-branch", "time-travel-offset", "mykronos-ref"})
 # A param whose name says it is a credential, whatever its value.
 CREDENTIAL_PARAM = re.compile(r"TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY", re.IGNORECASE)
 # A service a task starts for itself and reaches on its own loopback (the
@@ -184,6 +185,16 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
     ("thehub", "gate-smoke", "gates"): {"pr": "pr-tree", "live-pipeline": None},
     ("thehub", "container-tiers", "linux-worker-probe"): {},
     ("thehub", "container-tiers", "tiers"): {"source": "tree", "commit": None},
+    # #1178's mykronos lanes: `source` is mykronos's own git get. Its history
+    # is public, unlike TheHub's (#398), so it may reach the laptops as is.
+    ("mykronos", "coverage", "linux-worker-probe"): {},
+    ("mykronos", "coverage", "pytest-cov"): {"source": None},
+    ("mykronos", "time-travel", "linux-worker-probe"): {},
+    ("mykronos", "time-travel", "pytest-time-travel"): {"source": None},
+    ("mykronos", "sast", "linux-worker-probe"): {},
+    ("mykronos", "sast", "semgrep"): {"source": None},
+    ("mykronos", "dependencies", "linux-worker-probe"): {},
+    ("mykronos", "dependencies", "osv-scanner"): {"source": None},
 }
 
 # The gating remote tasks, and the host step after each that decides the
@@ -438,7 +449,8 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
-    assert len(REMOTE_COMPUTE) == 9
+    # #1177's 9 TheHub steps and #1178's 8 mykronos steps.
+    assert len(REMOTE_COMPUTE) == 17
     assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
