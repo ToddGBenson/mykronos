@@ -156,7 +156,9 @@ class TestTheBenchPostsOnlyOverHttp:
             assert server.hits == 1
 
 
-@pytest.mark.parametrize("script", [SCRIPTS / name for name in FETCHERS] + [SEED], ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "script", [SCRIPTS / name for name in FETCHERS] + [SEED], ids=lambda p: p.name
+)
 def test_no_fetcher_calls_urlopen(script: Path) -> None:
     """The static half: a later edit that goes back to urlopen reopens file://.
 
