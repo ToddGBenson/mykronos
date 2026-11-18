@@ -128,3 +128,17 @@ class TestWhenNothingIsEstablished:
 
     def test_no_path_claims_nothing(self, repo: Path) -> None:
         assert _basis("", "urllib3", repo) is None
+
+
+class TestTheManifestIsReadOnlyInsideTheWorkspace:
+    """The path is the scanner's output, made on a remote worker since the
+    review of #1178: a `../` path must not read a file outside the checkout."""
+
+    def test_a_path_out_of_the_workspace_is_not_read(self, tmp_path: Path) -> None:
+        inside = tmp_path / "ws"
+        inside.mkdir()
+        (tmp_path / "requirements.txt").write_text("cryptography==42.0.0\n", encoding="utf-8")
+        assert _basis("../requirements.txt", "cryptography", inside) is None
+
+    def test_a_path_inside_still_is(self, repo: Path) -> None:
+        assert _basis("./requirements.txt", "cryptography", repo) == "declared_pin"

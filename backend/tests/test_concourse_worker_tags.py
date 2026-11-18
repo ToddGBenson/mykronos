@@ -26,6 +26,16 @@ public registry image, and not privileged. Every other task keeps its job's
 placement. Concourse streams the remote task's inputs and outputs, so the
 upload or report that follows on the host still reads them. `get` and `put`
 steps stay untagged (D-181 point 3).
+
+The operator decision of 2026-11-16 ("heavy jobs to Linux") moved gating
+suites and scans too, which the first rule could not admit as written: a
+suite has literal params (a pip cache path, a memory budget) and two of
+TheHub's run in TheHub's own image from the local registry. So the rule is
+now about what reaches the remote host, not about the shape of the step: no
+pipeline var except the non-secret ones in REMOTE_VARS, no param that names a
+credential, no host address (a task-local Postgres or Redis on the task's own
+127.0.0.1 is not one), and an image that is either a public `get` or the
+local registry at `((remote-registry))`, the address a remote worker reaches.
 """
 
 from __future__ import annotations
@@ -69,11 +79,37 @@ INSTALLER = CONCOURSE / "linux-worker" / "install-concourse-worker.sh"
 # a merge or a delivery (`pr-gates`, or anything in a `passed:` chain) stays
 # on this host until a remote host is always on or a second tagged worker
 # runs here (review of mykronos #1169).
+#
+# The operator overrode that last rule on 2026-11-16 ("heavy jobs to Linux"):
+# gating lanes move too, and what keeps an offline remote host from reading
+# as a red verdict is in the pipelines (`linux_probe` and `linux_absent` in
+# thehub.yml, the timed wrappers everywhere), not in staying here.
 REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("thehub", "image-refresh", "build"),
+        ("mykronos", "coverage", "pytest-cov"),
+        ("mykronos", "time-travel", "pytest-time-travel"),
+        ("mykronos", "sast", "semgrep"),
+        ("mykronos", "dependencies", "osv-scanner"),
+        ("mykronos", "coverage", "linux-worker-probe"),
+        ("mykronos", "time-travel", "linux-worker-probe"),
+        ("mykronos", "sast", "linux-worker-probe"),
+        ("mykronos", "dependencies", "linux-worker-probe"),
     }
 )
+
+# The pipeline vars a remote step may carry: none is a credential and none
+# names a host service. `remote-registry` is the local registry at the
+# address the remote workers reach (Vault-held, so the LAN address is not in
+# this public repository), and is allowed only as an image_resource's
+# repository. The others come from vars/*.yml.
+REMOTE_VARS = frozenset({"remote-registry", "thehub-branch", "time-travel-offset", "mykronos-ref"})
+REMOTE_REGISTRY = "((remote-registry))/"
+# A param whose name says it is a credential, whatever its value.
+CREDENTIAL_PARAM = re.compile(r"TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY", re.IGNORECASE)
+# A service a task starts for itself and reaches on its own loopback (the
+# suites' Postgres and Redis): not this host, wherever the task runs.
+TASK_LOCAL = re.compile(r"(localhost|127\.0\.0\.1):(5432|6379)\b")
 
 # Any pipeline var. Workers never resolve vars; the web node puts the value in
 # the step, so a var on a remote step is a value on the remote host. `((.:x))`
@@ -236,8 +272,9 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
         )
     if frozenset(step.get("tags") or []) != {REMOTE_TAG}:
         faults.append(f"tags {sorted(step.get('tags') or [])}, not exactly [{REMOTE_TAG}]")
-    if step.get("params"):
-        faults.append(f"params {sorted(step['params'])}: a credential or host address would travel")
+    for name in step.get("params") or {}:
+        if CREDENTIAL_PARAM.search(str(name)):
+            faults.append(f"param {name}: a credential would travel")
     if step.get("privileged"):
         faults.append("privileged")
     if "file" in step:
@@ -245,12 +282,20 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
     # Every string the step carries, with shell line continuations joined so
     # one command reads as one line.
     text = "\n".join(_strings(step)).replace("\\\n", " ")
-    named = HOST_ONLY.search(text)
+    config = step.get("config") or {}
+    image_resource = config.get("image_resource")
+    repository = str(((image_resource or {}).get("source") or {}).get("repository", ""))
+    named = HOST_ONLY.search(TASK_LOCAL.sub("", text))
     if named:
         faults.append(f"names a host service: {named.group(0)}")
-    var = PIPELINE_VAR.search(text)
-    if var:
-        faults.append(f"carries a pipeline var: {var.group(0)}")
+    for var in PIPELINE_VAR.finditer(text):
+        name = var.group(0)[2:-2].strip('"')
+        if name not in REMOTE_VARS:
+            faults.append(f"carries a pipeline var: {var.group(0)}")
+    # `remote-registry` only as the image's repository, never in a script.
+    allowed = 1 if repository.startswith(REMOTE_REGISTRY) else 0
+    if text.count(REMOTE_REGISTRY.rstrip("/")) > allowed:
+        faults.append("((remote-registry)) outside the task image's repository")
     registry = REGISTRY_IO.search(text)
     if registry:
         faults.append(f"reads or writes a registry: {registry.group(0)}")
@@ -259,9 +304,13 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
             faults.append(f"reads a registry: {command.strip()[:60]}")
     if "/kaniko/executor" in text and "--no-push" not in text:
         faults.append("kaniko without --no-push pushes to the registry")
-    config = step.get("config") or {}
-    if "image_resource" in config:
-        faults.append("an image_resource: the image is not one of the pipeline's public gets")
+    if image_resource is not None:
+        if not repository.startswith(REMOTE_REGISTRY) or "image" in step:
+            faults.append(
+                "an image_resource that is not the local registry at ((remote-registry)): "
+                "use one of the pipeline's public gets"
+            )
+        return faults
     image = step.get("image")
     if image not in images:
         faults.append(f"image {image!r} is not a registry-image resource")
@@ -338,7 +387,8 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
-    assert {("thehub", "image-refresh", "build")} == REMOTE_COMPUTE
+    assert len(REMOTE_COMPUTE) == 9
+    assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
         "declared, not tagged": sorted(REMOTE_COMPUTE - tagged),
@@ -421,6 +471,18 @@ def test_the_compute_only_check_can_fail() -> None:
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "buildah --push a"]}}},
         # A task-level timeout does not bound the wait for a worker.
         {**ok, "timeout": "20m"},
+        # A credential by name, a host var as an image, the remote registry
+        # anywhere but the image, and an image_resource beside an `image:`.
+        {**ok, "params": {"HUB_DEPLOY_TOKEN": "x"}},
+        {
+            **ok,
+            "image": None,
+            "config": {"image_resource": {"source": {"repository": "((registry))/thehub"}}},
+        },
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl ((remote-registry))/v2/"]}}},
+        {**ok, "config": {"image_resource": {"source": {"repository": "((remote-registry))/x"}}}},
+        # A task-local service is fine, a host port on loopback is not.
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl localhost:8100"]}}},
     ]
     def run(script: str) -> dict[str, Any]:
         return {**ok, "config": {"run": {"path": "sh", "args": ["-c", script]}}}
@@ -431,6 +493,22 @@ def test_the_compute_only_check_can_fail() -> None:
         run("trivy image --quiet --input x.tar"),  # a tarball, not a registry
         run("trivy image \\\n  --quiet \\\n  --input x.tar"),  # one command, three lines
         run("/kaniko/executor --destination r/x:1 --no-push --tar-path i.tar"),
+        # 2026-11-16: literal params, a non-secret var, a task-local Postgres,
+        # and the local registry at the remote workers' address.
+        {**ok, "params": {"PIP_CACHE_DIR": "/pipcache", "MEMORY_BUDGET_MB": "2560"}},
+        {**ok, "params": {"TIME_TRAVEL_OFFSET": "((time-travel-offset))"}},
+        run("export DATABASE_URL=postgresql://postgres:test@localhost:5432/thehub_test"),
+        {
+            "task": "t",
+            "tags": [REMOTE_TAG],
+            "config": {
+                "platform": "linux",
+                "image_resource": {
+                    "type": "registry-image",
+                    "source": {"repository": "((remote-registry))/thehub", "tag": "((.:sha))"},
+                },
+            },
+        },
     ]
     for step in allowed:
         assert _remote_task_faults(step, images) == [], step

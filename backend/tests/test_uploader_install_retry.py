@@ -42,7 +42,10 @@ PARAM = "MYKRONOS_INSTALL_UPLOADER"
 #: Textual call sites per file, not YAML task instances: an aliased `upload`
 #: task is one site that several jobs run. Pinned so a site that quietly goes
 #: back to its own pip line, or a new lane added without the call, is noticed.
-CALL_SITES = {"mykronos.yml": 16, "thehub.yml": 17, "personal-soc.yml": 7}
+# mykronos.yml 16 -> 17 in TheHub #61761: `sast` splits into a remote `semgrep`,
+# which still installs the package for `mykronos.reachability` and holds no
+# token, and `upload-semgrep` on this host, which uploads.
+CALL_SITES = {"mykronos.yml": 17, "thehub.yml": 17, "personal-soc.yml": 7}
 
 #: The only tasks that may declare `infra`, and why each is safe: each runs
 #: before anything in its job reaches a verdict, so a failed install there means

@@ -161,15 +161,31 @@ def combination_severity(member_severities: list[str], *, kev: bool, escalate_st
     return "critical" if kev else escalate(worst, escalate_steps)
 
 
-def _pool(catalog: Catalog, repo: str | None) -> list[dict[str, Any]]:
+def _pool(
+    catalog: Catalog,
+    repo: str | None,
+    *,
+    drop_ids: frozenset[str] = frozenset(),
+    add_ids: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """The findings detection runs over.
+
+    `drop_ids` and `add_ids` describe a state that is not the lake's current
+    one: the deploy ratchet (D-183) asks which combinations a commit carried,
+    so it drops the findings that commit did not have and adds back closed
+    ones it did. An added finding is read whatever its status and counted as
+    open, which is what it was at that commit.
+    """
     if not catalog.all_files("findings"):
         return []
     caps = sorted(DEFAULT_CORRELATION_CAPABILITIES)
-    params: list[Any] = [*STATUSES, *caps]
-    where = (
-        f"status IN ({', '.join('?' for _ in STATUSES)}) "
-        f"AND capability IN ({', '.join('?' for _ in caps)})"
-    )
+    params: list[Any] = [*STATUSES]
+    status = f"status IN ({', '.join('?' for _ in STATUSES)})"
+    if add_ids:
+        status = f"({status} OR finding_id IN ({', '.join('?' for _ in add_ids)}))"
+        params.extend(add_ids)
+    params.extend(caps)
+    where = f"{status} AND capability IN ({', '.join('?' for _ in caps)})"
     if repo is not None:
         where += " AND repo_full_name = ?"
         params.append(repo)
@@ -183,9 +199,16 @@ def _pool(catalog: Catalog, repo: str | None) -> list[dict[str, Any]]:
         f"FROM findings WHERE {where}",
         params,
     )
-    pool = [dict(zip(_COLUMNS, row, strict=True)) for row in rows]
+    pool = [
+        finding
+        for finding in (dict(zip(_COLUMNS, row, strict=True)) for row in rows)
+        if str(finding["finding_id"]) not in drop_ids
+    ]
+    added = set(add_ids)
     for finding in pool:
         finding["cwe_ids"] = _cwe_ids(finding.pop("cwe_ids_json", None))
+        if finding["status"] not in STATUSES and str(finding["finding_id"]) in added:
+            finding["status"] = "open"
     # A 90022 counts only on its evidence, which this pool does not select
     # (TheHub #61014).
     correlate.attach_disclosure_evidence(pool, catalog.query)
@@ -448,6 +471,8 @@ def detect(
     session: Session | None = None,
     escalate_steps: int = 1,
     suppress: bool = True,
+    drop_ids: frozenset[str] = frozenset(),
+    add_ids: tuple[str, ...] = (),
 ) -> list[ToxicCombination]:
     """Every toxic combination, for one repository or the whole estate.
 
@@ -457,9 +482,12 @@ def detect(
     `suppress=False` is the approver's view: accepted members count and no
     acceptance dissolves anything, so a proposal (and its frozen evidence)
     names every combination its findings are in - a renewal included.
+
+    `drop_ids` / `add_ids` detect over another state of the findings (see
+    `_pool`); empty, the lake's current state.
     """
     by_repo: dict[str, list[dict[str, Any]]] = {}
-    for finding in _pool(catalog, repo):
+    for finding in _pool(catalog, repo, drop_ids=drop_ids, add_ids=add_ids):
         by_repo.setdefault(str(finding["repo_full_name"]), []).append(finding)
 
     rules = {r.rule_id: r for r in RULES}
