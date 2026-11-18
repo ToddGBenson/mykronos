@@ -544,8 +544,12 @@ anchors:
               echo
               echo "Mykronos refused 'cancelled'; reporting failure instead."
               CONCLUSION=failure
-              RESP=$(post_check "$(body_for failure)")
+              # Captured first, then printed, then judged: a bare assignment
+              # would end the script under `set -e` before Mykronos's refusal
+              # reached the log.
+              if RESP=$(post_check "$(body_for failure)"); then rc=0; else rc=$?; fi
               printf '%s\n' "$RESP"
+              if [ "$rc" -ne 0 ]; then exit "$rc"; fi
             fi
             echo
             # [TheHub #61842] Against a stored failure, Mykronos answers a later
@@ -555,7 +559,13 @@ anchors:
             OUTCOME=$(printf '%s' "$RESP" | sed -n 's/.*"outcome" *: *"\([a-z_]*\)".*/\1/p')
             KEPT=$(printf '%s' "$RESP" | sed -n 's/.*"conclusion" *: *"\([a-z_]*\)".*/\1/p')
             if [ "${PHASE:-}" = "end" ] && [ "$OUTCOME" = "unchanged" ]; then
-              echo "Sent end ${CONCLUSION:-} for ${JOB} on ${SHA}; Mykronos left the check at '${KEPT:-its stored conclusion}' (a cancelled never replaces a failure on the same commit)."
+              # The why only where it is the why: an `unchanged` for any
+              # other reason says only what Mykronos kept.
+              WHY=""
+              if [ "${CONCLUSION:-}" = "cancelled" ] && [ "$KEPT" = "failure" ]; then
+                WHY=" (a cancelled never replaces a failure on the same commit)"
+              fi
+              echo "Sent end ${CONCLUSION:-} for ${JOB} on ${SHA}; Mykronos left the check at '${KEPT:-its stored conclusion}'${WHY}."
             else
               echo "Reported ${PHASE} ${CONCLUSION:-} for ${JOB} on ${SHA}."
             fi

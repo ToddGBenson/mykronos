@@ -310,6 +310,19 @@ def test_a_kept_failure_is_reported_as_kept_not_as_cancelled(tmp_path: Path) -> 
     assert "Reported end cancelled" not in r.stdout
 
 
+def test_an_unchanged_for_another_reason_does_not_claim_the_cancelled_rule(
+    tmp_path: Path,
+) -> None:
+    """Fable nit on #1190: the parenthetical is the cancelled-over-failure
+    rule, and only that case may print it."""
+    body = '{"conclusion": "failure", "outcome": "unchanged"}'
+    r = _run(tmp_path, SHA, JOB="iac", PHASE="end", CONCLUSION="failure", CURL_BODY=body)
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Mykronos left the check at 'failure'." in r.stdout
+    assert "a cancelled never replaces" not in r.stdout
+
+
 def test_a_posted_end_is_reported_as_sent(tmp_path: Path) -> None:
     body = '{"conclusion": "cancelled", "outcome": "updated"}'
     r = _run(tmp_path, SHA, JOB="iac", PHASE="end", CONCLUSION="cancelled", CURL_BODY=body)
@@ -396,6 +409,8 @@ _CURL_SEQ = """curl() {
     shift
   done
   eval "rc=\\${CURL_RC_$n:-0}"
+  eval "body=\\${CURL_BODY_$n:-}"
+  printf '%s' "$body"
   return "$rc"
 }
 """
@@ -447,6 +462,23 @@ def test_an_unreachable_mykronos_still_fails_the_step(tmp_path: Path) -> None:
 
     assert r.returncode == 7
     assert sent == ["cancelled"]
+
+
+def test_a_refused_fallback_prints_mykronos_reason_before_failing(tmp_path: Path) -> None:
+    """Fable nit on #1190: the fallback's answer was assigned bare under
+    `set -e`, so a refused fallback ended the script before its body was
+    printed, and the log had no reason."""
+    r, sent = _run_seq(
+        tmp_path,
+        CONCLUSION="cancelled",
+        CURL_RC_1="22",
+        CURL_RC_2="22",
+        CURL_BODY_2='{"detail":"commit_sha is not a commit on this repository"}',
+    )
+
+    assert r.returncode == 22
+    assert sent == ["cancelled", "failure"]
+    assert "commit_sha is not a commit on this repository" in r.stdout
 
 
 def test_a_refused_failure_is_never_retried(tmp_path: Path) -> None:
