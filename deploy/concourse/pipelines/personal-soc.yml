@@ -1203,6 +1203,14 @@ jobs:
                       echo "*personal-soc / iac*: Mykronos refused the IaC upload (exit ${up_rc}) - nothing was filed." > ../notify/message.txt
                       exit 1
                     fi
+                    # A scan that wrote no report is already a verdict: it
+                    # broke. An unanswered upload after it does not make it
+                    # "not judged", so it stays `failure` (Fable nit 4 on #1191).
+                    if [ "$scanned" -eq 0 ]; then
+                      echo "::error:: checkov wrote no report, and Mykronos never answered the upload (uploader"
+                      echo "          exit ${up_rc}). The scan failed either way; this is not an outage."
+                      exit 1
+                    fi
                     reason="INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered the IaC upload (uploader exit ${up_rc}, transport errors only), so nothing from this scan was ingested or judged. The reason is in the uploader's output above."
                     echo "::error:: ${reason}"
                     printf '%s\n' "$reason" > ../infra/reason

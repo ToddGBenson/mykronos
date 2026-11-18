@@ -119,8 +119,16 @@ def _run_iac(
     for d in ("source", "infra", "notify"):
         (tmp_path / d).mkdir()
     results = tmp_path / "results"
-    # The task writes to an absolute /tmp/results; give each test its own.
-    script = _iac_task()["config"]["run"]["args"][-1].replace("/tmp/results", str(results))
+    # The task writes to an absolute /tmp/results and /tmp/iac-upload.log; give
+    # each test its own, or under xdist one test reads another's upload log
+    # (Fable nit 1 on #1191).
+    script = (
+        _iac_task()["config"]["run"]["args"][-1]
+        .replace("/tmp/results", str(results))
+        .replace("/tmp/iac-upload.log", str(tmp_path / "iac-upload.log"))
+        .replace("/tmp/uploader", str(tmp_path / "uploader"))
+    )
+    assert "/tmp/" not in script.replace(str(tmp_path), ""), "an absolute /tmp path is shared"
     return subprocess.run(
         [bash, "-e", "-s"],
         input=_STUBS + script,
@@ -156,6 +164,20 @@ def test_an_iac_upload_never_answered_is_an_infrastructure_fault(tmp_path: Path)
     assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered")
     message = (tmp_path / "notify" / "message.txt").read_text()
     assert "never answered its upload" in message
+
+
+def test_a_scan_with_no_report_stays_a_failure_when_the_upload_is_unanswered(
+    tmp_path: Path,
+) -> None:
+    """Fable nit 4 on #1191. No SARIF report is a broken scan, a verdict; a
+    transport-only upload failure after it must not turn it into exit 75 and
+    `cancelled`."""
+    r = _run_iac(tmp_path, sarif=False, upload_rc=1, accepted=False, upload_log=NO_RESPONSE)
+
+    assert (tmp_path / "uploaded").exists()
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert not (tmp_path / "infra" / "reason").exists()
+    assert "checkov wrote no report" in r.stdout
 
 
 @pytest.mark.parametrize(
