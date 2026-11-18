@@ -170,6 +170,22 @@ async def _report_locked(
         audit("ci_check_run.unchanged", check_run_id=existing_id)
         return Posted(name, existing_id, existing_status or "", existing_conclusion, "unchanged")
 
+    # [TheHub #61842] Worst wins between a failure and a cancelled. One check
+    # run carries every lane on the commit, and every `on_error:` hook sends
+    # `cancelled`, so the last report used to decide: a lane that errored after
+    # another lane FAILED turned a refused commit into a not-judged one. A
+    # failure is a verdict and a cancelled says no verdict was reached, so a
+    # cancelled never replaces a stored failure for the same commit. A success
+    # still does: that is a re-run passing, which is the way out of a red.
+    if (
+        phase == "end"
+        and conclusion == "cancelled"
+        and existing_id
+        and existing_conclusion == "failure"
+    ):
+        audit("ci_check_run.unchanged", check_run_id=existing_id, kept="failure")
+        return Posted(name, existing_id, existing_status or "", existing_conclusion, "unchanged")
+
     target = None if phase == "start" else conclusion
     title, summary = _render(job, phase, conclusion)
     try:
