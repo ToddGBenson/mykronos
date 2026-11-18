@@ -25,6 +25,8 @@ import yaml
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from tests.pipeline_steps import flat
+
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 RUNTIME_LOCK = BACKEND / "requirements.txt"
@@ -249,7 +251,7 @@ def _jobs() -> dict[str, str]:
     for job in pipeline["jobs"]:
         scripts[job["name"]] = "\n".join(
             str(step["config"]["run"]["args"][-1])
-            for step in job["plan"]
+            for step in flat(job["plan"])
             if "config" in step and "run" in step["config"]
         )
     return scripts

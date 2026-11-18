@@ -26,6 +26,7 @@ BeforeAll {
             NowUtc        = $script:Noon
             Attempts      = @()
             RollbackAvailable = $true
+            Ratchet       = [pscustomobject]@{ allow = $true; verdict = 'allow'; reasons = @([pscustomobject]@{ code = 'not_raised'; message = 'ok' }) }
             Mode          = 'Live'
         }
     }
@@ -55,6 +56,34 @@ Describe 'Get-AutoDeployDecision' {
         $d = Get-AutoDeployDecision @in
         $d.Mode | Should -Be 'DryRun'
         $d.Execute | Should -BeFalse
+    }
+
+    It 'skips when the ratchet could not be asked (D-183 fails closed)' {
+        $in = Get-GreenInput; $in.Ratchet = $null
+        $d = Get-AutoDeployDecision @in
+        $d.Action | Should -Be 'Skip'
+        $d.Reason | Should -Be 'ratchet_unread'
+        $d.Execute | Should -BeFalse
+    }
+
+    It 'skips when the ratchet answered something that is not a verdict' {
+        $in = Get-GreenInput; $in.Ratchet = [pscustomobject]@{ detail = 'Not Found' }
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'ratchet_unread'
+    }
+
+    It 'skips when the ratchet refused, and names its codes' {
+        $in = Get-GreenInput
+        $in.Ratchet = [pscustomobject]@{ allow = $false; verdict = 'refuse'
+            reasons = @([pscustomobject]@{ code = 'score_raised'; message = 'raises 40 to 42' }) }
+        $d = Get-AutoDeployDecision @in
+        $d.Reason | Should -Be 'ratchet_refused'
+        $d.Detail | Should -Match 'score_raised'
+    }
+
+    It 'treats a string "true" as no allow' {
+        $in = Get-GreenInput
+        $in.Ratchet = [pscustomobject]@{ allow = 'true'; verdict = 'allow'; reasons = @() }
+        (Get-AutoDeployDecision @in).Reason | Should -Be 'ratchet_refused'
     }
 
     It 'skips when nothing was promoted' {
@@ -229,9 +258,15 @@ Describe 'a pre-move refusal is not an attempt; a post-move failure is (61644)' 
     }
 
     It 'every kind deploy.ps1 emits is read back by the watcher' {
-        $kinds = @([regex]::Matches($script:DeployPs1, 'Stop-BeforeMove -Kind "([a-z_]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        # Literal kinds, and the ones the ratchet's refusal assigns to $kind
+        # before `Stop-BeforeMove -Kind $kind` (D-183).
+        $kinds = @(@([regex]::Matches($script:DeployPs1, 'Stop-BeforeMove -Kind "([a-z_]+)"')) +
+            @([regex]::Matches($script:DeployPs1, '\$kind = "([a-z_]+)"')) |
+            ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        $script:DeployPs1 | Should -Match 'Stop-BeforeMove -Kind \$kind -Message'
         $kinds | Should -Contain 'risk_refused'
         $kinds | Should -Contain 'risk_not_judged'
+        $kinds | Should -Contain 'risk_unasked'
         $kinds | Should -Contain 'lock_held'
         $kinds | Should -Contain 'pull_failed'
         foreach ($k in $kinds) {
@@ -348,6 +383,13 @@ Describe 'the watcher passes the decision''s full sha (61644)' {
         $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev.Substring(0, 12) -Registry 'r' -Extra @('-GateWaitMinutes', '0')
         $a[-2] | Should -Be '-GateWaitMinutes'
     }
+    It 'a rollback is a -Restore, which does not ask the ratchet (D-183)' {
+        $a = Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:Prev -Registry 'r' -Extra @('-GateWaitMinutes', '0') -Restore
+        $a | Should -Contain '-Restore'
+        (Get-DeployScriptArgumentList -ScriptPath 'deploy.ps1' -Tag $script:H -Registry 'r' -RequireFullSha) | Should -Not -Contain '-Restore'
+        $w = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\Watch-AutoDeploy.ps1') -Raw
+        $w | Should -Match "Invoke-DeployScript -Tag \`$previousTag -LogPath \`$rollbackLog -Extra @\('-GateWaitMinutes', '0'\) -Restore"
+    }
     It 'the watcher''s forward deploy asks for the full sha' {
         $w = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\Watch-AutoDeploy.ps1') -Raw
         $w | Should -Match 'Invoke-DeployScript -Tag \$sha -LogPath \$deployLog -RequireFullSha'
@@ -421,6 +463,33 @@ Describe 'the rollback supply' {
     It 'does not ask for a way back when production already runs the sha' {
         $in = Get-GreenInput; $in.RunningSha = $script:H; $in.RollbackAvailable = $false
         (Get-AutoDeployDecision @in).Reason | Should -Be 'already_running'
+    }
+}
+
+Describe 'Get-RatchetAnswer asks with validated, escaped shas (D-183)' {
+    BeforeAll {
+        $script:EnvFile = Join-Path $TestDrive 'backend.env'
+        Set-Content -LiteralPath $script:EnvFile -Value 'MYKRONOS_VIEWER_TOKEN=t'
+    }
+    BeforeEach {
+        $script:AskedUri = $null
+        Mock Invoke-RestMethod { $script:AskedUri = $Uri; [pscustomobject]@{ allow = $true; verdict = 'allow'; reasons = @() } }
+    }
+    It 'asks for two well-formed shas' {
+        $a = Get-RatchetAnswer -Sha $script:H -Deployed $script:Prev -EnvPath $script:EnvFile
+        $a.allow | Should -BeTrue
+        $script:AskedUri | Should -Be ("http://127.0.0.1:8100/api/oracle/deploy-gate?repo=ToddGBenson%2Fmykronos" +
+            "&commit=$($script:H)&deployed=$($script:Prev)")
+    }
+    It 'does not ask for a sha that is not 7-40 lower-case hex' {
+        foreach ($bad in @("$($script:H)&deployed=0000000", 'ABCDEF1', 'abc', 'zzzzzzz')) {
+            Get-RatchetAnswer -Sha $bad -Deployed $script:Prev -EnvPath $script:EnvFile | Should -BeNullOrEmpty
+        }
+        $script:AskedUri | Should -BeNullOrEmpty
+    }
+    It 'does not ask with a running sha that is not one' {
+        Get-RatchetAnswer -Sha $script:H -Deployed 'main&x=1' -EnvPath $script:EnvFile | Should -BeNullOrEmpty
+        $script:AskedUri | Should -BeNullOrEmpty
     }
 }
 

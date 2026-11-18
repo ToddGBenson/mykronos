@@ -427,8 +427,20 @@ class TestTheStepCannotFailTheScan:
     def test_an_empty_result_is_not_posted(self) -> None:
         """A zero-byte file would POST an empty body and record a report
         claiming nothing was analysed, which is worse than no report: the
-        Oracle category would read `available` with nothing behind it."""
-        assert "-s /tmp/reachability.json" in self._block()
+        Oracle category would read `available` with nothing behind it.
+
+        Since TheHub #61761 the analysis runs on a remote worker into the
+        `reachability` output, and `upload-semgrep`, on this host, posts it."""
+        from pathlib import Path
+
+        assert "-s ../reachability/reachability.json" in self._block()
+        pipeline = (
+            Path(__file__).resolve().parents[2]
+            / "deploy" / "concourse" / "pipelines" / "mykronos.yml"
+        ).read_text(encoding="utf-8")
+        upload = pipeline[pipeline.index("- task: upload-semgrep") :]
+        guard = upload.index("[ -s ../reachability/reachability.json ] || exit 0")
+        assert guard < upload.index("/api/ingest/reachability")
 
 
 class TestReadingItBack:
