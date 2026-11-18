@@ -41,6 +41,7 @@ PIPELINE = (
 HOOK_TASK = "upload-network-findings"
 NETWORK_JOBS = ("external-exposure", "netassess-ingest", "netassess-freshness")
 APT_CONF = "/etc/apt/apt.conf.d/99force-ipv4"
+APT_TIMEOUTS_CONF = "/etc/apt/apt.conf.d/99timeouts"
 
 REFUSED = (
     "ERROR POST /api/ingest/scan-run -> HTTP 403 "
@@ -52,7 +53,6 @@ REFUSED = (
 #: in the hook; it prints what the real one logs in each case and exits with the
 #: real one's code (backend/mykronos/upload.py `main`).
 STUBS = r"""
-apt-get() { :; }
 python() {
   case "$FAKE_UPLOAD" in
     refused)
@@ -92,8 +92,19 @@ def _run(tmp_path: Path, job: str, mode: str) -> subprocess.CompletedProcess[str
     hook = _hook(job)
     script = str(hook["config"]["run"]["args"][-1])
     assert APT_CONF in script
+    assert APT_TIMEOUTS_CONF in script
     script = script.replace(APT_CONF, (tmp_path / "apt.conf").as_posix())
+    script = script.replace(APT_TIMEOUTS_CONF, (tmp_path / "apt-timeouts.conf").as_posix())
     (tmp_path / "results").mkdir(exist_ok=True)
+    # [TheHub #61842] apt runs under `timeout ... sh -c 'apt-get ...'`, a new
+    # process, and a shell function does not cross into it. So apt-get is an
+    # executable on PATH, which every child sees. A function stub let the real
+    # apt-get run: green as root, exit 100 on an unprivileged CI runner.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    apt_get = bin_dir / "apt-get"
+    apt_get.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    apt_get.chmod(0o755)
     env = {
         **os.environ,
         **{k: str(v) for k, v in (hook.get("params") or {}).items()},
@@ -102,6 +113,7 @@ def _run(tmp_path: Path, job: str, mode: str) -> subprocess.CompletedProcess[str
         "MYKRONOS_TOKEN": "t",
         "FAKE_UPLOAD": mode,
         "FAKE_REFUSAL": REFUSED,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
     }
     return subprocess.run(
         [bash, "-s"],

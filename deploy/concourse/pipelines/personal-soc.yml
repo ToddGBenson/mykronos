@@ -698,7 +698,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 cd source
                 git config --global --add safe.directory "$PWD"
 
@@ -841,7 +851,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl git >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
                 # PS-8. The version was already pinned; a pin says which bytes
@@ -954,7 +974,12 @@ jobs:
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi
@@ -1123,7 +1148,12 @@ jobs:
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi
@@ -1145,9 +1175,17 @@ jobs:
                   #   - accepted, but the uploader exits 1 because the scan
                   #     itself was degraded (a missing report is filed as a
                   #     FAILED scan): a verdict, so `failure`;
-                  #   - never accepted (refused, unreachable, timed out):
-                  #     nothing was judged, so infra/reason and exit 75, and
-                  #     the hook reports `cancelled`, as for an install outage.
+                  #   - refused: Mykronos answered and said no (a 403 naming
+                  #     an ungranted capability, a 422, a revoked token, or a
+                  #     5xx on the last attempt). An answer is not an outage,
+                  #     so `failure`, with the uploader's reason above;
+                  #   - never answered (the uploader's last attempt ended in a
+                  #     transport error - unreachable, reset, timed out - and
+                  #     no HTTP status appears in its log): nothing was judged, so
+                  #     infra/reason and exit 75, and the hook reports
+                  #     `cancelled`, as for an install outage. Only this
+                  #     positive "no response" evidence takes that path;
+                  #     anything else not accepted stays `failure`.
                   #     Since TheHub #61842 (F1) a cancelled never replaces a
                   #     failure another lane already posted for this commit.
                   if [ "${up_rc:-0}" -ne 0 ]; then
@@ -1157,10 +1195,18 @@ jobs:
                       echo "*personal-soc / iac*: Mykronos filed this IaC scan as failed or degraded (uploader exit ${up_rc})." > ../notify/message.txt
                       exit 1
                     fi
-                    reason="INFRASTRUCTURE, NOT A VERDICT: Mykronos did not accept the IaC upload (uploader exit ${up_rc}), so nothing from this scan was ingested or judged. The reason is in the uploader's output above."
+                    if grep -q 'HTTP [0-9][0-9][0-9]' /tmp/iac-upload.log \
+                      || ! grep -q 'transport error:' /tmp/iac-upload.log; then
+                      echo "::error:: Mykronos refused the IaC upload (uploader exit ${up_rc}), so nothing from this"
+                      echo "          scan was filed. The reason is in the uploader's output above. A 403 naming"
+                      echo "          'iac' means the capability is not granted."
+                      echo "*personal-soc / iac*: Mykronos refused the IaC upload (exit ${up_rc}) - nothing was filed." > ../notify/message.txt
+                      exit 1
+                    fi
+                    reason="INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered the IaC upload (uploader exit ${up_rc}, transport errors only), so nothing from this scan was ingested or judged. The reason is in the uploader's output above."
                     echo "::error:: ${reason}"
                     printf '%s\n' "$reason" > ../infra/reason
-                    echo "*personal-soc / iac*: the scan ran but Mykronos never accepted its upload (exit ${up_rc}) - nothing was ingested." > ../notify/message.txt
+                    echo "*personal-soc / iac*: the scan ran but Mykronos never answered its upload (exit ${up_rc}) - nothing was ingested." > ../notify/message.txt
                     exit 75
                   fi
                 fi
@@ -1248,7 +1294,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 git config --global --add safe.directory "$PWD"
 
                 # No ingestion token is "the gate did not run", and a gate that
@@ -1506,14 +1562,29 @@ jobs:
                   # budget and names itself.
                   printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                    || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
                   export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   if timeout --kill-after=10s 240s bash -ec '
                     bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi
@@ -1619,7 +1690,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 cat > tests.ps1 <<'PS'
                 $ErrorActionPreference = 'Stop'
@@ -1981,14 +2062,29 @@ jobs:
                   # budget and names itself.
                   printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                    || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
                   export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   if timeout --kill-after=10s 240s bash -ec '
                     bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi
@@ -2081,7 +2177,17 @@ jobs:
                 # that says why it could not finish.
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 cat > check.py <<'PY'
                 import json, os, pathlib, re, subprocess, sys
@@ -2368,7 +2474,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
@@ -2488,7 +2604,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 cd source
 
@@ -2601,7 +2727,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 # TheHub #60852 (option C). This lane used to print "Ports are
                 # visible from the internet" and exit 0 -- build #10 showed 7547
@@ -2742,14 +2878,29 @@ jobs:
                   # budget and names itself.
                   printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                    || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
                   export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   if timeout --kill-after=10s 240s bash -ec '
                     bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi
@@ -2865,7 +3016,17 @@ jobs:
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq unzip curl >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
@@ -3149,14 +3310,29 @@ jobs:
                   # budget and names itself.
                   printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                    || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
                   export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   if timeout --kill-after=10s 240s bash -ec '
                     bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi
@@ -3264,7 +3440,17 @@ jobs:
                 # that says why it could not finish.
                 printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null' \
-                  || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
@@ -3399,14 +3585,29 @@ jobs:
                   # budget and names itself.
                   printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                    || { echo "::error:: INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit $?)." >&2; exit 1; }
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
                   export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   if timeout --kill-after=10s 240s bash -ec '
                     bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   '; then :; else
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
-                      echo "::error:: INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit $inst_rc)." >&2
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
                     fi
                     exit "$inst_rc"
                   fi

@@ -71,10 +71,14 @@ python() {
     *mykronos.upload*)
       echo called > "$UPLOAD_MARK"
       [ "${UPLOAD_ACCEPTED:-1}" = 1 ] && echo "Uploaded 0 finding(s) for scan run r1 (failure)"
+      [ -n "${UPLOAD_LOG:-}" ] && echo "ERROR $UPLOAD_LOG" >&2
       return "${UPLOAD_RC:-0}" ;;
   esac
 }
 timeout() {
+  case "$*" in
+    *"bash -ec"*) return "${INSTALL_RC:-0}" ;;
+  esac
   if [ "${WRITE_SARIF:-0}" = 1 ]; then
     echo '{"runs": []}' > "$RESULTS/results_sarif.sarif"
   fi
@@ -83,8 +87,31 @@ timeout() {
 """
 
 
+#: What the real uploader logs when it gives up (backend/mykronos/upload.py
+#: `IngestionClient.post`), by cause.
+NO_RESPONSE = (
+    "/api/ingest/scan-run failed after 6 attempts — transport error: "
+    "[Errno -3] Temporary failure in name resolution. Findings were NOT recorded"
+)
+REFUSED_403 = (
+    "/api/ingest/scan-run failed and will not be retried — HTTP 403: "
+    "{\"detail\":\"'iac' is not enabled for ToddGBenson/personal-soc.\"}"
+)
+REFUSED_422 = (
+    "/api/ingest/scan-run failed and will not be retried — HTTP 422: "
+    "{\"detail\":[{\"loc\":[\"body\",\"commit_sha\"]}]}"
+)
+SERVER_ERROR = "/api/ingest/scan-run failed after 6 attempts — HTTP 503: upstream down."
+
+
 def _run_iac(
-    tmp_path: Path, *, sarif: bool, upload_rc: int, accepted: bool = True
+    tmp_path: Path,
+    *,
+    sarif: bool,
+    upload_rc: int,
+    accepted: bool = True,
+    upload_log: str = "",
+    install_rc: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if not bash:
@@ -105,6 +132,8 @@ def _run_iac(
             "UPLOAD_MARK": str(tmp_path / "uploaded"),
             "UPLOAD_RC": str(upload_rc),
             "UPLOAD_ACCEPTED": "1" if accepted else "0",
+            "UPLOAD_LOG": upload_log,
+            "INSTALL_RC": str(install_rc),
             "WRITE_SARIF": "1" if sarif else "0",
             "RESULTS": str(results),
         },
@@ -115,17 +144,63 @@ def _run_iac(
     )
 
 
-def test_an_iac_upload_never_accepted_is_an_infrastructure_fault(tmp_path: Path) -> None:
-    """Nothing was ingested, so nothing was judged: infra/reason and 75, and
-    the check hook says `cancelled` (Fable nit 5 on #1191)."""
-    r = _run_iac(tmp_path, sarif=True, upload_rc=1, accepted=False)
+def test_an_iac_upload_never_answered_is_an_infrastructure_fault(tmp_path: Path) -> None:
+    """Every attempt a transport error: nothing was ingested, so nothing was
+    judged. infra/reason and 75, and the check hook says `cancelled` (Fable
+    nit 5 on #1191)."""
+    r = _run_iac(tmp_path, sarif=True, upload_rc=1, accepted=False, upload_log=NO_RESPONSE)
 
     assert (tmp_path / "uploaded").exists()
     assert r.returncode == 75, r.stdout + r.stderr
     reason = (tmp_path / "infra" / "reason").read_text()
-    assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: Mykronos did not accept")
+    assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered")
     message = (tmp_path / "notify" / "message.txt").read_text()
-    assert "never accepted its upload" in message
+    assert "never answered its upload" in message
+
+
+@pytest.mark.parametrize(
+    "log",
+    [REFUSED_403, REFUSED_422, SERVER_ERROR, ""],
+    ids=["403", "422", "503-after-retries", "no-recognisable-output"],
+)
+def test_an_iac_upload_mykronos_refused_stays_a_failure(tmp_path: Path, log: str) -> None:
+    """Fable must-fix (a) on #1191. An HTTP answer from Mykronos is Mykronos
+    saying no, not an outage: it stays `failure`, with no infra/reason to
+    launder it into `cancelled`. So does an exit with no evidence either way:
+    only a positive no-response takes the infrastructure path."""
+    r = _run_iac(tmp_path, sarif=True, upload_rc=1, accepted=False, upload_log=log)
+
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert not (tmp_path / "infra" / "reason").exists()
+    assert "Mykronos refused the IaC upload" in r.stdout
+    assert "INFRASTRUCTURE" not in r.stdout + r.stderr
+    message = (tmp_path / "notify" / "message.txt").read_text()
+    assert "refused the IaC upload" in message
+
+
+@pytest.mark.parametrize("rc", [124, 137])
+def test_an_iac_uploader_install_past_its_deadline_writes_the_reason(
+    tmp_path: Path, rc: int
+) -> None:
+    """Fable must-fix (b) on #1191. The deadline said INFRASTRUCTURE but left
+    no infra/reason, so the hook reported `failure`. Now it reports what it
+    says."""
+    r = _run_iac(tmp_path, sarif=True, upload_rc=0, install_rc=rc)
+
+    assert r.returncode == 75, r.stdout + r.stderr
+    assert not (tmp_path / "uploaded").exists()
+    reason = (tmp_path / "infra" / "reason").read_text()
+    assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish")
+    assert "240s deadline" in reason
+
+
+def test_an_iac_uploader_install_that_fails_otherwise_keeps_its_exit(tmp_path: Path) -> None:
+    """75 from the install's own retries already wrote its reason (the
+    `install_uploader` anchor); anything else is passed on as it was."""
+    r = _run_iac(tmp_path, sarif=True, upload_rc=0, install_rc=2)
+
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert not (tmp_path / "infra" / "reason").exists()
 
 
 def test_an_iac_upload_filed_as_degraded_is_a_failure_and_says_it_was_filed(
@@ -262,6 +337,90 @@ def test_every_apt_and_uploader_install_has_a_hard_deadline() -> None:
                 installs += 1
                 assert _INSTALL_DEADLINE.match(lines[i - 1].strip()), where
     assert apts == 15 and installs == 7, (apts, installs)
+
+
+def _apt_blocks() -> list[tuple[str, str]]:
+    """Each apt deadline and its `|| { ... }` handler, as the task runs it."""
+    blocks = []
+    for job, task in _all_tasks():
+        lines = _script(task).splitlines()
+        for i, line in enumerate(lines):
+            if _APT_DEADLINE.search(line):
+                ends = (j for j in range(i, len(lines)) if lines[j].rstrip().endswith("exit 1; }"))
+                end = next(ends)
+                blocks.append((f"{job}/{task['task']}", "\n".join(lines[i : end + 1])))
+    return blocks
+
+
+def _run_apt(tmp_path: Path, block: str, rc: int) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required to execute the apt step")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "timeout"
+    stub.write_text(f"#!/bin/sh\nexit {rc}\n", encoding="utf-8")
+    stub.chmod(0o755)
+    (tmp_path / "infra").mkdir()
+    return subprocess.run(
+        [bash, "-c", block + "\necho after-apt"],
+        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.parametrize("rc", [124, 137])
+@pytest.mark.parametrize("where,block", _apt_blocks(), ids=lambda v: v if "/" in v else None)
+def test_an_apt_deadline_writes_the_reason_so_it_reports_cancelled(
+    tmp_path: Path, where: str, block: str, rc: int
+) -> None:
+    """Fable must-fix (b) on #1191: what says INFRASTRUCTURE writes
+    infra/reason where the task declares it, and exits 75, like the
+    uploader install. (Only `iac` declares it today; the others write
+    nothing, by the rule in the `install_uploader` note.)"""
+    r = _run_apt(tmp_path, block, rc)
+
+    assert r.returncode == 75, where + r.stdout + r.stderr
+    assert "after-apt" not in r.stdout
+    reason = (tmp_path / "infra" / "reason").read_text()
+    assert reason.startswith(
+        "INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline"
+    )
+    assert f"(exit {rc})" in reason
+
+
+@pytest.mark.parametrize("where,block", _apt_blocks(), ids=lambda v: v if "/" in v else None)
+def test_an_apt_failure_is_worded_by_its_exit_code(tmp_path: Path, where: str, block: str) -> None:
+    """Fable nit on #1191: exit 100 is apt failing, not a deadline."""
+    r = _run_apt(tmp_path, block, 100)
+
+    assert r.returncode == 1, where + r.stdout + r.stderr
+    assert "apt failed (exit 100)" in r.stderr
+    assert "deadline" not in r.stderr
+    assert "INFRASTRUCTURE" not in r.stderr
+    assert not (tmp_path / "infra" / "reason").exists()
+
+
+def test_the_apt_blocks_are_all_found() -> None:
+    assert len(_apt_blocks()) == 15
+
+
+def test_whatever_says_infrastructure_writes_the_reason() -> None:
+    """Fable must-fix (b) on #1191, as a rule for the file: a line that tells
+    the log INFRASTRUCTURE, NOT A VERDICT is a `reason=` that the same
+    script writes to infra/reason, never a bare echo that reports `failure`."""
+    for job, task in _all_tasks():
+        script = _script(task)
+        for line in script.splitlines():
+            text = line.strip()
+            if "INFRASTRUCTURE, NOT A VERDICT" not in text or text.startswith("#"):
+                continue
+            where = f"{job}/{task['task']}"
+            assert text.startswith('reason="INFRASTRUCTURE, NOT A VERDICT'), f"{where}: {text}"
+            assert '/reason"' in script or "infra/reason" in script, f"{job}/{task['task']}"
 
 
 def _deadline(script: str, pattern: str) -> int:
