@@ -2758,14 +2758,6 @@ class DashboardQueries:
         """Open findings first seen by a scan of this commit, split into
         (introduced, newly disclosed). The one definition both `introduced_by`
         and `introduced_rows` read, so they cannot disagree."""
-        from mykronos.disclosure import (
-            ATLAS,
-            CAPABILITY,
-            atlas_candidate,
-            atlas_disclosed,
-            disclosed_ids,
-        )
-
         rows = self.catalog.query(
             """
             SELECT f.finding_id, f.severity, f.capability, f.rule_id, f.title,
@@ -2806,6 +2798,29 @@ class DashboardQueries:
                 baseline, remedy,
             ) in rows
         ]
+        return self.split_disclosed(found)
+
+    def split_disclosed(
+        self, found: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split first-seen rows into (introduced, newly disclosed).
+
+        `_first_seen_at`'s rule, applied to rows a caller selected some other
+        way: the deploy ratchet (D-183) selects the findings first seen across
+        a range of commits, and must not count a CVE published against an
+        image nobody changed any more than the commit gate does. Each row
+        carries the keys `_first_seen_at` builds (`finding_id`, `capability`,
+        `rule_id`, `_scan`, `_image`, `_package`, `_version`, `_baseline`,
+        `_remedy`); `_remediated` is set on every row.
+        """
+        from mykronos.disclosure import (
+            ATLAS,
+            CAPABILITY,
+            atlas_candidate,
+            atlas_disclosed,
+            disclosed_ids,
+        )
+
         disclosed = disclosed_ids(
             self.catalog,
             [

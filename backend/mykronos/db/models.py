@@ -1894,6 +1894,65 @@ class RiskGateNoticeState(Base):
         return f"<RiskGateNoticeState {self.repo_full_name} {self.subject} {self.state}>"
 
 
+class OracleRatchetLatch(Base):
+    """When a repository's risk score first fell below the No-Go threshold (D-183).
+
+    The deploy ratchet's latch: once a repository has been out of No-Go, a
+    deploy whose decision is No-Go again is refused outright. One row per
+    repository, written once and never updated or cleared by code: the first
+    crossing is a fact, and a latch that moved with the score would be no latch.
+    Created by `create_all` like every other operational table.
+    """
+
+    __tablename__ = "oracle_ratchet_latches"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    latched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    #: The commit whose evaluation first scored below the threshold.
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    #: That evaluation's unclamped `raw_score`, and the threshold it was under.
+    raw_score: Mapped[float] = mapped_column(Float, default=0.0)
+    no_go_threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    policy_version: Mapped[str] = mapped_column(String(32), default="")
+    #: `decision` (a recorded gate decision) or `deploy_gate` (a ratchet check).
+    source: Mapped[str] = mapped_column(String(16), default="")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<OracleRatchetLatch {self.repo_full_name} {self.latched_at}>"
+
+
+class OracleRatchetCreep(Base):
+    """How far deploys within the tolerance have raised a repository's score (D-183).
+
+    The tolerance absorbs one small rise, not a series of them: ten deploys at
+    +0.4 are +4.0. So every rise a deploy actually shipped is added here, and a
+    deploy is refused once this plus its own rise passes the tolerance. A
+    deploy that lowers the score subtracts its fall, never below zero: a net
+    lowering pays the creep back, and a token fall between two rises does not
+    clear it.
+
+    "Actually shipped" is learned from the next question, not the answer. An
+    allow records its rise as pending against the candidate sha; the next
+    ratchet check that names that sha as deployed (the running build stamp)
+    confirms it. A pending rise whose sha is never seen running is never
+    added. One row per repository, created by `create_all`.
+    """
+
+    __tablename__ = "oracle_ratchet_creep"
+
+    repo_full_name: Mapped[str] = mapped_column(String(255), primary_key=True)
+    #: Accumulated confirmed rise, raw score points, never negative.
+    accepted_creep: Mapped[float] = mapped_column(Float, default=0.0)
+    #: The deployed sha whose rise was last added, so a sha is added once.
+    confirmed_sha: Mapped[str] = mapped_column(String(64), default="")
+    #: JSON {candidate_sha: {"delta": float, "baseline": sha, "at": iso}}.
+    pending_json: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<OracleRatchetCreep {self.repo_full_name} {self.accepted_creep}>"
+
+
 class LibraryRequest(Base):
     """A request to onboard one third-party library (TheHub #60895, #60896).
 

@@ -2925,6 +2925,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/oracle/deploy-gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deploy Gate Check
+         * @description May this commit be deployed over what the repository runs now? (D-183)
+         *
+         *     The deploy ratchet. Refuses a deploy that raises the repository's risk
+         *     score beyond a 0.5 tolerance (summed across deploys) or brings an open
+         *     critical or high the running commit lacks (by severity, KEV boost or a
+         *     toxic combination); once the repository has been below No-Go, refuses a
+         *     No-Go unless it lowers the score by more than the tolerance and brings no
+         *     critical or high; allows a fix that lowers the score while it is still
+         *     No-Go.
+         *
+         *     **MyKronos only, for now.** Any other repository is refused
+         *     `not_enforceable`: its baseline would be the caller's word, and its scan
+         *     history (feature-branch pushes, pull requests) cannot yet be placed.
+         *
+         *     **Fails closed, and says why.** No recorded decision for the commit, an
+         *     unknown or disputed baseline, or an evaluation error is `allow: false`
+         *     with a named `reasons[].code`, always 200: a caller must read `allow`,
+         *     and must treat a non-200, an unparseable body or a missing `allow` as a
+         *     refusal too.
+         *
+         *     Both scores are measured over one findings snapshot, now, so a CVE
+         *     published since the deployed commit was scanned moves both equally.
+         *
+         *     Readable by viewers as `/decisions/by-commit` is (the deploy host holds a
+         *     viewer token). Can set the repository's latch as a side effect, which is
+         *     monotonic and idempotent, and records an allowed rise in the creep ledger
+         *     until the commit is seen running.
+         *
+         *     An answer is reused for a few seconds while nothing it read has changed
+         *     (the lake's files, the latch, the creep ledger), so a caller polling it
+         *     cannot make the backend evaluate the whole backlog on every request.
+         *     Database-side inputs (KEV matches, risk acceptances, remediation in
+         *     flight, the policy) are not in the key; the 15-second lifetime bounds
+         *     how stale they can be.
+         */
+        get: operations["deploy_gate_check_api_oracle_deploy_gate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oracle/decisions/by-commit/{commit_sha}": {
         parameters: {
             query?: never;
@@ -7434,6 +7487,154 @@ export interface components {
              * @default true
              */
             configured: boolean;
+        };
+        /** DeployGateLatch */
+        DeployGateLatch: {
+            /**
+             * Latched
+             * @description Whether the repository's score has ever been below the No-Go threshold. Once true, a No-Go deploy is a hard refusal (D-183 (b)).
+             */
+            latched: boolean;
+            /** Latched At */
+            latched_at?: string | null;
+            /** Commit Sha */
+            commit_sha?: string | null;
+            /** Raw Score */
+            raw_score?: number | null;
+            /** Source */
+            source?: string | null;
+        };
+        /**
+         * DeployGateOut
+         * @description The deploy ratchet's answer about one deploy (D-183).
+         */
+        DeployGateOut: {
+            /** Repo Full Name */
+            repo_full_name: string;
+            /**
+             * Commit Sha
+             * @description The commit to deploy, full when the lake knows it.
+             */
+            commit_sha: string;
+            /**
+             * Deployed Sha
+             * @description The baseline: the commit the repository runs now.
+             */
+            deployed_sha?: string | null;
+            /**
+             * Baseline Source
+             * @description Where `deployed_sha` came from: `caller`, `deployment probe`, or, for this platform's own repository, `this process (MYKRONOS_BUILD_SHA)`.
+             */
+            baseline_source: string;
+            /**
+             * Probe Revision
+             * @description The deployment probe's last reading, reported beside a caller's claim.
+             */
+            probe_revision?: string | null;
+            /**
+             * Verdict
+             * @description `allow` or `refuse`. Anything else is a refusal.
+             */
+            verdict: string;
+            /** Allow */
+            allow: boolean;
+            /** Reasons */
+            reasons: components["schemas"]["DeployGateReason"][];
+            /**
+             * Candidate Score
+             * @description The commit's unclamped raw score, measured now.
+             */
+            candidate_score?: number | null;
+            /**
+             * Baseline Score
+             * @description The deployed commit's raw score over the SAME findings snapshot: the candidate's score with the range's introduced findings removed and its fixes put back. Never a stored decision's score.
+             */
+            baseline_score?: number | null;
+            /** Score Delta */
+            score_delta?: number | null;
+            /**
+             * Tolerance
+             * @description The total rise deploys may add, summed across deploys: `score_raised` refuses when `accepted_creep` plus this deploy's rise exceeds it.
+             */
+            tolerance: number;
+            /**
+             * Accepted Creep
+             * @description The rise earlier allowed deploys already shipped (the creep ledger), confirmed when their commit was later seen running. Null when not read.
+             */
+            accepted_creep?: number | null;
+            /**
+             * Fix Credit Pending
+             * @description Open findings this commit's latest scan no longer reports that absence reconciliation has not closed yet: not credited until a second scan.
+             * @default 0
+             */
+            fix_credit_pending: number;
+            /**
+             * Error Id
+             * @description Set on `evaluation_failed` from an exception: the backend log carries the detail under this id. The response never carries the exception text.
+             */
+            error_id?: string | null;
+            /** No Go Threshold */
+            no_go_threshold: number;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Direction
+             * @description `forward`, `rollback` or `same`.
+             */
+            direction: string;
+            /** Branch */
+            branch?: string | null;
+            /**
+             * Range Commits
+             * @description Commits between the baseline and the candidate.
+             */
+            range_commits?: string[];
+            /**
+             * Introduced
+             * @description Open findings the deploy brings that the running commit lacks, by severity.
+             */
+            introduced?: {
+                [key: string]: number;
+            };
+            /**
+             * Fixed
+             * @description Findings the running commit carries that the deploy removes, by severity.
+             */
+            fixed?: {
+                [key: string]: number;
+            };
+            /**
+             * Introduced Blocking Ids
+             * @description The critical and high finding ids in `introduced`; any refuses.
+             */
+            introduced_blocking_ids?: string[];
+            /**
+             * Candidate Decision
+             * @description The newest recorded decision for the commit, for reference.
+             */
+            candidate_decision?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Baseline Decision
+             * @description The newest recorded decision for the baseline, if any.
+             */
+            baseline_decision?: {
+                [key: string]: unknown;
+            } | null;
+            latch: components["schemas"]["DeployGateLatch"];
+            /** Evaluated At */
+            evaluated_at: string;
+        };
+        /** DeployGateReason */
+        DeployGateReason: {
+            /**
+             * Code
+             * @description Stable. Refusals: `no_decision`, `not_assessed`, `baseline_unknown`, `baseline_disagrees`, `evaluation_failed`, `introduced_blocking`, `score_raised`, `latched_no_go`, `not_enforceable`. Allows: `not_raised`, `lowered`, `unchanged_while_no_go`, `lowered_while_no_go`, `lowered_while_latched`.
+             */
+            code: string;
+            /** Message */
+            message: string;
         };
         /** DeployIn */
         DeployIn: {
@@ -18634,6 +18835,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deploy_gate_check_api_oracle_deploy_gate_get: {
+        parameters: {
+            query: {
+                repo: string;
+                commit: string;
+                deployed?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployGateOut"];
                 };
             };
             /** @description Validation Error */

@@ -45,56 +45,37 @@
     about the sha before it pulls anything, and REFUSES a commit the gate
     refused unless -Force is passed with a reason that is recorded.
 
-    IT FAILS OPEN, DELIBERATELY. If the platform cannot be reached it warns
-    and proceeds. That is never worse than the state it replaces: with no
-    check at all, an unreachable platform already meant no gate. Fail closed
-    was rejected on a measured case, not a hypothetical one - Vault was sealed
-    for four days in September 2026 and the whole Concourse estate was down
-    (#60474); a fail-closed gate would have blocked every deploy that could
-    have fixed it, including the unseal.
+    THE RATCHET, AND IT FAILS CLOSED (D-183, operator decision 2026-11-15).
+    Since D-183 the question is not "what did the gate decide about this sha"
+    but "may this sha replace the one running", asked of
+    GET /api/oracle/deploy-gate with the running image's MYKRONOS_BUILD_SHA as
+    the baseline. The platform refuses a deploy that raises the risk score
+    beyond a 0.5 tolerance or brings an open critical or high the running
+    commit lacks; once the repository has been below No-Go it refuses any
+    No-Go; and it allows a fix that lowers the score while still No-Go. Both
+    scores are measured over one findings snapshot, so a CVE published since
+    the running commit was scanned moves both equally and refuses nothing.
 
-    AND THE COST OF FAILING OPEN IS THAT A WARNING CAN GO INVISIBLE. A
-    warn-and-proceed path that prints on every routine command stops being
-    read, which is the failure mode this estate keeps meeting. So the four
-    outcomes do not look alike: a clean answer is ONE quiet line, while
-    "could not ask" is a banner with a pause, "nothing ever scored this" stops,
-    and every run's verdict is repeated as the last line on the screen and
-    appended to `deploy-risk-log.jsonl` beside this script. "Could not ask"
-    is not "asked and it was fine", and the operator must never have to infer
-    which one happened from the absence of something.
+    It supersedes D-126's fail-open posture and D-159's "only the floor
+    refuses". Everything that is not an explicit `allow` stops before
+    anything is pulled: a refusal, a sha nothing has scored, and a platform
+    this host could not ask (unreachable, no token, an answer that is not a
+    ratchet verdict). The cost D-126 named is real - a sealed Vault or a
+    down backend now blocks the deploy that would fix it - and the answer to
+    it is -Force with a recorded reason, which is the operator's alone.
+    Agents never pass -Force.
+
+    THE OUTCOMES DO NOT LOOK ALIKE. An allow is ONE quiet line; every refusal
+    names its codes and scores, and every run's verdict is repeated as the
+    last line on the screen and appended to `deploy-risk-log.jsonl` beside
+    this script, refusals and overrides included.
 
     AND IT WAITS FOR THE ANSWER (#735). The gate is not part of Delivery: it
     runs in Concourse after every scan lane for the commit has finished,
-    which on 2026-09-29 was 29 and 32 minutes after Delivery went green. The
-    documented procedure - wait for Delivery, then deploy - therefore asked
-    before the gate had answered, and every deploy that day printed NOT
-    JUDGED. So when there is no decision yet this script polls for one, for
-    -GateWaitMinutes (45 by default), and only then falls back to NOT JUDGED.
-
-    AND IT HEARS THE FLOOR (#735). The gate job does not refuse on the
-    recommendation - that describes the whole backlog and is almost never
-    no_go (D-048). It refuses when the commit INTRODUCED an open critical or
-    high. This script used to read only the recommendation, so a commit the
-    gate had refused would have shipped with a yellow note. `introduced_blocking`
-    is now a refusal here too, with the same -Force -ForceReason override,
-    and a recorded override on the decision clears it.
-
-    AND ONLY THE FLOOR REFUSES (D-159, TheHub #60732). This script used to
-    refuse a backlog `no_go` as well, which the gate job never did, so the
-    two disagreed about the same decision. A `no_go` with
-    `introduced_blocking` false is the standing backlog, not this change: it
-    is now a yellow banner with the score and recommendation, and the deploy
-    proceeds. -Force is for what the gate refused, and nothing else.
-
-    AND NOTHING-EVER-SCORED-IT IS A REFUSAL. An "unjudged" sha used to print
-    NOT JUDGED and ship. But Concourse scores only a commit that passed every
-    lane, so a sha whose `unit` lane is red is never scored - and it shipped
-    precisely because it was red. Fail open (D-126) is kept for what it was
-    decided for, "could not ask": the platform unreachable, Vault sealed.
-    "Asked, and nothing scored this" is an answer, and it now refuses unless
-    -Force -ForceReason is given, recorded the same way as a floor override.
-    Wait for the gate (about 30 minutes after Delivery), or deploy the newest
-    sha it did score.
+    which on 2026-09-29 was 29 and 32 minutes after Delivery went green. So
+    when the ratchet answers only `no_decision` this script polls, for
+    -GateWaitMinutes (45 by default), and then refuses as NOT JUDGED, naming
+    the nearest ancestor the gate did score.
 
     SCOPE. D-125 retired the GHCR `:latest`, which is what this script pulls by
     default. A SECOND promote exists in the Concourse `mykronos.yml` pipeline
@@ -105,15 +86,20 @@
 .PARAMETER Tag
     REQUIRED. The commit sha to deploy - 7 to 40 hex characters, validated.
 
-    Rollback is the same command with the previous sha. The deploy reads
+    Rollback is the same command with the previous sha, plus -Restore when
+    the ratchet cannot be asked (the failed deploy took the backend down):
+    see .PARAMETER Restore. The deploy reads
     the running container's `MYKRONOS_BUILD_SHA` afterwards and says whether
     the running commit is the one requested, because "healthy" and "running what you asked for" are different
     facts and only the second one is the deploy's job.
 
 .PARAMETER PlatformUrl
-    Where to ask for the sha's risk decision. The local backend by default -
-    the same address this script already polls for health, so it adds no
-    new host, no new port and no new credential store.
+    Where to ask the ratchet. The local production backend, and ONLY that:
+    http://127.0.0.1:8100 is the one value accepted (D-183). Since the gate
+    fails closed, the address it asks is the gate - a listener elsewhere
+    that answers {"allow": true} would otherwise ship anything with no
+    -Force and no override in the ledger. The parameter stays so the value is
+    visible and recorded (`asked` on every ledger line), not so it can move.
 
 .PARAMETER GateWaitMinutes
     How long to wait for the risk gate to score the sha when it has not yet
@@ -122,11 +108,31 @@
     deploy where the ledger's NOT JUDGED line is the accepted cost.
 
 .PARAMETER Force
-    Deploy a sha the risk gate refused, or one it never scored.
+    OPERATOR ONLY; agents never pass it. Deploy a sha the ratchet did not
+    allow: refused, never scored, or not asked at all.
     Requires -ForceReason, and the reason
     is written to a ledger beside this script before anything is pulled. An
     override nobody can find afterwards is not an override, it is an
     unrecorded exception.
+
+.PARAMETER Restore
+    Redeploy the sha that was running before the most recent deploy, WITHOUT
+    asking the ratchet (D-183, operator decision 2026-11-15: "Allow restore
+    of the prior sha"). It exists for the rollback after a failed deploy,
+    when the backend that answers the ratchet is the thing that failed.
+
+    The sha is not the caller's word. Before every pull, deploy.ps1 writes
+    an `event=deploying` line with the running build stamp it replaces
+    (`previous`) and an HMAC of it keyed with this host's platform token. A
+    restore is accepted only when -Tag is that recorded sha (or a prefix of
+    it, the tag a hand deploy may have pulled) for the MOST RECENT
+    `deploying` line, and that line verifies. Anything else refuses before
+    anything moves (`restore_refused`): a different sha, no ledger, an
+    unreadable or edited ledger, a deploy that recorded no running sha, or
+    no token to verify with. The restore is recorded as `event=restore`
+    before the pull (`restore_unrecorded` if it cannot be). A restore writes
+    no `deploying` line, so it can never make the failed sha restorable.
+    Cannot be combined with -Force.
 
 .PARAMETER ForceReason
     Why this refused or unjudged sha ships anyway. Recorded, not just printed.
@@ -159,14 +165,20 @@ param(
     # every deploy for months passed `-Tag <sha>` because `:latest` could not
     # be trusted -- and D-125 makes the practice the contract.
     #
-    # Rollback is unchanged and is still the whole procedure: the same command
-    # with the previous sha.
+    # Rollback is the same command with the previous sha; -Restore ships that
+    # sha without asking the ratchet (D-183), and only that sha.
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{7,40}$')]
     [string]$Tag,
     # Where to ask what the risk gate decided about $Tag (#60487). The same
     # backend this script already deploys and checks, so the new dependency
-    # is a route, not a machine.
+    # is a route, not a machine. Pinned (D-183): see .PARAMETER PlatformUrl.
+    # A throw rather than ValidateScript's ErrorMessage, which Windows
+    # PowerShell 5.1 does not parse.
+    [ValidateScript({
+        if ($_ -ceq 'http://127.0.0.1:8100') { $true }
+        else { throw "-PlatformUrl must be http://127.0.0.1:8100, the production backend this script deploys (D-183). The ratchet's answer is the gate; it is not asked anywhere else." }
+    })]
     [string]$PlatformUrl = "http://127.0.0.1:8100",
     # How long to wait for the gate to answer about $Tag (#735). 0 = ask once.
     [ValidateRange(0, 180)]
@@ -175,12 +187,20 @@ param(
     # prints and the ledger it writes.
     [switch]$Force,
     [string]$ForceReason,
+    # Redeploy the sha the most recent deploy replaced, without asking the
+    # ratchet; only that sha, read from the ledger. See .PARAMETER Restore.
+    [switch]$Restore,
     [string]$MigrateFrom,
     [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
+# The repository the ratchet judges $Tag in (D-183). Not a parameter: this
+# script deploys MyKronos and nothing else, and for this platform's own
+# repository the backend compares the running sha this script sends with its
+# own build stamp and refuses a disagreement.
+$Repo = "ToddGBenson/mykronos"
 
 # [TheHub #61644] A PRE-MOVE REFUSAL IS NOT AN ATTEMPT. Every stop before the
 # first change to the host (the risk gate refused or never scored the sha, the
@@ -281,7 +301,7 @@ function Invoke-DeployRecorder {
 }
 
 # ---------------------------------------------------------------------------
-# THE RISK GATE (#60487, D-126). Runs before anything is pulled, so a refusal
+# THE RISK GATE (#60487, D-183). Runs before anything is pulled, so a refusal
 # costs nothing and leaves the host exactly as it was.
 # ---------------------------------------------------------------------------
 
@@ -322,6 +342,8 @@ function Write-RiskLedger {
         $Entry["at"] = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $Entry["user"] = $env:USERNAME
         $Entry["host"] = $env:COMPUTERNAME
+        # Which platform answered (or was asked), on every line (D-183).
+        $Entry["asked"] = $PlatformUrl
         Add-Content -Path $riskLedger -Value ($Entry | ConvertTo-Json -Compress -Depth 8)
         return $true
     } catch {
@@ -330,8 +352,98 @@ function Write-RiskLedger {
     }
 }
 
+function Get-LedgerMac {
+    # HMAC-SHA256 of a ledger line's load-bearing fields, keyed with this
+    # host's platform token (D-183 restore). Lower-case hex.
+    param([string]$Key, [string]$Text)
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($Key))
+    try {
+        $bytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text))
+        return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $hmac.Dispose()
+    }
+}
+
+function Get-DeployingMacText {
+    # A random nonce, not the time: ConvertFrom-Json turns an ISO time back
+    # into a DateTime, and its string is then not the one that was signed.
+    param([string]$DeployTag, [string]$Previous, [string]$Nonce)
+    return "deploying|$DeployTag|$Previous|$Nonce"
+}
+
+function Get-RestoreTarget {
+    <#
+        Whether -Tag is the sha the most recent deploy replaced, from the
+        ledger alone. Fails closed: any doubt is a refusal with a reason.
+        Returns @{ Ok; Sha; Deploy; Reason }.
+    #>
+    param([string]$Tag, [string]$Key, [string]$Running)
+    $no = { param($why) @{ Ok = $false; Sha = $null; Deploy = $null; Reason = $why } }
+    if (-not $Key) { return (& $no "there is no platform token in backend/.env to verify the ledger with") }
+    if (-not (Test-Path -LiteralPath $riskLedger -PathType Leaf)) {
+        return (& $no "there is no deploy ledger ($riskLedger), so no deploy recorded what it replaced")
+    }
+    try {
+        $lines = @(Get-Content -LiteralPath $riskLedger -ErrorAction Stop)
+    } catch {
+        return (& $no "the deploy ledger could not be read: $($_.Exception.Message)")
+    }
+    $last = $null
+    $lastIndex = -1
+    $entries = @()
+    foreach ($line in $lines) {
+        if (-not "$line".Trim()) { continue }
+        try {
+            $entry = $line | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            return (& $no "a deploy ledger line is not JSON, so the ledger was edited or damaged")
+        }
+        $entries += , $entry
+        if ($entry -and $entry.PSObject.Properties.Name -contains "event" -and $entry.event -eq "deploying") {
+            $last = $entry
+            $lastIndex = $entries.Count - 1
+        }
+    }
+    if (-not $last) { return (& $no "the ledger records no deploy, so there is no prior sha to restore") }
+    # A replayed copy of a genuine older line carries that line's nonce, which
+    # every deploy draws fresh: the latest deploying line's nonce on any
+    # earlier line means the line is a replay, whatever the running stamp says.
+    $lastNonce = [string]$last.nonce
+    for ($i = 0; $i -lt $lastIndex; $i++) {
+        $earlier = $entries[$i]
+        if ($earlier -and $earlier.PSObject.Properties.Name -contains "nonce" -and $lastNonce -and
+            ([string]$earlier.nonce) -ceq $lastNonce) {
+            return (& $no "the most recent deploy line repeats an earlier line's nonce, so it is a replayed copy")
+        }
+    }
+    $previous = [string]$last.previous
+    if ($previous -cnotmatch '^[0-9a-f]{40}$') {
+        return (& $no "the most recent deploy ($([string]$last.tag)) recorded no running sha")
+    }
+    $expected = Get-LedgerMac -Key $Key -Text (Get-DeployingMacText -DeployTag ([string]$last.tag) -Previous $previous -Nonce ([string]$last.nonce))
+    if ($expected -cne [string]$last.mac) {
+        return (& $no "the most recent deploy line does not verify (edited, or written with another token)")
+    }
+    # Bound to what runs now, so a replayed older line or a truncated ledger
+    # cannot re-target the restore: after the failed deploy the unhealthy
+    # container still reports the failed deploy's sha. Unreadable is allowed
+    # (the backend container may be gone altogether).
+    $lastTag = ([string]$last.tag).ToLowerInvariant()
+    if ($Running -and -not $Running.ToLowerInvariant().StartsWith($lastTag)) {
+        return (& $no "the running build is $($Running.Substring(0, [Math]::Min(12, $Running.Length))), not $lastTag, the most recent recorded deploy; a restore undoes only that deploy")
+    }
+    $want = $Tag.ToLowerInvariant()
+    if ($want.Length -lt 7 -or -not $previous.StartsWith($want)) {
+        return (& $no "$Tag is not $($previous.Substring(0, 12)), the sha that ran before the most recent deploy ($([string]$last.tag))")
+    }
+    return @{ Ok = $true; Sha = $previous; Deploy = [string]$last.tag; Reason = $null }
+}
+
 function Get-RiskVerdict {
     <#
+        Since D-183 this reads `/decisions/by-commit` only for
+        Find-NearestScored's hint; the deploy decision is Get-RatchetVerdict.
         Four outcomes, and the caller must be able to tell all four apart:
           clean    - asked, and the answer permits a deploy
           refused  - asked, and the commit INTRODUCED an open critical or
@@ -408,6 +520,65 @@ function Get-RiskVerdict {
     }
 }
 
+function Format-Short {
+    param([string]$Sha)
+    if (-not $Sha) { return "(unknown)" }
+    if ($Sha.Length -gt 12) { return $Sha.Substring(0, 12) }
+    return $Sha
+}
+
+function Get-RatchetVerdict {
+    <#
+        THE DEPLOY RATCHET (D-183). Asks GET /api/oracle/deploy-gate whether
+        $Sha may replace $Deployed, and returns one of four states:
+          allow    - the platform answered allow: true, verdict "allow"
+          refused  - it answered, and refused (score raised, an introduced
+                     critical or high, a latched No-Go, a disputed baseline)
+          unjudged - it answered no_decision and nothing else: the gate has
+                     not scored $Sha yet, so the caller may wait for it
+          unasked  - it could not be asked, or answered something that is not
+                     a ratchet verdict
+        Only `allow` lets a deploy through. `unasked` used to warn and proceed
+        (D-126); it is a refusal now, because the operator decided the gate
+        fails closed. An answer is read as allow only when BOTH `allow` is
+        the boolean true and `verdict` is "allow": a proxy that rewrote the
+        body, or a backend too old to have the route, must not read as a pass.
+    #>
+    param([string]$Sha, [string]$Deployed, [string]$Repo, [string]$BaseUrl, [string]$Token)
+
+    if (-not $Token) {
+        return @{
+            State = "unasked"
+            Reason = "backend/.env carries neither MYKRONOS_ADMIN_TOKEN nor MYKRONOS_VIEWER_TOKEN, so there was no credential to ask with."
+        }
+    }
+    $query = "repo=$([uri]::EscapeDataString($Repo))&commit=$Sha"
+    if ($Deployed) { $query += "&deployed=$Deployed" }
+    try {
+        $answer = Invoke-RestMethod `
+            -Uri "$BaseUrl/api/oracle/deploy-gate?$query" `
+            -Headers @{ Authorization = "Bearer $Token" } `
+            -TimeoutSec 60
+    } catch {
+        return @{ State = "unasked"; Reason = "$BaseUrl did not answer: $($_.Exception.Message)" }
+    }
+    if ($null -eq $answer -or -not ($answer.PSObject.Properties.Name -contains "allow") -or
+        -not ($answer.PSObject.Properties.Name -contains "reasons")) {
+        return @{
+            State = "unasked"
+            Reason = "$BaseUrl answered, but not with a ratchet verdict. Is this backend new enough to serve /api/oracle/deploy-gate?"
+        }
+    }
+    if ($answer.allow -is [bool] -and $answer.allow -and $answer.verdict -eq "allow") {
+        return @{ State = "allow"; Answer = $answer }
+    }
+    $codes = @($answer.reasons | ForEach-Object { $_.code })
+    if ($codes.Count -eq 1 -and $codes[0] -eq "no_decision") {
+        return @{ State = "unjudged"; Answer = $answer; Reason = "the gate has never scored $Sha" }
+    }
+    return @{ State = "refused"; Answer = $answer; Reason = ($codes -join ", ") }
+}
+
 function Find-NearestScored {
     <#
         The nearest ancestor of an unjudged sha that the gate DID score, and
@@ -466,6 +637,9 @@ if ($Force -and -not $ForceReason) {
 if ($ForceReason -and $ForceReason.Trim().Length -lt 10) {
     Stop-BeforeMove -Kind "usage" -Message "-ForceReason is too short to be a reason. Write the sentence someone reading the ledger in six months needs."
 }
+if ($Restore -and $Force) {
+    Stop-BeforeMove -Kind "usage" -Message "-Restore and -Force do not combine. A restore ships only the sha the last deploy replaced, without -Force; anything else is a normal deploy."
+}
 if ($ForceReason -and -not $Force) {
     Write-Host "-ForceReason was given without -Force; it will only be recorded if the gate actually refuses." -ForegroundColor DarkGray
 }
@@ -479,7 +653,42 @@ if (-not $riskToken) { $riskToken = Read-EnvValue $backendEnv "MYKRONOS_VIEWER_T
 # ledger only, while the decision still read as un-overridden.
 $gateToken = Read-EnvValue $backendEnv "MYKRONOS_GATE_TOKEN"
 
-$verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
+# [TheHub #61046] What this deploy replaces, read before anything changes, so
+# the recorder can name the range of commits it shipped - and, since D-183,
+# so the ratchet can judge $Tag against what is running. Null on a first
+# deploy or an image too old to carry the stamp; the recorder then reads the
+# tip commit alone, and the ratchet uses the backend's own build stamp (it
+# is the deployment) or refuses with baseline_unknown.
+$previousSha = Get-RunningBuildSha -Quiet
+if ($previousSha -notmatch '^[0-9a-f]{7,40}$') { $previousSha = $null }
+
+# Repeated as the very last line of the run. The banner below scrolls away
+# behind a pull, a health wait and a briefing; this does not.
+$riskSummary = ""
+
+if ($Restore) {
+    # D-183, operator decision 2026-11-15: "Allow restore of the prior sha".
+    # The ratchet is not asked: the backend that answers it may be the thing
+    # that just failed. Only the sha the ledger says the last deploy replaced.
+    $target = Get-RestoreTarget -Tag $Tag -Key $riskToken -Running $previousSha
+    if (-not $target.Ok) {
+        Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "restore"; kind = "restore_refused";
+            reason = $target.Reason; deployed = $previousSha } | Out-Null
+        Stop-BeforeMove -Kind "restore_refused" -Message ("RESTORE REFUSED - $($target.Reason). " +
+            "A restore ships only the sha the most recent deploy replaced, as its ledger line recorded it. " +
+            "Nothing has been pulled.")
+    }
+    $recorded = Write-RiskLedger @{ event = "restore"; tag = $Tag; restores = $target.Sha;
+        failed_deploy = $target.Deploy; deployed = $previousSha }
+    if (-not $recorded) {
+        Stop-BeforeMove -Kind "restore_unrecorded" -Message "The restore could not be recorded, so it does not happen. Fix $riskLedger and re-run."
+    }
+    $riskSummary = ("Risk gate: not asked - RESTORE of $(Format-Short $target.Sha), the sha the deploy of " +
+        "$(Format-Short $target.Deploy) replaced (D-183, operator decision 2026-11-15).")
+    Write-Host $riskSummary -ForegroundColor Yellow
+} else {
+
+$verdict = Get-RatchetVerdict -Sha $Tag -Deployed $previousSha -Repo $Repo -BaseUrl $PlatformUrl -Token $riskToken
 
 # #735: "no decision yet" is usually "the gate has not run yet". Wait for it,
 # bounded, and say so - a silent 30-minute pause reads as a hang.
@@ -495,11 +704,11 @@ if ($verdict.State -eq "unjudged" -and $GateWaitMinutes -gt 0) {
     # platform: the first ask, above, was answered. On 2026-10-15 a single poll
     # 40 minutes into the wait took longer than its 10 s timeout, the loop
     # ended on it, and 9a2eec4 shipped as COULD NOT ASK while its gate was
-    # minutes from deciding. A miss keeps waiting; only a deadline that passes
-    # on a miss still reads as "could not ask".
+    # minutes from deciding. A miss keeps waiting; a deadline that passes on
+    # a miss is "could not ask", which is a refusal since D-183.
     while ($verdict.State -in @("unjudged", "unasked") -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 30
-        $verdict = Get-RiskVerdict -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken
+        $verdict = Get-RatchetVerdict -Sha $Tag -Deployed $previousSha -Repo $Repo -BaseUrl $PlatformUrl -Token $riskToken
         if ($verdict.State -eq "unasked") {
             $missed++
             if ($missed -eq 1 -or $missed % 10 -eq 0) {
@@ -514,227 +723,150 @@ if ($verdict.State -eq "unjudged" -and $GateWaitMinutes -gt 0) {
         }
     }
 }
-$decision = $verdict.Decision
+$answer = $verdict.Answer
 
-# Repeated as the very last line of the run. The banner above scrolls away
-# behind a pull, a health wait and a briefing; this does not.
-$riskSummary = ""
-
-switch ($verdict.State) {
-
-    "clean" {
-        # One line. No banner, no pause. The quiet path has to be quiet, or
-        # the loud paths stop meaning anything.
-        $note = "Risk gate: $($decision.effective_recommendation) for $Tag (score $($decision.overall_risk_score), policy $($decision.policy_version), asked $PlatformUrl)."
-        if ($decision.overridden) {
-            $note += " Recorded override: $($decision.recommendation) -> $($decision.effective_recommendation)."
-        }
-        $color = if ($decision.effective_recommendation -eq "go") { "DarkGray" } else { "Yellow" }
-        Write-Host $note -ForegroundColor $color
-        $riskSummary = $note
-        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "clean";
-            recommendation = $decision.recommendation;
-            effective = $decision.effective_recommendation;
-            decision_id = $decision.decision_id; score = $decision.overall_risk_score } | Out-Null
+if ($verdict.State -eq "allow") {
+    # One line. No banner, no pause. The quiet path has to be quiet, or the
+    # loud paths stop meaning anything.
+    $note = ("Risk gate: allow for $Tag over $(Format-Short $answer.deployed_sha) " +
+        "(score $($answer.baseline_score) -> $($answer.candidate_score), " +
+        "$(@($answer.reasons | ForEach-Object { $_.code }) -join ', '), " +
+        "latched $($answer.latch.latched), policy $($answer.policy_version), asked $PlatformUrl).")
+    # Fixes the scans already show but reconciliation has not closed (two
+    # missed scans) are not credited yet; said so nobody re-deploys to chase it.
+    if ($answer.PSObject.Properties.Name -contains "fix_credit_pending" -and [int]$answer.fix_credit_pending -gt 0) {
+        $note += " Fix credit pending: $($answer.fix_credit_pending) finding(s) close on their second missed scan; no need to re-deploy for it."
     }
-
-    "backlog" {
-        # Visible, and no pause and no refusal: this is the standing backlog,
-        # which the gate job reports and passes (D-048, D-159).
-        Write-RiskBanner -Color Yellow `
-            -Heading "BACKLOG NO_GO - $Tag IS NOT REFUSED (D-159)" `
-            -Lines @(
-                "Recommendation $($decision.recommendation), effective $($decision.effective_recommendation), score $($decision.overall_risk_score), policy $($decision.policy_version).",
-                "Repository $($decision.repo_full_name), decision $($decision.decision_id).",
+    $color = if ([double]$answer.candidate_score -lt [double]$answer.no_go_threshold) { "DarkGray" } else { "Yellow" }
+    Write-Host $note -ForegroundColor $color
+    $riskSummary = $note
+    Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "allow"; deployed = $answer.deployed_sha;
+        candidate_score = $answer.candidate_score; baseline_score = $answer.baseline_score;
+        codes = @($answer.reasons | ForEach-Object { $_.code }); latched = $answer.latch.latched } | Out-Null
+    if ($Force) {
+        Write-Host "-Force was passed but the ratchet did not refuse $Tag; there was nothing to override." -ForegroundColor DarkGray
+    }
+} else {
+    # Everything that is not an explicit allow refuses (D-183 (c)): a refusal,
+    # a commit nothing scored, and a platform that could not be asked.
+    $lines = @()
+    $kind = "risk_refused"
+    $heading = "REFUSED"
+    switch ($verdict.State) {
+        "unjudged" {
+            $kind = "risk_not_judged"
+            $heading = "NOT JUDGED"
+            $nearest = Find-NearestScored -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken `
+                -RepoPath (Join-Path $here "..\..")
+            $waited = $(if ($GateWaitMinutes -gt 0) { "Waited $GateWaitMinutes minutes for the gate to answer." } else { "Did not wait for the gate (-GateWaitMinutes 0)." })
+            $lines = @(
+                "NOT JUDGED - the risk gate has never scored $Tag.",
+                $waited,
                 "",
-                "This commit introduced no open critical or high, so the gate passed it.",
-                "The no_go describes the standing backlog, not this change. Deploying."
-            )
-        $riskSummary = "Risk gate: BACKLOG no_go for $Tag (score $($decision.overall_risk_score)) - nothing blocking introduced, so not refused (D-159)."
-        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "backlog_no_go";
-            recommendation = $decision.recommendation;
-            effective = $decision.effective_recommendation;
-            decision_id = $decision.decision_id; score = $decision.overall_risk_score;
-            introduced_blocking = $false } | Out-Null
-    }
-
-    "unjudged" {
-        $nearest = Find-NearestScored -Sha $Tag -BaseUrl $PlatformUrl -Token $riskToken `
-            -RepoPath (Join-Path $here "..\..")
-        $nearestLine = Format-NearestScored -Nearest $nearest -Sha $Tag
-        $nearestSha = $(if ($nearest.Found) { $nearest.Sha } else { $null })
-        $nearestVerdict = $(if ($nearest.Found) { $nearest.Verdict } else { $null })
-        $waited = $(if ($GateWaitMinutes -gt 0) { "Waited $GateWaitMinutes minutes for the gate to answer." } else { "Did not wait for the gate (-GateWaitMinutes 0)." })
-        $why = @(
-            "The platform was reached and asked. It has never scored $Tag.",
-            $waited,
-            "",
-            "THAT IS NOT A PASS. Concourse scores only a commit that passed every",
-            "lane, so the usual cause is a red lane (unit, lint-and-types) for this",
-            "sha - exactly the commit that must not ship unassessed. Fail open",
-            "(D-126) is for COULD NOT ASK, not for this.",
-            "",
-            $nearestLine
-        )
-
-        if (-not $Force) {
-            $lines = @("NOT JUDGED - the risk gate has never scored $Tag. Nothing has been pulled.") + $why + @(
+                "Concourse scores only a commit that passed every lane, so the usual cause",
+                "is a red lane (unit, lint-and-types) for this sha.",
+                "",
+                (Format-NearestScored -Nearest $nearest -Sha $Tag),
                 "",
                 "What to do:",
                 "  * Wait. The gate answers about 30 minutes after Delivery goes",
                 "    green; re-run, or pass a larger -GateWaitMinutes.",
                 "  * Or deploy the last green sha - the newest one the gate DID score:",
-                $(if ($nearest.Found) { "      .\deploy.ps1 -Tag $($nearest.Sha.Substring(0, 12))   ($nearestVerdict)" } else { "      (none found above; check the lanes for the newest green head)" }),
-                "  * Check the lanes for $Tag. A red lane is never scored, and waiting",
-                "    will not change that - fix it and deploy the next green head.",
-                "",
-                "To deploy it unassessed anyway:",
-                "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships with no risk decision>"""
+                $(if ($nearest.Found) { "      .\deploy.ps1 -Tag $($nearest.Sha.Substring(0, 12))   ($($nearest.Verdict))" } else { "      (none found above; check the lanes for the newest green head)" })
             )
-            Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "unjudged";
-                waited_minutes = $GateWaitMinutes;
-                nearest_scored = $nearestSha; nearest_verdict = $nearestVerdict } | Out-Null
-            Stop-BeforeMove -Kind "risk_not_judged" -Message ($lines -join [Environment]::NewLine)
         }
-
-        Write-RiskBanner -Color Red `
-            -Heading "OVERRIDDEN - SHIPPING A SHA NOTHING HAS SCORED" `
-            -Lines (@("$Tag has no risk decision. It is being deployed anyway.") + $why + @(
-                "",
-                "Reason given: $ForceReason"
-            ))
-        # Recorded BEFORE the pull, as a floor override is. There is no
-        # decision to record it against on the platform, so the local ledger
-        # is the whole record - which makes the write the price of the deploy.
-        $recorded = Write-RiskLedger @{ event = "override"; tag = $Tag; state = "unjudged";
-            waited_minutes = $GateWaitMinutes;
-            nearest_scored = $nearestSha; nearest_verdict = $nearestVerdict;
-            reason = $ForceReason }
-        if (-not $recorded) {
-            Stop-BeforeMove -Kind "override_unrecorded" -Message "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
-        }
-        Write-Host "Override recorded in $riskLedger (there is no decision to record it against on the platform)." -ForegroundColor Yellow
-        $riskSummary = "Risk gate: OVERRIDDEN - nothing has ever scored $Tag and it shipped with -Force. Reason: $ForceReason $nearestLine"
-        Start-Sleep -Seconds 5
-    }
-
-    "unasked" {
-        Write-RiskBanner -Color Red `
-            -Heading "COULD NOT ASK - THE RISK GATE DID NOT RUN FOR $Tag" `
-            -Lines @(
+        "unasked" {
+            $kind = "risk_unasked"
+            $heading = "COULD NOT ASK"
+            $lines = @(
+                "COULD NOT ASK - the deploy ratchet did not answer for $Tag.",
                 $verdict.Reason,
                 "",
-                "No risk decision was consulted. Whatever the platform thinks of this",
-                "commit, this deploy did not hear it - and that is NOT the same thing",
-                "as being told the commit is fine.",
-                "",
-                "Proceeding: the decided posture is fail open (#60487, D-126). Vault",
-                "was sealed four days in September 2026 and the estate was down",
-                "(#60474); a fail-closed gate would have blocked the deploy that",
-                "fixed it."
+                "No risk decision was consulted, and since D-183 that is a refusal, not a",
+                "pass: the gate fails closed. If the platform itself is what is broken",
+                "(Vault sealed, the backend down), fix it, or deploy the fix with",
+                "-Force and a reason; the override is recorded before anything is pulled."
             )
-        $riskSummary = "Risk gate: COULD NOT ASK - $($verdict.Reason) $Tag shipped unchecked."
-        Write-RiskLedger @{ event = "checked"; tag = $Tag; state = "unasked"; reason = $verdict.Reason } | Out-Null
-        Start-Sleep -Seconds 5
+        }
+        default {
+            $lines = @("REFUSED - the deploy ratchet refused $Tag over $(Format-Short $answer.deployed_sha) (D-183).") +
+                @($answer.reasons | ForEach-Object { "  [$($_.code)] $($_.message)" }) + @(
+                "",
+                "Score $($answer.baseline_score) running -> $($answer.candidate_score) for $Tag (tolerance $($answer.tolerance) in total, already spent $($answer.accepted_creep), No-Go $($answer.no_go_threshold)), latched $($answer.latch.latched).",
+                "Introduced: $(($answer.introduced | ConvertTo-Json -Compress)); fixed: $(($answer.fixed | ConvertTo-Json -Compress)).",
+                "Repository $($answer.repo_full_name), policy $($answer.policy_version), range of $(@($answer.range_commits).Count) commit(s)."
+            )
+        }
     }
+    $codes = @()
+    if ($answer) { $codes = @($answer.reasons | ForEach-Object { $_.code }) }
+    $decisionId = $(if ($answer -and $answer.candidate_decision) { $answer.candidate_decision.decision_id } else { $null })
 
-    "refused" {
-        $intro = $decision.introduced
-        $newCritical = if ($intro -and $intro.critical) { $intro.critical } else { 0 }
-        $newHigh = if ($intro -and $intro.high) { $intro.high } else { 0 }
-        $why = "The risk gate refused ${Tag}: it introduced $newCritical critical and $newHigh high open finding(s) (D-048)."
-        $detail = @(
-            "Score $($decision.overall_risk_score), policy $($decision.policy_version), decided $($decision.evaluated_at).",
-            "Repository $($decision.repo_full_name), decision $($decision.decision_id).",
-            "Reasoning: $($decision.reasoning)"
+    if (-not $Force) {
+        $refusal = $lines + @(
+            "",
+            "Nothing has been pulled.",
+            "",
+            "To deploy it anyway (the operator only - agents never pass -Force):",
+            "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships despite the refusal>""",
+            "",
+            "The reason is written to deploy-risk-log.jsonl and, with an admin token,",
+            "recorded against the decision itself."
         )
-
-        if (-not $Force) {
-            $lines = @("$why Nothing has been pulled.") + $detail + @(
-                "",
-                "To deploy it anyway:",
-                "  .\deploy.ps1 -Tag $Tag -Force -ForceReason ""<why this ships despite the refusal>""",
-                "",
-                "The reason is written to deploy-risk-log.jsonl and, with an admin",
-                "token, recorded against the decision itself so the override is",
-                "visible to everyone and not only to whoever was at this keyboard."
-            )
-            # A refusal is recorded too. The ledger is meant to answer "what
-            # did this host do about risk", and a run that was stopped is part
-            # of that answer -- not least because a refusal followed minutes
-            # later by a -Force is the pattern worth being able to see.
-            Write-RiskLedger @{ event = "refused"; tag = $Tag; state = "refused";
-                recommendation = $decision.recommendation;
-                effective = $decision.effective_recommendation;
-                decision_id = $decision.decision_id; score = $decision.overall_risk_score;
-                repo = $decision.repo_full_name; floor = [bool]$verdict.Floor } | Out-Null
-            Stop-BeforeMove -Kind "risk_refused" -Message ($lines -join [Environment]::NewLine)
-        }
-
-        Write-RiskBanner -Color Red `
-            -Heading "OVERRIDDEN - SHIPPING A REFUSED SHA" `
-            -Lines (@("$why It is being deployed anyway.") + $detail + @(
-                "",
-                "Reason given: $ForceReason"
-            ))
-
-        # Recorded BEFORE the pull. If this cannot be written the deploy does
-        # not happen: an override whose reason exists only in a console buffer
-        # is an unrecorded exception wearing the word "recorded".
-        $recorded = Write-RiskLedger @{ event = "override"; tag = $Tag; state = "refused";
-            recommendation = $decision.recommendation;
-            effective = $decision.effective_recommendation;
-            decision_id = $decision.decision_id; score = $decision.overall_risk_score;
-            repo = $decision.repo_full_name; floor = [bool]$verdict.Floor; reason = $ForceReason }
-        if (-not $recorded) {
-            Stop-BeforeMove -Kind "override_unrecorded" -Message "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
-        }
-        Write-Host "Override recorded in $riskLedger" -ForegroundColor Yellow
-
-        # Best effort, and said out loud either way. The platform is the right
-        # home for this record, but it is also the thing most likely to be
-        # down during the deploy that needed forcing - which is exactly why
-        # the local ledger above is the one the deploy depends on.
-        $pushed = "not attempted"
-        if ($riskTokenIsAdmin -and $decision.decision_id) {
-            try {
-                Invoke-RestMethod -Method Post `
-                    -Uri "$PlatformUrl/api/oracle/decisions/$($decision.decision_id)/override" `
-                    -Headers $(if ($gateToken) {
-                        @{ Authorization = "Bearer $riskToken"; "X-Hub-Token" = $gateToken }
-                    } else {
-                        @{ Authorization = "Bearer $riskToken" }
-                    }) `
-                    -ContentType "application/json" `
-                    -Body (@{ reason = "Deployed by deploy.ps1 -Force: $ForceReason"; accepted_recommendation = "go" } | ConvertTo-Json) `
-                    -TimeoutSec 10 | Out-Null
-                $pushed = "recorded on the platform"
-                Write-Host "Override also recorded against decision $($decision.decision_id)." -ForegroundColor Yellow
-            } catch {
-                $pushed = "local ledger only ($($_.Exception.Message))"
-                Write-Host "Could not record the override on the platform: $($_.Exception.Message)" -ForegroundColor Yellow
-                Write-Host "The local ledger still holds it." -ForegroundColor Yellow
-            }
-        } elseif (-not $riskTokenIsAdmin) {
-            $pushed = "local ledger only (no admin token on this host)"
-            Write-Host "No MYKRONOS_ADMIN_TOKEN here, so the override is in the local ledger only." -ForegroundColor Yellow
-        }
-
-        $riskSummary = "Risk gate: OVERRIDDEN - $Tag was refused and shipped with -Force ($pushed). Reason: $ForceReason"
-        Start-Sleep -Seconds 5
+        # A refusal is recorded too. The ledger is meant to answer "what did
+        # this host do about risk", and a refusal followed minutes later by a
+        # -Force is the pattern worth being able to see.
+        Write-RiskLedger @{ event = "refused"; tag = $Tag; state = $verdict.State; kind = $kind;
+            codes = $codes; reason = $verdict.Reason; deployed = $previousSha;
+            candidate_score = $(if ($answer) { $answer.candidate_score } else { $null });
+            baseline_score = $(if ($answer) { $answer.baseline_score } else { $null });
+            decision_id = $decisionId } | Out-Null
+        Stop-BeforeMove -Kind $kind -Message ($refusal -join [Environment]::NewLine)
     }
-}
 
-if ($Force -and $verdict.State -notin @("refused", "unjudged")) {
-    Write-Host "-Force was passed but the gate did not refuse $Tag; there was nothing to override." -ForegroundColor DarkGray
-}
+    Write-RiskBanner -Color Red -Heading "OVERRIDDEN - SHIPPING A SHA THE RATCHET DID NOT ALLOW ($heading)" `
+        -Lines ($lines + @("", "Reason given: $ForceReason"))
 
-# [TheHub #61046] What this deploy replaces, read before anything changes, so
-# the recorder can name the range of commits it shipped. Null on a first
-# deploy or an image too old to carry the stamp; the recorder then reads the
-# tip commit alone.
-$previousSha = Get-RunningBuildSha -Quiet
-if ($previousSha -notmatch '^[0-9a-f]{7,40}$') { $previousSha = $null }
+    # Recorded BEFORE the pull. If this cannot be written the deploy does not
+    # happen: an override whose reason exists only in a console buffer is an
+    # unrecorded exception wearing the word "recorded".
+    $recorded = Write-RiskLedger @{ event = "override"; tag = $Tag; state = $verdict.State; kind = $kind;
+        codes = $codes; deployed = $previousSha; decision_id = $decisionId; reason = $ForceReason }
+    if (-not $recorded) {
+        Stop-BeforeMove -Kind "override_unrecorded" -Message "The override could not be recorded, so it is not an override. Fix $riskLedger and re-run."
+    }
+    Write-Host "Override recorded in $riskLedger" -ForegroundColor Yellow
+
+    # Best effort, and said out loud either way. The platform is the right
+    # home for this record, but it is also the thing most likely to be down
+    # during the deploy that needed forcing - which is exactly why the local
+    # ledger above is the one the deploy depends on.
+    $pushed = "not attempted (no decision to record it against)"
+    if ($riskTokenIsAdmin -and $decisionId) {
+        try {
+            Invoke-RestMethod -Method Post `
+                -Uri "$PlatformUrl/api/oracle/decisions/$decisionId/override" `
+                -Headers $(if ($gateToken) {
+                    @{ Authorization = "Bearer $riskToken"; "X-Hub-Token" = $gateToken }
+                } else {
+                    @{ Authorization = "Bearer $riskToken" }
+                }) `
+                -ContentType "application/json" `
+                -Body (@{ reason = "Deployed by deploy.ps1 -Force over the deploy ratchet ($(($codes + @($verdict.State)) -join ', ')): $ForceReason"; accepted_recommendation = "go" } | ConvertTo-Json) `
+                -TimeoutSec 10 | Out-Null
+            $pushed = "recorded on the platform"
+            Write-Host "Override also recorded against decision $decisionId." -ForegroundColor Yellow
+        } catch {
+            $pushed = "local ledger only ($($_.Exception.Message))"
+            Write-Host "Could not record the override on the platform: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } elseif ($decisionId) {
+        $pushed = "local ledger only (no admin token on this host)"
+    }
+    $riskSummary = "Risk gate: OVERRIDDEN - $Tag was $heading ($(($codes + @($verdict.Reason)) -join ', ')) and shipped with -Force ($pushed). Reason: $ForceReason"
+    Start-Sleep -Seconds 5
+}
+}  # end of: not a restore
 
 # [TheHub #61610] ONE DEPLOY AT A TIME. Taken here, after the risk gate and
 # before the first pull: the gate is read-only and can wait 45 minutes, and
@@ -754,6 +886,28 @@ if (-not $deployLock.Acquired) {
 # The rest of the script runs inside this try, unindented to keep the diff
 # readable; the matching finally is the last line of the file.
 try {
+
+# What this deploy replaces, recorded BEFORE the pull and signed, so a
+# rollback can restore exactly that sha without asking the ratchet (D-183,
+# -Restore). A restore writes none: it must never make the failed sha
+# restorable. If the line cannot be written the deploy does not happen, for
+# the same reason an override that cannot be recorded does not: an
+# unattended deploy that then fails health could not be rolled back.
+if (-not $Restore) {
+    $deployingNonce = [guid]::NewGuid().ToString("N")
+    $deployingMac = $null
+    if (-not $riskToken) {
+        Write-Host ("No platform token in backend/.env: this deploy's ledger line cannot be signed, " +
+            "so it cannot be restored with -Restore if it fails; a rollback will need -Force.") -ForegroundColor Yellow
+    } else {
+        $deployingMac = Get-LedgerMac -Key $riskToken -Text (Get-DeployingMacText -DeployTag $Tag -Previous ([string]$previousSha) -Nonce $deployingNonce)
+    }
+    $recorded = Write-RiskLedger @{ event = "deploying"; tag = $Tag; previous = $previousSha;
+        nonce = $deployingNonce; mac = $deployingMac }
+    if (-not $recorded) {
+        Stop-BeforeMove -Kind "deploy_unrecorded" -Message "The deploy could not record what it replaces, so it could not be restored if it fails. Fix $riskLedger and re-run."
+    }
+}
 
 Write-Host "Pulling images from $Registry at tag $Tag..." -ForegroundColor Cyan
 # [TheHub #61644] Both are pulled before either is retagged, so a failed pull
@@ -847,9 +1001,9 @@ function Write-RiskSummaryLine {
         where the eye lands.
     #>
     if (-not $riskSummary) { return }
-    $color = if ($riskSummary.StartsWith("Risk gate: go") -or $riskSummary.StartsWith("Risk gate: review")) {
+    $color = if ($riskSummary.StartsWith("Risk gate: allow")) {
         "DarkGray"
-    } elseif ($riskSummary.StartsWith("Risk gate: OVERRIDDEN") -or $riskSummary.StartsWith("Risk gate: COULD NOT ASK")) {
+    } elseif ($riskSummary.StartsWith("Risk gate: OVERRIDDEN") -or $riskSummary.StartsWith("Risk gate: not asked - RESTORE")) {
         "Red"
     } else {
         "Yellow"
@@ -969,9 +1123,21 @@ try {
     # same MYKRONOS_BUILD_SHA the backend serves as `build.sha`: the image's
     # ENV, which compose does not override.
     $running = Get-RunningBuildSha
+    # A restore may pull a short tag; what it must run is exactly the full
+    # sha the ledger recorded, so a colliding prefix cannot pass as one.
+    $restoreMismatch = $false
+    $tookTag = $false
+    if ($running) {
+        if ($Restore) {
+            $tookTag = ($running.ToLowerInvariant() -ceq $target.Sha)
+            $restoreMismatch = -not $tookTag
+        } else {
+            $tookTag = ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag))
+        }
+    }
     if (-not $running) {
         Write-Host "The running image does not report a build sha; cannot confirm the tag took." -ForegroundColor Yellow
-    } elseif ($running -eq $Tag -or $Tag.StartsWith($running) -or $running.StartsWith($Tag)) {
+    } elseif ($tookTag) {
         Write-Host "Confirmed: the backend is running $Tag." -ForegroundColor Green
         # [TheHub #61046] Only a confirmed deploy is recorded: on a mismatch
         # the stories in the range are not what is running.
@@ -1003,6 +1169,9 @@ try {
 
     Write-Host ""
     Write-RiskSummaryLine
+    if ($restoreMismatch) {
+        throw "RESTORE MISMATCH: the restore was of $($target.Sha), and the backend reports $running."
+    }
 } finally {
     foreach ($name in $slackResolved) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
     Pop-Location
