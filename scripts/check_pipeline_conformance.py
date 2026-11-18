@@ -93,10 +93,6 @@ KNOWN_GAPS: dict[str, str] = {
         "a failing gitleaks would skip its own upload, so a broken scan reports "
         "nothing rather than reporting that it broke"
     ),
-    "personal-soc.yml:iac PS-3": (
-        "a failing checkov would skip its own upload, so the lane reports a "
-        "clean infrastructure scan by not reporting at all"
-    ),
     "personal-soc.yml:doc-drift PS-4": (
         "commit-triggered with no quality gate. The gate this pipeline has runs "
         "on the same commit, so this is an ordering fix rather than a new job"

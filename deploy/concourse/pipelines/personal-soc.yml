@@ -116,11 +116,15 @@ resources:
   # index, as the resource records it), the D-114 pattern thehub.yml uses for
   # ZAP: the tag moving upstream changes nothing here until a reviewed edit
   # moves this line. image-refresh does not cover it: that job rebuilds the
-  # compose stack's own images, not pipeline task images.
+  # compose stack's own images, not pipeline task images. So it is bumped by
+  # hand, on the rule in docs/pipeline-standard.md PS-8 (TheHub #61842): the
+  # tag and this digest move together, and the digest is re-resolved at least
+  # every 90 days from the date below.
   - name: checkov
     type: registry-image
     icon: file-cog-outline
     source: { repository: bridgecrew/checkov, tag: "3.2.334" }
+    # pinned: 2026-11-16
     version: { digest: "sha256:888060aaaa6f4499fd3b00a1a03185ed760937b049d438fa6e00b3203a5d613e" }
 
   # The scanning jobs have no commit to react to - the network changes, not
@@ -478,11 +482,18 @@ anchors:
               fi
             done
             if [ "${#SHA}" -ne 40 ]; then
-              if [ "${PHASE:-}" = "end" ]; then
+              if [ "${PHASE:-}" = "end" ] && [ "${CONCLUSION:-}" != "success" ]; then
                 # [TheHub #61769] A hook is the end of a lane that has already
                 # gone red, usually because it never checked out. Failing the
                 # hook as well only adds a second red step that reads as a
                 # second fault. Say exactly what was not posted, and finish.
+                #
+                # [TheHub #61842] Only for a red end. The gate's in-plan
+                # `success` is not a hook on a failed lane: it is the one
+                # report that turns the check green, and a gate that could not
+                # name its commit has not verified one. It falls through to
+                # the exit 1 below rather than finishing green with nothing
+                # posted.
                 echo "::warning:: no checked-out commit: source/.git/HEAD and source/.git/ref are missing or not a full sha."
                 echo "${JOB:-this job} could not post '${CONCLUSION:-}' to the Concourse / personal-soc check, because the"
                 echo "check is keyed by commit and none can be named without guessing. Nothing was posted."
@@ -1050,8 +1061,8 @@ jobs:
                 # says `cancelled`. Any other exit falls through to the SARIF
                 # check below, unchanged.
                 echo "== checkov, github_actions framework =="
-                # (if/else: a scan that writes no report below still skips the
-                # upload, so personal-soc.yml:iac PS-3 stays a recorded gap.)
+                # (if/else, so a non-zero exit falls through to the report
+                # check and the upload below rather than ending the script.)
                 if timeout --kill-after=30s 8m \
                   checkov --directory . --framework github_actions \
                   --output sarif --output-file-path /tmp/results \
@@ -1067,15 +1078,21 @@ jobs:
                 # A missing report is "did not run", which is not "found
                 # nothing" - docs/lessons/0001, and the same check the secrets
                 # job makes for exactly the same reason.
+                #
+                # [TheHub #61842, PS-3] It no longer exits here. The upload
+                # below still runs, and the uploader files a missing report as
+                # a FAILED scan, so Mykronos hears that the scan broke instead
+                # of hearing nothing. The task still fails after it.
+                scanned=1
                 if [ ! -f /tmp/results/results_sarif.sarif ]; then
                   echo "::error:: checkov wrote no SARIF report. This is a failed scan,"
                   echo "          not a clean one - nothing was checked."
                   echo "*personal-soc / iac*: the IaC scan did not run." > ../notify/message.txt
-                  exit 1
+                  scanned=0
+                else
+                  COUNT=$(python3 -c 'import json;d=json.load(open("/tmp/results/results_sarif.sarif"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])))')
+                  echo "checkov findings: $COUNT"
                 fi
-
-                COUNT=$(python3 -c 'import json;d=json.load(open("/tmp/results/results_sarif.sarif"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])))')
-                echo "checkov findings: $COUNT"
 
                 if [ -z "${MYKRONOS_TOKEN:-}" ]; then
                   echo "=================================================="
@@ -1097,9 +1114,21 @@ jobs:
                     --branch main \
                     --workspace "$PWD" \
                     --severity-threshold low --blocking false \
-                    || echo "upload failed - the scan verdict above still stands."
+                    || up_rc=$?
+                  # [TheHub #61842, PS-3] An upload that failed is not a scan
+                  # that passed. This used to `|| echo` and carry on, so the
+                  # lane read green with nothing ingested.
+                  if [ "${up_rc:-0}" -ne 0 ]; then
+                    echo "::error:: Mykronos did not accept the IaC upload (uploader exit ${up_rc}),"
+                    echo "          so nothing from this scan was ingested. Not a pass."
+                    echo "*personal-soc / iac*: the scan ran but its upload to Mykronos failed (exit ${up_rc}) - nothing was ingested." > ../notify/message.txt
+                    exit 1
+                  fi
                 fi
 
+                if [ "$scanned" -eq 0 ]; then
+                  exit 1
+                fi
                 echo ""
                 echo "IaC scan complete."
 
@@ -1425,7 +1454,17 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's 10m
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte: apt, pip and the git clone pip runs have no deadline
+                  # of their own, so one stalled mirror held the step until
+                  # Concourse killed it and the run said only "timeout exceeded".
+                  # Each is bounded here, so an outage fails inside the budget
+                  # and names itself. The uploader's own HTTP calls already
+                  # time out at 60s.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   cd source
                   MYKRONOS_JOB=lint python -m mykronos.upload \
@@ -1878,7 +1917,17 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's 10m
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte: apt, pip and the git clone pip runs have no deadline
+                  # of their own, so one stalled mirror held the step until
+                  # Concourse killed it and the run said only "timeout exceeded".
+                  # Each is bounded here, so an outage fails inside the budget
+                  # and names itself. The uploader's own HTTP calls already
+                  # time out at 60s.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   cd source
@@ -1962,6 +2011,12 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                # [TheHub #61842] Every network call in this task has a
+                # deadline well inside its 15m cap. Unbounded, a stalled
+                # download or an unreachable store holds the step until
+                # Concourse kills it, and the task never writes the result
+                # that says why it could not finish.
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq curl >/dev/null
 
                 cat > check.py <<'PY'
@@ -2252,7 +2307,7 @@ jobs:
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
                 # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /usr/local/bin/mc \
                   "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
                 echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
@@ -2597,7 +2652,17 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's 10m
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte: apt, pip and the git clone pip runs have no deadline
+                  # of their own, so one stalled mirror held the step until
+                  # Concourse killed it and the run said only "timeout exceeded".
+                  # Each is bounded here, so an outage fails inside the budget
+                  # and names itself. The uploader's own HTTP calls already
+                  # time out at 60s.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
@@ -2714,7 +2779,7 @@ jobs:
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
                 # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /usr/local/bin/mc \
                   "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
                 echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
@@ -2973,7 +3038,17 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's 10m
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte: apt, pip and the git clone pip runs have no deadline
+                  # of their own, so one stalled mirror held the step until
+                  # Concourse killed it and the run said only "timeout exceeded".
+                  # Each is bounded here, so an outage fails inside the budget
+                  # and names itself. The uploader's own HTTP calls already
+                  # time out at 60s.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
@@ -3072,12 +3147,18 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                # [TheHub #61842] Every network call in this task has a
+                # deadline well inside its 15m cap. Unbounded, a stalled
+                # download or an unreachable store holds the step until
+                # Concourse kills it, and the task never writes the result
+                # that says why it could not finish.
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                 apt-get update -qq && apt-get install -y -qq curl >/dev/null
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
                 # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /usr/local/bin/mc \
                   "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
                 echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
@@ -3089,7 +3170,7 @@ jobs:
                 # listing that failed is said to have failed. It used to fall
                 # through as "no runs at all", which blamed a Scheduled Task
                 # that may have been fine for a bucket nobody could read.
-                if ! LISTING=$(mc --quiet ls "store/$BUCKET/runs/" 2>&1); then
+                if ! LISTING=$(timeout --kill-after=10s 120s mc --quiet ls "store/$BUCKET/runs/" 2>&1); then
                   echo "::error:: could not list $BUCKET - freshness is unknown, which is not a pass."
                   printf '{"check": "unknown", "reason": "the bucket could not be listed"}\n' > results/netassess-freshness.json
                   exit 1
@@ -3187,7 +3268,17 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's 10m
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte: apt, pip and the git clone pip runs have no deadline
+                  # of their own, so one stalled mirror held the step until
+                  # Concourse killed it and the run said only "timeout exceeded".
+                  # Each is bounded here, so an outage fails inside the budget
+                  # and names itself. The uploader's own HTTP calls already
+                  # time out at 60s.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
                   apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
                   bash -c "$MYKRONOS_INSTALL_UPLOADER"
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
