@@ -31,6 +31,7 @@ SETUP = CONCOURSE / "setup.ps1"
 ADD = CONCOURSE / "Add-LinuxWorker.ps1"
 INSTALL = CONCOURSE / "linux-worker" / "install-concourse-worker.sh"
 README = CONCOURSE / "linux-worker" / "README.md"
+WRAPPER = CONCOURSE / "linux-worker" / "cgroup-wrapper.sh"
 
 PWSH = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(PWSH is None, reason="pwsh is not installed")
@@ -230,6 +231,76 @@ class TestTheInstallScript:
         text = INSTALL.read_text(encoding="utf-8")
         assert re.search(r'install -m 0600 "\$KEYS_DIR/worker_key"', text)
         assert 'install -d -m 0700 "$CONF_DIR"' in text
+
+
+class TestTheDockerWorkerWrapper:
+    """[#62024] The Docker-run worker's entrypoint wrapper lives in the repo.
+
+    linux-3 restart-looped 1775 times because /run/containerd outlived a
+    reboot in the container's writable layer. The wrapper clears it on every
+    start, and it carries the cgroup delegation of #61894, so every Docker-run
+    worker gets both from one file instead of a hand-kept copy per host.
+    """
+
+    def test_is_posix_sh_with_lf_endings_and_ascii(self) -> None:
+        raw = WRAPPER.read_bytes()
+        assert raw.startswith(b"#!/bin/sh\n"), "the image has no bash at dumb-init time"
+        assert b"\r" not in raw
+        assert all(b < 0x80 for b in raw)
+        assert b"\nset -e\n" in raw
+
+    def test_clears_the_containerd_state_before_the_image_entrypoint(self) -> None:
+        lines = [ln.strip() for ln in WRAPPER.read_text(encoding="utf-8").splitlines()]
+        clear = lines.index("rm -rf /run/containerd")
+        start = lines.index('exec /usr/local/bin/entrypoint.sh "$@"')
+        assert clear < start
+        assert start == max(i for i, ln in enumerate(lines) if ln), "exec is the last step"
+
+    def test_delegates_every_controller_from_an_emptied_root(self) -> None:
+        text = WRAPPER.read_text(encoding="utf-8")
+        assert "/sys/fs/cgroup/init/cgroup.procs" in text
+        assert "/sys/fs/cgroup/cgroup.subtree_control" in text
+
+    def test_the_readme_names_the_wrapper_and_the_stale_state(self) -> None:
+        readme = README.read_text(encoding="utf-8")
+        assert '"/cgroup-wrapper.sh"' in readme
+        assert "/run/containerd" in readme and "--force-recreate" in readme
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh")
+    def test_a_run_removes_stale_state_and_hands_over_its_arguments(self, tmp_path: Path) -> None:
+        cg = tmp_path / "cgroup"
+        cg.mkdir()
+        (cg / "cgroup.controllers").write_text("cpu memory pids\n", encoding="utf-8")
+        (cg / "cgroup.procs").write_text("", encoding="utf-8")
+        run = tmp_path / "run" / "containerd"
+        task = run / "io.containerd.runtime.v2.task" / "concourse" / "dead"
+        task.mkdir(parents=True)
+        (task / "init.pid").write_text("4242\n", encoding="utf-8")
+        entry = tmp_path / "entrypoint.sh"
+        entry.write_text(
+            f'#!/bin/sh\n[ -e "{run}" ] && echo STALE || echo CLEAN\necho "args=$*"\n',
+            encoding="utf-8",
+        )
+        entry.chmod(0o755)
+        script = (
+            WRAPPER.read_text(encoding="utf-8")
+            .replace("/sys/fs/cgroup", str(cg))
+            .replace("/run/containerd", str(run))
+            .replace("/usr/local/bin/entrypoint.sh", str(entry))
+        )
+        out = subprocess.run(
+            ["sh", "-c", script, "cgroup-wrapper.sh", "worker"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "CLEAN" in out and "args=worker" in out
+        assert not run.exists()
+        assert (cg / "cgroup.subtree_control").read_text(encoding="utf-8").split() == [
+            "+cpu",
+            "+memory",
+            "+pids",
+        ]
 
 
 class TestTheWindowsScript:

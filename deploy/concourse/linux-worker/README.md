@@ -136,8 +136,10 @@ guardian` is there for a kernel that containerd's runtime refuses.
 
 The installer is the supported path. A worker can also run as the
 `concourse/concourse` image under Docker on the Linux box (linux-1 and
-linux-2 did, from 2026-11-14). Two things the installer gets right by
-construction then have to be set by hand, and both fail quietly:
+linux-2 did, from 2026-11-14). Three things the installer gets right by
+construction then have to be set by hand, and all three fail quietly. The
+first and third are handled by `cgroup-wrapper.sh` beside this README: mount
+it read-only and set `entrypoint: ["dumb-init", "/cgroup-wrapper.sh"]`.
 
 - **cgroup v2 delegation.** The image's entrypoint moves only PID 1 out of
   the container's root cgroup. The root keeps processes, so it cannot hand
@@ -158,6 +160,15 @@ construction then have to be set by hand, and both fail quietly:
   `CONCOURSE_CONTAINERD_DNS_PROXY_ENABLE=true` (the worker answers on its
   address and forwards to Docker's resolver). linux-1 and linux-2 use the
   proxy since 2026-11-16.
+- **Stale containerd state across a restart.** In the container `/run` is
+  the writable layer, not a tmpfs, so `/run/containerd` survives a container
+  restart and a host reboot. The tasks it records died with the previous
+  start; containerd tries to restore them and never listens, garden exits on
+  `dial unix /run/containerd/containerd.sock: connect: connection refused`,
+  and the worker restart-loops without ever running a job (linux-3: 1775
+  restarts in 30 h after an abrupt shutdown, 2026-11-16/17). The wrapper
+  removes `/run/containerd` before the image's entrypoint runs. Without it,
+  `docker compose up -d --force-recreate` recovers a looping worker once.
 
 To check a worker, enter a running job container's network namespace from
 inside the worker (`nsenter -t <pid> -n`, the pid from
