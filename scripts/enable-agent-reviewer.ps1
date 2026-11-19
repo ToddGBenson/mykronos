@@ -95,8 +95,18 @@ function Stop-Here {
 
 # The family the delegation trusts is the model the reviewer runs: the
 # platform records `reviewer_model` as the reviewer's family (config.py).
-if (-not $Family) { $Family = Read-EnvValue 'MYKRONOS_REVIEWER_MODEL' }
-if (-not $Family) { $Family = 'claude-opus-5-5' }      # config.py's default
+# Asked of the running backend, never read from backend\.env or written here
+# (TheHub #61547): a delegation naming a model the backend does not run lets
+# the reviewer approve nothing, and every request waits for you, silently.
+$shadow = Invoke-Api '/api/approvals/shadow-reviews'
+$running = [string] $shadow.model
+if (-not $running) {
+  Stop-Here "The backend at $Api does not report the reviewer's model (GET /api/approvals/shadow-reviews has no 'model'), so it predates TheHub #61547. Deploy a current backend first. Nothing was changed."
+}
+if (-not $Family) { $Family = $running }
+if ($Family -cne $running) {   # case-sensitive, as the engine's family match is
+  Stop-Here "-Family $Family is not the model the running reviewer uses ($running), so a delegation naming it would let the reviewer approve nothing. Run without -Family. Nothing was changed."
+}
 Write-Host "Delegating $Duty ($($Tiers -join ', ')) to the platform-started reviewer, family $Family" -ForegroundColor Cyan
 
 # -- 1. Can the reviewer run? -------------------------------------------------------------
@@ -118,8 +128,8 @@ Then run this script again. Nothing was changed.
 }
 Write-Host '  reviewer key: present in backend\.env (not shown)' -ForegroundColor DarkGray
 
-# The track record the trust rests on: shadow verdicts beside yours.
-$shadow = Invoke-Api '/api/approvals/shadow-reviews'
+# The track record the trust rests on: shadow verdicts beside yours ($shadow,
+# read above).
 # Only the tiers this script delegates (TheHub #60760): on governance the
 # reviewer rejects by rule so a person decides, which says nothing about them.
 $agree = 0; $disagree = 0; $undecided = 0

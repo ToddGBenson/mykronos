@@ -628,6 +628,48 @@ playbooks:
       - "Approve or decide your own request."
       - "Ask another agent of your own lineage to approve it."
 
+  delegation_attention:
+    purpose: >-
+      A live delegation will not do what it looks like it does (TheHub
+      #61547): it names approver families that do not include the model the
+      platform reviewer runs, so every review the reviewer starts under it is
+      refused and requests wait for a person; or it expires within seven days
+      and nothing renews it. Only a person can propose, approve or revoke a
+      delegation. The work is telling one, with the evidence.
+    steps:
+      - id: read-the-delegation
+        do: >-
+          Read the delegation the item names, and the model the reviewer runs
+          (`model` in the shadow-reviews answer).
+        check: >-
+          You can state which families it names, which tiers the reviewer
+          cannot approve, and when it expires.
+        routes:
+          - "GET /api/approvals/delegations"
+          - "GET /api/approvals/delegations/{delegation_id}/stats"
+          - "GET /api/approvals/shadow-reviews"
+      - id: tell-a-person
+        do: >-
+          Hand the operator the item's evidence. The fix is theirs:
+          scripts/enable-agent-reviewer.ps1 proposes a delegation naming the
+          running reviewer's model, and approving it is a person's decision.
+        check: >-
+          The operator has the delegation id, its families, the reviewer's
+          model and its expiry.
+        outside:
+          - "The item's summary and evidence."
+    stop_when:
+      - "A live delegation covers the reviewer's model for every tier this one names."
+      - "The delegation is renewed, revoked or has lapsed."
+    escalate:
+      when:
+        - "Always: only a person grants, renews or revokes a delegation."
+      evidence:
+        - "The delegation id, its duty, tiers and families, the reviewer's model and the expiry."
+    never:
+      - "Propose, approve or revoke a delegation yourself."
+      - "Ask for the reviewer's model to be changed to match an old delegation; the model is pinned (D-167)."
+
   pull_request_attention:
     purpose: >-
       A pull request needs you. Either your pull_request_merge request on it

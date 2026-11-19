@@ -4662,6 +4662,9 @@ export interface paths {
          *     cover only tiers an agent could be delegated; `by_tier` breaks them down per
          *     `duty:tier`, and human-only tiers are counted in `not_delegable`. Ordered before
          *     `/{request_id}` so the literal path is not read as a request id.
+         *
+         *     `model` is the model the running reviewer uses, which is the family a
+         *     delegation must name for its approvals to count (TheHub #61547).
          */
         get: operations["shadow_reviews_api_approvals_shadow_reviews_get"];
         put?: never;

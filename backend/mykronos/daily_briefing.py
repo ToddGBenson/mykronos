@@ -1471,6 +1471,45 @@ def reviewer_key_lines(db: Any, settings: Any, *, now: datetime) -> tuple[list[L
     ], ""
 
 
+def delegation_lines(db: Any, settings: Any, *, now: datetime) -> tuple[list[Line], str]:
+    """One line per delegation that cannot cover the platform reviewer's model,
+    or expires within a week (TheHub #61547). Returns (lines, why they could
+    not be read). Without `settings` the reviewer's model is unknown, so only
+    expiry is read."""
+    from mykronos.approvals import delegation_notices, reviewer
+
+    try:
+        found = delegation_notices.notices(
+            db,
+            now=now,
+            reviewer_model=reviewer.reviewer_family(settings) if settings is not None else None,
+            reviewer_mode=reviewer.mode(settings),
+        )
+    except Exception as exc:  # noqa: BLE001 - reported as the section's reason
+        return [], f"Delegations could not be read: {_error(exc)}"
+    return [
+        Line(
+            what=n.what,
+            so_what=n.so_what,
+            work=DECISION,
+            ref=f"/api/approvals/delegations/{n.delegation_id}/stats",
+        )
+        for n in found
+    ], ""
+
+
+def _with_delegations(section: Section, lines: list[Line], why: str) -> Section:
+    """Put delegation lines first in "Needs you today" (TheHub #61547)."""
+    section.lines[:0] = lines
+    if lines:
+        section.data["delegations"] = [line.ref for line in lines]
+    if why:
+        section.reason = " ".join(r for r in (section.reason, why) if r)
+        if section.status == OK:
+            section.status = PARTIAL
+    return section
+
+
 def _with_credentials(section: Section, lines: list[Line], why: str) -> Section:
     """Put credential lines first in "Needs you today", whatever else it could read."""
     section.lines[:0] = lines
@@ -2074,7 +2113,10 @@ def build_overall(
     delta = risk_delta_section(risk, risk_error)
     acceptances = acceptances_section(db, now=now)
     needs_you = _with_credentials(
-        needs_you_section(delivery, now=now), *reviewer_key_lines(db, settings, now=now)
+        _with_delegations(
+            needs_you_section(delivery, now=now), *delegation_lines(db, settings, now=now)
+        ),
+        *reviewer_key_lines(db, settings, now=now),
     )
     sprint = sprint_health_section(delivery, now=now)
     next_sprint = next_sprint_section(

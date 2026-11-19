@@ -27,6 +27,7 @@ from sqlalchemy import select
 from mykronos import agent_work, briefing, briefing_sources, playbooks, read_coverage
 from mykronos import risk_acceptance as ra
 from mykronos.adminauth import Principal, PrincipalDep
+from mykronos.approvals import delegation_notices, reviewer
 from mykronos.dashboard import DashboardQueries
 from mykronos.db.models import (
     ApprovalDecision,
@@ -364,6 +365,20 @@ def _analyser_coverage(
     return out
 
 
+def _delegations(db: Any, settings: Any) -> list[delegation_notices.DelegationNotice] | None:
+    """Delegations a person must act on (TheHub #61547), or None if unreadable."""
+    try:
+        return delegation_notices.notices(
+            db,
+            now=utcnow(),
+            reviewer_model=reviewer.reviewer_family(settings),
+            reviewer_mode=reviewer.mode(settings),
+        )
+    except Exception:  # noqa: BLE001 - reported in `unknown`
+        logger.debug("Could not read delegations for the work queue")
+        return None
+
+
 @router.get("/work", response_model=WorkQueueOut)
 async def work(
     request: Request,
@@ -432,6 +447,7 @@ async def work(
     pr_requests = await asyncio.to_thread(_pull_request_requests, state.db)
     patchwork_prs = await asyncio.to_thread(_patchwork_prs, state.catalog, repo)
     coverage = await asyncio.to_thread(_analyser_coverage, request, repo)
+    delegations = await asyncio.to_thread(_delegations, state.db, settings)
 
     queue = agent_work.build(
         report,
@@ -446,6 +462,7 @@ async def work(
         probe_interval_seconds=int(settings.exposure_probe_interval_seconds),
         playbook_version=playbook_version,
         repo_ids=repo_ids,
+        delegations=delegations,
     )
     # TheHub #61615: each Dependabot pull request and what the autopilot did.
     from mykronos import jobs

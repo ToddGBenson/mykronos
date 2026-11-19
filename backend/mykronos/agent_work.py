@@ -31,12 +31,14 @@ write the route will refuse, but the route still makes the decision.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from mykronos import finding_disposition
 from mykronos.adminauth import Principal
+from mykronos.approvals.delegation_notices import DelegationNotice
 from mykronos.briefing import Briefing
 from mykronos.dependabot_remedy import remedy_for
 from mykronos.read_coverage import ReadCoverage
@@ -68,6 +70,7 @@ KINDS: tuple[str, ...] = (
     "toxic_combination",
     "public_exposure",
     "approval_needs_info",
+    "delegation_attention",
     "pull_request_attention",
     "acceptance_attention",
     "token_delivery",
@@ -721,6 +724,46 @@ def _pull_request_items(
     return list(items.values()), waiting
 
 
+def _delegation_items(found: Sequence[DelegationNotice]) -> list[WorkItem]:
+    """One item per delegation that cannot cover the platform reviewer's
+    model, or expires within a week (TheHub #61547). The same notices, and
+    the same words, as the daily briefing's "Needs you today"."""
+    items = []
+    for n in found:
+        items.append(
+            WorkItem(
+                item_id=f"delegation_attention:{n.delegation_id}",
+                kind="delegation_attention",
+                band=BAND_APPROVAL,
+                title=f"Delegation {n.short_id} needs a person",
+                summary=f"{n.what} {n.so_what}",
+                done_when=(
+                    "A live delegation covers the reviewer's model for every tier this one "
+                    "names, and nothing it grants lapses within a week unrenewed."
+                ),
+                evidence=[
+                    Evidence(
+                        source="delegations",
+                        ref=n.delegation_id,
+                        detail=(
+                            f"families {list(n.families)}; expires {n.expires_at:%Y-%m-%d %H:%M}Z"
+                            + (f"; reviewer runs {n.reviewer_model}" if n.reviewer_model else "")
+                        ),
+                    )
+                ],
+                actions=[
+                    ActionRef(
+                        label="Read it",
+                        method="GET",
+                        path=f"/api/approvals/delegations/{n.delegation_id}/stats",
+                        effect="A read.",
+                    )
+                ],
+            )
+        )
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Band 4: acceptances
 
@@ -1258,6 +1301,7 @@ def build(
     probe_interval_seconds: int,
     playbook_version: str,
     repo_ids: dict[str, str] | None = None,
+    delegations: Sequence[DelegationNotice] | None = (),
 ) -> WorkQueue:
     """The queue for one principal. `None` for any input means it was not read.
 
@@ -1273,7 +1317,9 @@ def build(
     never asks GitHub for it. `repo_ids` names the analyser-gap routes, and a
     repository missing from it gets no path.
     `playbook_version` is the loaded `agent-playbooks-v1.yaml`'s version; every
-    item names its playbook with it.
+    item names its playbook with it. `delegations` is
+    `delegation_notices.notices`' answer (TheHub #61547); left out, none are
+    listed, and None says they could not be read.
     """
     now = _aware(now)
     queue = WorkQueue(
@@ -1299,6 +1345,17 @@ def build(
         approval_items, approval_waiting = _approval_items(approval_requests)
         items += approval_items
         queue.waiting += approval_waiting
+
+    if delegations is None:
+        queue.unknown.append(
+            Unknown(
+                "delegations",
+                "Delegations could not be read, so neither one the reviewer's model falls "
+                "outside nor one about to expire is listed.",
+            )
+        )
+    else:
+        items += _delegation_items(delegations)
 
     if pull_request_requests is None:
         queue.unknown.append(

@@ -425,11 +425,15 @@ async def shadow_reviews(request: Request, principal: PrincipalDep) -> dict[str,
     cover only tiers an agent could be delegated; `by_tier` breaks them down per
     `duty:tier`, and human-only tiers are counted in `not_delegable`. Ordered before
     `/{request_id}` so the literal path is not read as a request id.
+
+    `model` is the model the running reviewer uses, which is the family a
+    delegation must name for its approvals to count (TheHub #61547).
     """
     report = await asyncio.to_thread(
         reviewer.shadow_report, request.app.state.db, _policy(request)
     )
     report["mode"] = reviewer.mode(request.app.state.settings)
+    report["model"] = reviewer.reviewer_family(request.app.state.settings)
     return report
 
 
