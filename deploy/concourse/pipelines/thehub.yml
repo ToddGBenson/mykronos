@@ -3496,11 +3496,20 @@ jobs:
                     else
                       echo "::warning::this image has no timeout(1); container-tiers runs under the task's timeout only"
                     fi
+                    # stdin is /dev/null (TheHub pr-gates cancelled since #1177).
+                    # On the containerd `linux` workers a task's stdin is a
+                    # terminal, and timeout(1) runs its command in a process
+                    # group of its own, which is not the terminal's foreground
+                    # group. apt-get resets the terminal when it finishes, gets
+                    # SIGTTOU and stops: `T` in /proc, a stopped apt-get after
+                    # ~50s of real work, until the budget ends it at 840s. The
+                    # host's guardian workers give no terminal, so it never
+                    # showed there.
                     run_tiers() {
                       if [ -n "$TIMER" ]; then
-                        "$TIMER" -s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset
+                        "$TIMER" -s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset < /dev/null
                       else
-                        bash pr/scripts/ci/container-tiers.sh pr subset
+                        bash pr/scripts/ci/container-tiers.sh pr subset < /dev/null
                       fi
                     }
                     let "TIERS_DEADLINE = SECONDS + BUDGET"
@@ -3534,6 +3543,14 @@ jobs:
                           WHERE="it was still building the environment, so the subset never started"
                         fi
                         echo "::error::container-tiers overran its ${BUDGET}s budget: ${WHERE}"
+                        # Where it was: container-tiers sends each phase to a
+                        # log and tails it only on a failure, and a kill is not
+                        # one, so the last phase's log is shown here.
+                        LAST_LOG="$(ls -t "$CONTAINER_TIERS_OUT"/*.log 2>/dev/null | head -1)"
+                        if [ -n "$LAST_LOG" ]; then
+                          echo "the last phase's log, $(basename "$LAST_LOG"):"
+                          tail -15 "$LAST_LOG"
+                        fi
                         mkdir -p memory-infra
                         printf '%s\n' "NO VERDICT: the integration subset overran its ${BUDGET}s budget (${WHERE}), so this pull request's code was not judged. The environment was too slow; not a test failure. pick asks this head once more; a second cancelled run parks it until the branch is pushed again." > memory-infra/reason
                         printf '2\n' > memory-infra/exit_code
