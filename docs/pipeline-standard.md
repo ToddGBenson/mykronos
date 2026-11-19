@@ -255,6 +255,26 @@ produces this platform's supply-chain evidence — was installed by piping an
 An SBOM is worth exactly what the thing that generated it is worth, and this is
 the class of finding the platform reports in other people's repositories.
 
+**A digest-pinned task image is bumped by hand (TheHub #61842).** A
+resource held by `version: { digest: ... }` never moves on its own, and
+`image-refresh` does not touch it: that job rebuilds the compose stack's
+images, not pipeline task images. So every such pin carries a
+`# pinned: YYYY-MM-DD` line next to its `version:`, and the rule is:
+
+1. Moving the resource's `tag:` moves its digest in the same pull request.
+   That is enforced rather than remembered: the tag and digest disagree, so
+   the `get:` cannot find the version and the lane errors on its first run.
+2. At least every 90 days from the `pinned:` date, re-resolve the tag
+   (`docker buildx imagetools inspect <repository>:<tag>`, the index
+   digest), then either move the digest and the date, or move only the date
+   with a one-line reason. `test_every_digest_pin_records_its_date` checks
+   that the line exists and is a real date, not that it is recent: a unit
+   test that turns red with time alone would block unrelated work.
+
+`personal-soc.yml`'s `checkov` is the pin this covers today. The one other
+digest pin, `thehub.yml`'s `zap` (D-128), has no `pinned:` line yet and is not
+checked; it belongs to TheHub's mirror of that file.
+
 ### PS-9 — A credential manager, not `((vars))` in a file
 
 Spec 15 §6: "Concourse pipeline YAML is committed. Nothing sensitive may appear

@@ -116,11 +116,15 @@ resources:
   # index, as the resource records it), the D-114 pattern thehub.yml uses for
   # ZAP: the tag moving upstream changes nothing here until a reviewed edit
   # moves this line. image-refresh does not cover it: that job rebuilds the
-  # compose stack's own images, not pipeline task images.
+  # compose stack's own images, not pipeline task images. So it is bumped by
+  # hand, on the rule in docs/pipeline-standard.md PS-8 (TheHub #61842): the
+  # tag and this digest move together, and the digest is re-resolved at least
+  # every 90 days from the date below.
   - name: checkov
     type: registry-image
     icon: file-cog-outline
     source: { repository: bridgecrew/checkov, tag: "3.2.334" }
+    # pinned: 2026-11-16
     version: { digest: "sha256:888060aaaa6f4499fd3b00a1a03185ed760937b049d438fa6e00b3203a5d613e" }
 
   # The scanning jobs have no commit to react to - the network changes, not
@@ -478,11 +482,18 @@ anchors:
               fi
             done
             if [ "${#SHA}" -ne 40 ]; then
-              if [ "${PHASE:-}" = "end" ]; then
+              if [ "${PHASE:-}" = "end" ] && [ "${CONCLUSION:-}" != "success" ]; then
                 # [TheHub #61769] A hook is the end of a lane that has already
                 # gone red, usually because it never checked out. Failing the
                 # hook as well only adds a second red step that reads as a
                 # second fault. Say exactly what was not posted, and finish.
+                #
+                # [TheHub #61842] Only for a red end. The gate's in-plan
+                # `success` is not a hook on a failed lane: it is the one
+                # report that turns the check green, and a gate that could not
+                # name its commit has not verified one. It falls through to
+                # the exit 1 below rather than finishing green with nothing
+                # posted.
                 echo "::warning:: no checked-out commit: source/.git/HEAD and source/.git/ref are missing or not a full sha."
                 echo "${JOB:-this job} could not post '${CONCLUSION:-}' to the Concourse / personal-soc check, because the"
                 echo "check is keyed by commit and none can be named without guessing. Nothing was posted."
@@ -685,7 +696,19 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 cd source
                 git config --global --add safe.directory "$PWD"
 
@@ -826,8 +849,20 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl git >/dev/null
-                curl -sSfL -o /tmp/gitleaks.tar.gz \
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl git >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /tmp/gitleaks.tar.gz \
                   https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
                 # PS-8. The version was already pinned; a pin says which bytes
                 # were intended, a checksum says these are them.
@@ -933,7 +968,21 @@ jobs:
                   echo "  mykronos rotate-token ToddGBenson/personal-soc"
                   echo "=================================================="
                 else
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   MYKRONOS_JOB=secrets python -m mykronos.upload \
                     --capability secrets --tool gitleaks \
@@ -1050,8 +1099,8 @@ jobs:
                 # says `cancelled`. Any other exit falls through to the SARIF
                 # check below, unchanged.
                 echo "== checkov, github_actions framework =="
-                # (if/else: a scan that writes no report below still skips the
-                # upload, so personal-soc.yml:iac PS-3 stays a recorded gap.)
+                # (if/else, so a non-zero exit falls through to the report
+                # check and the upload below rather than ending the script.)
                 if timeout --kill-after=30s 8m \
                   checkov --directory . --framework github_actions \
                   --output sarif --output-file-path /tmp/results \
@@ -1067,15 +1116,21 @@ jobs:
                 # A missing report is "did not run", which is not "found
                 # nothing" - docs/lessons/0001, and the same check the secrets
                 # job makes for exactly the same reason.
+                #
+                # [TheHub #61842, PS-3] It no longer exits here. The upload
+                # below still runs, and the uploader files a missing report as
+                # a FAILED scan, so Mykronos hears that the scan broke instead
+                # of hearing nothing. The task still fails after it.
+                scanned=1
                 if [ ! -f /tmp/results/results_sarif.sarif ]; then
                   echo "::error:: checkov wrote no SARIF report. This is a failed scan,"
                   echo "          not a clean one - nothing was checked."
                   echo "*personal-soc / iac*: the IaC scan did not run." > ../notify/message.txt
-                  exit 1
+                  scanned=0
+                else
+                  COUNT=$(python3 -c 'import json;d=json.load(open("/tmp/results/results_sarif.sarif"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])))')
+                  echo "checkov findings: $COUNT"
                 fi
-
-                COUNT=$(python3 -c 'import json;d=json.load(open("/tmp/results/results_sarif.sarif"));print(sum(len(r.get("results",[])) for r in d.get("runs",[])))')
-                echo "checkov findings: $COUNT"
 
                 if [ -z "${MYKRONOS_TOKEN:-}" ]; then
                   echo "=================================================="
@@ -1087,7 +1142,21 @@ jobs:
                   # touch the versions checkov was built and tested with.
                   python -m venv /tmp/uploader
                   export PATH="/tmp/uploader/bin:$PATH"
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   MYKRONOS_JOB=iac python -m mykronos.upload \
                     --capability iac --tool checkov \
                     --results-path /tmp/results \
@@ -1097,9 +1166,62 @@ jobs:
                     --branch main \
                     --workspace "$PWD" \
                     --severity-threshold low --blocking false \
-                    || echo "upload failed - the scan verdict above still stands."
+                    2>&1 | tee /tmp/iac-upload.log || up_rc=$?
+                  # [TheHub #61842, PS-3] An upload that failed is not a scan
+                  # that passed. This used to `|| echo` and carry on, so the
+                  # lane read green with nothing ingested. Two different
+                  # failures, told apart the way the network hooks tell them
+                  # apart, by the uploader's "Uploaded N finding(s)" line:
+                  #   - accepted, but the uploader exits 1 because the scan
+                  #     itself was degraded (a missing report is filed as a
+                  #     FAILED scan): a verdict, so `failure`;
+                  #   - refused: Mykronos answered and said no (a 403 naming
+                  #     an ungranted capability, a 422, a revoked token, or a
+                  #     5xx on the last attempt). An answer is not an outage,
+                  #     so `failure`, with the uploader's reason above;
+                  #   - never answered (the uploader's last attempt ended in a
+                  #     transport error - unreachable, reset, timed out - and
+                  #     no HTTP status appears in its log): nothing was judged, so
+                  #     infra/reason and exit 75, and the hook reports
+                  #     `cancelled`, as for an install outage. Only this
+                  #     positive "no response" evidence takes that path;
+                  #     anything else not accepted stays `failure`.
+                  #     Since TheHub #61842 (F1) a cancelled never replaces a
+                  #     failure another lane already posted for this commit.
+                  if [ "${up_rc:-0}" -ne 0 ]; then
+                    if grep -q 'Uploaded [0-9]* finding(s) for scan run' /tmp/iac-upload.log; then
+                      echo "::error:: Mykronos accepted the IaC upload but filed it as a failed or degraded scan"
+                      echo "          (uploader exit ${up_rc}). Not a pass."
+                      echo "*personal-soc / iac*: Mykronos filed this IaC scan as failed or degraded (uploader exit ${up_rc})." > ../notify/message.txt
+                      exit 1
+                    fi
+                    if grep -q 'HTTP [0-9][0-9][0-9]' /tmp/iac-upload.log \
+                      || ! grep -q 'transport error:' /tmp/iac-upload.log; then
+                      echo "::error:: Mykronos refused the IaC upload (uploader exit ${up_rc}), so nothing from this"
+                      echo "          scan was filed. The reason is in the uploader's output above. A 403 naming"
+                      echo "          'iac' means the capability is not granted."
+                      echo "*personal-soc / iac*: Mykronos refused the IaC upload (exit ${up_rc}) - nothing was filed." > ../notify/message.txt
+                      exit 1
+                    fi
+                    # A scan that wrote no report is already a verdict: it
+                    # broke. An unanswered upload after it does not make it
+                    # "not judged", so it stays `failure` (Fable nit 4 on #1191).
+                    if [ "$scanned" -eq 0 ]; then
+                      echo "::error:: checkov wrote no report, and Mykronos never answered the upload (uploader"
+                      echo "          exit ${up_rc}). The scan failed either way; this is not an outage."
+                      exit 1
+                    fi
+                    reason="INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered the IaC upload (uploader exit ${up_rc}, transport errors only), so nothing from this scan was ingested or judged. The reason is in the uploader's output above."
+                    echo "::error:: ${reason}"
+                    printf '%s\n' "$reason" > ../infra/reason
+                    echo "*personal-soc / iac*: the scan ran but Mykronos never answered its upload (exit ${up_rc}) - nothing was ingested." > ../notify/message.txt
+                    exit 75
+                  fi
                 fi
 
+                if [ "$scanned" -eq 0 ]; then
+                  exit 1
+                fi
                 echo ""
                 echo "IaC scan complete."
 
@@ -1178,7 +1300,19 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl jq git >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 git config --global --add safe.directory "$PWD"
 
                 # No ingestion token is "the gate did not run", and a gate that
@@ -1425,8 +1559,43 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                  apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte. apt (120s) and pip (15s x 5 retries) have default
+                  # deadlines, but they are per request and too long for a
+                  # lane, and the git clone pip runs has none. Measured against
+                  # a live WAN blackhole on 2026-11-18, apt alone took 354s even
+                  # with the stall deadlines below. So each install also runs
+                  # under a hard `timeout`, and an outage fails inside the
+                  # budget and names itself.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                  timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   cd source
                   MYKRONOS_JOB=lint python -m mykronos.upload \
                     --capability sast --tool psscriptanalyzer \
@@ -1527,7 +1696,19 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 cat > tests.ps1 <<'PS'
                 $ErrorActionPreference = 'Stop'
@@ -1878,8 +2059,43 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                  apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte. apt (120s) and pip (15s x 5 retries) have default
+                  # deadlines, but they are per request and too long for a
+                  # lane, and the git clone pip runs has none. Measured against
+                  # a live WAN blackhole on 2026-11-18, apt alone took 354s even
+                  # with the stall deadlines below. So each install also runs
+                  # under a hard `timeout`, and an outage fails inside the
+                  # budget and names itself.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                  timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
                   cd source
                   MYKRONOS_JOB=functional python -m mykronos.upload \
@@ -1962,7 +2178,24 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl >/dev/null
+                # [TheHub #61842] Every network call in this task has a
+                # deadline well inside its 15m cap. Unbounded, a stalled
+                # download or an unreachable store holds the step until
+                # Concourse kills it, and the task never writes the result
+                # that says why it could not finish.
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 cat > check.py <<'PY'
                 import json, os, pathlib, re, subprocess, sys
@@ -2247,12 +2480,24 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git zip unzip curl >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
                 # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /usr/local/bin/mc \
                   "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
                 echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
@@ -2285,13 +2530,13 @@ jobs:
                 echo ""
                 echo "no confidential files in the bundle"
 
-                mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
-                mc --quiet cp "$ZIP" "store/$RELEASE_BUCKET/skills-$SHA.zip"
+                timeout --kill-after=10s 120s mc --quiet mb --ignore-existing "store/$RELEASE_BUCKET" >/dev/null
+                timeout --kill-after=10s 120s mc --quiet cp "$ZIP" "store/$RELEASE_BUCKET/skills-$SHA.zip"
 
                 # The pointer is written last. If the upload failed, the host
                 # must not be told to go and fetch something that is not there.
                 printf '%s' "$SHA" > requested
-                mc --quiet cp requested "store/$RELEASE_BUCKET/skills.requested"
+                timeout --kill-after=10s 120s mc --quiet cp requested "store/$RELEASE_BUCKET/skills.requested"
                 echo "published skills-$SHA.zip and moved the pointer"
 
                 # Then wait to be told it landed. Without this, "delivery"
@@ -2300,7 +2545,7 @@ jobs:
                 # stale.
                 DEADLINE=$(( $(date +%s) + INSTALL_TIMEOUT_MINUTES * 60 ))
                 while :; do
-                  if mc --quiet cp "store/$RELEASE_BUCKET/skills.installed" installed >/dev/null 2>&1 \
+                  if timeout --kill-after=10s 120s mc --quiet cp "store/$RELEASE_BUCKET/skills.installed" installed >/dev/null 2>&1 \
                      && [ "$(cat installed)" = "$SHA" ]; then
                     echo "host reports the skills installed at $SHA"
                     break
@@ -2365,7 +2610,19 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 cd source
 
@@ -2476,7 +2733,19 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq ca-certificates >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
 
                 # TheHub #60852 (option C). This lane used to print "Ports are
                 # visible from the internet" and exit 0 -- build #10 showed 7547
@@ -2557,6 +2826,15 @@ jobs:
           task: upload-network-findings
           # PS-7. An apt install of git, a pip install of the uploader and one
           # upload: the secrets lane does the same last two in under 3m.
+          #
+          # [TheHub #61842] The worst case before the upload, with the network
+          # black-holed: up to 130s of container creation (the slowest
+          # measured, builds 1333-1341; this clock includes it) + apt 150s +
+          # the uploader install 240s, each deadline plus its 10s KILL grace,
+          # = 540s, inside these 600s. In a full blackhole the install fails
+          # first and the upload is never reached. The upload itself retries
+          # each request at a 60s HTTP timeout; a network that dies in the
+          # middle of it is still ended by this cap, red, as before.
           timeout: 10m
           image: python
           params:
@@ -2597,8 +2875,43 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                  apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte. apt (120s) and pip (15s x 5 retries) have default
+                  # deadlines, but they are per request and too long for a
+                  # lane, and the git clone pip runs has none. Measured against
+                  # a live WAN blackhole on 2026-11-18, apt alone took 354s even
+                  # with the stall deadlines below. So each install also runs
+                  # under a hard `timeout`, and an outage fails inside the
+                  # budget and names itself.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                  timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
                   # hook reads it.
@@ -2709,12 +3022,24 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq unzip curl >/dev/null
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq unzip curl >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
                 # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /usr/local/bin/mc \
                   "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
                 echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
@@ -2834,7 +3159,7 @@ jobs:
                 # comparison needs two. Sorted with -V so 2026.8.9 precedes
                 # 2026.8.10 - plain sort puts .10 first and would compare
                 # every week against the same stale baseline.
-                PREV_KEY=$(mc --quiet ls "store/$BUCKET/runs/" 2>/dev/null \
+                PREV_KEY=$(timeout --kill-after=10s 120s mc --quiet ls "store/$BUCKET/runs/" 2>/dev/null \
                   | awk '{print $NF}' | grep '^netassess-.*\.zip$' | sort -V \
                   | grep -B1 -x "$CUR_KEY" | head -1)
 
@@ -2845,7 +3170,7 @@ jobs:
                 else
                   echo "== host changes vs $PREV_KEY =="
                   mkdir -p previous
-                  mc --quiet cp "store/$BUCKET/runs/$PREV_KEY" prev.zip
+                  timeout --kill-after=10s 120s mc --quiet cp "store/$BUCKET/runs/$PREV_KEY" prev.zip
                   # Same archive shape, same warning, same reason.
                   unpack prev.zip previous
 
@@ -2933,6 +3258,15 @@ jobs:
           task: upload-network-findings
           # PS-7. An apt install of git, a pip install of the uploader and one
           # upload: the secrets lane does the same last two in under 3m.
+          #
+          # [TheHub #61842] The worst case before the upload, with the network
+          # black-holed: up to 130s of container creation (the slowest
+          # measured, builds 1333-1341; this clock includes it) + apt 150s +
+          # the uploader install 240s, each deadline plus its 10s KILL grace,
+          # = 540s, inside these 600s. In a full blackhole the install fails
+          # first and the upload is never reached. The upload itself retries
+          # each request at a 60s HTTP timeout; a network that dies in the
+          # middle of it is still ended by this cap, red, as before.
           timeout: 10m
           image: python
           params:
@@ -2973,8 +3307,43 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                  apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte. apt (120s) and pip (15s x 5 retries) have default
+                  # deadlines, but they are per request and too long for a
+                  # lane, and the git clone pip runs has none. Measured against
+                  # a live WAN blackhole on 2026-11-18, apt alone took 354s even
+                  # with the stall deadlines below. So each install also runs
+                  # under a hard `timeout`, and an outage fails inside the
+                  # budget and names itself.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                  timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
                   # hook reads it.
@@ -3072,12 +3441,29 @@ jobs:
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl >/dev/null
+                # [TheHub #61842] Every network call in this task has a
+                # deadline well inside its 15m cap. Unbounded, a stalled
+                # download or an unreachable store holds the step until
+                # Concourse kills it, and the task never writes the result
+                # that says why it could not finish.
+                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null' \
+                  || { apt_rc=$?
+                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                    exit 1; }
                 # dl.min.io returns 410 Gone: MinIO archived the open-source
                 # client and stopped serving it, so `curl -f` fails and this
                 # task dies before it starts. Pinned GitHub release instead,
                 # verified -- PS-8, a fetched binary is code.
-                curl -sSfL -o /usr/local/bin/mc \
+                curl -sSfL --connect-timeout 20 --max-time 180 --retry 2 -o /usr/local/bin/mc \
                   "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
                 echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
                 chmod +x /usr/local/bin/mc
@@ -3089,7 +3475,7 @@ jobs:
                 # listing that failed is said to have failed. It used to fall
                 # through as "no runs at all", which blamed a Scheduled Task
                 # that may have been fine for a bucket nobody could read.
-                if ! LISTING=$(mc --quiet ls "store/$BUCKET/runs/" 2>&1); then
+                if ! LISTING=$(timeout --kill-after=10s 120s mc --quiet ls "store/$BUCKET/runs/" 2>&1); then
                   echo "::error:: could not list $BUCKET - freshness is unknown, which is not a pass."
                   printf '{"check": "unknown", "reason": "the bucket could not be listed"}\n' > results/netassess-freshness.json
                   exit 1
@@ -3147,6 +3533,15 @@ jobs:
           task: upload-network-findings
           # PS-7. An apt install of git, a pip install of the uploader and one
           # upload: the secrets lane does the same last two in under 3m.
+          #
+          # [TheHub #61842] The worst case before the upload, with the network
+          # black-holed: up to 130s of container creation (the slowest
+          # measured, builds 1333-1341; this clock includes it) + apt 150s +
+          # the uploader install 240s, each deadline plus its 10s KILL grace,
+          # = 540s, inside these 600s. In a full blackhole the install fails
+          # first and the upload is never reached. The upload itself retries
+          # each request at a 60s HTTP timeout; a network that dies in the
+          # middle of it is still ended by this cap, red, as before.
           timeout: 10m
           image: python
           params:
@@ -3187,8 +3582,43 @@ jobs:
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
                   echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                  apt-get update -qq && apt-get install -y -qq git >/dev/null
-                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  # [TheHub #61842] netassess-freshness #19 hit this hook's
+                  # timeout inside the apt/pip install, before the uploader sent
+                  # a byte. apt (120s) and pip (15s x 5 retries) have default
+                  # deadlines, but they are per request and too long for a
+                  # lane, and the git clone pip runs has none. Measured against
+                  # a live WAN blackhole on 2026-11-18, apt alone took 354s even
+                  # with the stall deadlines below. So each install also runs
+                  # under a hard `timeout`, and an outage fails inside the
+                  # budget and names itself.
+                  printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
+                  timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
+                    || { apt_rc=$?
+                      if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
+                        reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
+                        echo "::error:: ${reason}" >&2
+                        for dir in infra ../infra; do
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        done
+                        exit 75
+                      fi
+                      echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
+                      exit 1; }
+                  export PIP_DEFAULT_TIMEOUT=30 PIP_RETRIES=2 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30
+                  if timeout --kill-after=10s 240s bash -ec '
+                    bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  '; then :; else
+                    inst_rc=$?
+                    if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
+                      reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      echo "::error:: ${reason}" >&2
+                      for dir in infra ../infra; do
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                      done
+                      exit 75
+                    fi
+                    exit "$inst_rc"
+                  fi
                   # The network has no commit. The scripts' commit says which
                   # version of the scan judged it; read the way the check-run
                   # hook reads it.
