@@ -186,6 +186,58 @@ class TestOneCheckRunPerCommit:
         (run,) = _runs(github)
         assert run["conclusion"] == "success"
 
+    def test_a_later_cancelled_never_replaces_a_stored_failure(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        """TheHub #61842 (F1). One check run carries every lane on a commit, and
+        every `on_error:` hook sends `cancelled`. A lane that errored after
+        another lane failed must not turn a red commit into a not-judged one:
+        `failure` says something was judged and refused, which is worse."""
+        onboard(client, admin_auth)
+        token = issue_token(client, REPO)
+
+        _post(client, token)
+        failed = _post(client, token, job="sast", phase="end", conclusion="failure").json()
+        calls = len(github.calls)
+        later = _post(client, token, job="containers", phase="end", conclusion="cancelled")
+
+        assert later.status_code == 200
+        body = later.json()
+        assert body["outcome"] == "unchanged"
+        assert body["conclusion"] == "failure"
+        assert body["check_run_id"] == failed["check_run_id"]
+        (run,) = _runs(github)
+        assert run["conclusion"] == "failure"
+        assert "sast" in run["title"]
+        assert len(github.calls) == calls  # nothing sent to GitHub
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            (row,) = session.execute(select(CiCheckRun)).scalars().all()
+            (kept,) = session.execute(
+                select(AuditLogEntry).where(
+                    AuditLogEntry.entity_type == "ci_check_run",
+                    AuditLogEntry.action == "ci_check_run.unchanged",
+                )
+            ).scalars().all()
+        assert (row.conclusion, row.last_job) == ("failure", "sast")
+        assert kept.detail["conclusion"] == "cancelled"
+        assert kept.detail["kept"] == "failure"
+
+    def test_a_cancelled_still_lands_when_nothing_failed(
+        self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
+    ) -> None:
+        """The precedence is only over a stored failure: after a success, or
+        another cancelled, the later cancelled is still posted."""
+        onboard(client, admin_auth)
+        token = issue_token(client, REPO)
+
+        _post(client, token)
+        _post(client, token, job="unit", phase="end", conclusion="success")
+        body = _post(client, token, job="containers", phase="end", conclusion="cancelled").json()
+
+        assert body["outcome"] == "updated"
+        (run,) = _runs(github)
+        assert run["conclusion"] == "cancelled"
+
     def test_an_end_with_no_start_still_posts_one(
         self, client: TestClient, admin_auth: dict[str, str], github: FakeGitHubClient
     ) -> None:

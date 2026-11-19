@@ -540,7 +540,10 @@ anchors:
             # if/else, not an or-assignment of $?: check_pipeline_conformance.py
             # reads that form as a job's scanner capture for PS-3, and this
             # hook is in every job.
-            if post_check "$(body_for "${CONCLUSION:-}")"; then rc=0; else rc=$?; fi
+            # The answer is kept (and printed) so the last line can say what
+            # Mykronos did, not only what was sent.
+            if RESP=$(post_check "$(body_for "${CONCLUSION:-}")"); then rc=0; else rc=$?; fi
+            printf '%s\n' "$RESP"
             if [ "$rc" -ne 0 ]; then
               # A Mykronos older than #61007 refuses `cancelled` with a 422
               # (curl 22). Then say `failure`, as before, rather than leave
@@ -552,10 +555,31 @@ anchors:
               echo
               echo "Mykronos refused 'cancelled'; reporting failure instead."
               CONCLUSION=failure
-              post_check "$(body_for failure)"
+              # Captured first, then printed, then judged: a bare assignment
+              # would end the script under `set -e` before Mykronos's refusal
+              # reached the log.
+              if RESP=$(post_check "$(body_for failure)"); then rc=0; else rc=$?; fi
+              printf '%s\n' "$RESP"
+              if [ "$rc" -ne 0 ]; then exit "$rc"; fi
             fi
             echo
-            echo "Reported ${PHASE} ${CONCLUSION:-} for ${JOB} on ${SHA}."
+            # [TheHub #61842] Against a stored failure, Mykronos answers a later
+            # `cancelled` with outcome `unchanged` and keeps the failure. Say
+            # that, rather than "Reported end cancelled" about a check that
+            # still reads failure.
+            OUTCOME=$(printf '%s' "$RESP" | sed -n 's/.*"outcome" *: *"\([a-z_]*\)".*/\1/p')
+            KEPT=$(printf '%s' "$RESP" | sed -n 's/.*"conclusion" *: *"\([a-z_]*\)".*/\1/p')
+            if [ "${PHASE:-}" = "end" ] && [ "$OUTCOME" = "unchanged" ]; then
+              # The why only where it is the why: an `unchanged` for any
+              # other reason says only what Mykronos kept.
+              WHY=""
+              if [ "${CONCLUSION:-}" = "cancelled" ] && [ "$KEPT" = "failure" ]; then
+                WHY=" (a cancelled never replaces a failure on the same commit)"
+              fi
+              echo "Sent end ${CONCLUSION:-} for ${JOB} on ${SHA}; Mykronos left the check at '${KEPT:-its stored conclusion}'${WHY}."
+            else
+              echo "Reported ${PHASE} ${CONCLUSION:-} for ${JOB} on ${SHA}."
+            fi
 
 jobs:
 
