@@ -127,6 +127,43 @@ class TestTheReviewerIsNotCovered:
 
         assert _notices(db) == []
 
+    def test_a_purpose_scoped_delegation_naming_the_model_does_not_cover_the_reviewer(
+        self, db
+    ) -> None:
+        """`decide` refuses the platform reviewer under a purpose-scoped
+        delegation, so the check must ask as the reviewer: without
+        `approver=reviewer` this one would read as covered (Fable 5.2 on #1194)."""
+        old = _grant(db, families=[OLD], expires_at=NOW + timedelta(days=30))
+        _grant(
+            db,
+            families=[RUNS],
+            expires_at=NOW + timedelta(days=30),
+            constraints={"approver_purposes": ["security-champion"]},
+        )
+
+        [notice] = _notices(db)
+
+        assert notice.delegation_id == old
+        assert notice.uncovered_tiers == ("production", "routine")
+
+    def test_live_says_it_is_refused(self, db) -> None:
+        _grant(db, families=[OLD], expires_at=NOW + timedelta(days=30))
+
+        [notice] = _notices(db, mode="live")
+
+        assert "is refused (409)" in notice.so_what
+        assert "would" not in notice.so_what
+
+    def test_shadow_says_going_live_would_refuse(self, db) -> None:
+        """In shadow mode `run_review` skips the preflight: nothing is refused yet."""
+        _grant(db, families=[OLD], expires_at=NOW + timedelta(days=30))
+
+        [notice] = _notices(db, mode="shadow")
+
+        assert "Once the reviewer is live" in notice.so_what
+        assert "would be refused (409)" in notice.so_what
+        assert "is refused" not in notice.so_what
+
     def test_a_revoked_or_lapsed_delegation_says_nothing(self, db) -> None:
         _grant(db, families=[OLD], expires_at=NOW - timedelta(seconds=1))
         revoked = _grant(db, families=[OLD], expires_at=NOW + timedelta(days=30))
@@ -161,6 +198,43 @@ class TestExpiry:
 
         assert all(len(found) == 1 for found in days)
         assert len({(n.delegation_id, n.what, n.so_what) for [n] in days}) == 1
+
+    def test_a_purpose_scoped_one_does_not_renew_a_family_only_one(self, db) -> None:
+        """The reviewer's delegation lapsing is not renewed by one only a
+        person-minted credential can use (Fable 5.2 on #1194)."""
+        expiring = _grant(db, families=[RUNS], expires_at=NOW + timedelta(days=3))
+        _grant(
+            db,
+            families=[RUNS],
+            expires_at=NOW + timedelta(days=33),
+            constraints={"approver_purposes": ["security-champion"]},
+        )
+
+        [notice] = _notices(db)
+
+        assert notice.delegation_id == expiring and notice.expiring is True
+
+    def test_a_family_only_one_does_not_renew_a_purpose_scoped_one(self, db) -> None:
+        """A person-minted credential under a family-only delegation keeps
+        fresh_context and is refused, so it is no renewal either."""
+        expiring = _grant(
+            db,
+            families=[RUNS],
+            expires_at=NOW + timedelta(days=3),
+            constraints={"approver_purposes": ["security-champion"]},
+        )
+        _grant(db, families=[RUNS], expires_at=NOW + timedelta(days=33))
+
+        [notice] = _notices(db)
+
+        assert notice.delegation_id == expiring and notice.expiring is True
+
+    def test_the_same_purposes_do_renew(self, db) -> None:
+        scoped = {"approver_purposes": ["security-champion"]}
+        _grant(db, families=[RUNS], expires_at=NOW + timedelta(days=3), constraints=scoped)
+        _grant(db, families=[RUNS], expires_at=NOW + timedelta(days=33), constraints=scoped)
+
+        assert _notices(db) == []
 
     def test_a_renewed_delegation_says_nothing(self, db) -> None:
         _grant(db, families=[RUNS], expires_at=NOW + timedelta(days=3))

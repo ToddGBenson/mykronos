@@ -32,7 +32,12 @@ from typing import Any
 
 from sqlalchemy import select
 
-from mykronos.approvals.engine import _active_delegation, approver_purposes, delegation_live
+from mykronos.approvals.engine import (
+    _active_delegation,
+    approver_purposes,
+    delegation_covers,
+    delegation_live,
+)
 from mykronos.db.models import Delegation
 
 #: How far ahead an expiring delegation is surfaced.
@@ -54,6 +59,8 @@ class DelegationNotice:
     uncovered_tiers: tuple[str, ...] = ()
     #: Within `EXPIRY_LEAD` of `expires_at`, with nothing renewing it.
     expiring: bool = False
+    #: The reviewer runs in shadow mode, so the mismatch refuses nothing yet.
+    shadow: bool = False
 
     @property
     def short_id(self) -> str:
@@ -81,11 +88,21 @@ class DelegationNotice:
     def so_what(self) -> str:
         parts = []
         if self.reviewer_model:
-            parts.append(
-                f"The reviewer can approve no {self.duty} {'+'.join(self.uncovered_tiers)} "
-                "request: each review it starts is refused (409) and the request waits for "
-                f"a person. Propose a delegation naming {self.reviewer_model}."
-            )
+            scope = f"{self.duty} {'+'.join(self.uncovered_tiers)}"
+            if self.shadow:
+                # In shadow mode `run_review` skips the preflight: nothing is
+                # refused yet, so say what going live would do.
+                why = (
+                    f"Once the reviewer is live it can approve no {scope} request: each "
+                    "review it starts would be refused (409) and the request would wait "
+                    "for a person."
+                )
+            else:
+                why = (
+                    f"The reviewer can approve no {scope} request: each review it starts "
+                    "is refused (409) and the request waits for a person."
+                )
+            parts.append(f"{why} Propose a delegation naming {self.reviewer_model}.")
         if self.expiring:
             parts.append(
                 f"After it lapses no {'/'.join(self.families)} agent approves {self._scope()}; "
@@ -94,10 +111,20 @@ class DelegationNotice:
         return " ".join(parts)
 
 
-def _covered_at(session: Any, d: Delegation, moment: datetime) -> bool:
-    """Every (tier, family) of `d` is covered by a delegation live at `moment`."""
+def _covered_at(rows: list[Delegation], d: Delegation, moment: datetime) -> bool:
+    """Every (tier, family) of `d` is covered at `moment` by a delegation that
+    would satisfy the same approvers: same duty and the same
+    `approver_purposes`. A purpose-scoped delegation admits only a
+    person-minted credential and a family-only one only the platform reviewer
+    (`engine.decide`), so neither renews the other."""
+    purposes = sorted(approver_purposes(d))
+    successors = [
+        o
+        for o in rows
+        if o.id != d.id and o.duty == d.duty and sorted(approver_purposes(o)) == purposes
+    ]
     return all(
-        _active_delegation(session, d.duty, tier, family, moment) is not None
+        any(delegation_covers(o, tier, family, moment) for o in successors)
         for tier in (d.tiers or [])
         for family in (d.approver_families or [])
     )
@@ -141,7 +168,7 @@ def notices(
                     is None
                 )
             expiring = d.expires_at - now <= EXPIRY_LEAD and not _covered_at(
-                session, d, d.expires_at
+                rows, d, d.expires_at
             )
             if not uncovered and not expiring:
                 continue
@@ -155,6 +182,7 @@ def notices(
                     reviewer_model=model if uncovered else "",
                     uncovered_tiers=uncovered,
                     expiring=expiring,
+                    shadow=bool(uncovered) and reviewer_mode == "shadow",
                 )
             )
     return out

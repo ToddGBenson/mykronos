@@ -527,7 +527,8 @@ class TestThisRepositorysOwnModelIsPinned:
         assert "Read-EnvValue 'MYKRONOS_REVIEWER_MODEL'" not in code
         assert re.search(r"\$running = \[string\] \$shadow\.model", code)
         assert re.search(r"if \(-not \$Family\) \{ \$Family = \$running \}", code)
-        assert "if ($Family -ne $running)" in code
+        # Case-sensitive: the engine's family match is exact (Fable 5.2 on #1194).
+        assert "if ($Family -cne $running)" in code
 
     def test_each_place_is_found(self) -> None:
         """Guards the test itself: a scan that finds nothing passes anything."""

@@ -104,7 +104,7 @@ if (-not $running) {
   Stop-Here "The backend at $Api does not report the reviewer's model (GET /api/approvals/shadow-reviews has no 'model'), so it predates TheHub #61547. Deploy a current backend first. Nothing was changed."
 }
 if (-not $Family) { $Family = $running }
-if ($Family -ne $running) {
+if ($Family -cne $running) {   # case-sensitive, as the engine's family match is
   Stop-Here "-Family $Family is not the model the running reviewer uses ($running), so a delegation naming it would let the reviewer approve nothing. Run without -Family. Nothing was changed."
 }
 Write-Host "Delegating $Duty ($($Tiers -join ', ')) to the platform-started reviewer, family $Family" -ForegroundColor Cyan
