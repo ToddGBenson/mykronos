@@ -293,13 +293,9 @@ anchors:
     pip install --quiet "$spec" && exit 0
     reason="INFRASTRUCTURE, NOT A VERDICT: the mykronos uploader could not be installed from GitHub at ${MYKRONOS_REF} after 3 attempts, so no scan ran to a verdict and nothing on this commit was judged. Re-run the job once GitHub is reachable."
     echo "::error:: ${reason}" >&2
-    wrote_infra=0
     for dir in infra ../infra; do
-      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
+      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
     done
-    if [ "$wrote_infra" -eq 0 ]; then
-      echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
-    fi
     exit 75
 
   # -- No Slack hooks (TheHub #61194) ------------------------------------

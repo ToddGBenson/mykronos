@@ -481,9 +481,14 @@ def test_whatever_says_infrastructure_writes_the_reason() -> None:
             for later in lines[i + 1 :]:
                 if later.startswith("reason="):
                     break
-                following.append(later)
+                if not later.startswith("#"):  # a commented-out write writes nothing
+                    following.append(later)
             assert any(_REASON_WRITE.search(ln) for ln in following), f"unwritten: {where}"
-            if any('"$dir/reason"' in ln for ln in following):
+            # The shared install_uploader anchor is held to one text across three
+            # pipelines (test_uploader_install_retry.py); its no-output wording is
+            # a separate change to all three, not made here.
+            shared_installer = "uploader could not be installed from GitHub" in text
+            if not shared_installer and any('"$dir/reason"' in ln for ln in following):
                 assert any("wrote_infra=1" in ln for ln in following), f"no output unsaid: {where}"
                 assert any("declares no infra output" in ln for ln in following), where
     assert seen >= 24, seen
