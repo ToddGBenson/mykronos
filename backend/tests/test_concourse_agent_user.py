@@ -24,6 +24,7 @@ OPERATOR_TASKS = ROOT / "docs" / "OPERATOR-TASKS.md"
 
 OWNER = "CONCOURSE_LOCAL_USER"
 AGENT = "CONCOURSE_AGENT_USER"
+VIEWER = "CONCOURSE_HUB_VIEWER_USER"
 
 
 def _compose() -> dict:
@@ -45,6 +46,8 @@ DUMMY = {
     "CONCOURSE_LOCAL_PASSWORD": "owner-pass",
     AGENT: "agent-name",
     "CONCOURSE_AGENT_PASSWORD": "agent-pass",
+    VIEWER: "viewer-name",
+    "CONCOURSE_HUB_VIEWER_PASSWORD": "viewer-pass",
 }
 
 
@@ -58,14 +61,17 @@ def _role_users(name: str) -> list[str]:
     return roles[name]["local"]["users"]
 
 
-def test_both_users_are_added_and_both_are_required() -> None:
+def test_every_user_is_added_and_every_one_is_required() -> None:
     raw = _web_env()["CONCOURSE_ADD_LOCAL_USER"]
-    for name in (OWNER, "CONCOURSE_LOCAL_PASSWORD", AGENT, "CONCOURSE_AGENT_PASSWORD"):
+    for name in (OWNER, "CONCOURSE_LOCAL_PASSWORD", AGENT, "CONCOURSE_AGENT_PASSWORD",
+                 VIEWER, "CONCOURSE_HUB_VIEWER_PASSWORD"):
         assert re.search(rf"\$\{{{name}:\?[^}}]+\}}", raw), (
             f"{name} is not a required (`:?`) variable in CONCOURSE_ADD_LOCAL_USER"
         )
     # Comma-separated USER:PASSWORD pairs, owner first.
-    assert _resolve(raw, DUMMY) == "operator-name:owner-pass,agent-name:agent-pass"
+    assert _resolve(raw, DUMMY) == (
+        "operator-name:owner-pass,agent-name:agent-pass,viewer-name:viewer-pass"
+    )
 
 
 def test_the_main_team_is_configured_by_the_mounted_file() -> None:
@@ -87,9 +93,24 @@ def test_the_operator_keeps_owner() -> None:
 
 def test_the_agent_is_pipeline_operator_and_nothing_more() -> None:
     names = [r["name"] for r in _team_config()["roles"]]
-    assert sorted(names) == ["owner", "pipeline-operator"]
+    assert sorted(names) == ["owner", "pipeline-operator", "viewer"]
     assert _role_users("pipeline-operator") == [DUMMY[AGENT]]
     assert DUMMY[AGENT] not in _role_users("owner")
+
+
+def test_the_hub_viewer_is_viewer_and_nothing_more() -> None:
+    """TheHub #61752: the Ops Dashboard reads /api/v1/workers as this user.
+    It must hold viewer alone; the Hub's reader also refuses it otherwise."""
+    assert _role_users("viewer") == [DUMMY[VIEWER]]
+    for role in _team_config()["roles"]:
+        if role["name"] != "viewer":
+            assert DUMMY[VIEWER] not in role["local"]["users"], role["name"]
+
+
+def test_a_fresh_env_has_the_hub_viewer_pair() -> None:
+    setup = SETUP.read_text(encoding="utf-8")
+    assert f'"{VIEWER}=' in setup
+    assert '"CONCOURSE_HUB_VIEWER_PASSWORD=$(New-Secret)"' in setup
 
 
 def test_every_role_user_is_a_user_who_can_log_in() -> None:

@@ -82,3 +82,19 @@ command against this stack, including those inside `vault-init.ps1`,
 moment the checkout has this change until `.env` has them; running
 containers are unaffected. The operator steps therefore run `-Provision`
 immediately after updating the checkout, and it never calls compose.
+
+**Addendum 2026-11-19: a third user, TheHub's viewer (TheHub #61752).** The
+Ops Dashboard's workers row reads `/api/v1/workers`, which answers 401
+anonymously. Operator decision 2026-11-18 (option 1): a dedicated local user
+for TheHub holding `viewer` on main and nothing more, created and stored by
+the operator script `Create-ConcourseViewer-OPS6.ps1` (mykronos-operator).
+`CONCOURSE_HUB_VIEWER_USER` and `CONCOURSE_HUB_VIEWER_PASSWORD` are a third
+required pair in `CONCOURSE_ADD_LOCAL_USER`, and the team config gains a
+`viewer` role naming that user; `setup.ps1` writes the pair for a new host.
+`viewer` can read pipelines, builds, resources and workers; it cannot
+trigger, rerun, abort, pause, pin or set anything. TheHub's reader also reads
+the roles back after each login and refuses the credential if it ever holds
+more than viewer. As with the agents' pair, every `docker compose` command
+against this stack fails from the moment the checkout has this change until
+`.env` has the pair, so the script writes `.env` first and refuses to
+recreate the web node until the checkout carries this change.
