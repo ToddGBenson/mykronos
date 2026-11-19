@@ -682,3 +682,57 @@ class TestTheRestoreIsConfirmedInFull:
         assert code == 3, output
         assert "DEPLOY-PRE-MOVE-REFUSAL kind=restore_refused" in output
         assert "replayed copy" in output
+
+
+class TestTheLedgerIsReadInOnePass:
+    """TheHub #61730 (2): `Get-RestoreTarget` appended every ledger entry to a
+    PowerShell array (`+=` copies the whole array each time) and then walked
+    the entries again for the nonce check, so a restore's cost grew with the
+    square of a ledger that only ever grows."""
+
+    @staticmethod
+    def _body() -> str:
+        text = SCRIPT.read_text(encoding="utf-8")
+        start = text.index("function Get-RestoreTarget")
+        return text[start:text.index("\nfunction ", start)]
+
+    def test_no_entry_is_appended_to_an_array(self) -> None:
+        body = self._body()
+        assert "+=" not in body, "an array append inside the scan copies the array"
+        assert "$entries" not in body, "the entries are not collected for a second walk"
+
+    def test_a_long_ledger_still_restores_and_still_catches_a_replay(
+        self, tmp_path: Path
+    ) -> None:
+        self._failed_deploy_with_history(tmp_path, 2000)
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING, running=FAILED, down=True
+        )
+        assert code == 0, output
+        assert "RESTORE of 0e9a88860000" in output
+
+    def test_a_replay_behind_a_long_history_is_refused(self, tmp_path: Path) -> None:
+        self._failed_deploy_with_history(tmp_path, 2000)
+        path = _ledger_path(tmp_path)
+        line = next(x for x in path.read_text(encoding="utf-8").splitlines()
+                    if json.loads(x)["event"] == "deploying")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+        code, output, _, _ = deploy(
+            tmp_path, [], "-Restore", tag=RUNNING, running=FAILED, down=True
+        )
+
+        assert code == 3, output
+        assert "replayed copy" in output
+
+    @staticmethod
+    def _failed_deploy_with_history(tmp_path: Path, lines: int) -> None:
+        """`lines` older entries, each with its own nonce, then a deploy."""
+        path = _ledger_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for i in range(lines):
+                f.write(json.dumps({"event": "checked", "tag": TAG, "nonce": f"old{i}"}) + "\n")
+        code, output, _, _ = deploy(tmp_path, [ALLOW])
+        assert code == 0, output

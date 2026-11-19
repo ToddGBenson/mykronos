@@ -389,9 +389,14 @@ function Get-RestoreTarget {
     } catch {
         return (& $no "the deploy ledger could not be read: $($_.Exception.Message)")
     }
+    # One pass (TheHub #61730): the ledger only grows, and appending to a
+    # PowerShell array copies it, so collecting every entry first and then
+    # walking them again was quadratic in the ledger's length. Each nonce's
+    # first position is all the replay check below needs.
     $last = $null
     $lastIndex = -1
-    $entries = @()
+    $index = -1
+    $firstNonce = [System.Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
     foreach ($line in $lines) {
         if (-not "$line".Trim()) { continue }
         try {
@@ -399,10 +404,14 @@ function Get-RestoreTarget {
         } catch {
             return (& $no "a deploy ledger line is not JSON, so the ledger was edited or damaged")
         }
-        $entries += , $entry
+        $index++
+        if ($entry -and $entry.PSObject.Properties.Name -contains "nonce") {
+            $nonce = [string]$entry.nonce
+            if (-not $firstNonce.ContainsKey($nonce)) { $firstNonce[$nonce] = $index }
+        }
         if ($entry -and $entry.PSObject.Properties.Name -contains "event" -and $entry.event -eq "deploying") {
             $last = $entry
-            $lastIndex = $entries.Count - 1
+            $lastIndex = $index
         }
     }
     if (-not $last) { return (& $no "the ledger records no deploy, so there is no prior sha to restore") }
@@ -410,12 +419,8 @@ function Get-RestoreTarget {
     # every deploy draws fresh: the latest deploying line's nonce on any
     # earlier line means the line is a replay, whatever the running stamp says.
     $lastNonce = [string]$last.nonce
-    for ($i = 0; $i -lt $lastIndex; $i++) {
-        $earlier = $entries[$i]
-        if ($earlier -and $earlier.PSObject.Properties.Name -contains "nonce" -and $lastNonce -and
-            ([string]$earlier.nonce) -ceq $lastNonce) {
-            return (& $no "the most recent deploy line repeats an earlier line's nonce, so it is a replayed copy")
-        }
+    if ($lastNonce -and $firstNonce.ContainsKey($lastNonce) -and $firstNonce[$lastNonce] -lt $lastIndex) {
+        return (& $no "the most recent deploy line repeats an earlier line's nonce, so it is a replayed copy")
     }
     $previous = [string]$last.previous
     if ($previous -cnotmatch '^[0-9a-f]{40}$') {
