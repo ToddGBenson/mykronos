@@ -102,6 +102,7 @@ cannot disagree. The agent learns before it asks whether a person will be involv
 | 2 | `toxic_combination` | `toxic.detect` | Any one member closes and the combination stops firing |
 | 2 | `public_exposure` | `exposure.summary`, endpoints with a high or critical observation | The next probe observes nothing at that severity |
 | 3 | `approval_needs_info` | The principal's own requests answered `needs_info`, other than pull requests | The request is decided |
+| 3 | `delegation_attention` | `delegation_notices.notices`: a live delegation the platform reviewer's model is not covered by (the same rule as the preflight 409), or one expiring within seven days with nothing renewing it (TheHub #61547) | A live delegation covers the reviewer's model for its tiers, and nothing lapses within a week unrenewed |
 | 3 | `pull_request_attention` | The principal's own `pull_request_merge` requests answered `needs_info` or rejected, and Patchwork draft pull requests no request names (TheHub #60797) | A request names a newer head, or the webhook records the pull request merged or closed |
 | 4 | `acceptance_attention` | Acceptances `review_due`, `premise_failed`, with scope drift, or expiring within 14 days | Renewed, revoked or closed; for `premise_failed`, which neither renew nor revoke accepts, every covered finding fixed or held by a new acceptance with corrected premises |
 | 5 | `token_delivery` | Tokens the rotation sweep deferred to a person | Rotated (`due`) or a scan confirmed arriving (`unverified`) |
