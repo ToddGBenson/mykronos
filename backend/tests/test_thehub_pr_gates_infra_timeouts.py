@@ -117,7 +117,7 @@ def test_the_budget_holds_a_healthy_environment_build_and_the_whole_soft_cap() -
 
 
 def _integration(tmp_path: Path, tiers_body: str, budget: str,
-                 soft: str = "300") -> subprocess.CompletedProcess[str]:
+                 soft: str = "300", stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if not bash or not shutil.which("timeout"):
         pytest.skip("bash and timeout(1) are required")
@@ -135,7 +135,7 @@ def _integration(tmp_path: Path, tiers_body: str, budget: str,
     # From a file, not `bash -c`: Git Bash on Windows truncates a long argv.
     (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
     return subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
-                          timeout=90, env=env)
+                          timeout=90, env=env, input=stdin)
 
 
 SLOW_ENVIRONMENT = (
@@ -209,6 +209,47 @@ def test_a_run_inside_the_budget_is_untouched(tmp_path: Path) -> None:
     r = _integration(tmp_path, "exit 1\n", budget="60")
     assert r.returncode == 1, r.stdout + r.stderr
     assert not (tmp_path / "memory-infra").exists()
+
+
+# -- the task's stdin (TheHub pr-gates cancelled since #1177) -----------------
+# On the containerd `linux` workers a task's stdin is a terminal. timeout(1)
+# puts container-tiers in a process group that is not the terminal's
+# foreground group, so apt-get, resetting the terminal as it finishes, gets
+# SIGTTOU and stops until the 840s budget ends it. Measured 2026-11-19 with
+# `fly execute` on linux-1, the PGDG postgresql-16 + pgvector + redis install
+# container-tiers makes: terminal stdin, apt-get in state T after ~50s and
+# still there at 240s; stdin from /dev/null, done in 47s. Six pr-gates heads
+# were cancelled this way (builds 1763-1768, 1783, 1784: linux-1, -2 and -3).
+
+
+def test_container_tiers_runs_with_stdin_from_dev_null() -> None:
+    script = _step("integration")["config"]["run"]["args"][-1]
+    calls = [line.strip() for line in script.splitlines()
+             if "container-tiers.sh pr subset" in line and not line.strip().startswith("#")]
+    assert len(calls) == 2, calls
+    assert all(call.endswith("< /dev/null") for call in calls), calls
+
+
+def test_container_tiers_cannot_read_the_tasks_stdin(tmp_path: Path) -> None:
+    """Executed: whatever the task's stdin holds, the script sees end of file."""
+    tiers = ('if IFS= read -r line; then echo "STDIN:$line"; exit 1; fi\n'
+             "exit 0\n")
+    r = _integration(tmp_path, tiers, budget="60", stdin="a line on the terminal\n")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "STDIN:" not in r.stdout
+
+
+def test_an_overrun_shows_the_last_phases_log(tmp_path: Path) -> None:
+    """container-tiers tails a phase's log only when the phase fails, and a
+    kill is not a failure: the overrun says where the time went."""
+    tiers = ('mkdir -p "$CONTAINER_TIERS_OUT"\n'
+             "echo 'Setting up postgresql-16 (16.16-1.pgdg13+1) ...' \\\n"
+             '  > "$CONTAINER_TIERS_OUT/apt.log"\n'
+             + SLOW_ENVIRONMENT)
+    r = _integration(tmp_path, tiers, budget="2")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "the last phase's log, apt.log:" in r.stdout
+    assert "Setting up postgresql-16" in r.stdout
 
 
 # -- the reporter, executed on what A1 leaves behind --------------------------
