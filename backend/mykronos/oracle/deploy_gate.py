@@ -117,7 +117,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from mykronos import blast_radius, risk_evidence
 from mykronos.db.models import OracleRatchetCreep, OracleRatchetLatch, RepoOnboarding
@@ -439,12 +440,78 @@ def note_score(
 # -- the creep ledger -----------------------------------------------------------
 
 
-def _pending(row: OracleRatchetCreep) -> dict[str, dict[str, Any]]:
+def _pending(pending_json: str | None) -> dict[str, dict[str, Any]]:
     try:
-        value = json.loads(row.pending_json or "{}")
+        value = json.loads(pending_json or "{}")
     except (TypeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+#: How many times a creep-ledger write re-reads after losing a race before it
+#: gives up. Giving up raises, and the caller refuses (rule (c)).
+_SWAP_ATTEMPTS = 8
+
+
+class CreepLedgerContended(RuntimeError):
+    """The creep row kept changing under a read-modify-write."""
+
+
+def _read_creep(db: Database, repo_full_name: str) -> tuple[float, str, str] | None:
+    """The creep row's three content columns, as seen now; None when absent."""
+    with db.session() as session:
+        row = session.get(OracleRatchetCreep, repo_full_name)
+        if row is None:
+            return None
+        return (row.accepted_creep, row.confirmed_sha, row.pending_json)
+
+
+def _write_creep(
+    db: Database,
+    repo_full_name: str,
+    seen: tuple[float, str, str] | None,
+    *,
+    accepted_creep: float,
+    confirmed_sha: str,
+    pending_json: str,
+) -> bool:
+    """Write the creep row only if it is still what `seen` read (TheHub #61730).
+
+    A compare-and-swap on every column the new value was computed from, so a
+    concurrent writer between the read and this write (two deploy-gate calls
+    run on worker threads side by side) makes this return False rather than
+    be silently overwritten: a pending rise dropped, or entries a settle had
+    cleared written back. Comparing content rather than a version counter is
+    safe here because the new value depends on nothing else. An insert that
+    loses to another insert is the same False.
+    """
+    try:
+        with db.session() as session:
+            if seen is None:
+                session.add(OracleRatchetCreep(
+                    repo_full_name=repo_full_name, accepted_creep=accepted_creep,
+                    confirmed_sha=confirmed_sha, pending_json=pending_json,
+                    updated_at=utcnow(),
+                ))
+                session.flush()
+                return True
+            result = session.execute(
+                update(OracleRatchetCreep)
+                .where(
+                    OracleRatchetCreep.repo_full_name == repo_full_name,
+                    OracleRatchetCreep.accepted_creep == seen[0],
+                    OracleRatchetCreep.confirmed_sha == seen[1],
+                    OracleRatchetCreep.pending_json == seen[2],
+                )
+                .values(
+                    accepted_creep=accepted_creep, confirmed_sha=confirmed_sha,
+                    pending_json=pending_json, updated_at=utcnow(),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            return int(getattr(result, "rowcount", 0) or 0) == 1
+    except IntegrityError:
+        return False
 
 
 def settle_creep(
@@ -468,57 +535,76 @@ def settle_creep(
     the store cannot be read or written, or the change cannot be measured;
     the caller refuses, because an unreadable ledger must not read as "no
     creep".
+
+    The write is a compare-and-swap against what was read (`_write_creep`),
+    retried on a lost race, and `measure` runs outside any transaction.
     """
     deployed = (deployed_sha or "").strip().lower()
-    with db.session() as session:
-        row = session.get(OracleRatchetCreep, repo_full_name)
-        if row is None:
+    measured: dict[tuple[str, str], float] = {}
+    for _ in range(_SWAP_ATTEMPTS):
+        seen = _read_creep(db, repo_full_name)
+        if seen is None:
             if not deployed:
                 return 0.0
-            row = OracleRatchetCreep(
-                repo_full_name=repo_full_name, accepted_creep=0.0, confirmed_sha=deployed,
-                pending_json="{}", updated_at=utcnow(),
-            )
-            session.add(row)
-            return 0.0
-        confirmed = (row.confirmed_sha or "").strip().lower()
-        if deployed and not _same(deployed, confirmed):
-            pending = _pending(row)
-            match = next((sha for sha in pending if _same(sha, deployed)), None)
-            if match is not None:
-                delta = float(pending[match].get("delta") or 0.0)
-            elif confirmed:
-                delta = float(measure(confirmed, deployed))
-            else:
-                delta = 0.0  # the starting point: nothing earlier to measure from
-            row.accepted_creep = max(0.0, float(row.accepted_creep or 0.0) + delta)
-            row.confirmed_sha = deployed
-            row.pending_json = "{}"
-            row.updated_at = utcnow()
-        return float(row.accepted_creep or 0.0)
+            if _write_creep(
+                db, repo_full_name, None,
+                accepted_creep=0.0, confirmed_sha=deployed, pending_json="{}",
+            ):
+                return 0.0
+            continue
+        accepted = float(seen[0] or 0.0)
+        confirmed = (seen[1] or "").strip().lower()
+        if not deployed or _same(deployed, confirmed):
+            return accepted
+        pending = _pending(seen[2])
+        match = next((sha for sha in pending if _same(sha, deployed)), None)
+        if match is not None:
+            delta = float(pending[match].get("delta") or 0.0)
+        elif confirmed:
+            key = (confirmed, deployed)
+            if key not in measured:
+                measured[key] = float(measure(confirmed, deployed))
+            delta = measured[key]
+        else:
+            delta = 0.0  # the starting point: nothing earlier to measure from
+        settled = max(0.0, accepted + delta)
+        if _write_creep(
+            db, repo_full_name, seen,
+            accepted_creep=settled, confirmed_sha=deployed, pending_json="{}",
+        ):
+            return settled
+    raise CreepLedgerContended(
+        f"the creep ledger for {repo_full_name} kept changing; nothing was settled"
+    )
 
 
 def record_pending(
     db: Database, repo_full_name: str, *, candidate: str, baseline: str, delta: float
 ) -> None:
-    """Remember an allowed deploy's delta until the candidate is seen running."""
-    with db.session() as session:
-        row = session.get(OracleRatchetCreep, repo_full_name)
-        if row is None:
-            row = OracleRatchetCreep(
-                repo_full_name=repo_full_name, accepted_creep=0.0, confirmed_sha="",
-                pending_json="{}",
-            )
-            session.add(row)
-        pending = _pending(row)
+    """Remember an allowed deploy's delta until the candidate is seen running.
+
+    A compare-and-swap like `settle_creep`'s, so a concurrent record or settle
+    is never overwritten with this call's stale copy of the pending set.
+    """
+    for _ in range(_SWAP_ATTEMPTS):
+        seen = _read_creep(db, repo_full_name)
+        pending = {} if seen is None else _pending(seen[2])
         pending.pop(candidate, None)
         pending[candidate] = {
             "delta": round(float(delta), 4), "baseline": baseline, "at": utcnow().isoformat(),
         }
         while len(pending) > _PENDING_CAP:
             pending.pop(next(iter(pending)))
-        row.pending_json = json.dumps(pending)
-        row.updated_at = utcnow()
+        if _write_creep(
+            db, repo_full_name, seen,
+            accepted_creep=0.0 if seen is None else seen[0],
+            confirmed_sha="" if seen is None else seen[1],
+            pending_json=json.dumps(pending),
+        ):
+            return
+    raise CreepLedgerContended(
+        f"the creep ledger for {repo_full_name} kept changing; the pending rise was not recorded"
+    )
 
 
 def ratchet_state(db: Database, repo_full_name: str) -> tuple[bool, tuple[Any, ...] | None]:
