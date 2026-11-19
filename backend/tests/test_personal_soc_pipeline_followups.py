@@ -440,6 +440,93 @@ def test_an_apt_deadline_on_a_task_with_no_infra_output_says_it_reports_failure(
     assert "declares no infra output, so the check reports failure, not cancelled" in r.stderr
 
 
+_INSTALL_CALL = 'bash -c "$MYKRONOS_INSTALL_UPLOADER"'
+
+
+def _install_blocks() -> list[tuple[str, str]]:
+    """Each uploader install deadline and its handler, from `if timeout` to
+    the `fi` that closes it, as the task runs it."""
+    blocks = []
+    for job, task in _all_tasks():
+        lines = _script(task).splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() != _INSTALL_CALL:
+                continue
+            start = i - 1
+            assert _INSTALL_DEADLINE.match(lines[start].strip()), f"{job}/{task['task']}"
+            indent = len(lines[start]) - len(lines[start].lstrip())
+            end = next(
+                j
+                for j in range(i, len(lines))
+                if lines[j].strip() == "fi" and len(lines[j]) - len(lines[j].lstrip()) == indent
+            )
+            blocks.append((f"{job}/{task['task']}", "\n".join(lines[start : end + 1])))
+    return blocks
+
+
+def test_the_install_blocks_are_all_found() -> None:
+    assert len(_install_blocks()) == 7
+
+
+def _run_install(
+    tmp_path: Path, block: str, rc: int, *, infra: bool
+) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required to execute the install step")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "timeout"
+    stub.write_text(f"#!/bin/sh\nexit {rc}\n", encoding="utf-8")
+    stub.chmod(0o755)
+    if infra:
+        (tmp_path / "infra").mkdir()
+    return subprocess.run(
+        [bash, "-c", block + "\necho after-install"],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "MYKRONOS_INSTALL_UPLOADER": "exit 0",
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.parametrize("infra", [True, False], ids=["infra", "no-infra"])
+@pytest.mark.parametrize("where,block", _install_blocks(), ids=lambda v: v if "/" in v else None)
+def test_an_install_timeout_handler_runs_both_ways(
+    tmp_path: Path, where: str, block: str, infra: bool
+) -> None:
+    """TheHub #62130. Executed, not read: with an infra output the deadline
+    writes the reason (the check says `cancelled`) and says nothing more;
+    without one it writes nothing and says the check reports `failure`."""
+    r = _run_install(tmp_path, block, 124, infra=infra)
+
+    assert r.returncode == 75, where + r.stdout + r.stderr
+    assert "after-install" not in r.stdout
+    assert "INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish" in r.stderr
+    if infra:
+        reason = (tmp_path / "infra" / "reason").read_text()
+        assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: the uploader install")
+        assert "(exit 124)" in reason
+        assert "declares no infra output" not in r.stderr
+    else:
+        assert not (tmp_path / "infra").exists()
+        assert "declares no infra output, so the check reports failure, not cancelled" in r.stderr
+
+
+@pytest.mark.parametrize("where,block", _install_blocks(), ids=lambda v: v if "/" in v else None)
+def test_an_install_that_works_carries_on(tmp_path: Path, where: str, block: str) -> None:
+    r = _run_install(tmp_path, block, 0, infra=True)
+
+    assert r.returncode == 0, where + r.stdout + r.stderr
+    assert "after-install" in r.stdout
+    assert not (tmp_path / "infra" / "reason").exists()
+
+
 @pytest.mark.parametrize("where,block", _apt_blocks(), ids=lambda v: v if "/" in v else None)
 def test_an_apt_failure_is_worded_by_its_exit_code(tmp_path: Path, where: str, block: str) -> None:
     """Fable nit on #1191: exit 100 is apt failing, not a deadline."""
@@ -484,11 +571,9 @@ def test_whatever_says_infrastructure_writes_the_reason() -> None:
                 if not later.startswith("#"):  # a commented-out write writes nothing
                     following.append(later)
             assert any(_REASON_WRITE.search(ln) for ln in following), f"unwritten: {where}"
-            # The shared install_uploader anchor is held to one text across three
-            # pipelines (test_uploader_install_retry.py); its no-output wording is
-            # a separate change to all three, not made here.
-            shared_installer = "uploader could not be installed from GitHub" in text
-            if not shared_installer and any('"$dir/reason"' in ln for ln in following):
+            # [TheHub #62130] No exemption for the shared install_uploader
+            # anchor any more: it says so too, in all three pipelines.
+            if any('"$dir/reason"' in ln for ln in following):
                 assert any("wrote_infra=1" in ln for ln in following), f"no output unsaid: {where}"
                 assert any("declares no infra output" in ln for ln in following), where
     assert seen >= 24, seen
