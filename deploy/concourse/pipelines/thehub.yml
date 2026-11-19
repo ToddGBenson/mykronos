@@ -2344,11 +2344,15 @@ jobs:
                         # a collection error is a red summary to the classifier
                         # ("1 error in ..."), a clean collection has no pass/fail
                         # summary and reads green on exit 0. ADR 0095 amendment.
+                        # [TheHub #62142] stdin from /dev/null, as pr-gates'
+                        # integration subset (#1199): this runs on the `linux`
+                        # workers, where a task's stdin is a terminal and
+                        # timeout(1)'s process group is not its foreground one.
                         if command -v timeout >/dev/null 2>&1; then
                           python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
-                            python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
+                            python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider < /dev/null
                         else
-                          python -c "$MEMORY_GUARD" python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider
+                          python -c "$MEMORY_GUARD" python -m pytest tests/unit tests/integration tests/security --collect-only -q -p no:cacheprovider < /dev/null
                         fi
                       ) > "$1" 2>&1
                       rc=$?
@@ -3502,9 +3506,10 @@ jobs:
                     # group of its own, which is not the terminal's foreground
                     # group. apt-get resets the terminal when it finishes, gets
                     # SIGTTOU and stops: `T` in /proc, a stopped apt-get after
-                    # ~50s of real work, until the budget ends it at 840s. The
-                    # host's guardian workers give no terminal, so it never
-                    # showed there.
+                    # ~50s of real work, until the budget ends it at 840s. It
+                    # never showed on the host's guardian workers; that they
+                    # give a task no terminal is inferred from that, not
+                    # measured (TheHub #62142).
                     run_tiers() {
                       if [ -n "$TIMER" ]; then
                         "$TIMER" -s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset < /dev/null
@@ -6019,7 +6024,14 @@ jobs:
                       echo "::error::so its deploy tiers cannot be run in its image. Judge a newer commit."
                       exit 2
                     fi
-                    bash source/scripts/ci/container-tiers.sh source all
+                    # [TheHub #62142] stdin from /dev/null, as pr-gates'
+                    # integration subset (#1199). On the `linux` workers a
+                    # task's stdin is a terminal, and container-tiers' apt-get
+                    # stopped on SIGTTOU there under timeout(1). This call has
+                    # no timeout(1) today, so it was not seen to stop here;
+                    # the redirect keeps it that way if one is added, and the
+                    # script needs no terminal either way.
+                    bash source/scripts/ci/container-tiers.sh source all < /dev/null
                     RC=$?
                     if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
                       mkdir -p memory-infra
