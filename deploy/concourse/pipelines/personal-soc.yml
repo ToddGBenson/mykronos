@@ -293,9 +293,13 @@ anchors:
     pip install --quiet "$spec" && exit 0
     reason="INFRASTRUCTURE, NOT A VERDICT: the mykronos uploader could not be installed from GitHub at ${MYKRONOS_REF} after 3 attempts, so no scan ran to a verdict and nothing on this commit was judged. Re-run the job once GitHub is reachable."
     echo "::error:: ${reason}" >&2
+    wrote_infra=0
     for dir in infra ../infra; do
-      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
     done
+    if [ "$wrote_infra" -eq 0 ]; then
+      echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+    fi
     exit 75
 
   # -- No Slack hooks (TheHub #61194) ------------------------------------
@@ -726,9 +730,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -879,9 +887,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -1000,9 +1012,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
@@ -1174,9 +1190,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
@@ -1233,9 +1253,10 @@ jobs:
                     if [ "$scanned" -eq 0 ]; then
                       echo "::error:: checkov wrote no report, and Mykronos never answered the upload (uploader"
                       echo "          exit ${up_rc}). The scan failed either way; this is not an outage."
+                      echo "          Nothing was filed with MyKronos, so the dashboard has not heard that this scan broke."
                       exit 1
                     fi
-                    reason="INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered the IaC upload (uploader exit ${up_rc}, transport errors only), so nothing from this scan was ingested or judged. The reason is in the uploader's output above."
+                    reason="INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered the IaC upload (uploader exit ${up_rc}; its last attempt ended in a transport error and no HTTP status was logged), so nothing from this scan was ingested or judged. The reason is in the uploader's output above."
                     echo "::error:: ${reason}"
                     printf '%s\n' "$reason" > ../infra/reason
                     echo "*personal-soc / iac*: the scan ran but Mykronos never answered its upload (exit ${up_rc}) - nothing was ingested." > ../notify/message.txt
@@ -1330,9 +1351,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -1598,9 +1623,13 @@ jobs:
                       if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                         reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                         echo "::error:: ${reason}" >&2
+                        wrote_infra=0
                         for dir in infra ../infra; do
-                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                         done
+                        if [ "$wrote_infra" -eq 0 ]; then
+                          echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                        fi
                         exit 75
                       fi
                       echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -1613,9 +1642,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
@@ -1726,9 +1759,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2098,9 +2135,13 @@ jobs:
                       if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                         reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                         echo "::error:: ${reason}" >&2
+                        wrote_infra=0
                         for dir in infra ../infra; do
-                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                         done
+                        if [ "$wrote_infra" -eq 0 ]; then
+                          echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                        fi
                         exit 75
                       fi
                       echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2113,9 +2154,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
@@ -2213,9 +2258,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2510,9 +2559,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2640,9 +2693,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2763,9 +2820,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2914,9 +2975,13 @@ jobs:
                       if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                         reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                         echo "::error:: ${reason}" >&2
+                        wrote_infra=0
                         for dir in infra ../infra; do
-                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                         done
+                        if [ "$wrote_infra" -eq 0 ]; then
+                          echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                        fi
                         exit 75
                       fi
                       echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -2929,9 +2994,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
@@ -3052,9 +3121,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -3346,9 +3419,13 @@ jobs:
                       if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                         reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                         echo "::error:: ${reason}" >&2
+                        wrote_infra=0
                         for dir in infra ../infra; do
-                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                         done
+                        if [ "$wrote_infra" -eq 0 ]; then
+                          echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                        fi
                         exit 75
                       fi
                       echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -3361,9 +3438,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
@@ -3476,9 +3557,13 @@ jobs:
                     if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -3621,9 +3706,13 @@ jobs:
                       if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
                         reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
                         echo "::error:: ${reason}" >&2
+                        wrote_infra=0
                         for dir in infra ../infra; do
-                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                          if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                         done
+                        if [ "$wrote_infra" -eq 0 ]; then
+                          echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                        fi
                         exit 75
                       fi
                       echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
@@ -3636,9 +3725,13 @@ jobs:
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
                       echo "::error:: ${reason}" >&2
+                      wrote_infra=0
                       for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
                       done
+                      if [ "$wrote_infra" -eq 0 ]; then
+                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+                      fi
                       exit 75
                     fi
                     exit "$inst_rc"
