@@ -124,11 +124,11 @@ def _run_iac(
     # (Fable nit 1 on #1191).
     script = (
         _iac_task()["config"]["run"]["args"][-1]
-        .replace("/tmp/results", str(results))
-        .replace("/tmp/iac-upload.log", str(tmp_path / "iac-upload.log"))
-        .replace("/tmp/uploader", str(tmp_path / "uploader"))
+        .replace("/tmp/results", results.as_posix())
+        .replace("/tmp/iac-upload.log", (tmp_path / "iac-upload.log").as_posix())
+        .replace("/tmp/uploader", (tmp_path / "uploader").as_posix())
     )
-    assert "/tmp/" not in script.replace(str(tmp_path), ""), "an absolute /tmp path is shared"
+    assert "/tmp/" not in script.replace(tmp_path.as_posix(), ""), "an absolute /tmp path is shared"
     return subprocess.run(
         [bash, "-e", "-s"],
         input=_STUBS + script,
@@ -143,7 +143,7 @@ def _run_iac(
             "UPLOAD_LOG": upload_log,
             "INSTALL_RC": str(install_rc),
             "WRITE_SARIF": "1" if sarif else "0",
-            "RESULTS": str(results),
+            "RESULTS": results.as_posix(),
         },
         cwd=tmp_path,
         capture_output=True,
