@@ -57,10 +57,11 @@ from mykronos.agents import TOKEN_PREFIX
 from mykronos.approvals.engine import (
     ApprovalError,
     _active_delegation,
+    approver_purposes,
     decide,
     independence_violations,
 )
-from mykronos.approvals.policy import ApprovalPolicy
+from mykronos.approvals.policy import ApprovalPolicy, Independence
 from mykronos.auth import hash_token
 from mykronos.db.models import (
     AgentCredential,
@@ -247,27 +248,51 @@ def _load(db: Any, request_id: str) -> dict[str, Any]:
 
 
 def _preflight(db: Any, policy: ApprovalPolicy, req: dict[str, Any], family: str) -> None:
-    """Refuse before spending anything on a review `decide` would refuse anyway."""
+    """Refuse before spending anything on a review `decide` would refuse anyway.
+
+    Exactly when `decide` would, for the reviewer as `decide` will see it
+    (TheHub #62132). It used to ask for a delegation without the approver, so
+    one that names `approver_purposes` - which admits only a person-minted
+    credential, never the platform reviewer - passed here, the review ran,
+    and `decide` refused it. And it read the tier's independence rules
+    without the `fresh_context` a family-only delegation adds in `decide`.
+    """
     tier = policy.duty(req["duty"]).tiers[req["tier"]]
     if tier.admits(ActorKind.AGENT.value) is None:
         raise ApprovalError(
             f"'{req['duty']}' tier '{tier.name}' does not admit an agent approver; "
             "it needs a person."
         )
+    prospective = prospective_reviewer(family)
+    refusals: list[str] = []
     with db.session() as session:
-        if _active_delegation(session, req["duty"], tier.name, family, utcnow()) is None:
+        delegation = _active_delegation(
+            session,
+            req["duty"],
+            tier.name,
+            family,
+            utcnow(),
+            approver=prospective,
+            refusals=refusals,
+        )
+        if delegation is None:
             raise ApprovalError(
                 f"No active delegation lets a {family} agent approve '{req['duty']}' "
                 f"tier '{tier.name}'. A person can grant one (spec 34 §5), or decide "
                 "the request themselves."
+                + (" " + " ".join(refusals) if refusals else "")
             )
-    prospective = prospective_reviewer(family)
+        purpose_scoped = bool(approver_purposes(delegation))
+    # As `decide`: a delegation by model family alone keeps fresh_context.
+    rules = tier.independence
+    if not purpose_scoped:
+        rules = rules | {Independence.FRESH_CONTEXT}
     violations = independence_violations(
         requester_actor=req["requested_by"],
         requester_kind=req["requester_kind"],
         requester_provenance=req["requester_provenance"],
         approver=prospective,
-        rules=tier.independence,
+        rules=rules,
         single_operator_same_person_allowed=False,
     )
     if violations:

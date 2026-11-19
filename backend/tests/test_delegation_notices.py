@@ -242,6 +242,20 @@ class TestExpiry:
 
         assert _notices(db) == []
 
+    def test_another_duty_never_renews_it(self, db) -> None:
+        """TheHub #62132: `_covered_at` reads only the same duty. A longer
+        risk_acceptance delegation with the same tiers and families does not
+        renew a pull_request_merge one that lapses in three days."""
+        expiring = _grant(db, families=[RUNS], expires_at=NOW + timedelta(days=3))
+        _grant(
+            db, families=[RUNS], expires_at=NOW + timedelta(days=60), duty="risk_acceptance"
+        )
+
+        [notice] = _notices(db)
+
+        assert notice.delegation_id == expiring
+        assert notice.duty == DUTY and notice.expiring is True
+
     def test_mismatched_and_expiring_is_still_one_item(self, db) -> None:
         _grant(db, families=[OLD], expires_at=NOW + timedelta(days=2))
 
@@ -306,6 +320,49 @@ class TestTheDailyBriefing:
         )
 
         assert lines == [] and "Delegations could not be read" in why
+
+
+class TestWithTheReviewerLive:
+    """TheHub #62132. The tests above run in the default `shadow` mode; these
+    switch the reviewer live, where a missing delegation refuses for real, and
+    count what each surface shows for the one delegation that cannot cover it."""
+
+    @pytest.fixture
+    def live(self, client) -> Any:
+        client.app.state.settings.reviewer_mode = "live"
+        assert reviewer.mode(client.app.state.settings) == "live"
+        return client
+
+    @pytest.mark.parametrize("days", [30, 2], ids=["mismatched", "mismatched-and-expiring"])
+    def test_the_work_queue_shows_one_item(self, live, admin_auth, days: int) -> None:
+        delegation_id = _grant(
+            live.app.state.db, families=[OLD], expires_at=utcnow() + timedelta(days=days)
+        )
+
+        body = live.get("/api/agent/work", headers=admin_auth).json()
+
+        items = [i for i in body["items"] if i["kind"] == "delegation_attention"]
+        assert [i["item_id"] for i in items] == [f"delegation_attention:{delegation_id}"]
+        assert "Once the reviewer is live" not in items[0]["summary"]
+
+    @pytest.mark.parametrize("days", [30, 2], ids=["mismatched", "mismatched-and-expiring"])
+    def test_the_briefing_shows_one_line(
+        self, live, admin_auth, gathered, days: int  # noqa: F811
+    ) -> None:
+        delegation_id = _grant(
+            live.app.state.db, families=[OLD], expires_at=utcnow() + timedelta(days=days)
+        )
+
+        section = _section(_get(live, admin_auth), "needs_you_today")
+
+        lines = [line for line in section["lines"] if "elegation" in line["what"]]
+        assert len(lines) == 1, lines
+        assert delegation_id[:8] in lines[0]["what"]
+        assert "is refused (409)" in lines[0]["so_what"]
+        assert "Once the reviewer is live" not in lines[0]["so_what"]
+        assert section["data"]["delegations"] == [
+            f"/api/approvals/delegations/{delegation_id}/stats"
+        ]
 
 
 def test_shadow_reviews_reports_the_running_model(client, admin_auth) -> None:
