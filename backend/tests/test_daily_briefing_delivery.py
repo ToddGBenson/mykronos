@@ -145,6 +145,83 @@ class TestReadiness:
         assert r.state != "ready"
 
 
+def _cancelled(*names: str, passed: int = 0, failed: int = 0) -> ChecksSummary:
+    summary = ChecksSummary(total=passed + failed + len(names), passed=passed)
+    summary.failed = failed + len(names)
+    for name in names:
+        summary.record(name, "cancelled")
+    for i in range(failed):
+        summary.record(f"lint-{i}", "failure")
+    return summary
+
+
+class TestAHeadNothingJudged:
+    """TheHub #61730 (3): a pull-request head whose check ended cancelled read
+    as "1 of 1 check(s) failed", and a head `pr-gates` had parked after two
+    cancelled runs was visible nowhere: the parking lives in the pipeline's
+    cache. Here it is named as not judged, with what moves it."""
+
+    def test_a_cancelled_check_is_not_judged_rather_than_failed(self) -> None:
+        r = daily_briefing.pr_readiness(
+            _open_pr(checks=_cancelled("Concourse / thehub", passed=3)), now=utcnow()
+        )
+
+        assert r.state == "red"  # GitHub still blocks the merge on it
+        assert r.not_judged == ["Concourse / thehub"]
+        assert "failed" not in r.why
+        assert "no verdict was reached" in r.why
+        assert "parked" in r.why and "pushed" in r.why
+
+    def test_the_line_says_push_again_not_fix_the_failure(self) -> None:
+        r = daily_briefing.pr_readiness(
+            _open_pr(checks=_cancelled("Concourse / thehub")), now=utcnow()
+        )
+        line = daily_briefing._pr_line(r)
+
+        assert line is not None
+        assert "Its checks failed" not in line.so_what
+        assert "push the branch again" in line.so_what
+
+    def test_a_real_failure_beside_it_is_still_a_failure(self) -> None:
+        r = daily_briefing.pr_readiness(
+            _open_pr(checks=_cancelled("Concourse / thehub", failed=1)), now=utcnow()
+        )
+        line = daily_briefing._pr_line(r)
+
+        assert r.state == "red"
+        assert r.why.startswith("1 check(s) failed.")
+        assert line is not None and "Its checks failed" in line.so_what
+
+    def test_a_github_actions_cancel_is_not_called_parked(self) -> None:
+        r = daily_briefing.pr_readiness(_open_pr(checks=_cancelled("build")), now=utcnow())
+
+        assert r.not_judged == ["build"]
+        assert "parked" not in r.why
+
+    def test_an_ordinary_failure_names_nothing_not_judged(self) -> None:
+        r = daily_briefing.pr_readiness(
+            _open_pr(checks=ChecksSummary(total=3, passed=2, failed=1)), now=utcnow()
+        )
+
+        assert r.not_judged == []
+        assert r.why == "1 of 3 check(s) failed."
+
+    def test_the_briefing_lists_it(self, client, admin_auth, github, gathered) -> None:
+        onboard_row(client)
+        attach_hub(client, FakeHub([]))
+        _pr(github, 1, title="Judged")
+        parked = _pr(github, 2, title="Parked", conclusion="cancelled")
+        github.repos[REPO].check_runs[-1]["name"] = "Concourse / thehub"
+
+        section = _section(_get(client, admin_auth), "needs_you_today")
+
+        readiness = section["data"]["pr_readiness"]
+        assert [r["number"] for r in readiness["not_judged"]] == [parked.number]
+        assert readiness["not_judged"][0]["not_judged"] == ["Concourse / thehub"]
+        line = next(x for x in section["lines"] if f"{REPO}#2" in x["what"])
+        assert "no verdict was reached" in line["what"]
+
+
 # ---------------------------------------------------------------------------
 # Needs you today
 # ---------------------------------------------------------------------------

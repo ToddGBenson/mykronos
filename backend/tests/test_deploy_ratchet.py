@@ -902,6 +902,90 @@ class TestTheCreepLedger:
             assert session.get(OracleRatchetCreep, REPO).confirmed_sha == E1
 
 
+class TestTheCreepLedgerUnderARace:
+    """TheHub #61730 (1): the pending set was read, changed in Python and
+    written back whole, so a write by a concurrent deploy-gate call between
+    the read and the write was lost. Each test lands that write at the worst
+    moment, from inside the reader's own parse of the pending set."""
+
+    @staticmethod
+    def _interleave(monkeypatch: pytest.MonkeyPatch, concurrent: Any) -> None:
+        real = deploy_gate._pending
+        fired: list[bool] = []
+
+        def racing(*args: Any) -> Any:
+            if not fired:
+                fired.append(True)
+                concurrent()
+            return real(*args)
+
+        monkeypatch.setattr(deploy_gate, "_pending", racing)
+
+    @staticmethod
+    def _row(db: Any) -> OracleRatchetCreep:
+        with db.session() as session:
+            row = session.get(OracleRatchetCreep, REPO)
+            assert row is not None
+            session.expunge(row)
+            return row
+
+    def test_two_concurrent_records_both_stay_pending(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = client.app.state.db
+        deploy_gate.settle_creep(db, REPO, D, measure=lambda a, b: 0.0)
+        self._interleave(monkeypatch, lambda: deploy_gate.record_pending(
+            db, REPO, candidate=C1, baseline=D, delta=0.3))
+
+        deploy_gate.record_pending(db, REPO, candidate=C, baseline=D, delta=0.2)
+
+        assert set(json.loads(self._row(db).pending_json)) == {C1, C}
+
+    def test_a_record_never_writes_back_what_a_settle_cleared(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = client.app.state.db
+        deploy_gate.settle_creep(db, REPO, D, measure=lambda a, b: 0.0)
+        deploy_gate.record_pending(db, REPO, candidate=C1, baseline=D, delta=0.3)
+        # C1 is seen running while another call records E1 against it.
+        self._interleave(monkeypatch, lambda: deploy_gate.settle_creep(
+            db, REPO, C1, measure=lambda a, b: 0.0))
+
+        deploy_gate.record_pending(db, REPO, candidate=E1, baseline=C1, delta=0.1)
+
+        row = self._row(db)
+        assert row.confirmed_sha == C1
+        assert row.accepted_creep == pytest.approx(0.3)
+        # C1's entry was measured against D, which no longer runs.
+        assert set(json.loads(row.pending_json)) == {E1}
+
+    def test_a_settle_that_loses_the_race_reads_again(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = client.app.state.db
+        deploy_gate.settle_creep(db, REPO, D, measure=lambda a, b: 0.0)
+        deploy_gate.record_pending(db, REPO, candidate=C1, baseline=D, delta=0.3)
+        self._interleave(monkeypatch, lambda: deploy_gate.settle_creep(
+            db, REPO, C1, measure=lambda a, b: 0.0))
+
+        # A second caller settles the same deploy: it is added once, not twice.
+        assert deploy_gate.settle_creep(
+            db, REPO, C1, measure=lambda a, b: 0.0) == pytest.approx(0.3)
+        assert self._row(db).accepted_creep == pytest.approx(0.3)
+
+    def test_a_ledger_that_never_stops_changing_is_an_error(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = client.app.state.db
+        deploy_gate.settle_creep(db, REPO, D, measure=lambda a, b: 0.0)
+        monkeypatch.setattr(deploy_gate, "_write_creep", lambda *a, **k: False)
+
+        with pytest.raises(deploy_gate.CreepLedgerContendedError):
+            deploy_gate.record_pending(db, REPO, candidate=C, baseline=D, delta=0.2)
+        with pytest.raises(deploy_gate.CreepLedgerContendedError):
+            deploy_gate.settle_creep(db, REPO, C, measure=lambda a, b: 0.0)
+
+
 class TestShouldFix:
     def test_fix_credit_uses_the_deployed_commits_first_scan(
         self, client, run_compaction, oracle_auth, viewer_auth
