@@ -164,6 +164,10 @@ def test_an_iac_upload_never_answered_is_an_infrastructure_fault(tmp_path: Path)
     assert reason.startswith("INFRASTRUCTURE, NOT A VERDICT: Mykronos never answered")
     message = (tmp_path / "notify" / "message.txt").read_text()
     assert "never answered its upload" in message
+    # TheHub #62104 AC3: the uploader logs no per-attempt statuses, so the
+    # reason claims only what the last attempt showed.
+    assert "transport errors only" not in reason
+    assert "its last attempt ended in a transport error" in reason
 
 
 def test_a_scan_with_no_report_stays_a_failure_when_the_upload_is_unanswered(
@@ -178,6 +182,8 @@ def test_a_scan_with_no_report_stays_a_failure_when_the_upload_is_unanswered(
     assert r.returncode == 1, r.stdout + r.stderr
     assert not (tmp_path / "infra" / "reason").exists()
     assert "checkov wrote no report" in r.stdout
+    # TheHub #62108 (2): say that Mykronos was told nothing.
+    assert "Nothing was filed with MyKronos" in r.stdout
 
 
 @pytest.mark.parametrize(
@@ -374,7 +380,9 @@ def _apt_blocks() -> list[tuple[str, str]]:
     return blocks
 
 
-def _run_apt(tmp_path: Path, block: str, rc: int) -> subprocess.CompletedProcess[str]:
+def _run_apt(
+    tmp_path: Path, block: str, rc: int, *, infra: bool = True
+) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("bash is required to execute the apt step")
@@ -383,7 +391,8 @@ def _run_apt(tmp_path: Path, block: str, rc: int) -> subprocess.CompletedProcess
     stub = bin_dir / "timeout"
     stub.write_text(f"#!/bin/sh\nexit {rc}\n", encoding="utf-8")
     stub.chmod(0o755)
-    (tmp_path / "infra").mkdir()
+    if infra:
+        (tmp_path / "infra").mkdir()
     return subprocess.run(
         [bash, "-c", block + "\necho after-apt"],
         env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
@@ -412,6 +421,23 @@ def test_an_apt_deadline_writes_the_reason_so_it_reports_cancelled(
         "INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline"
     )
     assert f"(exit {rc})" in reason
+    assert "declares no infra output" not in r.stderr
+
+
+@pytest.mark.parametrize("rc", [124, 137])
+@pytest.mark.parametrize("where,block", _apt_blocks(), ids=lambda v: v if "/" in v else None)
+def test_an_apt_deadline_on_a_task_with_no_infra_output_says_it_reports_failure(
+    tmp_path: Path, where: str, block: str, rc: int
+) -> None:
+    """TheHub #62104 AC1. No `infra` output means no reason file and a check
+    that says `failure`; the log line must say so, not leave INFRASTRUCTURE
+    next to a failure with no explanation."""
+    r = _run_apt(tmp_path, block, rc, infra=False)
+
+    assert r.returncode == 75, where + r.stdout + r.stderr
+    assert not (tmp_path / "infra").exists()
+    assert "INFRASTRUCTURE, NOT A VERDICT" in r.stderr
+    assert "declares no infra output, so the check reports failure, not cancelled" in r.stderr
 
 
 @pytest.mark.parametrize("where,block", _apt_blocks(), ids=lambda v: v if "/" in v else None)
@@ -430,19 +456,37 @@ def test_the_apt_blocks_are_all_found() -> None:
     assert len(_apt_blocks()) == 15
 
 
+_REASON_WRITE = re.compile(
+    r"""printf '%s\\n' "\$reason" > "?(?:\$dir|\.\./infra|infra)/reason"?"""
+)
+
+
 def test_whatever_says_infrastructure_writes_the_reason() -> None:
     """Fable must-fix (b) on #1191, as a rule for the file: a line that tells
-    the log INFRASTRUCTURE, NOT A VERDICT is a `reason=` that the same
-    script writes to infra/reason, never a bare echo that reports `failure`."""
+    the log INFRASTRUCTURE, NOT A VERDICT is a `reason=` that the same script
+    writes to infra/reason before the next `reason=`, never a bare echo that
+    reports `failure`. TheHub #62104 AC2: it is that line's own text that is
+    written, not just any `infra/reason` somewhere in the script, and a write
+    through the declared-output loop says so when it finds no output."""
+    seen = 0
     for job, task in _all_tasks():
-        script = _script(task)
-        for line in script.splitlines():
-            text = line.strip()
+        lines = [ln.strip() for ln in _script(task).splitlines()]
+        for i, text in enumerate(lines):
             if "INFRASTRUCTURE, NOT A VERDICT" not in text or text.startswith("#"):
                 continue
-            where = f"{job}/{task['task']}"
-            assert text.startswith('reason="INFRASTRUCTURE, NOT A VERDICT'), f"{where}: {text}"
-            assert '/reason"' in script or "infra/reason" in script, f"{job}/{task['task']}"
+            where = f"{job}/{task['task']}: {text}"
+            assert text.startswith('reason="INFRASTRUCTURE, NOT A VERDICT'), where
+            seen += 1
+            following = []
+            for later in lines[i + 1 :]:
+                if later.startswith("reason="):
+                    break
+                following.append(later)
+            assert any(_REASON_WRITE.search(ln) for ln in following), f"unwritten: {where}"
+            if any('"$dir/reason"' in ln for ln in following):
+                assert any("wrote_infra=1" in ln for ln in following), f"no output unsaid: {where}"
+                assert any("declares no infra output" in ln for ln in following), where
+    assert seen >= 24, seen
 
 
 def _deadline(script: str, pattern: str) -> int:
