@@ -2639,46 +2639,6 @@ jobs:
                     print(f"Could not report the verdict to TheHub ({exc}); the verdict stands.")
                 sys.exit(exit_code)
 
-                  def read(name):
-                      path = d / name
-                      return path.read_text(encoding="utf-8") if path.is_file() else ""
-
-                  url = os.environ.get("HUB_URL", "")
-                  token = os.environ.get("HUB_DEPLOY_TOKEN", "")
-                  if not url or not token:
-                      print("TheHub reporting is not configured; the verdict is in grade's log only.")
-                      sys.exit(0)
-                  tip, status, verdict, detail = read("tip"), read("status"), read("verdict"), read("detail")
-                  code = read("exit_code").strip()
-                  body = {
-                      "deploy_id": tip, "stage": "post_merge_verdict", "status": status,
-                      "git_sha": tip, "git_branch": os.environ.get("SCANNED_BRANCH") or "develop",
-                      "commit_message": read("message") or "unknown",
-                      "actor": "concourse", "target_env": "prod",
-                      "exit_code": int(code) if code.isdigit() else 2,
-                      "notes": detail,
-                      "meta": {"source": "concourse", "pipeline": "thehub",
-                               "verdict": verdict, "check": "post_merge"},
-                  }
-                  # [#336] A red or indeterminate verdict is a failure report, and
-                  # every failure report carries a log_tail: the verdict's own
-                  # detail and the job link. Green is unchanged.
-                  if status != "success":
-                      link = (os.environ.get("CONCOURSE_URL") or "http://localhost:8080") \
-                          + "/teams/main/pipelines/thehub/jobs/post-merge"
-                      body["log_tail"] = f"post-merge {verdict}: {detail} -- {link}"
-                  request = urllib.request.Request(
-                      url + "/api/ops/deploys", data=json.dumps(body).encode(), method="POST",
-                      headers={"Content-Type": "application/json",
-                               "X-Ops-Deploy-Token": token})
-                  try:
-                      with urllib.request.urlopen(request, timeout=20):
-                          pass
-                      print(f"Reported post_merge_verdict={status} ({verdict}) for {tip}.")
-                  except Exception as exc:  # noqa: BLE001 - never fails the build
-                      print(f"Could not report the verdict to TheHub ({exc}); the verdict stands.")
-                  sys.exit(0)
-
   # Every build and scan job below is in exactly one of three serial lanes, so
   # at most three of them run at a time (TheHub #60928, D-172):
   #
