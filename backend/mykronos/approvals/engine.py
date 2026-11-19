@@ -448,6 +448,29 @@ def _purpose_refusal(delegation: Delegation, approver: Principal) -> str | None:
     return None
 
 
+def delegation_live(delegation: Delegation, now: datetime) -> bool:
+    """Neither revoked, suspended nor expired at `now`."""
+    return not (
+        delegation.revoked_at or delegation.suspended_at or delegation.expires_at <= now
+    )
+
+
+def delegation_covers(delegation: Delegation, tier: str, family: str | None, now: datetime) -> bool:
+    """Whether `delegation` lets an agent of `family` approve `tier` at `now`.
+
+    The one family rule: `_active_delegation` (the reviewer's preflight and
+    `decide`) and the delegation notices (TheHub #61547) both read it, so a
+    notice can never say a delegation covers a model the 409 refuses. A
+    family matches only exactly: a delegation naming `claude-opus-5` does not
+    cover a reviewer running `claude-opus-5-5`.
+    """
+    if not delegation_live(delegation, now):
+        return False
+    if tier not in (delegation.tiers or []):
+        return False
+    return family is None or family in (delegation.approver_families or [])
+
+
 def _active_delegation(
     session: Session,
     duty: str,
@@ -465,11 +488,7 @@ def _active_delegation(
     """
     rows = session.execute(select(Delegation).where(Delegation.duty == duty)).scalars()
     for d in rows:
-        if d.revoked_at or d.suspended_at or d.expires_at <= now:
-            continue
-        if tier not in (d.tiers or []):
-            continue
-        if family is not None and family not in (d.approver_families or []):
+        if not delegation_covers(d, tier, family, now):
             continue
         if approver is not None:
             refusal = _purpose_refusal(d, approver)

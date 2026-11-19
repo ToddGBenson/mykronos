@@ -508,11 +508,26 @@ class TestThisRepositorysOwnModelIsPinned:
         match = re.search(r"^MYKRONOS_REVIEWER_MODEL=(\S+)$", env, re.M)
         assert match, "backend/.env.example no longer sets MYKRONOS_REVIEWER_MODEL"
         found["backend/.env.example"] = match.group(1)
-        ps1 = (self.ROOT / "scripts/enable-agent-reviewer.ps1").read_text(encoding="utf-8")
-        match = re.search(r"\$Family = '([^']+)'", ps1)
-        assert match, "enable-agent-reviewer.ps1 no longer has a default family"
-        found["scripts/enable-agent-reviewer.ps1"] = match.group(1)
         return found
+
+    def test_the_enable_script_names_no_model_and_asks_the_backend(self) -> None:
+        """TheHub #61547: the script proposed a delegation for a literal (or
+        backend\\.env's value), not for what the running backend's reviewer
+        runs, and a delegation naming another model lets it approve nothing.
+        It now has no model id in it at all, and takes the family from
+        `GET /api/approvals/shadow-reviews`' `model`."""
+        import re
+
+        ps1 = (self.ROOT / "scripts/enable-agent-reviewer.ps1").read_text(encoding="utf-8")
+        code = "\n".join(
+            line for line in ps1.splitlines() if not line.lstrip().startswith("#")
+        )
+
+        assert re.findall(r"claude-[a-z0-9.-]+", code) == []
+        assert "Read-EnvValue 'MYKRONOS_REVIEWER_MODEL'" not in code
+        assert re.search(r"\$running = \[string\] \$shadow\.model", code)
+        assert re.search(r"if \(-not \$Family\) \{ \$Family = \$running \}", code)
+        assert "if ($Family -ne $running)" in code
 
     def test_each_place_is_found(self) -> None:
         """Guards the test itself: a scan that finds nothing passes anything."""

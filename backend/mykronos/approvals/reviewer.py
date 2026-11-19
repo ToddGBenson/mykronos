@@ -178,6 +178,23 @@ def mode(settings: Any) -> str:
     return value if value in MODES else "shadow"
 
 
+def reviewer_family(settings: Any) -> str:
+    """The model the platform reviewer runs, which is also its family: the
+    value a delegation's `approver_families` must name for its approvals to
+    count (TheHub #61547)."""
+    return str(getattr(settings, "reviewer_model", "") or "claude-opus-5-5")
+
+
+def prospective_reviewer(family: str) -> Principal:
+    """The reviewer as `decide` will see it, before one is minted."""
+    return Principal(
+        actor=f"agent:{family}:reviewer",
+        role=Role.AGENT,
+        kind=ActorKind.AGENT,
+        provenance={"family": family, "instance": "prospective", "platform_started": True},
+    )
+
+
 def _probe_note(db: Any, settings: Any) -> str:
     """When the hourly key probe has reported refused, say since when, so the
     503 points at the key and not at this one request (TheHub #61614)."""
@@ -244,12 +261,7 @@ def _preflight(db: Any, policy: ApprovalPolicy, req: dict[str, Any], family: str
                 f"tier '{tier.name}'. A person can grant one (spec 34 §5), or decide "
                 "the request themselves."
             )
-    prospective = Principal(
-        actor=f"agent:{family}:reviewer",
-        role=Role.AGENT,
-        kind=ActorKind.AGENT,
-        provenance={"family": family, "instance": "prospective", "platform_started": True},
-    )
+    prospective = prospective_reviewer(family)
     violations = independence_violations(
         requester_actor=req["requested_by"],
         requester_kind=req["requester_kind"],
@@ -403,7 +415,7 @@ def run_review(
             "The request stays pending for a person."
         )
     shadow = current == "shadow"
-    model = str(getattr(settings, "reviewer_model", "") or "claude-opus-5-5")
+    model = reviewer_family(settings)
     family = model
     req = _load(db, request_id)
     # The preflight asks whether `decide` would accept this reviewer's answer.
