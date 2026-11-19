@@ -499,6 +499,9 @@ anchors:
   # declares an `infra` output, writes the reason to infra/reason. The job's
   # failure hooks read that and report `errored`, not `failed`, to TheHub and
   # `cancelled`, not `failure`, to the GitHub check, saying no scan ran.
+  # A task that declares none gets no marker, and the installer says so
+  # (TheHub #62130): its check reports `failure`, not `cancelled`, though
+  # nothing was judged either way.
   # ONLY a task that runs before anything in its job reaches a verdict may
   # declare `infra`: a marker left by an upload that follows a real failing
   # scan would launder that failure into an outage.
@@ -517,9 +520,13 @@ anchors:
     pip install --quiet "$spec" && exit 0
     reason="INFRASTRUCTURE, NOT A VERDICT: the mykronos uploader could not be installed from GitHub at ${MYKRONOS_REF} after 3 attempts, so no scan ran to a verdict and nothing on this commit was judged. Re-run the job once GitHub is reachable."
     echo "::error:: ${reason}" >&2
+    wrote_infra=0
     for dir in infra ../infra; do
-      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; break; fi
+      if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
     done
+    if [ "$wrote_infra" -eq 0 ]; then
+      echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
+    fi
     exit 75
 
   # -- A `linux` step that never ran (operator decision 2026-11-16) ------

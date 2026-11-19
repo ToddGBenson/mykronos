@@ -203,7 +203,9 @@ sleep() { printf '%s\\n' "$1" >> "$SLEEPS"; }
 """
 
 
-def _install(tmp_path: Path, ok_on: int | None, *, infra: bool) -> subprocess.CompletedProcess[str]:
+def _install(
+    tmp_path: Path, ok_on: int | None, *, infra: bool, pipeline: str = "thehub.yml"
+) -> subprocess.CompletedProcess[str]:
     bash = shutil.which("bash")
     if not bash:
         pytest.skip("bash is required to execute the installer")
@@ -219,7 +221,7 @@ def _install(tmp_path: Path, ok_on: int | None, *, infra: bool) -> subprocess.Co
     if ok_on is not None:
         env["PIP_OK_ON"] = str(ok_on)
     return subprocess.run(
-        [bash, "-s"], input=_STUBS + _anchor("thehub.yml"), env=env, cwd=tmp_path,
+        [bash, "-s"], input=_STUBS + _anchor(pipeline), env=env, cwd=tmp_path,
         capture_output=True, text=True, timeout=30,
     )
 
@@ -270,6 +272,38 @@ def test_a_task_without_the_infra_output_writes_no_marker(tmp_path: Path) -> Non
 
     assert r.returncode == 75
     assert not (tmp_path / "infra").exists()
+
+
+NO_INFRA = "declares no infra output, so the check reports failure, not cancelled"
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_an_exhausted_install_with_the_infra_output_writes_it_and_says_nothing_more(
+    tmp_path: Path, name: str
+) -> None:
+    """TheHub #62130. Executed from each pipeline's own copy of the anchor."""
+    r = _install(tmp_path, ok_on=None, infra=True, pipeline=name)
+
+    assert r.returncode == 75, r.stderr
+    assert (tmp_path / "infra" / "reason").read_text(encoding="utf-8").startswith(
+        "INFRASTRUCTURE, NOT A VERDICT"
+    )
+    assert NO_INFRA not in r.stderr
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_an_exhausted_install_without_the_infra_output_says_it_reports_failure(
+    tmp_path: Path, name: str
+) -> None:
+    """TheHub #62130, the anchor's half of #62104 AC1. No `infra` output
+    means no marker and a check that says `failure`; the log must say so
+    rather than leave INFRASTRUCTURE next to a failure unexplained."""
+    r = _install(tmp_path, ok_on=None, infra=False, pipeline=name)
+
+    assert r.returncode == 75, r.stderr
+    assert not (tmp_path / "infra").exists()
+    assert "INFRASTRUCTURE, NOT A VERDICT" in r.stderr
+    assert NO_INFRA in r.stderr
 
 
 # -- who may say "infrastructure" ---------------------------------------------
