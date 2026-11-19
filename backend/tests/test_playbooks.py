@@ -22,6 +22,7 @@ from fastapi import FastAPI
 
 from mykronos import agent_work, playbooks, read_coverage
 from mykronos.adminauth import ActorKind, Principal, Role
+from mykronos.approvals.delegation_notices import DelegationNotice
 from mykronos.briefing import (
     Briefing,
     FailingLane,
@@ -332,6 +333,17 @@ def _every_kind_queue(version: str = "1.0") -> agent_work.WorkQueue:
             read_coverage.measure(REPO, {"Shell": 219000, "Python": 66000}, "codeql")
         ],
         repo_ids={REPO: REPO_ID},
+        delegations=[
+            DelegationNotice(
+                delegation_id="d" * 36,
+                duty="pull_request_merge",
+                tiers=("production",),
+                families=("claude-opus-5",),
+                expires_at=datetime(2026, 12, 1),
+                reviewer_model="claude-opus-5-5",
+                uncovered_tiers=("production",),
+            )
+        ],
         now=NOW,
         probe_interval_seconds=21_600,
         playbook_version=version,
