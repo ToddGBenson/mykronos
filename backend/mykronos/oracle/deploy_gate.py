@@ -453,7 +453,7 @@ def _pending(pending_json: str | None) -> dict[str, dict[str, Any]]:
 _SWAP_ATTEMPTS = 8
 
 
-class CreepLedgerContended(RuntimeError):
+class CreepLedgerContendedError(RuntimeError):
     """The creep row kept changing under a read-modify-write."""
 
 
@@ -573,7 +573,7 @@ def settle_creep(
             accepted_creep=settled, confirmed_sha=deployed, pending_json="{}",
         ):
             return settled
-    raise CreepLedgerContended(
+    raise CreepLedgerContendedError(
         f"the creep ledger for {repo_full_name} kept changing; nothing was settled"
     )
 
@@ -602,7 +602,7 @@ def record_pending(
             pending_json=json.dumps(pending),
         ):
             return
-    raise CreepLedgerContended(
+    raise CreepLedgerContendedError(
         f"the creep ledger for {repo_full_name} kept changing; the pending rise was not recorded"
     )
 

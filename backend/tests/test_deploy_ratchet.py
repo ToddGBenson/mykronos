@@ -980,9 +980,9 @@ class TestTheCreepLedgerUnderARace:
         deploy_gate.settle_creep(db, REPO, D, measure=lambda a, b: 0.0)
         monkeypatch.setattr(deploy_gate, "_write_creep", lambda *a, **k: False)
 
-        with pytest.raises(deploy_gate.CreepLedgerContended):
+        with pytest.raises(deploy_gate.CreepLedgerContendedError):
             deploy_gate.record_pending(db, REPO, candidate=C, baseline=D, delta=0.2)
-        with pytest.raises(deploy_gate.CreepLedgerContended):
+        with pytest.raises(deploy_gate.CreepLedgerContendedError):
             deploy_gate.settle_creep(db, REPO, C, measure=lambda a, b: 0.0)
 
 
