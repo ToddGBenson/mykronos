@@ -209,14 +209,19 @@ def test_every_inline_pipeline_program_compiles() -> None:
             if key in RUNTIME_ONLY:
                 used.add(key)
                 continue
-            failures.append(f"{where}: ${unresolved[0]} is not defined in the YAML: {key[2][:80]!r}")
+            failures.append(f"{where}: ${unresolved[0]} is not set in the YAML: {key[2][:80]!r}")
             continue
         try:
             compile(program, f"<{where}>", "exec")
         except SyntaxError as exc:
-            failures.append(f"{where}: {type(exc).__name__}: {exc.msg} at line {exc.lineno}: {(exc.text or '').strip()!r}")
+            text = (exc.text or "").strip()
+            failures.append(
+                f"{where}: {type(exc).__name__}: {exc.msg} at line {exc.lineno}: {text!r}"
+            )
     stale = set(RUNTIME_ONLY) - used
-    assert not failures, "inline Python that `python -c` refuses before running a line:\n" + "\n".join(failures)
+    assert not failures, "inline Python that `python -c` refuses before running a line:\n" + (
+        "\n".join(failures)
+    )
     assert not stale, f"RUNTIME_ONLY entries that match nothing any more: {sorted(stale)}"
 
 
@@ -232,7 +237,8 @@ def test_every_inline_pipeline_program_compiles() -> None:
 def test_shell_unquoting(script: str, expected: str) -> None:
     match = INLINE.search(script)
     assert match is not None
-    program, unresolved = _substitute(_shell_word(script, match.end()), {"X": "X1", "HEAD_SHA": "def f(): pass\n"})
+    params = {"X": "X1", "HEAD_SHA": "def f(): pass\n"}
+    program, unresolved = _substitute(_shell_word(script, match.end()), params)
     assert (program, unresolved) == (expected, [])
 
 
