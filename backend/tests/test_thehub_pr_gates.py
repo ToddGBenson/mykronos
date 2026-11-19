@@ -26,6 +26,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.pipeline_steps import find, holder
+
 PIPELINE = Path(__file__).resolve().parents[2] / "deploy" / "concourse" / "pipelines" / "thehub.yml"
 JOB = "pr-gates"
 DEVELOP_TIP = "d" * 40
@@ -44,7 +46,7 @@ def _job() -> dict[str, Any]:
 
 
 def _step(task: str) -> dict[str, Any]:
-    return next(s for s in _job()["plan"] if s.get("task") == task)
+    return find(_job()["plan"], task)
 
 
 def _hooks() -> list[dict[str, Any]]:
@@ -318,7 +320,7 @@ INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "TIER
 def _memory_guard_anchor() -> str:
     """The `memory_guard` anchor's text, as `unit` and `container-tiers` are given it."""
     tiers = next(j for j in _doc()["jobs"] if j["name"] == "container-tiers")
-    task = next(s for s in tiers["plan"] if s.get("task") == "tiers")
+    task = find(tiers["plan"], "tiers")
     guard: str = task["params"]["MEMORY_GUARD"]
     return guard
 
@@ -344,14 +346,18 @@ def test_the_cached_image_is_the_newest_develop_commit_build_pushed() -> None:
 
 def test_the_integration_subset_runs_in_that_image() -> None:
     task = _step("integration")
-    image = task["config"]["image_resource"]
-    assert image["type"] == "registry-image"
-    assert image["source"] == {"repository": "((registry))/thehub", "tag": "((.:image_sha))",
-                               "insecure": True}
+    # The image is pulled on this host and handed over as an artifact: the
+    # registry never faces the LAN (review of mykronos #1177, B-054, D-109).
+    assert "image_resource" not in task["config"]
+    assert task["image"] == "thehub-image"
     plan = _job()["plan"]
     load = next(s for s in plan if s.get("load_var") == "image_sha")
-    assert plan.index(load) < plan.index(task) < len(plan) - 1, (
-        "after the image is resolved, and before the success report"
+    fetch = next(s for s in plan if s.get("task") == "fetch-image")
+    assert fetch["params"]["REPOSITORY"] == "((registry))/thehub"
+    assert fetch["params"]["TAG"] == "((.:image_sha))"
+    assert "linux" not in (fetch.get("tags") or [])
+    assert plan.index(load) < plan.index(fetch) < holder(plan, "integration") < len(plan) - 1, (
+        "after the image is resolved and fetched, and before the success report"
     )
 
 
@@ -373,8 +379,10 @@ def test_the_integration_task_gets_no_credential() -> None:
 
 def test_it_runs_in_the_memory_group_under_the_guard() -> None:
     """#61106: never beside `unit`, `post-merge` or `container-tiers`, and a
-    memory kill says errored rather than failed."""
-    assert set(_job()["serial_groups"]) == {"dast", "pytest-memory"}
+    memory kill says errored rather than failed. Since TheHub #61760 it runs on
+    the remote `linux` workers in its own lane, `linux-pr` (with gate-smoke),
+    so it shares no worker's memory with a full suite and holds no host lane."""
+    assert set(_job()["serial_groups"]) == {"linux-pr"}
     task = _step("integration")
     assert task["params"]["MEMORY_GUARD"] == _memory_guard_anchor()
     budget = int(task["params"]["MEMORY_BUDGET_MB"])
@@ -389,7 +397,11 @@ def test_it_fits_the_ten_minute_budget() -> None:
     task = _step("integration")
     soft = int(task["params"]["TIER_SOFT_TIMEOUT_S"])
     assert soft <= 300
-    hard = task["timeout"]
+    # On the timed `do:` that holds the task (TheHub #61760): a task's own
+    # `timeout:` starts only once a remote worker is chosen.
+    plan = _job()["plan"]
+    assert "timeout" not in task
+    hard = plan[holder(plan, "integration")]["timeout"]
     assert re.fullmatch(r"\d+m", hard) and int(hard[:-1]) * 60 > soft + 180
 
 

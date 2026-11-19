@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.pipeline_steps import find
 from tests.test_hub_failure_reports_carry_reason import _hook
 from tests.test_hub_failure_reports_carry_reason import _run as _run_hub_report
 from tests.test_uploader_install_retry import _run_check
@@ -45,7 +46,7 @@ def _guard() -> str:
 
 def _task(job: str, name: str) -> dict[str, Any]:
     plan = next(j for j in _doc()["jobs"] if j["name"] == job)["plan"]
-    return next(s for s in plan if s.get("task") == name)
+    return find(plan, name)
 
 
 def _script(task: dict[str, Any]) -> str:

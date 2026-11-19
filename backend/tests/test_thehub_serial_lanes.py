@@ -69,6 +69,22 @@ UNSERIALISED = {"set-pipeline", "oracle-gate", "deploy-demo", "cloud-posture"}
 # change claims.
 MAX_LANES = 3
 
+# The operator decision of 2026-11-16: the lanes whose heavy steps run on the
+# remote `linux` workers, not this host. They are bounded among themselves (one
+# build per lane) but do not count against MAX_LANES, which is this host's
+# memory, so EVERY task of a job in them is either tagged `linux` or one of
+# the short host steps below (review of mykronos #1177: image-refresh, whose
+# trivy scan and demo redeploy run here, went back to `dast` for that).
+REMOTE_LANES = {"linux-suites", "linux-pr"}
+REMOTE_TAG = "linux"
+# Host steps a remote-lane job may run: reports, picks, exports, the image
+# fetch and the verdict checks. Each is capped at 15 minutes.
+LIGHT_HOST_TASKS = {
+    "preflight", "pick", "smoke-inputs", "export-tree", "export-pr", "fetch-image",
+    "linux-verdict", "report-verdict", "report-check-run",
+}
+LIGHT_HOST_CAP_MINUTES = 15
+
 # TheHub #61106. Not a lane: a second group on the jobs that run TheHub's FULL
 # pytest suite, so two of them never run at once. unit #360 and post-merge
 # #1623 were SIGKILLed for memory ten hours apart with no test failing, because
@@ -79,11 +95,13 @@ MEMORY_GROUP = "pytest-memory"
 # integration tiers. post-merge stays: it now only COLLECTS tests/unit, but
 # collecting imports every test module, which is most of a suite's memory.
 FULL_SUITES = {"unit", "post-merge", "container-tiers"}
-# TheHub #61110: pr-gates runs an integration SUBSET in a cached image, with
-# its own Postgres, on the ten-minute clock. Not a full suite and not per
-# commit, so it is not replayed above; it is in the group so it never shares
-# a worker's memory with one.
-MEMORY_GROUP_MEMBERS = FULL_SUITES | {"pr-gates"}
+# Since 2026-11-16 post-merge and container-tiers run their suites on the
+# remote `linux` workers, in `linux-suites`, so they never run at once there,
+# and they no longer share this host's memory with `unit`. pr-gates (TheHub
+# #61110, an integration SUBSET) is remote too, in `linux-pr`. The memory group
+# keeps the suite that stays here, so a later full suite on this host joins it.
+REMOTE_SUITES = {"post-merge", "container-tiers"}
+MEMORY_GROUP_MEMBERS = FULL_SUITES - REMOTE_SUITES
 
 
 def _doc() -> dict[str, Any]:
@@ -208,13 +226,15 @@ def test_a_post_merge_grading_the_same_commit_delays_it_by_at_most_its_own_run()
 def test_the_full_pytest_suites_never_run_at_once() -> None:
     """#61106 AC1, replayed: post-merge arriving with the commit, where it overlapped."""
     start, end = _replay(with_post_merge=True)
-    suites = sorted(FULL_SUITES)
-    for i, a in enumerate(suites):
-        for b in suites[i + 1:]:
-            assert end[a] <= start[b] or end[b] <= start[a], (
-                f"{a} {start[a]:.1f}->{end[a]:.1f} overlaps {b} {start[b]:.1f}->{end[b]:.1f}\n"
-                + _timeline(with_post_merge=True)
-            )
+    # Pairs on the same machine: the host's suites, then the remote ones.
+    for machine in (FULL_SUITES - REMOTE_SUITES, REMOTE_SUITES):
+        suites = sorted(machine)
+        for i, a in enumerate(suites):
+            for b in suites[i + 1:]:
+                assert end[a] <= start[b] or end[b] <= start[a], (
+                    f"{a} {start[a]:.1f}->{end[a]:.1f} overlaps {b} "
+                    f"{start[b]:.1f}->{end[b]:.1f}\n" + _timeline(with_post_merge=True)
+                )
 
 
 def test_only_the_full_suites_share_the_memory_group() -> None:
@@ -261,8 +281,42 @@ def test_every_heavy_job_is_still_in_exactly_one_lane() -> None:
         assert len(lanes) == 1, f"{name} has serial lanes {lanes}; expected exactly one"
 
 
+def _plan_tasks(steps: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        if "task" in step:
+            found.append(step)
+        for key in ("do", "in_parallel", "aggregate"):
+            inner = step.get(key)
+            if isinstance(inner, dict):
+                inner = inner.get("steps")
+            found.extend(_plan_tasks(inner))
+        if "try" in step:
+            found.extend(_plan_tasks([step["try"]]))
+    return found
+
+
+def test_a_remote_lane_runs_nothing_heavy_on_this_host() -> None:
+    """Otherwise a job in a remote lane escapes every host lane (MAX_LANES)."""
+    escaped = []
+    for name, job in _jobs().items():
+        if not set(job.get("serial_groups") or []) & REMOTE_LANES:
+            continue
+        for task in _plan_tasks(job.get("plan")):
+            if REMOTE_TAG in (task.get("tags") or []):
+                continue
+            minutes = int(str(task.get("timeout") or "0m").rstrip("m") or 0)
+            if task["task"] not in LIGHT_HOST_TASKS or not 0 < minutes <= LIGHT_HOST_CAP_MINUTES:
+                escaped.append(f"{name}/{task['task']} ({task.get('timeout')})")
+    assert not escaped, f"heavy host steps in a remote lane: {escaped}"
+
+
 def test_no_more_than_three_heavy_jobs_can_run_at_once() -> None:
     lanes = {
         g for job in _jobs().values() for g in job.get("serial_groups") or [] if g != MEMORY_GROUP
     }
-    assert 1 < len(lanes) <= MAX_LANES, f"serial lanes: {sorted(lanes)}"
+    host = lanes - REMOTE_LANES
+    assert 1 < len(host) <= MAX_LANES, f"serial lanes on this host: {sorted(host)}"
+    assert lanes >= REMOTE_LANES, f"remote lanes missing: {sorted(REMOTE_LANES - lanes)}"

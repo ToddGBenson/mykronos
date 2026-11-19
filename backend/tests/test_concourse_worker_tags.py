@@ -32,10 +32,18 @@ suites and scans too, which the first rule could not admit as written: a
 suite has literal params (a pip cache path, a memory budget) and two of
 TheHub's run in TheHub's own image from the local registry. So the rule is
 now about what reaches the remote host, not about the shape of the step: no
-pipeline var except the non-secret ones in REMOTE_VARS, no param that names a
-credential, no host address (a task-local Postgres or Redis on the task's own
-127.0.0.1 is not one), and an image that is either a public `get` or the
-local registry at `((remote-registry))`, the address a remote worker reaches.
+pipeline var except the non-secret ones in REMOTE_VARS and no build-local
+`((.:x))` var, no param that names a credential, no host or LAN address (a
+task-local Postgres or Redis on the task's own 127.0.0.1 is not one), only
+the inputs REMOTE_INPUTS allows it, and an image that is a public `get` or
+TheHub's image as an artifact `fetch-image` made on this host.
+
+The review of mykronos #1177 (operator decision 2026-11-16, ~03:20Z) puts the
+laptops inside the CI trust boundary for gating verdicts WITH host-side
+checks, which the tests at the end hold: no TheHub git history reaches them
+(a tree from `export-tree` / `export-pr`), the registry never faces the LAN
+(`fetch-image`), and a gating remote task's exit code is decided on this
+host (`linux-verdict`, post-merge's `report-verdict`).
 """
 
 from __future__ import annotations
@@ -87,6 +95,14 @@ INSTALLER = CONCOURSE / "linux-worker" / "install-concourse-worker.sh"
 REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("thehub", "image-refresh", "build"),
+        ("thehub", "post-merge", "linux-worker-probe"),
+        ("thehub", "post-merge", "grade"),
+        ("thehub", "pr-gates", "linux-worker-probe"),
+        ("thehub", "pr-gates", "gates"),
+        ("thehub", "pr-gates", "integration"),
+        ("thehub", "gate-smoke", "gates"),
+        ("thehub", "container-tiers", "linux-worker-probe"),
+        ("thehub", "container-tiers", "tiers"),
         ("mykronos", "coverage", "pytest-cov"),
         ("mykronos", "time-travel", "pytest-time-travel"),
         ("mykronos", "sast", "semgrep"),
@@ -98,13 +114,12 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
     }
 )
 
-# The pipeline vars a remote step may carry: none is a credential and none
-# names a host service. `remote-registry` is the local registry at the
-# address the remote workers reach (Vault-held, so the LAN address is not in
-# this public repository), and is allowed only as an image_resource's
-# repository. The others come from vars/*.yml.
-REMOTE_VARS = frozenset({"remote-registry", "thehub-branch", "time-travel-offset", "mykronos-ref"})
-REMOTE_REGISTRY = "((remote-registry))/"
+# The pipeline vars a remote step may carry, from vars/*.yml: none is a
+# credential and none names a host service. `thehub-branch` is #1178's: the
+# branch name, used by this pipeline's host steps. `remote-registry`, also
+# #1178's, is not allowed: the review of #1177 keeps the registry off the LAN,
+# and nothing in any pipeline references it.
+REMOTE_VARS = frozenset({"thehub-branch", "time-travel-offset", "mykronos-ref"})
 # A param whose name says it is a credential, whatever its value.
 CREDENTIAL_PARAM = re.compile(r"TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY", re.IGNORECASE)
 # A service a task starts for itself and reaches on its own loopback (the
@@ -112,12 +127,14 @@ CREDENTIAL_PARAM = re.compile(r"TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY", re.I
 TASK_LOCAL = re.compile(r"(localhost|127\.0\.0\.1):(5432|6379)\b")
 
 # Any pipeline var. Workers never resolve vars; the web node puts the value in
-# the step, so a var on a remote step is a value on the remote host. `((.:x))`
-# is a local var (`load_var`), set inside the build, and is allowed.
+# the step, so a var on a remote step is a value on the remote host. A
+# build-local `((.:x))` (`load_var`) counts too since the review of #1177: its
+# value was read on this host from a file, and a remote task takes what it
+# needs as an input instead, where REMOTE_INPUTS can see it.
 # Matched by content: a var name has no spaces or operators, so shell
 # arithmetic `$((attempt + 1))` is not one. A `$` in front changes nothing:
 # Concourse interpolates `$((token))` all the same.
-PIPELINE_VAR = re.compile(r"\(\((?!\.:)[-/.:@\"\w]+\)\)")
+PIPELINE_VAR = re.compile(r"\(\([-/.:@\"\w]+\)\)")
 
 # Reading or writing an image registry from inside a task: the registry the
 # pipelines use is on this host, and its address can arrive as data (plan.tsv)
@@ -134,11 +151,61 @@ TRIVY_IMAGE = re.compile(r"\btrivy\b(\s+-\S+)*\s+image\b")
 
 # Anything that names a service on this host. Garden task containers reach the
 # host only through Docker Desktop's gateway, by a pipeline var or a literal.
+# Any RFC 1918 address names the LAN, this host's 192.168.0.x included: a
+# remote task has no business dialling it.
 HOST_ONLY = re.compile(
     r"192\.168\.65\.254|host\.docker\.internal|localhost|127\.0\.0\.1"
+    r"|\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|\b172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b"
+    r"|\b192\.168\.\d{1,3}\.\d{1,3}\b"
     r"|\(\((registry|mykronos-url|thehub-url|thehub-[a-z-]*-url|minio-endpoint)\)\)",
     re.IGNORECASE,
 )
+
+# The artifacts this host makes for a remote task, and the task that makes
+# each: a tree with no git history, the commit beside it, and TheHub's image.
+HOST_MADE = {
+    "tree": "export-tree",
+    "commit": "export-tree",
+    "pr-tree": "export-pr",
+    "thehub-image": "fetch-image",
+}
+# The images a remote task may run that are not a public registry-image get.
+HOST_IMAGES = frozenset({"thehub-image"})
+
+# Exactly what each remote task is given: input name -> the artifact mapped
+# to it (None: the input's own name). A TheHub `get` (git history) is never
+# one; `live-pipeline` is mykronos's public pipelines repo.
+REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
+    ("thehub", "image-refresh", "build"): {"source": "tree", "refresh": None},
+    ("thehub", "post-merge", "linux-worker-probe"): {},
+    ("thehub", "post-merge", "grade"): {"source": "tree", "commit": None},
+    ("thehub", "pr-gates", "linux-worker-probe"): {},
+    ("thehub", "pr-gates", "gates"): {"pr": "pr-tree", "live-pipeline": None},
+    ("thehub", "pr-gates", "integration"): {"pr": "pr-tree"},
+    ("thehub", "gate-smoke", "gates"): {"pr": "pr-tree", "live-pipeline": None},
+    ("thehub", "container-tiers", "linux-worker-probe"): {},
+    ("thehub", "container-tiers", "tiers"): {"source": "tree", "commit": None},
+    # #1178's mykronos lanes: `source` is mykronos's own git get. Its history
+    # is public, unlike TheHub's (#398), so it may reach the laptops as is.
+    ("mykronos", "coverage", "linux-worker-probe"): {},
+    ("mykronos", "coverage", "pytest-cov"): {"source": None},
+    ("mykronos", "time-travel", "linux-worker-probe"): {},
+    ("mykronos", "time-travel", "pytest-time-travel"): {"source": None},
+    ("mykronos", "sast", "linux-worker-probe"): {},
+    ("mykronos", "sast", "semgrep"): {"source": None},
+    ("mykronos", "dependencies", "linux-worker-probe"): {},
+    ("mykronos", "dependencies", "osv-scanner"): {"source": None},
+}
+
+# The gating remote tasks, and the host step after each that decides the
+# job's exit code from what the task wrote.
+HOST_DECIDES = {
+    ("thehub", "post-merge", "grade"): "report-verdict",
+    ("thehub", "pr-gates", "gates"): "linux-verdict",
+    ("thehub", "pr-gates", "integration"): "linux-verdict",
+    ("thehub", "gate-smoke", "gates"): "linux-verdict",
+    ("thehub", "container-tiers", "tiers"): "linux-verdict",
+}
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -283,8 +350,6 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
     # one command reads as one line.
     text = "\n".join(_strings(step)).replace("\\\n", " ")
     config = step.get("config") or {}
-    image_resource = config.get("image_resource")
-    repository = str(((image_resource or {}).get("source") or {}).get("repository", ""))
     named = HOST_ONLY.search(TASK_LOCAL.sub("", text))
     if named:
         faults.append(f"names a host service: {named.group(0)}")
@@ -292,10 +357,6 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
         name = var.group(0)[2:-2].strip('"')
         if name not in REMOTE_VARS:
             faults.append(f"carries a pipeline var: {var.group(0)}")
-    # `remote-registry` only as the image's repository, never in a script.
-    allowed = 1 if repository.startswith(REMOTE_REGISTRY) else 0
-    if text.count(REMOTE_REGISTRY.rstrip("/")) > allowed:
-        faults.append("((remote-registry)) outside the task image's repository")
     registry = REGISTRY_IO.search(text)
     if registry:
         faults.append(f"reads or writes a registry: {registry.group(0)}")
@@ -304,14 +365,15 @@ def _remote_task_faults(step: dict[str, Any], images: dict[str, str]) -> list[st
             faults.append(f"reads a registry: {command.strip()[:60]}")
     if "/kaniko/executor" in text and "--no-push" not in text:
         faults.append("kaniko without --no-push pushes to the registry")
-    if image_resource is not None:
-        if not repository.startswith(REMOTE_REGISTRY) or "image" in step:
-            faults.append(
-                "an image_resource that is not the local registry at ((remote-registry)): "
-                "use one of the pipeline's public gets"
-            )
+    if "image_resource" in config:
+        faults.append(
+            "an image_resource is fetched by the remote worker: use one of the "
+            "pipeline's public gets, or an image `fetch-image` made on this host"
+        )
         return faults
     image = step.get("image")
+    if image in HOST_IMAGES:
+        return faults
     if image not in images:
         faults.append(f"image {image!r} is not a registry-image resource")
     else:
@@ -387,7 +449,8 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
-    assert len(REMOTE_COMPUTE) == 9
+    # #1177's 9 TheHub steps and #1178's 8 mykronos steps.
+    assert len(REMOTE_COMPUTE) == 17
     assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
@@ -471,44 +534,43 @@ def test_the_compute_only_check_can_fail() -> None:
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "buildah --push a"]}}},
         # A task-level timeout does not bound the wait for a worker.
         {**ok, "timeout": "20m"},
-        # A credential by name, a host var as an image, the remote registry
-        # anywhere but the image, and an image_resource beside an `image:`.
+        # A credential by name, and any image_resource: the remote worker
+        # would fetch it, and the local registry never faces the LAN.
         {**ok, "params": {"HUB_DEPLOY_TOKEN": "x"}},
         {
             **ok,
             "image": None,
             "config": {"image_resource": {"source": {"repository": "((registry))/thehub"}}},
         },
-        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl ((remote-registry))/v2/"]}}},
-        {**ok, "config": {"image_resource": {"source": {"repository": "((remote-registry))/x"}}}},
+        {**ok, "image": None, "config": {"image_resource": {"source": {"repository": "x/y"}}}},
         # A task-local service is fine, a host port on loopback is not.
         {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl localhost:8100"]}}},
+        # Review of #1177: a build-local var, and any LAN address.
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "echo ((.:sha))"]}}},
+        {**ok, "params": {"EXPECTED_SHA": "((.:sha))"}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl 192.168.0.14:5000/v2/"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl http://10.0.0.5/"]}}},
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "ping 172.20.1.1"]}}},
+        {**ok, "image": "thehub"},  # an artifact this host did not make
+        # #1178's case, still refused: the remote registry is a var no remote
+        # step may carry.
+        {**ok, "config": {"run": {"path": "sh", "args": ["-c", "curl ((remote-registry))/v2/"]}}},
     ]
     def run(script: str) -> dict[str, Any]:
         return {**ok, "config": {"run": {"path": "sh", "args": ["-c", script]}}}
 
     allowed = [
-        run("echo ((.:sha))"),  # a local var is set inside the build
         run("attempt=$((attempt + 1))"),  # shell arithmetic
         run("trivy image --quiet --input x.tar"),  # a tarball, not a registry
         run("trivy image \\\n  --quiet \\\n  --input x.tar"),  # one command, three lines
         run("/kaniko/executor --destination r/x:1 --no-push --tar-path i.tar"),
         # 2026-11-16: literal params, a non-secret var, a task-local Postgres,
-        # and the local registry at the remote workers' address.
+        # and TheHub's image as the artifact `fetch-image` made on this host.
         {**ok, "params": {"PIP_CACHE_DIR": "/pipcache", "MEMORY_BUDGET_MB": "2560"}},
         {**ok, "params": {"TIME_TRAVEL_OFFSET": "((time-travel-offset))"}},
         run("export DATABASE_URL=postgresql://postgres:test@localhost:5432/thehub_test"),
-        {
-            "task": "t",
-            "tags": [REMOTE_TAG],
-            "config": {
-                "platform": "linux",
-                "image_resource": {
-                    "type": "registry-image",
-                    "source": {"repository": "((remote-registry))/thehub", "tag": "((.:sha))"},
-                },
-            },
-        },
+        {**ok, "image": "thehub-image"},
+        run("printf '%s' 1.2.3.4 > version"),  # not a private address
     ]
     for step in allowed:
         assert _remote_task_faults(step, images) == [], step
@@ -562,3 +624,124 @@ def test_the_unit_budget_leaves_room_in_its_worker() -> None:
     pytest_task = next(task for task in _tasks(unit["plan"]) if task["task"] == "pytest")
     script = "\n".join(pytest_task["config"]["run"]["args"])
     assert re.search(r"pytest -q -n 2 ", script), "mykronos unit runs pytest -n 2"
+
+
+# ── what a remote task is given and what this host takes back (review of #1177)
+
+
+def _job(where: tuple[str, str, str]) -> dict[str, Any]:
+    doc = _load(CONCOURSE / "pipelines" / f"{where[0]}.yml")
+    return next(j for j in doc["jobs"] if j["name"] == where[1])
+
+
+def _remote_step(where: tuple[str, str, str]) -> dict[str, Any]:
+    return next(s for s in _job_steps(_job(where)) if s.get("task") == where[2])
+
+
+def _input_faults(step: dict[str, Any], allowed: dict[str, str | None]) -> list[str]:
+    """Inputs or mappings that are not exactly what REMOTE_INPUTS allows."""
+    faults = []
+    names = [str(i.get("name")) for i in (step.get("config") or {}).get("inputs") or []]
+    mapping = dict(step.get("input_mapping") or {})
+    for name in names:
+        if name not in allowed:
+            faults.append(f"input {name!r} is not one this task is allowed")
+    for name, want in allowed.items():
+        if name in names and mapping.get(name) != want:
+            faults.append(f"input {name!r} maps {mapping.get(name)!r}, not {want!r}")
+    for name in mapping:
+        if name not in allowed:
+            faults.append(f"input_mapping {name!r} is not an allowed input")
+    return faults
+
+
+def test_every_remote_task_has_an_input_list() -> None:
+    assert set(REMOTE_INPUTS) == set(REMOTE_COMPUTE)
+
+
+@pytest.mark.parametrize("where", sorted(REMOTE_COMPUTE), ids="/".join)
+def test_a_remote_task_is_given_only_its_allowed_inputs(where: tuple[str, str, str]) -> None:
+    """In particular never a TheHub `get`: its .git is the repo's history."""
+    faults = _input_faults(_remote_step(where), REMOTE_INPUTS[where])
+    assert not faults, f"{'/'.join(where)}: {faults}"
+
+
+@pytest.mark.parametrize("where", sorted(REMOTE_COMPUTE), ids="/".join)
+def test_what_this_host_makes_for_a_remote_task_is_made_in_its_job(
+    where: tuple[str, str, str],
+) -> None:
+    step = _remote_step(where)
+    used = {v for v in REMOTE_INPUTS[where].values() if v} | {
+        n for n in REMOTE_INPUTS[where] if REMOTE_INPUTS[where][n] is None
+    }
+    if step.get("image") in HOST_IMAGES:
+        used.add(str(step["image"]))
+    tasks = [s.get("task") for s in _job_steps(_job(where))]
+    for artifact in sorted(used & set(HOST_MADE)):
+        maker = HOST_MADE[artifact]
+        assert maker in tasks, f"{'/'.join(where)} uses {artifact!r}, which no {maker} makes"
+
+
+def test_the_input_check_can_fail() -> None:
+    allowed: dict[str, str | None] = {"source": "tree", "commit": None}
+    ok = {"input_mapping": {"source": "tree"},
+          "config": {"inputs": [{"name": "source"}, {"name": "commit"}]}}
+    assert _input_faults(ok, allowed) == []
+    for bad in (
+        {"config": {"inputs": [{"name": "source"}]}},  # the raw git get
+        {"input_mapping": {"source": "tree"}, "config": {"inputs": [{"name": "source"},
+                                                                   {"name": "secrets"}]}},
+        {"input_mapping": {"source": "tree", "commit": "source"},
+         "config": {"inputs": [{"name": "source"}, {"name": "commit"}]}},
+    ):
+        assert _input_faults(bad, allowed), bad
+
+
+@pytest.mark.parametrize("where", sorted(REMOTE_COMPUTE), ids="/".join)
+def test_a_gated_remote_task_writes_ran_rc_on_exit(where: tuple[str, str, str]) -> None:
+    """`linux_absent` reads the FILE ran/rc: a registered `ran` directory alone
+    can be a deadline or a cancel, not a run (review of #1177)."""
+    if where == ("thehub", "image-refresh", "build"):
+        pytest.skip("not gating, and not wrapped in linux_absent")
+    step = _remote_step(where)
+    outputs = {o.get("name") for o in (step.get("config") or {}).get("outputs") or []}
+    text = "\n".join(_strings(step.get("config")))
+    if where[2] == "linux-worker-probe":
+        # Never `ran`: the probe's would outlive a remote task that timed out
+        # and read as that task having exited 0.
+        assert outputs == {"probed"} and "> probed/rc" in text, where
+        return
+    assert "ran" in outputs, f"{'/'.join(where)} declares no `ran` output"
+    assert re.search(r"trap '[^']*(ran|RAN_DIR)/rc[^']*' EXIT|> ran/rc", text), (
+        f"{'/'.join(where)} never writes ran/rc"
+    )
+
+
+def test_linux_absent_reads_the_rc_file_not_the_directory() -> None:
+    anchors = _load(CONCOURSE / "pipelines" / "thehub.yml")["anchors"]
+    script = "\n".join(_strings(anchors["linux_absent"]))
+    assert "[ -s ran/rc ]" in script
+    assert "[ -d ran ]" not in script
+
+
+@pytest.mark.parametrize("where", sorted(HOST_DECIDES), ids="/".join)
+def test_this_host_decides_a_gating_remote_tasks_exit_code(where: tuple[str, str, str]) -> None:
+    """The step after the remote task's wrapper is the host-side decider, and
+    it runs on this host."""
+    plan = _job(where)["plan"]
+    holder = next(i for i, s in enumerate(plan) if any(x.get("task") == where[2]
+                                                       for x in _every_step([s])))
+    after = plan[holder + 1] if holder + 1 < len(plan) else {}
+    assert after.get("task") == HOST_DECIDES[where], (
+        f"{'/'.join(where)}: the step after it is {after.get('task')!r}, not {HOST_DECIDES[where]}"
+    )
+    assert REMOTE_TAG not in (after.get("tags") or [])
+
+
+def test_no_task_reaches_the_registry_from_a_remote_worker() -> None:
+    """The local registry is published on 127.0.0.1 only, with no auth (B-054,
+    D-109). No remote task names it, and no image_resource of one points at
+    it: `fetch-image` pulls it here."""
+    for where in sorted(REMOTE_COMPUTE):
+        text = "\n".join(_strings(_remote_step(where)))
+        assert "((registry))" not in text and "remote-registry" not in text, where
