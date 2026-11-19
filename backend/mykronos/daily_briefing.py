@@ -1117,16 +1117,57 @@ class Readiness:
     checks: dict[str, int] | None
     mergeable_state: str
     story_ids: list[int]
+    #: Checks whose latest run ended `cancelled`: no verdict was reached on
+    #: this head (TheHub #61730). GitHub counts them as failed, so the state
+    #: is `red`, but re-running nothing fixes them the way fixing code fixes
+    #: a failure.
+    not_judged: list[str] = field(default_factory=list)
 
 
 #: Which states are a blocker, as against "not decided yet".
 BLOCKED_STATES = ("red", "conflict", "behind", "waiting")
 
+#: The prefix of a check run Concourse reports through the platform
+#: (`ci_check_run.CHECK_NAME_PREFIX`). Repeated rather than imported so this
+#: pure module does not pull in the GitHub client.
+_CONCOURSE_CHECK_PREFIX = "Concourse / "
+
+
+def _not_judged_why(names: list[str], failed: int) -> str:
+    """Why a red that is only cancelled checks is not a failure (TheHub #61730).
+
+    TheHub's `pr-gates` asks a head whose check ended cancelled once more and
+    then parks it: it is not judged again until the branch is pushed. That
+    memory lives in the pipeline's cache, where nobody reads it; the parked
+    head is visible here, as a cancelled Concourse check on an open pull
+    request, and nowhere else.
+    """
+    listed = ", ".join(names)
+    concourse = any(n.startswith(_CONCOURSE_CHECK_PREFIX) for n in names)
+    why = f"{listed} ended cancelled: no verdict was reached on this head."
+    if concourse:
+        why += (
+            " If pr-gates reported it, a head cancelled twice is parked: it is not "
+            "asked again until the branch is pushed."
+        )
+    others = failed - len(names)
+    if others > 0:
+        why = f"{others} check(s) failed. " + why
+    return why
+
 
 def pr_readiness(pr: Any, *, now: datetime) -> Readiness:
     """Ready to merge (mergeable and green), blocked (conflict, red checks, or
-    waiting on another pull request), or not yet known -- never guessed ready."""
+    waiting on another pull request), or not yet known -- never guessed ready.
+
+    A cancelled check is red, as GitHub counts it, but is named in
+    `not_judged` and in `why` as not judged rather than failed (TheHub #61730).
+    """
     checks = pr.checks
+    not_judged = sorted(
+        name for name, conclusion in (checks.by_name.items() if checks is not None else ())
+        if conclusion == "cancelled"
+    )
     counts = (
         {"total": checks.total, "passed": checks.passed, "failed": checks.failed,
          "pending": checks.pending}
@@ -1143,6 +1184,8 @@ def pr_readiness(pr: Any, *, now: datetime) -> Readiness:
         state, why = "waiting", f"Stacked on {on}; it merges after that does."
     elif pr.mergeable is False or pr.mergeable_state == "dirty":
         state, why = "conflict", f"Conflicts with {pr.base_branch or 'its base'}."
+    elif checks is not None and checks.failed and not_judged:
+        state, why = "red", _not_judged_why(not_judged, checks.failed)
     elif checks is not None and checks.failed:
         state, why = "red", f"{checks.failed} of {checks.total} check(s) failed."
     elif pr.mergeable_state == "behind":
@@ -1176,6 +1219,7 @@ def pr_readiness(pr: Any, *, now: datetime) -> Readiness:
         checks=counts,
         mergeable_state=pr.mergeable_state,
         story_ids=list(pr.story_ids),
+        not_judged=not_judged,
     )
 
 
@@ -1201,6 +1245,13 @@ def _pr_line(r: Readiness) -> Line | None:
             "conflict": "It cannot merge until it is rebased",
             "behind": "It cannot merge until the branch is updated",
         }[r.state]
+        if r.state == "red" and r.not_judged and r.checks and (
+            r.checks.get("failed", 0) <= len(r.not_judged)
+        ):
+            fix = (
+                "Nothing was judged, so it cannot merge until a run reaches a verdict: "
+                "clear what stopped the run, then push the branch again"
+            )
         return Line(
             what=f"{name} is blocked: {r.why}",
             so_what=f"{fix}: {r.title}{tail}.",
@@ -1328,6 +1379,8 @@ def needs_you_section(delivery: Any, *, now: datetime) -> Section:
             "ready": [asdict(r) for r in ready],
             "blocked": [asdict(r) for r in blocked],
             "failed_checks": [asdict(r) for r in readiness if r.state == "red"],
+            # TheHub #61730: heads a check could not judge, parked ones included.
+            "not_judged": [asdict(r) for r in readiness if r.not_judged],
             "pending": [asdict(r) for r in readiness if r.state == "pending"],
             "unknown": [asdict(r) for r in readiness if r.state == "unknown"],
             "drafts": sum(1 for r in readiness if r.state == "draft"),
