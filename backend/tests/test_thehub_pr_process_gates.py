@@ -196,6 +196,11 @@ def _judge(repo: Repo, base: str, head: str) -> tuple[int, str]:
     made = subprocess.run(["bash", "-euo", "pipefail", "-c", _inputs_block()], env=env, cwd=root,
                           capture_output=True, text=True, timeout=60)
     assert made.returncode == 0, made.stdout + made.stderr
+    return _gates(root)
+
+
+def _gates(root: Path) -> tuple[int, str]:
+    """The whole `gates` task, as Concourse runs it, on the inputs under root/pr."""
     (root / "pr" / ".git" / "pr-number").write_text("531\n", encoding="utf-8")
     for d in ("hub_log", "live-pipeline"):
         (root / d).mkdir(exist_ok=True)
@@ -394,3 +399,100 @@ def test_the_deploy_gates_still_run_and_both_verdicts_count() -> None:
     gates = _script("gates")
     assert 'bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline"' in gates
     assert gates.index("PROCESS_RC") < gates.index('bash "$JUDGE/scripts/pr_deploy_gates.sh"')
+
+
+# -- [TheHub #578, #586, #595] the range is closed before it is graded ---------
+#
+# Each of the three was cut from an old develop and later merged a newer one.
+# The pick's shallow fetch met develop at that merge on the first deepen, with
+# the branch's older first-parent history still unconnected to it, so
+# `git log merge-base..head` listed develop's own history as the branch's: 89
+# commits and 189 KB of bodies for #578's 13 commits and 9.5 KB. The bodies
+# travel in DEVB_COMMIT_MESSAGE, and Linux caps one environment string at
+# MAX_ARG_STRLEN, so DEV-B could not start: `[Errno 7] Argument list too long`.
+# These fetch the way the pick does (by sha, depth 1, deepened 50 at a time)
+# from a local repository of that shape, then run the pick's loop, its input
+# block and the gates task as the pipeline holds them.
+
+_MAX_ARG_STRLEN = 32 * 4096
+
+
+def _deepen_block() -> str:
+    """The lines of `pick` that fetch the base and deepen to the merge base."""
+    body = re.search(
+        r'\n([ \t]*GIT_SSH_COMMAND="\$ssh_cmd" git -C pr fetch -q --depth 1 "\$REPO_URI" "\$BASE_SHA"\n'
+        r".*?\n[ \t]*done\n)",
+        _script("pick"), re.S)
+    assert body, "the pick's deepening loop moved"
+    return textwrap.dedent(body.group(1))
+
+
+def _old_branch_that_merged_develop(
+    tmp_path: Path, old: int, old_body: str, pr_files: dict[str, str | None],
+) -> tuple[Repo, str, str]:
+    """#578's shape: `old` develop commits, a branch cut there, 60 more on
+    develop, develop merged into the branch, then develop moves on again."""
+    repo, _ = _develop(tmp_path / "src")
+    for i in range(old):
+        repo.commit(f"chore: old develop {i}\n\n{old_body}", {})
+    repo.branch("feat/old", repo.git("rev-parse", "HEAD"))
+    repo.commit("feat: the pull request's own commit", pr_files)
+    repo.git("checkout", "-q", "develop")
+    for i in range(60):
+        repo.commit(f"chore: develop moves {i}", {})
+    merged = repo.git("rev-parse", "HEAD")
+    repo.git("checkout", "-q", "feat/old")
+    repo.git("merge", "-q", "--no-ff", "-m", "Merge develop into feat/old", merged)
+    head = repo.git("rev-parse", "HEAD")
+    repo.git("checkout", "-q", "develop")
+    base = repo.commit("chore: develop moves on", {})
+    return repo, base, head
+
+
+def _judge_fetched(src: Repo, base: str, head: str, tmp_path: Path) -> tuple[int, str, str]:
+    """The pick's fetch, deepening and inputs from `src`, then the gates task."""
+    src.git("config", "uploadpack.allowAnySHA1InWant", "true")
+    root = tmp_path / "pick"
+    root.mkdir()
+    env = {**os.environ, "REPO_URI": src.dir.as_uri(), "ssh_cmd": "", "SHA": head,
+           "BASE_SHA": base, "NUM": "578", "THEHUB_BRANCH": "develop"}
+    script = ('git init -q pr\n'
+              'git -C pr fetch -q --depth 1 "$REPO_URI" "$SHA"\n'
+              'git -C pr checkout -q --detach "$SHA"\n'
+              + _deepen_block() + _inputs_block())
+    made = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, cwd=root,
+                          capture_output=True, text=True, timeout=180)
+    assert made.returncode == 0, made.stdout + made.stderr
+    assert (root / "pr" / ".git" / "shallow").is_file(), "the fixture must exercise a shallow fetch"
+    bodies = (root / "pr" / ".git" / "process-gates" / "bodies").read_text(encoding="utf-8")
+    rc, log = _gates(root)
+    return rc, log, bodies
+
+
+@pytest.mark.parametrize("old", [45, 80], ids=["history-reaches-the-root", "history-is-cut"])
+def test_a_branch_that_merged_a_newer_develop_is_graded_on_its_own_commits(tmp_path, old) -> None:
+    # 4 KB of develop body per old commit: 180 KB or more, past MAX_ARG_STRLEN,
+    # if the range drags them in, as #578's did.
+    padding = "OLD-DEVELOP-BODY " + "x" * 4000
+    repo, base, head = _old_branch_that_merged_develop(tmp_path, old, padding, {"docs/a.md": "a\n"})
+    assert old * len(padding) > _MAX_ARG_STRLEN
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path)
+    assert "OLD-DEVELOP-BODY" not in bodies, "develop's history was graded as the branch's"
+    assert "feat: the pull request's own commit" in bodies
+    assert "Merge develop into feat/old" in bodies
+    assert len(bodies.encode("utf-8")) < _MAX_ARG_STRLEN
+    assert "Argument list too long" not in log, log
+    assert "DEV-B: no sensitive path in this pull request" in log, log
+    assert rc == 0, log
+
+
+def test_a_trailer_in_develops_history_does_not_satisfy_the_branchs_dev_b(tmp_path) -> None:
+    """The same cut, small bodies: develop's own Threat-Model-MD: trailers must
+    not reach DEV-B as if a branch commit carried them."""
+    trailer = "Threat-Model-MD: docs/threat-models/old.md"
+    repo, base, head = _old_branch_that_merged_develop(
+        tmp_path, 45, trailer, {"backend/main.py": "app = 1\n"})
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path)
+    assert trailer not in bodies
+    assert rc != 0, log
+    assert "backend/main.py" in log, log

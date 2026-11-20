@@ -3108,16 +3108,40 @@ jobs:
                   BASE_SHA=$(awk -v r="refs/heads/$THEHUB_BRANCH" '$2 == r { print $1 }' /tmp/refs)
                   test -n "$BASE_SHA"
                   GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --depth 1 "$REPO_URI" "$BASE_SHA"
+                  # [TheHub #578, #586, #595] Finding a merge base is not enough:
+                  # the range must also be CLOSED, with every commit in
+                  # merge-base..head (and merge-base..base) holding its parents.
+                  # A branch cut from an old develop that later merged a newer
+                  # develop meets develop at that merge on the first deepen,
+                  # while its own older first-parent history is still cut off
+                  # at the shallow boundary, so git cannot see that history is
+                  # develop's too. `git log merge-base..head` then listed 89
+                  # commits for #578's 13: 189 KB of develop's bodies, past the
+                  # kernel's 128 KiB cap on one environment string, and DEV-B
+                  # could not start (`[Errno 7] Argument list too long`). So the
+                  # range is open while it holds a parentless commit: a shallow
+                  # boundary (the cut itself; git lists it without parents), or
+                  # a root reached on one side before the other side's history
+                  # shows it is develop's too. Deepen until there is none. With
+                  # the whole history fetched (no .git/shallow) it is exact.
+                  range_open() {
+                    [ -f pr/.git/shallow ] || return 1
+                    git -C pr rev-list --max-parents=0 "$SHA" "$BASE_SHA" --not "$MERGE_BASE" \
+                      > pr/.git/range-roots || return 0
+                    [ -s pr/.git/range-roots ]
+                  }
                   deepened=0
-                  until MERGE_BASE=$(git -C pr merge-base "$SHA" "$BASE_SHA" 2>/dev/null); do
+                  until MERGE_BASE=$(git -C pr merge-base "$SHA" "$BASE_SHA" 2>/dev/null) && ! range_open; do
                     deepened=$((deepened + 1))
                     if [ "$deepened" -gt 20 ]; then
-                      echo "::error::#$NUM shares no commit with $THEHUB_BRANCH in 1000 commits of history,"
-                      echo "          so its range cannot be graded. Rebase it onto $THEHUB_BRANCH."
+                      echo "::error::#$NUM's range with $THEHUB_BRANCH does not close in 1000 commits of history"
+                      echo "          (no shared commit, or one whose history is still cut off), so it"
+                      echo "          cannot be graded. Rebase it onto $THEHUB_BRANCH."
                       exit 1
                     fi
                     GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --deepen 50 "$REPO_URI" "$SHA" "$BASE_SHA"
                   done
+                  rm -f pr/.git/range-roots
 
                   # The gates task runs the branch's code and holds no
                   # credential; this one holds the deploy key and runs nothing
