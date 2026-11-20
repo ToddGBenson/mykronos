@@ -3151,25 +3151,39 @@ jobs:
                   mkdir -p "$pg"
                   git -C pr show "$BASE_SHA:scripts/lib/devb_gate.py" > "$pg/devb_gate.py"
                   git -C pr show "$BASE_SHA:scripts/deploy.sh" > "$pg/deploy.sh"
-                  # The paths: every path a pull request commit touches (a
-                  # merge's own changes too: -c lists what differs from every
-                  # parent; --no-renames lists both names of a move), kept
-                  # where the head still differs from the base's tip. That is
-                  # what the squash commit changes, path for path. A path the
-                  # branch touched and put back, or that develop changed the
-                  # same way, is not in the squash, and a file only develop
-                  # changed is not the branch's. So a test the branch added and
-                  # deleted again does not count for DEV-D.
-                  git -C "$graph" log --format= --name-only --no-renames -c "$SHA" --not "$BASE_SHA" \
-                    > "$pg/touched"
+                  # The paths come from the trees, not from per-commit
+                  # listings: every path where the head differs from a merge
+                  # base (all of them, for a criss-cross history), kept where
+                  # the head still differs from the base's tip. That is what
+                  # the squash commit changes, path for path. A per-commit
+                  # listing misses a merge that keeps the branch's old copy of
+                  # a file develop changed (or `-s ours`), and the squash then
+                  # reverts develop's change to it [review of mykronos #1202].
+                  # A path the branch touched and put back, or that develop
+                  # changed the same way, is not in the squash, and a file only
+                  # develop changed is not the branch's. --no-renames lists
+                  # both names of a move. No merge base, no range: fail closed.
+                  if ! MERGE_BASES=$(git -C "$graph" merge-base --all "$SHA" "$BASE_SHA") \
+                      || [ -z "$MERGE_BASES" ]; then
+                    echo "::error::#$NUM shares no commit with $THEHUB_BRANCH at $BASE_SHA, so the"
+                    echo "          paths its squash changes cannot be graded; failing closed."
+                    exit 1
+                  fi
+                  : > "$pg/candidates"
+                  for mb in $MERGE_BASES; do
+                    git -C "$graph" diff --name-only --no-renames "$mb" "$SHA" >> "$pg/candidates"
+                  done
                   git -C "$graph" diff --name-only --no-renames "$BASE_SHA" "$SHA" \
-                    | awk 'NR == FNR { t[$0]; next } $0 in t' "$pg/touched" - > "$pg/changed"
+                    | awk 'FILENAME == ARGV[1] { c[$0]; next } $0 in c' "$pg/candidates" - \
+                    > "$pg/changed"
                   git -C "$graph" diff --name-only --no-renames --diff-filter=A "$BASE_SHA" "$SHA" \
-                    | awk 'NR == FNR { t[$0]; next } $0 in t' "$pg/touched" - > "$pg/added"
-                  rm -f "$pg/touched"
+                    | awk 'FILENAME == ARGV[1] { c[$0]; next } $0 in c' "$pg/candidates" - \
+                    > "$pg/added"
+                  rm -f "$pg/candidates"
+                  # The commits, exactly: bodies and trailers.
                   git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"
-                  # The merge base is only named in the gates' log line.
-                  MERGE_BASE=$(git -C "$graph" merge-base "$SHA" "$BASE_SHA" || echo "$BASE_SHA")
+                  # The (first) merge base is only named in the gates' log line.
+                  MERGE_BASE=${MERGE_BASES%%$'\n'*}
                   printf '%s %s %s\n' "$BASE_SHA" "$MERGE_BASE" "$SHA" > "$pg/range"
                   rm -rf "$graph"
                   # [TheHub #61113] The deploy gates' judge: the BASE commit's

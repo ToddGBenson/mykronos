@@ -402,7 +402,10 @@ def test_the_pick_grades_the_range_on_the_whole_commit_graph() -> None:
     assert "--deepen" not in pick
     assert 'fetch -q --filter=blob:none \\\n    "$REPO_URI" "$SHA" "$BASE_SHA"' in block
     assert 'git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"' in block
-    assert '--name-only --no-renames -c "$SHA" --not "$BASE_SHA"' in block
+    # The paths come from the trees against every merge base, not per commit.
+    assert 'git -C "$graph" merge-base --all "$SHA" "$BASE_SHA"' in block
+    assert 'diff --name-only --no-renames "$mb" "$SHA"' in block
+    assert "git -C \"$graph\" log --format= --name-only" not in block
     assert 'diff --name-only "$MERGE_BASE"' not in block and "$MERGE_BASE..$SHA" not in block
     # The graph is made in the task that holds the credential and is removed
     # before `export-pr`, which copies only process-gates/ and judge/.
@@ -622,3 +625,44 @@ def test_a_head_whose_graph_cannot_be_fetched_fails_closed(tmp_path) -> None:
     assert made.returncode != 0, made.stdout + made.stderr
     assert "failing closed" in made.stdout, made.stdout + made.stderr
     assert not (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "bodies").exists()
+
+
+@pytest.mark.parametrize("how", ["checkout-the-branch-copy", "strategy-ours"])
+def test_a_merge_that_keeps_the_branchs_copy_of_a_sensitive_file_is_graded(tmp_path, how) -> None:
+    """[review of mykronos #1202, at e46cbda9] develop changed backend/main.py;
+    the branch merged develop and kept its own old copy. The squash reverts
+    develop's change to a sensitive file, so DEV-B must see backend/main.py,
+    though no branch commit's own listing names it. develop's trailer on that
+    change is develop's, not the branch's."""
+    repo, start = _develop(tmp_path / "src")
+    repo.branch("feat/keep", start)
+    repo.commit("docs: a", {"docs/a.md": "a\n"})
+    repo.git("checkout", "-q", "develop")
+    base = repo.commit("feat: develop wires a router\n\nThreat-Model-MD: docs/threat-models/r.md",
+                       {"backend/main.py": "app = 2\n"})
+    repo.git("checkout", "-q", "feat/keep")
+    if how == "strategy-ours":
+        repo.git("merge", "-q", "-s", "ours", "-m", "Merge develop into feat/keep", base)
+        head = repo.git("rev-parse", "HEAD")
+    else:
+        repo.git("merge", "-q", "--no-ff", "--no-commit", base)
+        repo.git("checkout", "HEAD", "--", "backend/main.py")
+        head = repo.commit("Merge develop into feat/keep", {})
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path, shallow=False)
+    changed = (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "changed").read_text(
+        encoding="utf-8").split()
+    assert sorted(changed) == ["backend/main.py", "docs/a.md"], changed
+    assert "Threat-Model-MD:" not in bodies
+    assert rc != 0, log
+    assert "backend/main.py" in log, log
+
+
+def test_a_head_that_shares_no_commit_with_develop_fails_closed(tmp_path) -> None:
+    """No merge base: no squash to grade paths against, so no verdict."""
+    repo, base = _develop(tmp_path / "src")
+    repo.git("checkout", "-q", "--orphan", "lone")
+    head = repo.commit("feat: lone", {"docs/x.md": "x\n"})
+    made = _pick(repo, base, head, tmp_path)
+    assert made.returncode != 0, made.stdout + made.stderr
+    assert "shares no commit" in made.stdout, made.stdout + made.stderr
+    assert not (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "changed").exists()
