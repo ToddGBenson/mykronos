@@ -177,12 +177,14 @@ def _develop(tmp_path: Path, **extra: str | None) -> tuple[Repo, str]:
 
 
 def _python3_shim(tmp_path: Path) -> str:
-    """The task image's `python3`, as this interpreter, ahead of anything else."""
+    """The task image's `python3`, as this interpreter, ahead of anything else.
+    In UTF-8 mode, as the image's is under its UTF-8 locale (-I ignores PYTHONUTF8)."""
     shim_dir = tmp_path / "bin"
     shim_dir.mkdir(exist_ok=True)
     shim = shim_dir / "python3"
     exe = Path(sys.executable).as_posix()
-    shim.write_text(f'#!/usr/bin/env bash\nexec "{exe}" "$@"\n', encoding="utf-8", newline="\n")
+    shim.write_text(f'#!/usr/bin/env bash\nexec "{exe}" -X utf8 "$@"\n', encoding="utf-8",
+                    newline="\n")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return str(shim_dir)
 
@@ -404,7 +406,7 @@ def test_the_pick_grades_the_range_on_the_whole_commit_graph() -> None:
     assert 'git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"' in block
     # The paths come from the trees against every merge base, not per commit.
     assert 'git -C "$graph" merge-base --all "$SHA" "$BASE_SHA"' in block
-    assert 'diff --name-only --no-renames "$mb" "$SHA"' in block
+    assert 'diff -z --name-only --no-renames "$mb" "$SHA"' in block
     assert "git -C \"$graph\" log --format= --name-only" not in block
     assert 'diff --name-only "$MERGE_BASE"' not in block and "$MERGE_BASE..$SHA" not in block
     # The graph is made in the task that holds the credential and is removed
@@ -666,3 +668,98 @@ def test_a_head_that_shares_no_commit_with_develop_fails_closed(tmp_path) -> Non
     assert made.returncode != 0, made.stdout + made.stderr
     assert "shares no commit" in made.stdout, made.stdout + made.stderr
     assert not (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "changed").exists()
+
+
+# -- [TheHub #62156] path handling: NUL-separated file names -------------------
+#
+# Without -z, `git diff --name-only` C-quotes a name with non-ASCII or special
+# characters ("docs/caf\303\251.md"), and devb_gate's anchored patterns grade
+# that quoted text rather than the path. The pick lists every name with -z, so
+# `changed` and `added` hold the exact, unquoted names, one per line, and a
+# name the one-per-line list cannot carry fails closed.
+#
+# These names cannot all be checked out on every filesystem, so the fixture
+# writes them through the index and the pick here stops short of the head's
+# checkout, which its range lines do not read.
+
+
+def _commit_names(repo: Repo, message: str, files: dict[str, str]) -> str:
+    """A commit of `files` written through the index alone, so any name git
+    can store is committed whatever the filesystem accepts."""
+    entries = b""
+    for name, content in files.items():
+        blob = subprocess.run(["git", "-C", str(repo.dir), "hash-object", "-w", "--stdin"],
+                              input=content.encode("utf-8"), capture_output=True,
+                              check=True).stdout.strip()
+        entries += b"100644 " + blob + b"\t" + name.encode("utf-8") + b"\0"
+    subprocess.run(["git", "-C", str(repo.dir), "-c", "core.protectNTFS=false",
+                    "-c", "core.protectHFS=false", "update-index", "-z", "--index-info"],
+                   input=entries, capture_output=True, check=True)
+    repo.git("commit", "-q", "-m", message)
+    return repo.git("rev-parse", "HEAD")
+
+
+def _pick_names(tmp_path: Path, files: dict[str, str]) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """A pull request adding `files`, through the pick's range lines."""
+    repo, base = _develop(tmp_path / "src")
+    repo.branch("feat/names", base)
+    head = _commit_names(repo, "feat: files with unusual names", files)
+    repo.git("checkout", "-q", "develop")
+    env = _pick_env(repo, base, head)
+    root = tmp_path / "pick"
+    root.mkdir()
+    script = ('git init -q pr\n'
+              'git -C pr fetch -q --depth 1 "$REPO_URI" "$SHA"\n'
+              + _range_block())
+    made = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, cwd=root,
+                          capture_output=True, text=True, encoding="utf-8", timeout=180)
+    return made, root
+
+
+def _path_list(root: Path, name: str) -> list[str]:
+    raw = (root / "pr" / ".git" / "process-gates" / name).read_bytes().decode("utf-8")
+    assert raw == "" or raw.endswith("\n"), repr(raw)
+    return raw.split("\n")[:-1]
+
+
+_UNUSUAL_NAMES = {
+    "non-ascii": "docs/café résumé.md",
+    "double-quote": 'docs/say "hi".md',
+    "backslash": "docs/back\\slash.md",
+    "tab": "docs/tab\there.md",
+}
+
+
+@pytest.mark.parametrize("name", list(_UNUSUAL_NAMES.values()), ids=list(_UNUSUAL_NAMES))
+def test_an_unusual_file_name_is_listed_exactly_in_changed_and_added(tmp_path, name) -> None:
+    made, root = _pick_names(tmp_path, {name: "x\n", "docs/plain.md": "p\n"})
+    assert made.returncode == 0, made.stdout + made.stderr
+    for listing in ("changed", "added"):
+        names = _path_list(root, listing)
+        assert name in names, (listing, names)
+        assert "docs/plain.md" in names, (listing, names)
+        assert not any(n.startswith('"') for n in names), (listing, names)
+
+
+def test_a_sensitive_path_with_a_non_ascii_name_is_graded_by_dev_b(tmp_path) -> None:
+    """The exact name matches devb_gate's anchored pattern; the quoted one did not."""
+    name = "backend/models/café.py"
+    made, root = _pick_names(tmp_path, {name: "x = 1\n"})
+    assert made.returncode == 0, made.stdout + made.stderr
+    assert _path_list(root, "changed") == [name]
+    rc, log = _gates(root)
+    assert rc != 0, log
+    assert "DEV-B (#4944)" in log, log
+
+
+@pytest.mark.parametrize("brk", ["\n", "\r", "\x0b", "\x1e", "\x85", " "],
+                         ids=["lf", "cr", "vt", "rs", "nel", "line-separator"])
+def test_a_name_with_a_line_break_fails_closed(tmp_path, brk) -> None:
+    """devb_gate reads one name per line, so a name that breaks a line cannot
+    be listed: no path lists, and the pick is red."""
+    made, root = _pick_names(tmp_path, {f"backend/models/a{brk}b.py": "x = 1\n"})
+    assert made.returncode != 0, made.stdout + made.stderr
+    assert "failing closed" in made.stdout, made.stdout + made.stderr
+    pg = root / "pr" / ".git" / "process-gates"
+    assert not (pg / "changed").exists() and not (pg / "added").exists()
+    assert not list(pg.glob("*.z"))

@@ -3169,17 +3169,36 @@ jobs:
                     echo "          paths its squash changes cannot be graded; failing closed."
                     exit 1
                   fi
-                  : > "$pg/candidates"
+                  # [TheHub #62156] Path handling: every list is NUL-separated
+                  # (`-z`) from git to the last filter, so each name is the
+                  # exact, unquoted path. Without -z git C-quotes a name with
+                  # non-ASCII or special characters ("dir/caf\303\251.py"),
+                  # and devb_gate's anchored patterns grade the quoted text.
+                  # devb_gate reads one name per line (Python splitlines), so
+                  # `changed` and `added` are written newline-separated, and a
+                  # name holding any character splitlines breaks on (\n \r \v
+                  # \f \x1c-\x1e U+0085 U+2028 U+2029) cannot be: fail closed.
+                  : > "$pg/candidates.z"
                   for mb in $MERGE_BASES; do
-                    git -C "$graph" diff --name-only --no-renames "$mb" "$SHA" >> "$pg/candidates"
+                    git -C "$graph" diff -z --name-only --no-renames "$mb" "$SHA" >> "$pg/candidates.z"
                   done
-                  git -C "$graph" diff --name-only --no-renames "$BASE_SHA" "$SHA" \
-                    | awk 'FILENAME == ARGV[1] { c[$0]; next } $0 in c' "$pg/candidates" - \
-                    > "$pg/changed"
-                  git -C "$graph" diff --name-only --no-renames --diff-filter=A "$BASE_SHA" "$SHA" \
-                    | awk 'FILENAME == ARGV[1] { c[$0]; next } $0 in c' "$pg/candidates" - \
-                    > "$pg/added"
-                  rm -f "$pg/candidates"
+                  LC_ALL=C sort -z -u -o "$pg/candidates.z" "$pg/candidates.z"
+                  git -C "$graph" diff -z --name-only --no-renames "$BASE_SHA" "$SHA" \
+                    | LC_ALL=C sort -z -u | LC_ALL=C comm -z -12 "$pg/candidates.z" - > "$pg/changed.z"
+                  git -C "$graph" diff -z --name-only --no-renames --diff-filter=A "$BASE_SHA" "$SHA" \
+                    | LC_ALL=C sort -z -u | LC_ALL=C comm -z -12 "$pg/candidates.z" - > "$pg/added.z"
+                  rm -f "$pg/candidates.z"
+                  if [ "$(tr -dc '\n\r\v\f\034\035\036' < "$pg/changed.z" | wc -c)" -ne 0 ] \
+                      || LC_ALL=C grep -qa -e $'\xc2\x85' -e $'\xe2\x80\xa8' -e $'\xe2\x80\xa9' "$pg/changed.z"; then
+                    rm -f "$pg/changed.z" "$pg/added.z"
+                    echo "::error::#$NUM changes a path whose name holds a line break, which the"
+                    echo "          one-per-line path list cannot represent, so it cannot be graded;"
+                    echo "          failing closed."
+                    exit 1
+                  fi
+                  tr '\0' '\n' < "$pg/changed.z" > "$pg/changed"
+                  tr '\0' '\n' < "$pg/added.z" > "$pg/added"
+                  rm -f "$pg/changed.z" "$pg/added.z"
                   # The commits, exactly: bodies and trailers.
                   git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"
                   # The (first) merge base is only named in the gates' log line.
@@ -3327,7 +3346,7 @@ jobs:
                         try:
                             r = subprocess.run(
                                 [sys.executable, "-I", os.path.abspath(os.path.join(pg, "devb_gate.py"))],
-                                input="\n".join(changed) + "\n", env=env, cwd=empty,
+                                input="\n".join(changed) + "\n", encoding="utf-8", env=env, cwd=empty,
                                 capture_output=True, text=True, timeout=120)
                             code, out = r.returncode, (r.stdout + r.stderr).strip()
                         except (OSError, subprocess.SubprocessError) as exc:
