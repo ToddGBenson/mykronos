@@ -699,7 +699,9 @@ def _commit_names(repo: Repo, message: str, files: dict[str, str]) -> str:
     return repo.git("rev-parse", "HEAD")
 
 
-def _pick_names(tmp_path: Path, files: dict[str, str]) -> tuple[subprocess.CompletedProcess[str], Path]:
+def _pick_names(
+    tmp_path: Path, files: dict[str, str],
+) -> tuple[subprocess.CompletedProcess[str], Path]:
     """A pull request adding `files`, through the pick's range lines."""
     repo, base = _develop(tmp_path / "src")
     repo.branch("feat/names", base)
