@@ -420,8 +420,8 @@ _MAX_ARG_STRLEN = 32 * 4096
 def _deepen_block() -> str:
     """The lines of `pick` that fetch the base and deepen to the merge base."""
     body = re.search(
-        r'\n([ \t]*GIT_SSH_COMMAND="\$ssh_cmd" git -C pr fetch -q --depth 1 "\$REPO_URI" "\$BASE_SHA"\n'
-        r".*?\n[ \t]*done\n)",
+        r'\n([ \t]*GIT_SSH_COMMAND="\$ssh_cmd" git -C pr fetch -q --depth 1 '
+        r'"\$REPO_URI" "\$BASE_SHA"\n.*?\n[ \t]*done\n)',
         _script("pick"), re.S)
     assert body, "the pick's deepening loop moved"
     return textwrap.dedent(body.group(1))
