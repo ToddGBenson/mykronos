@@ -3101,23 +3101,11 @@ jobs:
                   echo "$NUM" > pr/.git/pr-number
 
                   # [TheHub #61159] deploy.sh's process gates (DEV-B, DEV-D)
-                  # grade the pull request's own range, merge-base..head. So
-                  # this needs the base branch's tip and enough history on both
-                  # sides to find where they meet: deepened 50 commits at a time
-                  # rather than cloned, because TheHub's full history is minutes.
+                  # grade the pull request the way its squash lands on the base
+                  # branch. That needs the base branch's tip beside the head.
                   BASE_SHA=$(awk -v r="refs/heads/$THEHUB_BRANCH" '$2 == r { print $1 }' /tmp/refs)
                   test -n "$BASE_SHA"
                   GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --depth 1 "$REPO_URI" "$BASE_SHA"
-                  deepened=0
-                  until MERGE_BASE=$(git -C pr merge-base "$SHA" "$BASE_SHA" 2>/dev/null); do
-                    deepened=$((deepened + 1))
-                    if [ "$deepened" -gt 20 ]; then
-                      echo "::error::#$NUM shares no commit with $THEHUB_BRANCH in 1000 commits of history,"
-                      echo "          so its range cannot be graded. Rebase it onto $THEHUB_BRANCH."
-                      exit 1
-                    fi
-                    GIT_SSH_COMMAND="$ssh_cmd" git -C pr fetch -q --deepen 50 "$REPO_URI" "$SHA" "$BASE_SHA"
-                  done
 
                   # The gates task runs the branch's code and holds no
                   # credential; this one holds the deploy key and runs nothing
@@ -3126,14 +3114,78 @@ jobs:
                   # tree: a pull request that edits scripts/lib/devb_gate.py or
                   # deploy.sh is still judged by develop's copies.
                   # -- process-gate inputs, begin
+                  #
+                  # [TheHub #578, #586, #595; review of mykronos #1202] The
+                  # pull request's commits are every commit reachable from the
+                  # head and not from the base's tip, `"$SHA" --not "$BASE_SHA"`:
+                  # what GitHub lists, and what the squash's body is made of.
+                  # That is exact only on the WHOLE commit graph. The pick used
+                  # to deepen a shallow clone to a merge base and grade
+                  # merge-base..head, which took in develop's own commits three
+                  # ways: a branch from an old develop that later merged a newer
+                  # one (89 commits for #578's 13, 189 KB of bodies, past the
+                  # kernel's 128 KiB cap on one environment string, so DEV-B
+                  # could not start: `[Errno 7] Argument list too long`); a
+                  # branch cut from inside a develop merge's side branch longer
+                  # than the fetch depth; and a criss-cross history, where
+                  # `git merge-base` returns one base of two. Each handed DEV-B
+                  # develop's Threat-Model-MD: trailers as the branch's (19 for
+                  # #595, which has none). So the graph is fetched whole, with
+                  # no blobs (all of TheHub's commits and trees: ~6 MB, ~4 s),
+                  # into a repository of its own that `export-pr` never copies.
+                  graph=pr/.git/range-graph
+                  rm -rf "$graph"
+                  git init -q --bare "$graph"
+                  if ! GIT_SSH_COMMAND="$ssh_cmd" git -C "$graph" fetch -q --filter=blob:none \
+                      "$REPO_URI" "$SHA" "$BASE_SHA"; then
+                    echo "::error::#$NUM: the commit graph for $SHA and $THEHUB_BRANCH at $BASE_SHA"
+                    echo "          could not be fetched, so its range cannot be graded; failing closed."
+                    exit 1
+                  fi
+                  if [ -f "$graph/shallow" ] || ! git -C "$graph" cat-file -e "$SHA^{commit}" \
+                      || ! git -C "$graph" cat-file -e "$BASE_SHA^{commit}"; then
+                    echo "::error::#$NUM: the fetched commit graph is incomplete; failing closed."
+                    exit 1
+                  fi
                   pg=pr/.git/process-gates
                   mkdir -p "$pg"
                   git -C pr show "$BASE_SHA:scripts/lib/devb_gate.py" > "$pg/devb_gate.py"
                   git -C pr show "$BASE_SHA:scripts/deploy.sh" > "$pg/deploy.sh"
-                  git -C pr diff --name-only "$MERGE_BASE" "$SHA" > "$pg/changed"
-                  git -C pr diff --name-only --diff-filter=A "$MERGE_BASE" "$SHA" > "$pg/added"
-                  git -C pr log --format=%B "$MERGE_BASE..$SHA" > "$pg/bodies"
+                  # The paths come from the trees, not from per-commit
+                  # listings: every path where the head differs from a merge
+                  # base (all of them, for a criss-cross history), kept where
+                  # the head still differs from the base's tip. That is what
+                  # the squash commit changes, path for path. A per-commit
+                  # listing misses a merge that keeps the branch's old copy of
+                  # a file develop changed (or `-s ours`), and the squash then
+                  # reverts develop's change to it [review of mykronos #1202].
+                  # A path the branch touched and put back, or that develop
+                  # changed the same way, is not in the squash, and a file only
+                  # develop changed is not the branch's. --no-renames lists
+                  # both names of a move. No merge base, no range: fail closed.
+                  if ! MERGE_BASES=$(git -C "$graph" merge-base --all "$SHA" "$BASE_SHA") \
+                      || [ -z "$MERGE_BASES" ]; then
+                    echo "::error::#$NUM shares no commit with $THEHUB_BRANCH at $BASE_SHA, so the"
+                    echo "          paths its squash changes cannot be graded; failing closed."
+                    exit 1
+                  fi
+                  : > "$pg/candidates"
+                  for mb in $MERGE_BASES; do
+                    git -C "$graph" diff --name-only --no-renames "$mb" "$SHA" >> "$pg/candidates"
+                  done
+                  git -C "$graph" diff --name-only --no-renames "$BASE_SHA" "$SHA" \
+                    | awk 'FILENAME == ARGV[1] { c[$0]; next } $0 in c' "$pg/candidates" - \
+                    > "$pg/changed"
+                  git -C "$graph" diff --name-only --no-renames --diff-filter=A "$BASE_SHA" "$SHA" \
+                    | awk 'FILENAME == ARGV[1] { c[$0]; next } $0 in c' "$pg/candidates" - \
+                    > "$pg/added"
+                  rm -f "$pg/candidates"
+                  # The commits, exactly: bodies and trailers.
+                  git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"
+                  # The (first) merge base is only named in the gates' log line.
+                  MERGE_BASE=${MERGE_BASES%%$'\n'*}
                   printf '%s %s %s\n' "$BASE_SHA" "$MERGE_BASE" "$SHA" > "$pg/range"
+                  rm -rf "$graph"
                   # [TheHub #61113] The deploy gates' judge: the BASE commit's
                   # whole tree. `gates` runs develop's pr_deploy_gates.sh,
                   # harden_findings_report.py, shape tests and tool lock from

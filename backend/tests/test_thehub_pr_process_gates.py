@@ -187,15 +187,28 @@ def _python3_shim(tmp_path: Path) -> str:
     return str(shim_dir)
 
 
+def _pick_env(src: Repo, base: str, head: str) -> dict[str, str]:
+    """The pick's variables, with `src` standing in for GitHub: served over
+    file:// so a shallow or filtered fetch behaves as it does from GitHub."""
+    src.git("config", "uploadpack.allowAnySHA1InWant", "true")
+    src.git("config", "uploadpack.allowFilter", "true")
+    return {**os.environ, "REPO_URI": src.dir.as_uri(), "ssh_cmd": "", "SHA": head,
+            "BASE_SHA": base, "NUM": "578", "THEHUB_BRANCH": "develop"}
+
+
 def _judge(repo: Repo, base: str, head: str) -> tuple[int, str]:
     """`pick`'s input block, then the whole `gates` task, as Concourse runs them."""
     root = repo.root
     repo.git("checkout", "-q", "--detach", head)
-    merge_base = repo.git("merge-base", head, base)
-    env = {**os.environ, "BASE_SHA": base, "MERGE_BASE": merge_base, "SHA": head}
+    env = {**_pick_env(repo, base, head), "MERGE_BASE": repo.git("merge-base", head, base)}
     made = subprocess.run(["bash", "-euo", "pipefail", "-c", _inputs_block()], env=env, cwd=root,
                           capture_output=True, text=True, timeout=60)
     assert made.returncode == 0, made.stdout + made.stderr
+    return _gates(root)
+
+
+def _gates(root: Path) -> tuple[int, str]:
+    """The whole `gates` task, as Concourse runs it, on the inputs under root/pr."""
     (root / "pr" / ".git" / "pr-number").write_text("531\n", encoding="utf-8")
     for d in ("hub_log", "live-pipeline"):
         (root / d).mkdir(exist_ok=True)
@@ -379,18 +392,277 @@ def test_develops_deploy_sh_changing_its_dev_d_turns_the_check_red(tmp_path) -> 
 
 # -- wiring --------------------------------------------------------------------
 
-def test_the_pick_fetches_the_base_and_deepens_to_the_merge_base() -> None:
+def test_the_pick_grades_the_range_on_the_whole_commit_graph() -> None:
     pick = _script("pick")
+    block = _inputs_block()
     assert "refs/heads/$THEHUB_BRANCH" in pick
     assert 'git -C pr fetch -q --depth 1 "$REPO_URI" "$BASE_SHA"' in pick
-    assert 'git -C pr merge-base "$SHA" "$BASE_SHA"' in pick
-    assert '--deepen 50 "$REPO_URI" "$SHA" "$BASE_SHA"' in pick
-    # The inputs are written after the merge base is known, in the task that
-    # holds the credential and runs nothing from the branch.
-    assert pick.index("merge-base") < pick.index("# -- process-gate inputs, begin")
+    # [review of mykronos #1202] No deepening: a deepened clone cannot tell a
+    # branch commit from a develop commit whose link to develop is still cut.
+    assert "--deepen" not in pick
+    assert 'fetch -q --filter=blob:none \\\n    "$REPO_URI" "$SHA" "$BASE_SHA"' in block
+    assert 'git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"' in block
+    # The paths come from the trees against every merge base, not per commit.
+    assert 'git -C "$graph" merge-base --all "$SHA" "$BASE_SHA"' in block
+    assert 'diff --name-only --no-renames "$mb" "$SHA"' in block
+    assert "git -C \"$graph\" log --format= --name-only" not in block
+    assert 'diff --name-only "$MERGE_BASE"' not in block and "$MERGE_BASE..$SHA" not in block
+    # The graph is made in the task that holds the credential and is removed
+    # before `export-pr`, which copies only process-gates/ and judge/.
+    assert 'rm -rf "$graph"' in block
+    assert "range-graph" not in _script("export-pr")
 
 
 def test_the_deploy_gates_still_run_and_both_verdicts_count() -> None:
     gates = _script("gates")
     assert 'bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline"' in gates
     assert gates.index("PROCESS_RC") < gates.index('bash "$JUDGE/scripts/pr_deploy_gates.sh"')
+
+
+# -- [TheHub #578, #586, #595; review of mykronos #1202] the exact range -------
+#
+# The pull request's commits are `"$SHA" --not "$BASE_SHA"`, on the whole
+# commit graph. The pick used to deepen a shallow clone to a merge base and
+# grade merge-base..head, which took in develop's own commits:
+#
+# * #578, #586, #595: cut from an old develop, later merged with a newer one.
+#   89 commits and 189 KB of bodies for #578's 13 commits and 9.5 KB. The
+#   bodies travel in DEVB_COMMIT_MESSAGE, and Linux caps one environment
+#   string at MAX_ARG_STRLEN, so DEV-B could not start: `[Errno 7] Argument
+#   list too long`. Smaller, the same leak handed #595 19 develop trailers.
+# * A branch cut from inside a develop merge's side branch that is longer than
+#   the fetch depth.
+# * A criss-cross history, where `git merge-base` names one base of two.
+#
+# These fetch the way the pick does (by sha, depth 1, from a repository served
+# over file://), then run the pick's lines from the base's fetch to the end of
+# its input block, and the gates task, as the pipeline holds them.
+
+_MAX_ARG_STRLEN = 32 * 4096
+
+
+def _range_block() -> str:
+    """The lines of `pick` from the base's fetch to the end of the inputs."""
+    body = re.search(
+        r'\n([ \t]*GIT_SSH_COMMAND="\$ssh_cmd" git -C pr fetch -q --depth 1 '
+        r'"\$REPO_URI" "\$BASE_SHA"\n.*?# -- process-gate inputs, end)\n',
+        _script("pick"), re.S)
+    assert body, "the pick's range lines moved"
+    return textwrap.dedent(body.group(1)) + "\n"
+
+
+def _old_branch_that_merged_develop(
+    tmp_path: Path, old: int, old_body: str, pr_files: dict[str, str | None],
+) -> tuple[Repo, str, str]:
+    """#578's shape: `old` develop commits, a branch cut there, 60 more on
+    develop, develop merged into the branch, then develop moves on again."""
+    repo, _ = _develop(tmp_path / "src")
+    for i in range(old):
+        repo.commit(f"chore: old develop {i}\n\n{old_body}", {})
+    repo.branch("feat/old", repo.git("rev-parse", "HEAD"))
+    repo.commit("feat: the pull request's own commit", pr_files)
+    repo.git("checkout", "-q", "develop")
+    for i in range(60):
+        repo.commit(f"chore: develop moves {i}", {})
+    merged = repo.git("rev-parse", "HEAD")
+    repo.git("checkout", "-q", "feat/old")
+    repo.git("merge", "-q", "--no-ff", "-m", "Merge develop into feat/old", merged)
+    head = repo.git("rev-parse", "HEAD")
+    repo.git("checkout", "-q", "develop")
+    base = repo.commit("chore: develop moves on", {})
+    return repo, base, head
+
+
+def _pick(src: Repo, base: str, head: str, tmp_path: Path,
+          serve: Repo | None = None) -> subprocess.CompletedProcess[str]:
+    """The pick from the head's fetch to the end of its inputs. `serve` is the
+    repository the range lines fetch from, when it is not `src`."""
+    env = _pick_env(serve or src, base, head)
+    env["HEAD_URI"] = _pick_env(src, base, head)["REPO_URI"]
+    root = tmp_path / "pick"
+    root.mkdir()
+    script = ('git init -q pr\n'
+              'git -C pr fetch -q --depth 1 "$HEAD_URI" "$SHA"\n'
+              'git -C pr checkout -q --detach "$SHA"\n'
+              + _range_block())
+    return subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, cwd=root,
+                          capture_output=True, text=True, timeout=180)
+
+
+def _judge_fetched(src: Repo, base: str, head: str, tmp_path: Path,
+                   shallow: bool = True) -> tuple[int, str, str]:
+    """The pick, fetching from `src`, then the gates task. `shallow`: the
+    fixture must leave the pick's clone shallow (not for a small history
+    whose flaw is not shallowness, which a deepening clone fetches whole)."""
+    made = _pick(src, base, head, tmp_path)
+    assert made.returncode == 0, made.stdout + made.stderr
+    root = tmp_path / "pick"
+    if shallow:
+        assert (root / "pr" / ".git" / "shallow").is_file(), "the fixture must fetch shallow"
+    bodies = (root / "pr" / ".git" / "process-gates" / "bodies").read_text(encoding="utf-8")
+    rc, log = _gates(root)
+    return rc, log, bodies
+
+
+@pytest.mark.parametrize("old", [45, 80], ids=["history-reaches-the-root", "history-is-cut"])
+def test_a_branch_that_merged_a_newer_develop_is_graded_on_its_own_commits(tmp_path, old) -> None:
+    # 4 KB of develop body per old commit: 180 KB or more, past MAX_ARG_STRLEN,
+    # if the range drags them in, as #578's did.
+    padding = "OLD-DEVELOP-BODY " + "x" * 4000
+    repo, base, head = _old_branch_that_merged_develop(tmp_path, old, padding, {"docs/a.md": "a\n"})
+    assert old * len(padding) > _MAX_ARG_STRLEN
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path)
+    assert "OLD-DEVELOP-BODY" not in bodies, "develop's history was graded as the branch's"
+    assert "feat: the pull request's own commit" in bodies
+    assert "Merge develop into feat/old" in bodies
+    assert len(bodies.encode("utf-8")) < _MAX_ARG_STRLEN
+    assert "Argument list too long" not in log, log
+    assert "DEV-B: no sensitive path in this pull request" in log, log
+    assert rc == 0, log
+
+
+def test_a_trailer_in_develops_history_does_not_satisfy_the_branchs_dev_b(tmp_path) -> None:
+    """The same cut, small bodies: develop's own Threat-Model-MD: trailers must
+    not reach DEV-B as if a branch commit carried them."""
+    trailer = "Threat-Model-MD: docs/threat-models/old.md"
+    repo, base, head = _old_branch_that_merged_develop(
+        tmp_path, 45, trailer, {"backend/main.py": "app = 1\n"})
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path)
+    assert trailer not in bodies
+    assert rc != 0, log
+    assert "backend/main.py" in log, log
+
+
+def test_a_branch_cut_from_a_long_develop_side_branch_gets_none_of_its_trailers(tmp_path) -> None:
+    """Fable's reproduction. develop merged a side branch 71 commits long, and
+    the pull request was cut from the side's first commit `c`, which carries a
+    trailer. A deepened clone cannot see `c` is develop's (the side is cut near
+    its tip) and no commit in the range is parentless, so `c`'s trailer passed
+    the branch's untrailered backend/main.py."""
+    trailer = "Threat-Model-MD: docs/threat-models/side.md"
+    repo, _ = _develop(tmp_path / "src")
+    a = repo.commit("chore: a", {})
+    repo.branch("side", a)
+    c = repo.commit(f"feat: side c\n\n{trailer}", {})
+    for i in range(70):
+        repo.commit(f"chore: side {i}", {})
+    repo.git("checkout", "-q", "develop")
+    repo.commit("chore: x", {})
+    repo.git("merge", "-q", "--no-ff", "-m", "Merge side into develop", "side")
+    merged = repo.git("rev-parse", "HEAD")
+    repo.branch("feat/from-side", c)
+    repo.commit("feat: wire a router", {"backend/main.py": "app = 1\n"})
+    repo.git("merge", "-q", "--no-ff", "-m", "Merge develop into feat/from-side", merged)
+    head = repo.git("rev-parse", "HEAD")
+    repo.git("checkout", "-q", "develop")
+    base = repo.commit("chore: develop moves on", {})
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path)
+    assert trailer not in bodies, "develop's side commit was graded as the branch's"
+    assert "feat: wire a router" in bodies and "Merge develop into feat/from-side" in bodies
+    assert rc != 0, log
+    assert "backend/main.py" in log, log
+
+
+def test_a_criss_cross_history_gets_none_of_develops_trailers(tmp_path) -> None:
+    """develop merged an early state of the branch while the branch merged an
+    early develop: two merge bases, b1 and d1, and `git merge-base` names one.
+    merge-base..head then holds the other, and each carries a trailer."""
+    repo, start = _develop(tmp_path / "src")
+    repo.branch("feat/cc", start)
+    b1 = repo.commit("feat: b1\n\nThreat-Model-MD: docs/threat-models/b1.md", {"docs/b1.md": "b\n"})
+    repo.git("checkout", "-q", "develop")
+    d1 = repo.commit("feat: d1\n\nThreat-Model-MD: docs/threat-models/d1.md", {"docs/d1.md": "d\n"})
+    repo.git("merge", "-q", "--no-ff", "-m", "Merge feat/cc at b1 into develop", b1)
+    base = repo.git("rev-parse", "HEAD")
+    repo.git("checkout", "-q", "feat/cc")
+    repo.git("merge", "-q", "--no-ff", "-m", "Merge develop at d1 into feat/cc", d1)
+    head = repo.commit("feat: a model", {"backend/models/m.py": "x = 1\n"})
+    assert len(repo.git("merge-base", "--all", head, base).split()) == 2
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path, shallow=False)
+    assert "Threat-Model-MD:" not in bodies, "a develop commit was graded as the branch's"
+    assert "feat: a model" in bodies and "Merge develop at d1 into feat/cc" in bodies
+    assert rc != 0, log
+    assert "backend/models/m.py" in log, log
+
+
+def test_a_change_made_in_a_merge_commit_is_graded(tmp_path) -> None:
+    """A merge's own edit (in neither parent) is the branch's change."""
+    repo, start = _develop(tmp_path)
+    repo.branch("feat/evil", start)
+    repo.commit("docs: a", {"docs/a.md": "a\n"})
+    repo.git("checkout", "-q", "develop")
+    base = repo.commit("docs: b", {"docs/b.md": "b\n"})
+    repo.git("checkout", "-q", "feat/evil")
+    repo.git("merge", "-q", "--no-ff", "--no-commit", base)
+    head = repo.commit("Merge develop into feat/evil", {"backend/main.py": "app = 9\n"})
+    rc, log = _judge(repo, base, head)
+    assert rc != 0, log
+    assert "backend/main.py" in log, log
+
+
+def test_a_test_the_branch_added_and_deleted_does_not_count_for_dev_d(tmp_path) -> None:
+    repo, base = _develop(tmp_path)
+    repo.branch("feat/x", base)
+    repo.commit("feat: ledger", {
+        "backend/services/ledger.py": "x = 1\n",
+        "backend/tests/unit/test_ledger.py": "def test_x(): pass\n",
+    })
+    head = repo.commit("chore: drop the test", {"backend/tests/unit/test_ledger.py": None})
+    rc, log = _judge(repo, base, head)
+    assert rc != 0, log
+    assert "backend/services/ledger.py has no test_ledger.py" in log, log
+
+
+def test_a_head_whose_graph_cannot_be_fetched_fails_closed(tmp_path) -> None:
+    """The base can be fetched and the head cannot: no range, so no verdict."""
+    repo, base = _develop(tmp_path / "src")
+    repo.branch("feat/x", base)
+    head = repo.commit("feat: x", {"docs/x.md": "x\n"})
+    serve, _ = _develop(tmp_path / "other")
+    serve.git("fetch", "-q", repo.dir.as_uri(), "develop")
+    serve.git("reset", "-q", "--hard", "FETCH_HEAD")
+    made = _pick(repo, base, head, tmp_path, serve=serve)
+    assert made.returncode != 0, made.stdout + made.stderr
+    assert "failing closed" in made.stdout, made.stdout + made.stderr
+    assert not (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "bodies").exists()
+
+
+@pytest.mark.parametrize("how", ["checkout-the-branch-copy", "strategy-ours"])
+def test_a_merge_that_keeps_the_branchs_copy_of_a_sensitive_file_is_graded(tmp_path, how) -> None:
+    """[review of mykronos #1202, at e46cbda9] develop changed backend/main.py;
+    the branch merged develop and kept its own old copy. The squash reverts
+    develop's change to a sensitive file, so DEV-B must see backend/main.py,
+    though no branch commit's own listing names it. develop's trailer on that
+    change is develop's, not the branch's."""
+    repo, start = _develop(tmp_path / "src")
+    repo.branch("feat/keep", start)
+    repo.commit("docs: a", {"docs/a.md": "a\n"})
+    repo.git("checkout", "-q", "develop")
+    base = repo.commit("feat: develop wires a router\n\nThreat-Model-MD: docs/threat-models/r.md",
+                       {"backend/main.py": "app = 2\n"})
+    repo.git("checkout", "-q", "feat/keep")
+    if how == "strategy-ours":
+        repo.git("merge", "-q", "-s", "ours", "-m", "Merge develop into feat/keep", base)
+        head = repo.git("rev-parse", "HEAD")
+    else:
+        repo.git("merge", "-q", "--no-ff", "--no-commit", base)
+        repo.git("checkout", "HEAD", "--", "backend/main.py")
+        head = repo.commit("Merge develop into feat/keep", {})
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path, shallow=False)
+    changed = (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "changed").read_text(
+        encoding="utf-8").split()
+    assert sorted(changed) == ["backend/main.py", "docs/a.md"], changed
+    assert "Threat-Model-MD:" not in bodies
+    assert rc != 0, log
+    assert "backend/main.py" in log, log
+
+
+def test_a_head_that_shares_no_commit_with_develop_fails_closed(tmp_path) -> None:
+    """No merge base: no squash to grade paths against, so no verdict."""
+    repo, base = _develop(tmp_path / "src")
+    repo.git("checkout", "-q", "--orphan", "lone")
+    head = repo.commit("feat: lone", {"docs/x.md": "x\n"})
+    made = _pick(repo, base, head, tmp_path)
+    assert made.returncode != 0, made.stdout + made.stderr
+    assert "shares no commit" in made.stdout, made.stdout + made.stderr
+    assert not (tmp_path / "pick" / "pr" / ".git" / "process-gates" / "changed").exists()
