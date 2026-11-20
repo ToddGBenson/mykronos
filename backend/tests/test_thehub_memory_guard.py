@@ -297,3 +297,109 @@ def test_container_tiers_refuses_a_commit_without_its_script() -> None:
     guard = script.index("[ ! -f source/scripts/ci/container-tiers.sh ]")
     assert guard < script.index("bash source/scripts/ci/container-tiers.sh")
     assert "predates scripts/ci/container-tiers.sh" in script
+
+
+# -- TheHub #62142: stdin from /dev/null on the `linux` workers -----------------
+# On the containerd `linux` workers a task's stdin is a terminal, and a command
+# that is not the terminal's foreground process group stops on SIGTTOU when it
+# touches it (pr-gates' integration subset, #1199). post-merge `grade` and
+# container-tiers `tiers` run there too; nothing they run needs a terminal.
+
+#: Reads its stdin: a line there fails it, end of file passes.
+_READS_STDIN = '#!/bin/sh\nif IFS= read -r line; then echo "STDIN:$line"; exit 1; fi\nexit 0\n'
+_TERMINAL_LINE = "a line on the terminal\n"
+
+
+def _collect_calls() -> list[str]:
+    return [
+        line.strip()
+        for line in _script(_task("post-merge", "grade")).splitlines()
+        if "--collect-only" in line and "python -m pytest" in line
+    ]
+
+
+def test_post_merges_collection_reads_no_terminal() -> None:
+    calls = _collect_calls()
+    assert len(calls) == 2, calls  # with timeout(1) and without
+    assert all(call.endswith("< /dev/null") for call in calls), calls
+
+
+def test_container_tiers_reads_no_terminal() -> None:
+    calls = [
+        line.strip()
+        for line in _script(_task("container-tiers", "tiers")).splitlines()
+        if "bash source/scripts/ci/container-tiers.sh" in line
+        and not line.strip().startswith("#")
+    ]
+    assert calls == ["bash source/scripts/ci/container-tiers.sh source all < /dev/null"]
+
+
+def _collect_block() -> str:
+    """`grade`'s `if command -v timeout ... fi` around the collection, as run."""
+    lines = _script(_task("post-merge", "grade")).splitlines()
+    opener = "if command -v timeout >/dev/null 2>&1; then"
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == opener)
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "fi")
+    return "\n".join(lines[start : end + 1])
+
+
+@pytest.mark.parametrize("with_timeout", [True, False], ids=["timeout", "no-timeout"])
+def test_post_merges_collection_sees_end_of_file(tmp_path: Path, with_timeout: bool) -> None:
+    """Executed, both branches: whatever the task's stdin holds, the guarded
+    pytest sees end of file. `python` is the stub, so the outer guard is what
+    reads, which is the process the redirect covers."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "python"
+    stub.write_text(_READS_STDIN, encoding="utf-8", newline="\n")
+    stub.chmod(0o755)
+    path = str(bin_dir)
+    if with_timeout:
+        timeout = shutil.which("timeout")
+        if not timeout:
+            pytest.skip("timeout(1) is required for this branch")
+        path += os.pathsep + str(Path(timeout).parent)
+    r = subprocess.run(
+        [bash, "-c", _collect_block()],
+        input=_TERMINAL_LINE,
+        env={"PATH": path, "MEMORY_GUARD": "", "SOFT_TIMEOUT_S": "5"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "STDIN:" not in r.stdout
+
+
+def test_container_tiers_sees_end_of_file(tmp_path: Path) -> None:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is required")
+    script = tmp_path / "source" / "scripts" / "ci" / "container-tiers.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(_READS_STDIN, encoding="utf-8", newline="\n")
+    (call,) = [
+        line.strip()
+        for line in _script(_task("container-tiers", "tiers")).splitlines()
+        if line.strip().startswith("bash source/scripts/ci/container-tiers.sh")
+    ]
+    r = subprocess.run(
+        [bash, "-c", call],
+        input=_TERMINAL_LINE,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "STDIN:" not in r.stdout
+
+
+def test_the_guardian_workers_terminal_is_said_as_an_inference() -> None:
+    """TheHub #62142: nothing measured the guardian workers' stdin."""
+    text = PIPELINE.read_text(encoding="utf-8")
+    assert "guardian workers give no terminal" not in text
+    assert "is inferred from that, not" in text
