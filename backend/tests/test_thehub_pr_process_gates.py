@@ -71,7 +71,10 @@ def _inputs_block() -> str:
 
 # A stand-in for develop's scripts/lib/devb_gate.py, speaking its stdin
 # protocol: paths on stdin, the message in DEVB_COMMIT_MESSAGE, exit 1 on a
-# sensitive path with neither trailer.
+# sensitive path with neither trailer. Its pattern list is a SUBSET of the real
+# gate's, the same anchored shapes (a fixed file, a directory of .py files);
+# the full list is TheHub's and is tested there. What this file pins is how
+# the pipeline hands paths and bodies to whichever list develop carries.
 BASE_DEVB_GATE = textwrap.dedent('''\
     import os, re, sys
     files = [ln.strip() for ln in sys.stdin.read().splitlines()]
@@ -176,14 +179,14 @@ def _develop(tmp_path: Path, **extra: str | None) -> tuple[Repo, str]:
     return repo, base
 
 
-def _python3_shim(tmp_path: Path) -> str:
+def _python3_shim(tmp_path: Path, flags: str = "-X utf8") -> str:
     """The task image's `python3`, as this interpreter, ahead of anything else.
     In UTF-8 mode, as the image's is under its UTF-8 locale (-I ignores PYTHONUTF8)."""
     shim_dir = tmp_path / "bin"
     shim_dir.mkdir(exist_ok=True)
     shim = shim_dir / "python3"
     exe = Path(sys.executable).as_posix()
-    shim.write_text(f'#!/usr/bin/env bash\nexec "{exe}" -X utf8 "$@"\n', encoding="utf-8",
+    shim.write_text(f'#!/usr/bin/env bash\nexec "{exe}" {flags} "$@"\n', encoding="utf-8",
                     newline="\n")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return str(shim_dir)
@@ -194,8 +197,9 @@ def _pick_env(src: Repo, base: str, head: str) -> dict[str, str]:
     file:// so a shallow or filtered fetch behaves as it does from GitHub."""
     src.git("config", "uploadpack.allowAnySHA1InWant", "true")
     src.git("config", "uploadpack.allowFilter", "true")
-    return {**os.environ, "REPO_URI": src.dir.as_uri(), "ssh_cmd": "", "SHA": head,
-            "BASE_SHA": base, "NUM": "578", "THEHUB_BRANCH": "develop"}
+    path = _python3_shim(src.root) + os.pathsep + os.environ.get("PATH", "")
+    return {**os.environ, "PATH": path, "REPO_URI": src.dir.as_uri(), "ssh_cmd": "",
+            "SHA": head, "BASE_SHA": base, "NUM": "578", "THEHUB_BRANCH": "develop"}
 
 
 def _judge(repo: Repo, base: str, head: str) -> tuple[int, str]:
@@ -209,13 +213,15 @@ def _judge(repo: Repo, base: str, head: str) -> tuple[int, str]:
     return _gates(root)
 
 
-def _gates(root: Path) -> tuple[int, str]:
+def _gates(root: Path, python_flags: str = "-X utf8",
+           env: dict[str, str] | None = None) -> tuple[int, str]:
     """The whole `gates` task, as Concourse runs it, on the inputs under root/pr."""
     (root / "pr" / ".git" / "pr-number").write_text("531\n", encoding="utf-8")
     for d in ("hub_log", "live-pipeline"):
         (root / d).mkdir(exist_ok=True)
-    path = _python3_shim(root) + os.pathsep + os.environ.get("PATH", "")
-    r = subprocess.run(["bash", "-ec", _script("gates")], env={**os.environ, "PATH": path},
+    path = _python3_shim(root, python_flags) + os.pathsep + os.environ.get("PATH", "")
+    r = subprocess.run(["bash", "-ec", _script("gates")],
+                       env={**os.environ, **(env or {}), "PATH": path},
                        cwd=root, capture_output=True, text=True, timeout=120)
     log = (root / "hub_log" / "output.log").read_text(encoding="utf-8")
     return r.returncode, log
@@ -402,7 +408,10 @@ def test_the_pick_grades_the_range_on_the_whole_commit_graph() -> None:
     # [review of mykronos #1202] No deepening: a deepened clone cannot tell a
     # branch commit from a develop commit whose link to develop is still cut.
     assert "--deepen" not in pick
-    assert 'fetch -q --filter=blob:none \\\n    "$REPO_URI" "$SHA" "$BASE_SHA"' in block
+    # (A here-document in the block sits at the script's margin, so the
+    # block's lines keep their own indentation: match the break, not its depth.)
+    assert re.search(r'fetch -q --filter=blob:none \\\n\s+"\$REPO_URI" "\$SHA" "\$BASE_SHA"',
+                     block)
     assert 'git -C "$graph" log --format=%B "$SHA" --not "$BASE_SHA" > "$pg/bodies"' in block
     # The paths come from the trees against every merge base, not per commit.
     assert 'git -C "$graph" merge-base --all "$SHA" "$BASE_SHA"' in block
@@ -683,15 +692,17 @@ def test_a_head_that_shares_no_commit_with_develop_fails_closed(tmp_path) -> Non
 # checkout, which its range lines do not read.
 
 
-def _commit_names(repo: Repo, message: str, files: dict[str, str]) -> str:
+def _commit_names(repo: Repo, message: str, files: dict[str | bytes, str]) -> str:
     """A commit of `files` written through the index alone, so any name git
-    can store is committed whatever the filesystem accepts."""
+    can store is committed whatever the filesystem accepts. A bytes name is
+    stored as those bytes."""
     entries = b""
     for name, content in files.items():
         blob = subprocess.run(["git", "-C", str(repo.dir), "hash-object", "-w", "--stdin"],
                               input=content.encode("utf-8"), capture_output=True,
                               check=True).stdout.strip()
-        entries += b"100644 " + blob + b"\t" + name.encode("utf-8") + b"\0"
+        raw = name if isinstance(name, bytes) else name.encode("utf-8")
+        entries += b"100644 " + blob + b"\t" + raw + b"\0"
     subprocess.run(["git", "-C", str(repo.dir), "-c", "core.protectNTFS=false",
                     "-c", "core.protectHFS=false", "update-index", "-z", "--index-info"],
                    input=entries, capture_output=True, check=True)
@@ -700,7 +711,7 @@ def _commit_names(repo: Repo, message: str, files: dict[str, str]) -> str:
 
 
 def _pick_names(
-    tmp_path: Path, files: dict[str, str],
+    tmp_path: Path, files: dict[str | bytes, str],
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """A pull request adding `files`, through the pick's range lines."""
     repo, base = _develop(tmp_path / "src")
@@ -729,6 +740,7 @@ _UNUSUAL_NAMES = {
     "double-quote": 'docs/say "hi".md',
     "backslash": "docs/back\\slash.md",
     "tab": "docs/tab\there.md",
+    "inner-no-break-space": "docs/no\u00a0break.md",
 }
 
 
@@ -760,8 +772,47 @@ def test_a_name_with_a_line_break_fails_closed(tmp_path, brk) -> None:
     """devb_gate reads one name per line, so a name that breaks a line cannot
     be listed: no path lists, and the pick is red."""
     made, root = _pick_names(tmp_path, {f"backend/models/a{brk}b.py": "x = 1\n"})
+    _assert_refused(made, root)
+
+
+def _assert_refused(made: subprocess.CompletedProcess[str], root: Path) -> None:
     assert made.returncode != 0, made.stdout + made.stderr
     assert "failing closed" in made.stdout, made.stdout + made.stderr
     pg = root / "pr" / ".git" / "process-gates"
     assert not (pg / "changed").exists() and not (pg / "added").exists()
     assert not list(pg.glob("*.z"))
+
+
+# Every kind of whitespace str.strip() removes changes the name the gates read.
+@pytest.mark.parametrize("name", [
+    " docs/lead.md", "docs/trail.md ", "docs/trail.md\t", "docs/trail.md\x1f",
+    "docs/trail.md\u00a0", "\u2000docs/lead.md", "docs/trail.md\u200a", "docs/trail.md\u3000",
+], ids=["lead-space", "trail-space", "trail-tab", "trail-unit-sep", "trail-nbsp",
+        "lead-en-quad", "trail-hair-space", "trail-ideographic-space"])
+def test_a_name_that_strip_would_change_fails_closed(tmp_path, name) -> None:
+    assert name.strip() != name
+    made, root = _pick_names(tmp_path, {name: "x\n", "docs/plain.md": "p\n"})
+    _assert_refused(made, root)
+
+
+@pytest.mark.parametrize("raw", [
+    b"docs/\xff.md", b"docs/cut\xc3.md", b"docs/\xed\xa0\x80.md", b"docs/\xc0\xaf.md",
+], ids=["invalid-byte", "truncated", "surrogate", "overlong"])
+def test_a_name_that_is_not_utf8_fails_closed(tmp_path, raw) -> None:
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    made, root = _pick_names(tmp_path, {raw: "x\n", "docs/plain.md": "p\n"})
+    _assert_refused(made, root)
+
+
+def test_the_gates_hand_devb_gate_its_paths_as_utf8_whatever_the_locale(tmp_path) -> None:
+    """The gate's child reads stdin as UTF-8, so the gates encode it as UTF-8
+    themselves, not in the parent's locale encoding. Here the parent's is not
+    UTF-8 (UTF-8 mode off, a C locale), and the name has a character outside
+    both ASCII and cp1252: without encoding="utf-8" the hand-off fails, red."""
+    name = "docs/\u0151.md"
+    made, root = _pick_names(tmp_path, {name: "x\n"})
+    assert made.returncode == 0, made.stdout + made.stderr
+    rc, log = _gates(root, python_flags="-X utf8=0", env={"LC_ALL": "C"})
+    assert "DEV-B: no sensitive path in this pull request" in log, log
+    assert rc == 0, log
