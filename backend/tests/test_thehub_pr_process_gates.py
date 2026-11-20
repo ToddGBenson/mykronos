@@ -486,12 +486,16 @@ def _pick(src: Repo, base: str, head: str, tmp_path: Path,
                           capture_output=True, text=True, timeout=180)
 
 
-def _judge_fetched(src: Repo, base: str, head: str, tmp_path: Path) -> tuple[int, str, str]:
-    """The pick, fetching from `src`, then the gates task."""
+def _judge_fetched(src: Repo, base: str, head: str, tmp_path: Path,
+                   shallow: bool = True) -> tuple[int, str, str]:
+    """The pick, fetching from `src`, then the gates task. `shallow`: the
+    fixture must leave the pick's clone shallow (not for a small history
+    whose flaw is not shallowness, which a deepening clone fetches whole)."""
     made = _pick(src, base, head, tmp_path)
     assert made.returncode == 0, made.stdout + made.stderr
     root = tmp_path / "pick"
-    assert (root / "pr" / ".git" / "shallow").is_file(), "the fixture must exercise a shallow fetch"
+    if shallow:
+        assert (root / "pr" / ".git" / "shallow").is_file(), "the fixture must fetch shallow"
     bodies = (root / "pr" / ".git" / "process-gates" / "bodies").read_text(encoding="utf-8")
     rc, log = _gates(root)
     return rc, log, bodies
@@ -571,7 +575,7 @@ def test_a_criss_cross_history_gets_none_of_develops_trailers(tmp_path) -> None:
     repo.git("merge", "-q", "--no-ff", "-m", "Merge develop at d1 into feat/cc", d1)
     head = repo.commit("feat: a model", {"backend/models/m.py": "x = 1\n"})
     assert len(repo.git("merge-base", "--all", head, base).split()) == 2
-    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path)
+    rc, log, bodies = _judge_fetched(repo, base, head, tmp_path, shallow=False)
     assert "Threat-Model-MD:" not in bodies, "a develop commit was graded as the branch's"
     assert "feat: a model" in bodies and "Merge develop at d1 into feat/cc" in bodies
     assert rc != 0, log
