@@ -47,12 +47,24 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'LogFile', Justification = 'Used by Write-Step, which reads it from script scope; Install-VaultUnsealTask.ps1 passes it for the boot-time task. The rule does not follow a script parameter into a nested function.')]
 [CmdletBinding()]
 param(
-  [string] $InitFile = (Join-Path $PSScriptRoot 'vault/init.json'),
+  # Defaults to vault/init.json beside this script, resolved below (#62158).
+  [string] $InitFile,
   [string] $Container = 'mykronos-vault',
   [string] $LogFile
 )
 
 $ErrorActionPreference = 'Stop'
+
+# #62158: resolved here, NOT as the param default. Under Windows PowerShell 5.1
+# a [CmdletBinding()] script sees an empty $PSScriptRoot while its param
+# defaults are evaluated, so `(Join-Path $PSScriptRoot ...)` there threw and the
+# script exited 1 before its first log line. Both unattended callers - the
+# unseal task and TheHub's boot task - start this with powershell.exe, so after
+# every reboot Vault stayed sealed and the only trace was "exit 1". In the
+# script body $PSScriptRoot is set on 5.1 and 7 alike.
+if (-not $InitFile) {
+  $InitFile = Join-Path $PSScriptRoot 'vault/init.json'
+}
 
 function Write-Step {
   param([string] $Message, [string] $Colour = 'Gray')

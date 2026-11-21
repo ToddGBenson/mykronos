@@ -62,11 +62,22 @@ param(
     [string]$TaskName = "Mykronos Vault Unseal",
 
     # Passed through rather than left to the script's default, so the task and
-    # anyone reading the log cannot disagree about where it is.
-    [string]$LogFile = (Join-Path $PSScriptRoot "vault-unseal.log")
+    # anyone reading the log cannot disagree about where it is. Defaults to
+    # vault-unseal.log beside this script, resolved below: a $PSScriptRoot
+    # param default is empty under Windows PowerShell 5.1 (#62158).
+    [string]$LogFile
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $LogFile) {
+    $LogFile = Join-Path $PSScriptRoot "vault-unseal.log"
+}
+
+# pwsh, like the repo's other task installers. powershell.exe (5.1) is where
+# #62158 lived, and a hand switch of the live task to pwsh is undone by the
+# next run of this script unless the script itself registers pwsh.
+$pwsh = (Get-Command pwsh -ErrorAction Stop).Source
 
 $unsealer = Join-Path $PSScriptRoot "vault-unseal.ps1"
 if (-not (Test-Path $unsealer)) {
@@ -92,7 +103,7 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+$action = New-ScheduledTaskAction -Execute $pwsh `
     -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -LogFile "{1}"' -f $unsealer, $LogFile)
 
 # TWO triggers, and the repeating one is the one that matters.
@@ -184,10 +195,12 @@ if ($after -ne $before) {
     }
 } elseif ($info.LastTaskResult -eq 0) {
     Write-Host "Task completed but wrote nothing to $LogFile." -ForegroundColor Yellow
-    Write-Host "  Run the unsealer by hand to see why:" -ForegroundColor Yellow
-    Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$unsealer`"" -ForegroundColor Yellow
+    Write-Host "  Run the unsealer by hand, on the task's own host, to see why:" -ForegroundColor Yellow
+    Write-Host "  & `"$pwsh`" -NoProfile -ExecutionPolicy Bypass -File `"$unsealer`"" -ForegroundColor Yellow
 } else {
     Write-Host "First run returned $($info.LastTaskResult) and logged nothing." -ForegroundColor Red
+    Write-Host "  Run the unsealer by hand, on the task's own host, to see why:" -ForegroundColor Yellow
+    Write-Host "  & `"$pwsh`" -NoProfile -ExecutionPolicy Bypass -File `"$unsealer`" -LogFile `"$LogFile`"" -ForegroundColor Yellow
     Write-Host "  If this is a SYSTEM task, the likeliest cause is that SYSTEM cannot" -ForegroundColor Yellow
     Write-Host "  reach the Docker Desktop pipe. Re-run without -AsSystem." -ForegroundColor Yellow
 }
