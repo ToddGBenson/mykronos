@@ -16,3 +16,7 @@ backend/tests/fixtures/semgrep_fix/** -text
 
 # A worker install script that the operator runs with bash on Linux (TheHub #61659).
 deploy/concourse/linux-worker/*.sh text eol=lf
+
+# Deploy files are LF in the repository; a Windows checkout must not commit them back as CRLF.
+deploy/**/Dockerfile* text eol=lf
+deploy/**/*.yml text eol=lf
