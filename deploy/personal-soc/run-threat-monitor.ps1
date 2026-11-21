@@ -15,10 +15,18 @@
     runs locally, against the installed skill at ~/.claude/skills, on the machine
     that already holds the ledger.
 
-    The other half of the split is breach-check, a Concourse job: HIBP is a
-    script and needs no ledger beyond a list of addresses. What is left here is
-    the part that is judgement rather than a query, which is exactly the part
-    that needs a model.
+    breach-check, the paid HIBP job that used to run in Concourse, was retired
+    2026-09-23 (#60004). Its replacement is the key-free breach watch,
+    Get-NewBreaches.ps1 from the installed skill: it needs no API key, only the
+    git-ignored references/account-domains.local.txt, so it can only run here,
+    beside the rest of the weekly monitor. This script runs it first and puts
+    its verdict at the top of the digest: exit 1 names the new breaches, exit 2
+    is reported as unknown and never as clean, and a missing domains file is
+    reported once as "breach watch not configured". None of those fails the
+    run. What the model does is the part that is judgement rather than a query.
+
+.PARAMETER BreachScript
+    The installed skill's Get-NewBreaches.ps1.
 
 .PARAMETER AllowBash
     Adds Bash to the tool allowlist. Off by default: this runs unattended with
@@ -38,10 +46,62 @@
 param(
     [string]$Repo = (Join-Path $env:USERPROFILE 'personal-soc'),
     [string]$Claude = (Join-Path $env:USERPROFILE '.local\bin\claude.exe'),
+    [string]$BreachScript = (Join-Path $env:USERPROFILE '.claude\skills\personal-threat-monitor\scripts\Get-NewBreaches.ps1'),
     [switch]$AllowBash
 )
 
 $ErrorActionPreference = "Stop"
+
+# Runs the key-free breach watch and turns its exit code into a verdict. Exit
+# 0 is clean, 1 is new breaches, 2 is unknown. Anything else, a missing script
+# or a throw is unknown too: it must never read as clean. Returns Code
+# (0, 1 or 2), State, and Text for the digest.
+function Invoke-BreachWatch {
+    param(
+        [Parameter(Mandatory)][string]$Script,
+        [Parameter(Mandatory)][string]$OutDir,
+        [string]$Shell = (Get-Process -Id $PID).Path
+    )
+    if (-not (Test-Path -LiteralPath $Script -PathType Leaf)) {
+        return [pscustomobject]@{ Code = 2; State = 'unknown'
+            Text = "Breach watch UNKNOWN: Get-NewBreaches.ps1 not found at $Script. Install the current skills. This is not a pass." }
+    }
+    $domains = Join-Path (Split-Path -Parent $Script) '..\references\account-domains.local.txt'
+    if (-not (Test-Path -LiteralPath $domains -PathType Leaf)) {
+        return [pscustomobject]@{ Code = 2; State = 'not-configured'
+            Text = 'Breach watch not configured: references/account-domains.local.txt is missing, so no breach signal this run. This is not a pass.' }
+    }
+    $log = Join-Path $OutDir 'breach-watch.log'
+    $code = 2
+    try {
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $Shell -NoProfile -ExecutionPolicy Bypass -File $Script -OutDir $OutDir *> $log
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $old
+    } catch {
+        $code = 2
+    }
+    $file = Join-Path $OutDir 'new-breaches.json'
+    if ($code -eq 0) {
+        return [pscustomobject]@{ Code = 0; State = 'clean'
+            Text = 'Breach watch: no newly added breach matches an account domain.' }
+    }
+    if ($code -eq 1) {
+        $names = @()
+        try {
+            $names = @(Get-Content -LiteralPath $file -Raw | ConvertFrom-Json | ForEach-Object { "$($_.name) ($($_.domain))" })
+        } catch { }
+        if (-not $names.Count) { $names = @('see new-breaches.json') }
+        return [pscustomobject]@{ Code = 1; State = 'new-breaches'
+            Text = "Breach watch: NEW breach at a service you use: $($names -join ', '). Change those passwords and check for reuse." }
+    }
+    return [pscustomobject]@{ Code = 2; State = 'unknown'
+        Text = "Breach watch UNKNOWN: Get-NewBreaches.ps1 exited $code (see breach-watch.log). No breach signal this run; this is not a pass." }
+}
+
+# Dot-sourced by the tests to reach the functions without running the job.
+if ($env:MYKRONOS_TEST_LOAD_ONLY -eq '1') { return }
 
 if (-not (Test-Path $Claude)) { throw "claude CLI not found at $Claude" }
 if (-not (Test-Path $Repo))   { throw "personal-soc checkout not found at $Repo" }
@@ -49,6 +109,11 @@ if (-not (Test-Path $Repo))   { throw "personal-soc checkout not found at $Repo"
 $today = Get-Date -Format 'yyyy-MM-dd'
 $outDir = Join-Path $Repo "personal-monitor\$today"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+$breach = Invoke-BreachWatch -Script $BreachScript -OutDir $outDir
+Set-Content -LiteralPath (Join-Path $outDir 'breach-watch.md') -Value $breach.Text -Encoding ASCII
+$colour = if ($breach.Code -eq 0) { 'Green' } else { 'Yellow' }
+Write-Host $breach.Text -ForegroundColor $colour
 
 # No connected-account access. Check A can read the owner's inbox "with
 # consent" - but consent is a moment, and there is nobody here to give it.
@@ -69,6 +134,11 @@ This is an UNATTENDED scheduled run. Nobody is available to answer questions:
 
 Follow the skill's guardrails exactly, including the [S]/[D]/[M] handling
 classes in references/identifiers.md. Never search an [M] identifier.
+
+Breach watch (key-free, already run before you started; do not re-run it):
+  $($breach.Text)
+Put that line at the top of security-digest.md. Never describe an unknown
+result as clean.
 
 Write into: $outDir
   footprint.json      - Check A findings, machine-readable
@@ -108,6 +178,15 @@ try {
 # indistinguishable from "nothing to report" unless it is checked for.
 $expected = @('threat-brief.md', 'security-digest.md')
 $missing = $expected | Where-Object { -not (Test-Path (Join-Path $outDir $_)) }
+
+# The digest carries the breach verdict even if the model dropped it.
+$digest = Join-Path $outDir 'security-digest.md'
+if ((Test-Path $digest) -and -not (Select-String -LiteralPath $digest -SimpleMatch -Pattern 'Breach watch' -Quiet)) {
+    Add-Content -LiteralPath $digest -Value "`n## Breach watch`n`n$($breach.Text)`n"
+}
+if ($breach.Code -ne 0) {
+    Write-Host "`nBreach watch: $($breach.State). See breach-watch.md." -ForegroundColor Yellow
+}
 
 if ($code -ne 0) {
     Write-Host "`nclaude exited $code." -ForegroundColor Red
