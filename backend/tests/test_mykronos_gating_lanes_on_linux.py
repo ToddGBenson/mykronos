@@ -234,7 +234,9 @@ def test_this_host_runs_the_lane_once_unless_linux_finished_passed(
     """`errored` is the lost worker (review of #1213): linux-finished cannot
     stream a `ran` that lives on it. A copy here that errors must not run
     again, and nothing in this step may stop the build."""
-    after, _ = _fallback(job)
+    plan = _job(job)["plan"]
+    # The step as written, whatever its shape: the rules decide, not the layout.
+    after = plan[_holder(plan, MOVED[job][0]) + 1]
     outcome = {"linux-finished": OUTCOME[finished]}
     outcome |= {ON_THIS_HOST[(job, n)]: OUTCOME[here] for n in MOVED[job]}
     ran: list[str] = []
