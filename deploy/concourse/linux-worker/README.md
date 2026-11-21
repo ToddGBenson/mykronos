@@ -96,8 +96,15 @@ two things:
   2026-11-16);
 - mykronos's gating lanes `unit` and `frontend` (TheHub #61951) prefer a
   remote worker and run on this host when none finishes them, so an offline
-  laptop costs a slower build, never a stopped risk gate. See "The gating
-  lanes" in `deploy/concourse/pipelines/mykronos.yml`.
+  laptop costs a slower build, never a stopped risk gate. This host runs
+  the lane when no worker was up (the probe times out), when the run hit
+  its cap (the SIGTERM leaves no `ran/rc`), when setup failed on the laptop
+  (`ran/rc` is written only after it), and when the worker was lost
+  mid-run (`linux-finished` errors reading its outputs, and its `on_error`
+  runs the copy; read from the Concourse 8.3.3 source, not yet seen on a
+  real build). A worker that drops after the probe makes the remote task
+  wait out its cap first. See "The gating lanes" in
+  `deploy/concourse/pipelines/mykronos.yml`.
 
 Still on this host: mykronos `lint-and-types`, `qa-spec-links`, `secrets`,
 `ai` and `iac` (the next slice of #61951), and the jobs that need this
