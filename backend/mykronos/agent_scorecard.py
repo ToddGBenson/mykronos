@@ -64,7 +64,7 @@ UNRECORDED = "(unrecorded)"
 REOPENABLE = ("false_positive", "suppressed")
 
 #: Request states as the engine stores them (`ApprovalRequest.state`).
-REQUEST_STATES = ("approved", "rejected", "expired", "pending", "withdrawn")
+REQUEST_STATES = ("approved", "rejected", "expired", "pending", "withdrawn", "superseded")
 
 SOURCE_DECISIONS = "approval_decisions (approver_kind = agent)"
 SOURCE_REQUESTS = "approval_requests (requester_kind = agent) + approval_decisions"

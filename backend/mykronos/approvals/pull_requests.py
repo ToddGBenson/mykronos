@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Collection
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
@@ -65,6 +66,7 @@ MAX_PATCH_CHARS = 20_000
 MAX_TOTAL_PATCH_CHARS = 200_000
 
 #: request state -> check run conclusion (`None` posts it in progress).
+#: `superseded` posts nothing: see `_supersede`.
 CONCLUSIONS: dict[str, str | None] = {
     "pending": None,
     "approved": "success",
@@ -537,21 +539,53 @@ def _requires_check(protection: dict[str, Any] | None) -> bool:
     return CHECK_NAME in names
 
 
+def _supersede(db: Any, refs: Collection[str], head_sha: str) -> list[str]:
+    """Mark the pending requests for a pull request's earlier heads superseded.
+
+    Approving one covers a commit the pull request no longer merges, and left
+    pending it sat in every pending list until it expired (TheHub #61953).
+    Nothing is posted on the old commit: it can be another pull request's
+    head, and a conclusion posted there would read as that one's. An approved
+    request is left alone; its decision is a record, not a queue entry.
+    """
+    superseded: list[str] = []
+    with db.session() as session:
+        for request in session.execute(
+            select(ApprovalRequest).where(
+                ApprovalRequest.duty == DUTY,
+                ApprovalRequest.state == "pending",
+                ApprovalRequest.subject_ref.in_(list(refs)),
+            )
+        ).scalars():
+            request.state = "superseded"
+            _append_event(
+                session, request.id, "superseded", AUTO_REQUESTER.actor, {"head_sha": head_sha}
+            )
+            superseded.append(request.id)
+    return superseded
+
+
 async def request_missing(
     db: Any,
     policy: ApprovalPolicy,
     github_factory: GitHubClientFactory,
     *,
     now: datetime | None = None,
+    request_repos: Collection[str] = (),
 ) -> list[str]:
     """Open an approval request for every open PR head nobody asked about.
 
-    Only on repositories whose default branch requires `independent-review`:
-    elsewhere a request would be paperwork nothing reads. The requester is an
-    automation principal, which is safe because every tier an agent may
-    approve demands `fresh_context` - so a request the platform opened can be
-    approved by a person or a platform-started reviewer, never by the agent
-    that wrote the change.
+    On repositories whose default branch requires `independent-review`, and
+    on those in `request_repos` (`pull_request_auto_request_repos`), whose
+    merge waits on the approval at the head although no check is required:
+    TheHub's develop (TheHub #61953). Elsewhere a request would be paperwork
+    nothing reads. The requester is an automation principal, which is safe
+    because every tier an agent may approve demands `fresh_context` - so a
+    request the platform opened can be approved by a person or a
+    platform-started reviewer, never by the agent that wrote the change.
+
+    A pending request for a head the pull request has moved past is
+    superseded on sight, whoever filed it.
     """
     now = now or utcnow()
     with db.session() as session:
@@ -563,33 +597,41 @@ async def request_missing(
                 select(RepoOnboarding).where(RepoOnboarding.status != "removed")
             ).scalars()
         ]
-        asked = {
-            ref
-            for ref in session.execute(
-                select(ApprovalRequest.subject_ref).where(
-                    ApprovalRequest.duty == DUTY,
-                    ApprovalRequest.state.in_(("pending", "approved")),
-                )
-            ).scalars()
-        }
+        held = session.execute(
+            select(ApprovalRequest.subject_ref, ApprovalRequest.state).where(
+                ApprovalRequest.duty == DUTY,
+                ApprovalRequest.state.in_(("pending", "approved")),
+            )
+        ).all()
+    asked = {ref for ref, _ in held}
+    pending = {ref for ref, state in held if state == "pending"}
+    listed = {r.casefold() for r in request_repos}
     opened: list[str] = []
     for repo, installation in repos:
         if installation is None:
             continue
         github = github_factory.for_installation(installation)
         try:
-            branch = str((await github.get_repo(repo)).get("default_branch") or "main")
-            if not _requires_check(await github.get_branch_protection(repo, branch)):
-                continue
+            # A listed repository is not asked about its protection: there is
+            # no check to find, and reading it needs administration access.
+            if repo.casefold() not in listed:
+                branch = str((await github.get_repo(repo)).get("default_branch") or "main")
+                if not _requires_check(await github.get_branch_protection(repo, branch)):
+                    continue
             pulls = await github.list_open_pull_requests(repo)
         except Exception as exc:  # noqa: BLE001 - one repository never stops the rest
             logger.warning("Could not list pull requests for %s: %s", repo, exc)
             continue
         for pr in pulls:
-            if not pr.head_sha or pr.draft:
+            if not pr.head_sha:
                 continue
             ref = subject_ref(repo, pr.number, pr.head_sha)
-            if ref in asked:
+            earlier = {r for r in pending if r.startswith(f"{repo}#{pr.number}@")} - {ref}
+            if earlier:
+                for request_id in _supersede(db, earlier, pr.head_sha):
+                    logger.info("Superseded %s: the pull request is now %s", request_id, ref)
+                pending -= earlier
+            if pr.draft or ref in asked:
                 continue
             first = _first_seen.setdefault(ref, now)
             if now - first < REQUEST_GRACE:

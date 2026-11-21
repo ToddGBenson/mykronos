@@ -74,6 +74,18 @@ The check's summary names the requesting and approving principals. That is
 the record an audit cites, because every GitHub action reads as one shared
 account.
 
+**Requests nobody made.** Every two minutes `job:pull-request-requests` looks
+at the open pull requests of each onboarded repository whose default branch
+requires `independent-review`, and of each repository in
+`MYKRONOS_PULL_REQUEST_AUTO_REQUEST_REPOS` (by default TheHub, whose develop
+requires no check but whose merge waits on the approval at the head). A
+non-draft head that nobody has asked about for ten minutes gets a request,
+filed as the job, which only asks: it never decides. When a pull request moves
+to a new head, any pending request for an earlier head becomes `superseded`,
+whoever filed it, and leaves the pending list; an approved one keeps its
+decision. Nothing is posted on the old commit, which may be another pull
+request's head.
+
 ## Libraries
 
 `POST /api/libraries/requests` with `{ecosystem, package_name, version, reason,

@@ -518,7 +518,8 @@ class ApprovalRequest(Base):
     requested_by: Mapped[str] = mapped_column(String(255), index=True, default="")
     requester_kind: Mapped[str] = mapped_column(String(16), default="")
     requester_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    #: pending | approved | rejected | expired | withdrawn
+    #: pending | approved | rejected | expired | withdrawn | superseded (a
+    #: pull request moved past the head it names, TheHub #61953)
     state: Mapped[str] = mapped_column(String(16), index=True, default="pending")
     policy_version: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
