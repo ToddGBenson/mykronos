@@ -12,6 +12,7 @@ reported as not clean.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -44,15 +45,52 @@ class TestWording:
         assert "Get-NewBreaches.ps1" in PIPELINE.read_text(encoding="utf-8")
 
 
-def run_watch(tmp_path: Path, exit_code: int | None, *, domains: bool, breaches: bool = False):
+BOGUS = "C:/mykronos-test-nonexistent"
+GUARD_ARGS = f"-Claude '{BOGUS}/claude.exe' -Repo '{BOGUS}/repo'"
+
+
+def safe_pwsh(command: str) -> subprocess.CompletedProcess[str]:
+    """The only way these tests start pwsh.
+
+    run-threat-monitor.ps1 starts a real unattended Claude run when it is
+    executed, so refuse any command that is not pointed at paths that do not
+    exist, and always set the load-only variable.
+    """
+    assert f"-Claude '{BOGUS}" in command
+    assert f"-Repo '{BOGUS}" in command
+    assert not Path(BOGUS).exists()
+    return subprocess.run(
+        ["pwsh", "-NoProfile", "-Command", command],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "MYKRONOS_TEST_LOAD_ONLY": "1"},
+    )
+
+
+def run_watch(
+    tmp_path: Path,
+    exit_code: int | None,
+    *,
+    domains: bool,
+    breaches: bool = False,
+    crash: bool = False,
+    stale: bool = False,
+):
     skill = tmp_path / "skill"
     scripts = skill / "scripts"
     (skill / "references").mkdir(parents=True)
     scripts.mkdir()
     out = tmp_path / "out"
     out.mkdir()
+    if stale:
+        (out / "new-breaches.json").write_text(
+            '[{"name":"StaleService","domain":"stale.test"}]', encoding="ascii"
+        )
     script = scripts / "Get-NewBreaches.ps1"
-    if exit_code is not None:
+    if crash:
+        script.write_text("param([string]$OutDir='.')\nthrow 'boom'\n", encoding="ascii")
+    elif exit_code is not None:
         body = "param([string]$OutDir='.')\n"
         if breaches:
             body += (
@@ -64,20 +102,44 @@ def run_watch(tmp_path: Path, exit_code: int | None, *, domains: bool, breaches:
     if domains:
         (skill / "references" / "account-domains.local.txt").write_text("example.test\n")
     driver = (
-        "$env:MYKRONOS_TEST_LOAD_ONLY='1'; "
-        f". '{SCRIPT}'; "
+        f". '{SCRIPT}' {GUARD_ARGS}; "
         f"$r = Invoke-BreachWatch -Script '{script}' -OutDir '{out}'; "
         "$r | ConvertTo-Json -Compress"
     )
-    proc = subprocess.run(
-        ["pwsh", "-NoProfile", "-Command", driver], capture_output=True, text=True, timeout=120
-    )
+    proc = safe_pwsh(driver)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 @needs_pwsh
+class TestGuard:
+    def test_running_the_script_with_the_variable_set_throws(self) -> None:
+        proc = safe_pwsh(f"& '{SCRIPT}' {GUARD_ARGS}; exit 0")
+        assert proc.returncode != 0
+        assert "not dot-sourced" in proc.stderr + proc.stdout
+
+    def test_dot_sourcing_with_the_variable_set_loads_the_functions(self) -> None:
+        proc = safe_pwsh(f". '{SCRIPT}' {GUARD_ARGS}; (Get-Command Invoke-BreachWatch).Name")
+        assert proc.returncode == 0, proc.stderr
+        assert "Invoke-BreachWatch" in proc.stdout
+
+
+@needs_pwsh
 class TestInvokeBreachWatch:
+    def test_a_crash_is_unknown_not_a_new_breach(self, tmp_path: Path) -> None:
+        r = run_watch(tmp_path, None, domains=True, crash=True)
+        assert (r["Code"], r["State"]) == (2, "unknown")
+
+    def test_a_crash_never_reports_a_stale_file(self, tmp_path: Path) -> None:
+        r = run_watch(tmp_path, None, domains=True, crash=True, stale=True)
+        assert (r["Code"], r["State"]) == (2, "unknown")
+        assert "StaleService" not in r["Text"]
+
+    def test_exit_one_without_a_fresh_file_is_unknown(self, tmp_path: Path) -> None:
+        r = run_watch(tmp_path, 1, domains=True, stale=True)
+        assert (r["Code"], r["State"]) == (2, "unknown")
+        assert "StaleService" not in r["Text"]
+
     def test_exit_zero_is_clean(self, tmp_path: Path) -> None:
         r = run_watch(tmp_path, 0, domains=True)
         assert (r["Code"], r["State"]) == (0, "clean")

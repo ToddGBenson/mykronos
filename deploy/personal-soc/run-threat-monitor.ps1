@@ -72,36 +72,54 @@ function Invoke-BreachWatch {
             Text = 'Breach watch not configured: references/account-domains.local.txt is missing, so no breach signal this run. This is not a pass.' }
     }
     $log = Join-Path $OutDir 'breach-watch.log'
+    $file = Join-Path $OutDir 'new-breaches.json'
+    # A file left by an earlier run must never be read as this run's answer.
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $file) {
+        return [pscustomobject]@{ Code = 2; State = 'unknown'
+            Text = 'Breach watch UNKNOWN: could not clear the previous new-breaches.json. No breach signal this run; this is not a pass.' }
+    }
     $code = 2
+    $old = $ErrorActionPreference
     try {
-        $old = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         & $Shell -NoProfile -ExecutionPolicy Bypass -File $Script -OutDir $OutDir *> $log
         $code = $LASTEXITCODE
-        $ErrorActionPreference = $old
     } catch {
         $code = 2
+    } finally {
+        $ErrorActionPreference = $old
     }
-    $file = Join-Path $OutDir 'new-breaches.json'
     if ($code -eq 0) {
         return [pscustomobject]@{ Code = 0; State = 'clean'
             Text = 'Breach watch: no newly added breach matches an account domain.' }
     }
     if ($code -eq 1) {
+        # Exit 1 is also what pwsh -File returns when the script throws outside
+        # its own Exit-Unknown. It is a breach only if this run wrote a
+        # non-empty array.
         $names = @()
         try {
-            $names = @(Get-Content -LiteralPath $file -Raw | ConvertFrom-Json | ForEach-Object { "$($_.name) ($($_.domain))" })
+            $names = @(Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop |
+                ForEach-Object { "$($_.name) ($($_.domain))" })
         } catch { }
-        if (-not $names.Count) { $names = @('see new-breaches.json') }
-        return [pscustomobject]@{ Code = 1; State = 'new-breaches'
-            Text = "Breach watch: NEW breach at a service you use: $($names -join ', '). Change those passwords and check for reuse." }
+        if ($names.Count) {
+            return [pscustomobject]@{ Code = 1; State = 'new-breaches'
+                Text = "Breach watch: NEW breach at a service you use: $($names -join ', '). Change those passwords and check for reuse." }
+        }
+        return [pscustomobject]@{ Code = 2; State = 'unknown'
+            Text = 'Breach watch UNKNOWN: Get-NewBreaches.ps1 exited 1 without writing a new-breaches.json for this run, so it probably crashed (see breach-watch.log). No breach signal this run; this is not a pass.' }
     }
     return [pscustomobject]@{ Code = 2; State = 'unknown'
         Text = "Breach watch UNKNOWN: Get-NewBreaches.ps1 exited $code (see breach-watch.log). No breach signal this run; this is not a pass." }
 }
 
 # Dot-sourced by the tests to reach the functions without running the job.
-if ($env:MYKRONOS_TEST_LOAD_ONLY -eq '1') { return }
+# Set and not dot-sourced is an error, never a silent exit.
+if ($env:MYKRONOS_TEST_LOAD_ONLY) {
+    if ($MyInvocation.InvocationName -eq '.') { return }
+    throw 'MYKRONOS_TEST_LOAD_ONLY is set but the script was not dot-sourced; refusing to run the job.'
+}
 
 if (-not (Test-Path $Claude)) { throw "claude CLI not found at $Claude" }
 if (-not (Test-Path $Repo))   { throw "personal-soc checkout not found at $Repo" }
