@@ -195,7 +195,10 @@ class TestTheDraftCarriesTheEvidence:
                         reachable=False,
                         url="https://vault.internal.example:8200/v1/sys/health",
                         status_code=503,
-                        detail="https://vault.internal.example:8200/v1/sys/health answered HTTP 503",
+                        detail=(
+                            "https://vault.internal.example:8200/v1/sys/health "
+                            "answered HTTP 503"
+                        ),
                     ),
                 )
             ]
@@ -399,7 +402,9 @@ class TestTheRaisedListReadsTheHubOncePerTtl:
             ).status_code == 201
 
         def reads() -> int:
-            return len([c for c in hub.calls if c[0] == "GET" and c[1].startswith("/api/incidents/")])
+            return len(
+                [c for c in hub.calls if c[0] == "GET" and c[1].startswith("/api/incidents/")]
+            )
 
         def page() -> list[dict[str, Any]]:
             response = client.get(

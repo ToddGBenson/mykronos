@@ -129,7 +129,9 @@ async def raise_draft(
     )
 
 
-def _newest_raise(request: Request, kind: str, subject: str, hub_kind: str) -> dict[str, Any] | None:
+def _newest_raise(
+    request: Request, kind: str, subject: str, hub_kind: str
+) -> dict[str, Any] | None:
     """The newest audited raise of this subject as this Hub kind: its Hub id."""
     with request.app.state.db.session() as session:
         rows = session.execute(
@@ -330,6 +332,8 @@ async def raised(
                 raised_by=actor,
                 raised_at=at.isoformat() if at else None,
             )
-            for (entity_id, hub_id, hub_kind, actor, at), state in zip(linked, statuses, strict=True)
+            for (entity_id, hub_id, hub_kind, actor, at), state in zip(
+                linked, statuses, strict=True
+            )
         ]
     )

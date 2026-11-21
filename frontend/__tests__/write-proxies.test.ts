@@ -44,11 +44,12 @@ describe.each(ROUTES)("%s", (path, handler, good) => {
   });
 
   it("refuses a cross-origin POST before the backend is called", async () => {
-    for (const extra of [
+    const attempts: Record<string, string>[] = [
       { "sec-fetch-site": "cross-site" },
       { "sec-fetch-site": "same-site" },
       { origin: "https://evil.example" },
-    ]) {
+    ];
+    for (const extra of attempts) {
       const response = await handler(post(path, JSON.stringify(good), extra));
       expect(response.status).toBe(403);
     }
