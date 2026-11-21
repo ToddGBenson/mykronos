@@ -17,7 +17,7 @@
 # recipe's `baseline:` in deploy/demo/docker-compose.yml, which must name the
 # same image (test_zap_image.py holds the two together): the nightly rebuild is
 # compared against what runs, so it publishes only what is better than that.
-FROM ghcr.io/toddgbenson/mykronos-zap:weekly-p20261112@sha256:3eaafe11492c5a8f8bf094c912e8e4c213ad716be22c11e50899e6aa2c9f95ac
+FROM ghcr.io/toddgbenson/mykronos-zap:weekly-p20261120@sha256:35bfa407466c5b3d77d464d3daa59fbae641d8b5a0686b39f8c0ee0861096392
 
 # Restated, not changed: both are the recipe's. A build file that does not say
 # them reads to Checkov as running as root with no health check.
