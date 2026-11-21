@@ -342,7 +342,10 @@ class TestTheJobErrorsInsteadOfFailing:
         while j < len(plan) and (
             plan[j].get("task") == "remote-result"
             or plan[j].get("file") == "checked/ok"
-            or (plan[j].get("try") or {}).get("task") == "linux-finished"
+            or any(
+                s.get("task") == "linux-finished"
+                for s in (plan[j].get("try") or {}).get("do") or []
+            )
         ):
             j += 1
         after = plan[j] if j < len(plan) else {}
