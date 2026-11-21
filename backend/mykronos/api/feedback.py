@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mykronos import product_owner as po
 from mykronos.adminauth import HumanDep, PrincipalDep
+from mykronos.ratelimit import hourly_refusal
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
@@ -102,8 +103,9 @@ def feedback_status(request: Request, principal: PrincipalDep) -> FeedbackStatus
 async def file_feedback(request: Request, body: FeedbackIn, principal: HumanDep) -> FeedbackOut:
     """File one TheHub backlog story from the dashboard's Feedback dialog.
 
-    503 when no Hub is configured, and 502 when TheHub refused or could not be
-    reached. Every attempt is audit-logged.
+    503 when no Hub is configured, 502 when TheHub refused or could not be
+    reached, and 429 past `hub_filings_per_actor_per_hour` reports an hour
+    from one actor (TheHub #61379). Every attempt is audit-logged.
     """
     database = request.app.state.db
 
@@ -125,6 +127,20 @@ async def file_feedback(request: Request, body: FeedbackIn, principal: HumanDep)
     if hub is None:
         audit("unavailable")
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=UNAVAILABLE)
+
+    allowed, retry_after = request.app.state.feedback_limiter.check(principal.actor)
+    if not allowed:
+        audit("rate_limited")
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=hourly_refusal(
+                "Feedback",
+                principal.actor,
+                request.app.state.feedback_limiter.limit,
+                retry_after,
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
 
     try:
         result = await hub.create_story(story_payload(body, principal.actor))

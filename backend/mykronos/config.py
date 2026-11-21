@@ -50,6 +50,18 @@ class Settings(BaseSettings):
         description="Per-token ingestion rate limit. spec 05 §6.",
     )
 
+    hub_filings_per_actor_per_hour: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "How many TheHub incidents or stories one actor may file per hour "
+            "through POST /api/dashboard/raise, and how many feedback reports "
+            "through POST /api/feedback (TheHub #61379). Counted per actor, so an "
+            "agent credential cannot flood the Hub and one actor's use leaves "
+            "another's untouched. In process memory: a restart resets it."
+        ),
+    )
+
     max_raw_output_bytes: int = Field(
         default=50 * 1024 * 1024,
         ge=1,

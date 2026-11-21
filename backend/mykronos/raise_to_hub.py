@@ -24,6 +24,7 @@ credential are told apart, and no separate table can disagree with the log.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -103,7 +104,12 @@ def lane_draft(catalog: Any, subject: str) -> Draft:
     return Draft("lane", subject, f"{repo}: {capability} lane is {state}", evidence, repo)
 
 
-def finding_draft(queries: Any, catalog: Any, subject: str) -> Draft:
+def finding_draft(
+    queries: Any, catalog: Any, subject: str, repo_ids: Mapping[str, str] | None = None
+) -> Draft:
+    """`repo_ids` maps a repository's full name to its onboarding id, which the
+    dashboard's page for the finding is addressed by. A repository it does not
+    name gets the finding without a link, rather than a link that 404s."""
     finding = queries.finding(subject)
     if not finding:
         raise SubjectNotFoundError(f"No finding {subject!r}.")
@@ -119,6 +125,7 @@ def finding_draft(queries: Any, catalog: Any, subject: str) -> Draft:
         else "no location recorded"
     )
     rows = _scans(catalog, repo, capability, 1) if repo and capability else []
+    repo_id = (repo_ids or {}).get(repo)
     evidence = "\n".join(
         [
             f"Finding: {subject}",
@@ -126,7 +133,7 @@ def finding_draft(queries: Any, catalog: Any, subject: str) -> Draft:
             f"Rule: {rule} ({capability}), severity {severity}, status {finding.get('status')}",
             f"Title: {finding.get('title') or ''}",
             f"Location: {where}",
-            f"MyKronos page: /repos/-/findings/{subject}",
+            *([f"MyKronos page: /repos/{repo_id}/findings/{subject}"] if repo_id else []),
             "Newest scan of this lane:",
             *(_scan_lines(repo, rows) or ["- none recorded"]),
         ]
@@ -136,8 +143,8 @@ def finding_draft(queries: Any, catalog: Any, subject: str) -> Draft:
 
 
 async def health_draft(settings: Any, subject: str) -> Draft:
-    from mykronos.logsafe import scrub
-
+    # The self-check's own detail is `<url> answered HTTP ...`: the address of
+    # an internal dependency, and this lands in a Hub item. Name and status only.
     for name, result in await self_check(settings):
         if name != subject:
             continue
@@ -153,7 +160,6 @@ async def health_draft(settings: Any, subject: str) -> Draft:
                 f"Dependency: {name}",
                 f"State: {state}",
                 f"HTTP status: {result.status_code}" if result.status_code else "HTTP status: none",
-                f"Detail: {scrub(result.detail) or 'none'}",
                 "Seen on: MyKronos Health (/platform-health)",
             ]
         )

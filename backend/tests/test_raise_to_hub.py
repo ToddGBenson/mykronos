@@ -55,6 +55,7 @@ class RaiseHub(FakeHub):
             (self.incidents if path == "/api/incidents" else self.created)[self.next_id] = record
             return httpx2.Response(201, json=record)
         if request.method == "GET" and path.startswith("/api/incidents/"):
+            self.calls.append((request.method, path, None))
             found = self.incidents.get(int(path.rsplit("/", 1)[1]))
             return httpx2.Response(200, json=found) if found else httpx2.Response(404)
         if request.method == "GET" and path.startswith("/api/dev/stories/"):

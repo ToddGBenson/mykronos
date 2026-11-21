@@ -71,7 +71,11 @@ export function RaiseToHub({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind, subject, raise_as: as, title, note: note || null }),
       });
-      const body = (await response.json()) as { hub_kind: string; hub_id: number; detail?: string };
+      const body = (await response.json().catch(() => ({}))) as {
+        hub_kind: string;
+        hub_id: number;
+        detail?: string;
+      };
       if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
       setRaised({
         subject,

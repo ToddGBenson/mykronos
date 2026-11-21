@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 
 import { backendClient } from "@/lib/api";
+import { crossOriginRefusal } from "@/lib/same-origin";
 
 const UNREACHABLE = { detail: "Could not reach the Mykronos backend." };
 
@@ -28,6 +29,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const refusal = crossOriginRefusal(request.headers);
+  if (refusal) return NextResponse.json({ detail: refusal }, { status: 403 });
   let body: unknown;
   try {
     body = await request.json();

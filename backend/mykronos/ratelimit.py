@@ -42,3 +42,13 @@ class SlidingWindowLimiter:
             self._hits.clear()
         else:
             self._hits.pop(key, None)
+
+
+def hourly_refusal(what: str, actor: str, limit: int, retry_after: int) -> str:
+    """The 429 message for a per-actor hourly limit (TheHub #61379): what is
+    limited, how many, who used them, and when to come back."""
+    minutes = max(1, -(-retry_after // 60))
+    return (
+        f"{what} is limited to {limit} per hour for each actor, and {actor} has used "
+        f"them. Try again in about {minutes} minute(s)."
+    )
