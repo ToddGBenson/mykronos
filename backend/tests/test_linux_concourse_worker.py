@@ -33,6 +33,9 @@ ADD = CONCOURSE / "Add-LinuxWorker.ps1"
 INSTALL = CONCOURSE / "linux-worker" / "install-concourse-worker.sh"
 README = CONCOURSE / "linux-worker" / "README.md"
 WRAPPER = CONCOURSE / "linux-worker" / "cgroup-wrapper.sh"
+WORKER_COMPOSE = CONCOURSE / "linux-worker" / "docker-compose.yml"
+WORKER_ENV_EXAMPLE = CONCOURSE / "linux-worker" / ".env.example"
+DNS_CHECK_TASK = CONCOURSE / "linux-worker" / "check-job-dns.yml"
 
 PWSH = shutil.which("pwsh")
 needs_pwsh = pytest.mark.skipif(PWSH is None, reason="pwsh is not installed")
@@ -267,6 +270,138 @@ class TestTheDockerWorkerWrapper:
         assert '"/cgroup-wrapper.sh"' in readme
         assert "/run/containerd" in readme and "--force-recreate" in readme
         assert "hand-kept" in readme and "linux-3" in readme
+
+
+class TestTheDockerWorkersResolveThroughTheRouterFirst:
+    """[#62067] Job containers on the Docker-run workers ask the LAN resolver first.
+
+    With only Docker's embedded resolver (127.0.0.11) the job containers fell
+    through to 8.8.8.8 with no local cache, and every upstream loss failed a
+    `pip install` with NameResolutionError. The reference compose in the repo
+    takes the router, the ISP resolver and 8.8.8.8 from a local `.env`, in that
+    order, for all of linux-1, linux-2 and linux-3. The mykronos repo is
+    public, so no LAN address may be committed: the file names variables only.
+    """
+
+    def _services(self) -> dict[str, Any]:
+        doc = cast("dict[str, Any]", yaml.safe_load(WORKER_COMPOSE.read_text(encoding="utf-8")))
+        return cast("dict[str, Any]", doc["services"])
+
+    def test_the_reference_files_exist(self) -> None:
+        for path in (WORKER_COMPOSE, WORKER_ENV_EXAMPLE, DNS_CHECK_TASK):
+            assert path.is_file(), path
+
+    def test_each_worker_hands_its_task_containers_the_three_resolvers_in_order(self) -> None:
+        services = self._services()
+        assert set(services) == {"worker-1", "worker-2"}
+        for name, service in services.items():
+            servers = service["environment"]["CONCOURSE_CONTAINERD_DNS_SERVER"]
+            assert servers == "${WORKER_DNS_1:?}" ",${WORKER_DNS_2:?}" ",${WORKER_DNS_3:-8.8.8.8}", name
+            assert service["dns"] == [
+                "${WORKER_DNS_1:?}",
+                "${WORKER_DNS_2:?}",
+                "${WORKER_DNS_3:-8.8.8.8}",
+            ], name
+
+    def test_resolved_with_a_local_env_the_router_is_first_and_google_last(self) -> None:
+        local = {"WORKER_DNS_1": "router.example", "WORKER_DNS_2": "isp.example"}
+
+        def fill(text: str) -> str:
+            return re.sub(
+                r"\$\{(\w+)(?::-([^}]*)|:\?[^}]*)?\}",
+                lambda m: local.get(m.group(1), m.group(2) or ""),
+                text,
+            )
+
+        service = self._services()["worker-1"]
+        assert [fill(d) for d in service["dns"]] == ["router.example", "isp.example", "8.8.8.8"]
+        env = fill(service["environment"]["CONCOURSE_CONTAINERD_DNS_SERVER"])
+        assert env == "router.example,isp.example,8.8.8.8"
+
+    def test_the_resolvers_have_no_default_so_an_unset_env_fails_loudly(self) -> None:
+        """A `.env` that is missing must stop `docker compose up`, not fall back to
+        Google alone, which is the defect this file removes."""
+        text = WORKER_COMPOSE.read_text(encoding="utf-8")
+        assert "${WORKER_DNS_1:?" in text and "${WORKER_DNS_2:?" in text
+        assert "WORKER_DNS_1:-" not in text and "WORKER_DNS_2:-" not in text
+
+    def test_the_dns_proxy_is_not_used(self) -> None:
+        """The proxy forwards to Docker's resolver, which is the path that fell
+        through to 8.8.8.8; explicit servers replace it."""
+        text = WORKER_COMPOSE.read_text(encoding="utf-8")
+        assert "DNS_PROXY_ENABLE" not in text.replace("DNS_PROXY_ENABLE is not", "")
+
+    def test_the_worker_runs_the_image_and_wrapper_the_compose_workers_run(self) -> None:
+        compose_image = _compose()["x-worker"]["image"]
+        for name, service in self._services().items():
+            assert service["image"] == compose_image, name
+            assert service["entrypoint"] == ["dumb-init", "/cgroup-wrapper.sh"], name
+            assert "./cgroup-wrapper.sh:/cgroup-wrapper.sh:ro" in service["volumes"], name
+            assert service["privileged"] is True, name
+            assert service["environment"]["CONCOURSE_TAG"] == "linux", name
+            assert service["environment"]["CONCOURSE_RUNTIME"] == "containerd", name
+
+    def test_the_second_worker_is_opt_in_and_has_its_own_name_key_and_state(self) -> None:
+        one, two = self._services()["worker-1"], self._services()["worker-2"]
+        assert two["profiles"] == ["pair"] and "profiles" not in one
+        assert one["environment"]["CONCOURSE_NAME"] != two["environment"]["CONCOURSE_NAME"]
+        key = "CONCOURSE_TSA_WORKER_PRIVATE_KEY"
+        assert one["environment"][key] != two["environment"][key]
+        assert set(one["volumes"]) & set(two["volumes"]) == {
+            "./cgroup-wrapper.sh:/cgroup-wrapper.sh:ro",
+            "./keys/tsa_host_key.pub:/keys/tsa_host_key.pub:ro",
+        }
+
+    def test_the_example_env_names_the_three_resolvers_and_commits_no_lan_address(self) -> None:
+        values = dict(
+            line.split("=", 1)
+            for line in WORKER_ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+            if "=" in line and not line.lstrip().startswith("#")
+        )
+        assert values["WORKER_DNS_1"] == "" and values["WORKER_DNS_2"] == ""
+        assert values["WORKER_DNS_3"] == "8.8.8.8"
+        assert values["CHECK_HOSTS"] == ""
+
+    def test_no_file_of_the_worker_config_commits_a_lan_address(self) -> None:
+        """mykronos is public. Only loopback and the public resolvers may appear."""
+        allowed = {"8.8.8.8", "1.1.1.1", "8.8.4.4", "127.0.0.1", "127.0.0.11", "127.0.0.53", "0.0.0.0"}
+        for path in (WORKER_COMPOSE, WORKER_ENV_EXAMPLE, DNS_CHECK_TASK, README, INSTALL):
+            found = set(re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", path.read_text(encoding="utf-8")))
+            assert found <= allowed, (path.name, sorted(found - allowed))
+
+    def test_the_env_file_itself_is_never_tracked(self) -> None:
+        ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        assert ".env" in ignore and "!.env.example" in ignore
+        assert not (CONCOURSE / "linux-worker" / ".env").exists()
+
+    def test_the_check_task_prints_the_job_resolver_order_and_resolves_each_host(self) -> None:
+        task = cast("dict[str, Any]", yaml.safe_load(DNS_CHECK_TASK.read_text(encoding="utf-8")))
+        assert task["platform"] == "linux"
+        assert "CHECK_HOSTS" in task["params"]
+        script = "\n".join(task["run"]["args"])
+        assert "/etc/resolv.conf" in script, "the job container's own resolver list is shown"
+        assert "nslookup" in script and "CHECK_HOSTS" in script
+        assert "registry-1.docker.io" in script, "the Docker Hub name is always checked"
+        source = task["image_resource"]["source"]
+        assert source["repository"] == "curlimages/curl" and source["tag"] == "8.11.1"
+
+    def test_the_readme_documents_one_config_for_all_three_workers(self) -> None:
+        readme = README.read_text(encoding="utf-8")
+        for needle in (
+            "WORKER_DNS_1",
+            "WORKER_DNS_3",
+            "linux-1",
+            "linux-2",
+            "linux-3",
+            "docker compose config",
+            "fly execute",
+            "check-job-dns.yml",
+            "NameResolutionError",
+            "router first",
+        ):
+            assert needle in readme, needle
+        assert "linux-1 and linux-2 use the proxy since 2026-11-16" not in readme
+        assert "CONCOURSE_CONTAINERD_DNS_SERVER=8.8.8.8 directly" not in readme
 
 
 # The wrapper only ever runs in a Linux container. On Windows, Git Bash's sh
