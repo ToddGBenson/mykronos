@@ -58,7 +58,7 @@ def _plan_task(name: str) -> dict[str, Any]:
 
 def test_only_the_scan_runs_on_linux_3() -> None:
     tagged = {t["task"]: t.get("tags") for t in _tasks(_job()["plan"]) if t.get("tags")}
-    assert tagged == {"zap-baseline": ["small"]}, (
+    assert tagged == {"linux-worker-probe": ["small"], "zap-baseline": ["small"]}, (
         "dast-staging's ZAP scan must run on linux-3 (tag `small`, the only worker that "
         f"can reach laptop-hosted staging), and nothing else in the job may: {tagged}"
     )
@@ -85,7 +85,7 @@ def test_the_scan_runs_as_root_and_never_privileged() -> None:
     steps = [_job(), *_tasks(_job()["plan"])]
     assert not any("privileged" in step for step in steps), "nothing in dast-staging is privileged"
     outputs = [o["name"] for o in zap["config"].get("outputs") or []]
-    assert outputs == ["dast"], outputs
+    assert outputs == ["dast", "ran"], outputs
     script = zap["config"]["run"]["args"][-1]
     assert "chmod -R a+rX dast" in script, "the report must be readable by the host task"
 
@@ -110,3 +110,63 @@ def test_the_refusals_stay_in_the_scan() -> None:
         "The target is not serving the commit this scan would record",
     ):
         assert refusal in script, f"zap-baseline lost the refusal {refusal!r}"
+
+
+# -- Review of #1215: a tagged step waits for its worker forever ---------------
+#
+# A task's own `timeout:` starts only once a worker is chosen, so with linux-3
+# off a bare `tags: [small]` step held serial group `dast` -- and dast-prod,
+# dast-demo and the rest of the lane -- indefinitely, reporting nothing. Each
+# tagged step now sits in a `do:` whose `timeout:` includes that wait, behind
+# a short probe, and `linux_absent` on both hooks turns "never ran" into
+# errored (nothing judged), never failed and never green.
+
+
+def _wrappers() -> list[dict[str, Any]]:
+    return [s for s in _job()["plan"] if isinstance(s.get("do"), list)]
+
+
+def _wrapper_of(task: str) -> dict[str, Any]:
+    found = [w for w in _wrappers() if any(t.get("task") == task for t in w["do"])]
+    assert len(found) == 1, f"{task!r} is not inside exactly one `do:` wrapper"
+    return found[0]
+
+
+def _minutes(value: str) -> int:
+    assert value.endswith("m"), value
+    return int(value[:-1])
+
+
+def test_a_probe_asks_for_linux_3_first_and_bounds_the_wait() -> None:
+    probe = _wrapper_of("linux-worker-probe")
+    assert probe["do"][0].get("tags") == ["small"], "the probe must ask for linux-3"
+    assert _minutes(probe["timeout"]) <= 5
+    for hook in ("on_failure", "on_error"):
+        assert probe[hook]["task"] == "linux-worker-absent", f"the probe has no {hook} linux_absent"
+        assert probe[hook].get("input_mapping") == {"ran": "probed"}
+    plan = _job()["plan"]
+    assert plan.index(probe) < plan.index(_wrapper_of("zap-baseline")), "the probe must come first"
+
+
+def test_the_scan_waits_inside_a_timed_wrapper() -> None:
+    wrapper = _wrapper_of("zap-baseline")
+    zap = next(t for t in wrapper["do"] if t.get("task") == "zap-baseline")
+    assert _minutes(wrapper["timeout"]) >= _minutes(zap["timeout"]), (
+        "the wrapper must outlast the task"
+    )
+    for hook in ("on_failure", "on_error"):
+        assert wrapper[hook]["task"] == "linux-worker-absent", (
+            f"the scan's wrapper has no {hook} linux_absent"
+        )
+    # A scan that RAN keeps its verdict: it writes ran/rc from an EXIT trap,
+    # so linux_absent re-labels only a scan that never started.
+    assert {"name": "ran"} in zap["config"]["outputs"]
+    assert "> ran/rc' EXIT" in zap["config"]["run"]["args"][-1]
+
+
+def test_report_dast_needs_no_package_install() -> None:
+    """Review nit: an apt failure after a finished scan lost the scan."""
+    report = _plan_task("report-dast")
+    script = report["config"]["run"]["args"][-1]
+    assert "apt-get" not in script
+    assert report["image"] == "zap", "the job's own zap image ships git and pip"
