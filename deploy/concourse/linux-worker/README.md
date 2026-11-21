@@ -147,7 +147,8 @@ commands match this file up to 2026-11-18 (the stale-state clear was added
 there by hand that day). linux-1 and linux-2 run their own hand-kept copies
 with the cgroup delegation only, so they are not yet protected from the
 stale-state loop below. Each host's compose file has to mount this file in
-place of its copy.
+place of its copy; `docker-compose.yml` beside this README does, and is the
+compose to move each host to (TheHub #62067).
 
 - **cgroup v2 delegation.** The image's entrypoint moves only PID 1 out of
   the container's root cgroup. The root keeps processes, so it cannot hand
@@ -162,12 +163,17 @@ place of its copy.
   container's loopback. The containerd runtime hands task containers the
   worker's own address instead, and nothing answers there: every `get`
   fails, and git reports it as `fatal: Could not read from remote
-  repository`, which looks like a key or port problem. Set either
-  `CONCOURSE_CONTAINERD_DNS_SERVER` (explicit resolvers, as the installer
-  and `../docker-compose.yml` do) or
+  repository`, which looks like a key or port problem. Set
+  `CONCOURSE_CONTAINERD_DNS_SERVER` to explicit resolvers, router first (see
+  "One resolver config for every worker" below). The alternative,
   `CONCOURSE_CONTAINERD_DNS_PROXY_ENABLE=true` (the worker answers on its
-  address and forwards to Docker's resolver). linux-1 and linux-2 use the
-  proxy since 2026-11-16.
+  address and forwards to Docker's resolver), is what linux-1 and linux-2 ran
+  from 2026-11-16 to 2026-11-21: Docker then asks only the host's upstreams,
+  and a host whose `/etc/resolv.conf` names systemd-resolved's 127.0.0.53
+  (which a container cannot use) gives Docker nothing but 8.8.8.8 and 8.8.4.4.
+  Job containers went straight to Google with no local cache, and any loss on
+  that path failed a lookup (`NameResolutionError` for pypi.org in keel and
+  binnacle pr-checks, 2026-11-18).
 - **Stale containerd state across a restart.** In the container `/run` is
   the writable layer, not a tmpfs, so `/run/containerd` survives a container
   restart and a host reboot. The tasks it records died with the previous
@@ -180,6 +186,49 @@ place of its copy.
   containerd is already running, so running it by hand in a live worker
   deletes nothing. Without it, `docker compose up -d --force-recreate`
   recovers a looping worker once.
+
+## One resolver config for every worker
+
+TheHub #62067. linux-1, linux-2 and linux-3 resolve through the same three
+servers in the same order, router first: the LAN router, the ISP resolver,
+then 8.8.8.8 as the last resort. The addresses are the host's own and never
+enter this public repo; each host keeps them in a local, gitignored `.env`.
+
+| Worker kind | Where the three servers go |
+|---|---|
+| Run in Docker (linux-1, linux-2, linux-3) | `WORKER_DNS_1`, `WORKER_DNS_2`, `WORKER_DNS_3` in `.env` beside `docker-compose.yml` (this directory; copy `.env.example`). One setting feeds both the worker's `dns:` and `CONCOURSE_CONTAINERD_DNS_SERVER`. |
+| Run by the installer | `--dns <router>,<isp>,8.8.8.8` or `DNS_SERVERS=` in `worker.conf`; the installer's own default is the two public resolvers, so name the router there. |
+
+`WORKER_DNS_1` and `WORKER_DNS_2` have no default, so a host without its
+`.env` stops with `required variable WORKER_DNS_1 is missing a value` rather
+than starting a worker that asks Google alone. To apply it on a host:
+
+1. Copy this directory's `docker-compose.yml`, `cgroup-wrapper.sh` and
+   `.env.example` over the host's hand-kept copies; fill in `.env`.
+2. `docker compose config` and read the `dns:` list and
+   `CONCOURSE_CONTAINERD_DNS_SERVER`: the router must be first.
+3. Restart between builds (`fly workers` shows what is running):
+   `docker compose up -d --force-recreate`, or `--profile pair` for two.
+
+To prove it from inside a job container, run the check task on each worker.
+It prints the job container's `/etc/resolv.conf` and asks each nameserver, in
+order, for registry-1.docker.io and for every name in `CHECK_HOSTS` (name the
+MyKronos backend there). The image pull is itself the Docker Hub pull:
+
+```
+CHECK_HOSTS="<mykronos backend name>" fly -t mykronos execute --tag linux --config check-job-dns.yml
+```
+
+Run it until it has landed on every worker (`fly workers` lists them; stop
+one worker to force the next). The runs it must pass are one per worker, and
+the first line of each `resolv.conf` must be the router.
+
+Measured success is 20 consecutive pr-checks runs of keel and binnacle with
+no `NameResolutionError`. A resolver is not the only way to lose a lookup: the
+2026-11-18 outages took the router and the ISP too, and the Wi-Fi wedge that
+day came from the link. A pip step in a task can add `--retries 5 --timeout
+30`, and a wired link plus a watchdog that reconnects when the gateway stops
+answering covers the rest.
 
 To check a worker, enter a running job container's network namespace from
 inside the worker (`nsenter -t <pid> -n`, the pid from
