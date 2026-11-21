@@ -35,6 +35,17 @@ this token and must not be asked to:
 
 That is the same reasoning the Hub's own gate uses for its OAuth callbacks and
 webhooks: exempt the paths that carry their own proof, and only those.
+
+**One kind of agent may read without it (TheHub #61954).** The security
+champion and Delivery hold an agent credential and not this token, so every
+check they needed - pending approvals, risk acceptances, findings - became an
+operator script. A credential a *person* minted for one of
+`AGENT_READ_PURPOSES` now passes on its own for the GETs in `AGENT_READ`, and
+nothing else: any other method or path is a 403, every use is in the audit
+log under the credential's actor and purpose, and the handler serves the
+request as a viewer (`adminauth.READ_ONLY_AGENT`), so raw output stays
+withheld and no write check can pass. A request that came through a proxy is
+not offered this at all: there the token is still wanted.
 """
 
 from __future__ import annotations
@@ -47,6 +58,9 @@ from collections.abc import Awaitable, Callable
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
+
+from mykronos.adminauth import READ_ONLY_AGENT, Principal, current_principal
+from mykronos.agents import TOKEN_PREFIX, resolve_agent_credential
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +105,42 @@ EXEMPT = re.compile(
     re.VERBOSE,
 )
 
+#: [TheHub #61954] The purposes whose credential passes this gate on its own,
+#: for `AGENT_READ` only. In code, not configuration, so widening it is a
+#: reviewed change. The purpose counts only on a credential a person minted
+#: (no lineage, not platform-started): an agent may mint a child with any
+#: purpose it likes, and the approvals engine trusts one on the same terms.
+AGENT_READ_PURPOSES = frozenset({"security-champion", "delivery"})
+
+#: [TheHub #61954] The GETs such a credential may make without the token.
+#: Reads of approvals, risk acceptances, findings, lane health and the
+#: briefing, and `whoami`. Not the credential listing, the OpenAPI map, a raw
+#: record or scan output, or anything under an admin path. Anchored, like
+#: `EXEMPT`, so an entry never opens a neighbour.
+AGENT_READ = re.compile(
+    r"""^(
+        /api/agents/whoami
+      | /api/approvals
+      | /api/approvals/(delegations|samples|shadow-reviews)
+      | /api/approvals/delegations/[^/]+/stats
+      | /api/approvals/[^/]+(/(evidence|chain))?
+      | /api/risk-acceptances(/[^/]+)?
+      | /api/dashboard/briefing
+      | /api/briefing/(daily|weekly)
+      | /api/dashboard/triage
+      | /api/dashboard/findings/[^/]+
+      | /api/dashboard/repos/[^/]+/(findings|open-findings|scan-health)
+      | /api/dashboard/repos/[^/]+/risk-acceptances(/[^/]+)?
+    )$""",
+    re.VERBOSE,
+)
+
+#: Headers a proxy in front of this host adds. Cloudflare sets
+#: `Cf-Connecting-Ip` at its edge and a client cannot strip it, so a request
+#: carrying any of these came through the tunnel, and the one-secret path is
+#: not offered there: from the internet, the token is still wanted.
+PROXY_HEADERS = ("cf-connecting-ip", "cf-ray", "x-forwarded-for", "forwarded")
+
 
 def presented_token(request: Request) -> str:
     """The token this request carries, from whichever carrier has one."""
@@ -129,6 +179,64 @@ def is_exempt(path: str) -> bool:
     return EXEMPT.match(path) is not None
 
 
+def is_agent_readable(method: str, path: str) -> bool:
+    """Whether a scoped agent credential may make this request on its own.
+    GET only (not HEAD), and never a path containing `..`, as for `is_exempt`."""
+    if ".." in path:
+        return False
+    return method == "GET" and AGENT_READ.match(path) is not None
+
+
+def scoped_agent(request: Request) -> Principal | None:
+    """The agent this request may be let through for on its own credential.
+
+    `None` unless the request came straight to this host (no proxy header),
+    carries an `mka_` bearer that resolves to a live credential, and that
+    credential was minted by a person for one of `AGENT_READ_PURPOSES`.
+    """
+    if any(name in request.headers for name in PROXY_HEADERS):
+        return None
+    scheme, _, credential = request.headers.get("Authorization", "").partition(" ")
+    credential = credential.strip()
+    if scheme.lower() != "bearer" or not credential.startswith(TOKEN_PREFIX):
+        return None
+    db = getattr(request.app.state, "db", None)
+    principal = resolve_agent_credential(db, credential) if db is not None else None
+    if principal is None:
+        return None
+    provenance = principal.provenance
+    if (
+        provenance.get("purpose") not in AGENT_READ_PURPOSES
+        or provenance.get("lineage")
+        or provenance.get("platform_started")
+    ):
+        return None
+    return principal
+
+
+def _audit_agent(request: Request, agent: Principal, action: str) -> None:
+    """One audit entry per use, attributed to the agent (spec 34 §1). Written
+    before the handler runs, so a use is recorded whatever the handler does."""
+    db = request.app.state.db
+    path = request.url.path[:512]
+    token = current_principal.set(agent)
+    try:
+        with db.session() as session:
+            db.audit(
+                session,
+                actor=agent.actor,
+                action=action,
+                entity_type="agent_credential",
+                entity_id=str(agent.instance),
+                method=request.method,
+                path=path,
+                purpose=agent.provenance.get("purpose"),
+                instance=agent.instance,
+            )
+    finally:
+        current_principal.reset(token)
+
+
 class PerimeterGate(BaseHTTPMiddleware):
     """Reject anything that cannot present the shared token.
 
@@ -155,6 +263,29 @@ class PerimeterGate(BaseHTTPMiddleware):
             return await call_next(request)
 
         presented = presented_token(request)
+
+        # [TheHub #61954] Only when no token was presented at all: a wrong
+        # one is a 401 whatever else the request carries.
+        agent = None if presented else scoped_agent(request)
+        if agent is not None:
+            if not is_agent_readable(request.method, path):
+                _audit_agent(request, agent, "perimeter.agent_refused")
+                logger.warning(
+                    "Perimeter gate refused %s %s to %s: reads only",
+                    request.method,
+                    path,
+                    agent.actor,
+                )
+                return JSONResponse(
+                    {
+                        "detail": "This agent credential may only read here without the "
+                        "perimeter token (GET on mykronos.gate.AGENT_READ)."
+                    },
+                    status_code=403,
+                )
+            _audit_agent(request, agent, "perimeter.agent_read")
+            setattr(request.state, READ_ONLY_AGENT, agent.actor)
+            return await call_next(request)
 
         if not presents_token(request, self.token):
             # Deliberately terse, and identical whether the token was absent,

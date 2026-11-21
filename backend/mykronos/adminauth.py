@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import secrets
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -125,6 +125,13 @@ class Principal:
 #: `Database.audit`; `None` outside a request (jobs, the CLI).
 current_principal: ContextVar[Principal | None] = ContextVar("current_principal", default=None)
 
+#: [TheHub #61954] The `request.state` attribute the perimeter gate sets, to
+#: the agent's actor, when it let an agent credential through WITHOUT the
+#: perimeter token (`gate.AGENT_READ`). `require_principal` then serves that
+#: request as a viewer: one secret opens what took two, so it reads as a
+#: viewer reads (no raw output, no write check passes).
+READ_ONLY_AGENT = "perimeter_read_only_agent"
+
 
 class PrincipalContextReset:
     """Pure ASGI middleware: every request starts with no principal.
@@ -203,6 +210,15 @@ async def require_principal(
         principal = Principal(actor=str(settings.viewer_identity or "viewer"), role=Role.VIEWER)
     else:
         principal = _agent_principal(request, presented)
+
+    gated_as = getattr(request.state, READ_ONLY_AGENT, None)
+    if gated_as is not None and principal is not None:
+        # The gate and this read the same header; anything but the agent it
+        # let through is refused rather than served.
+        if principal.is_agent and principal.actor == gated_as:
+            principal = replace(principal, role=Role.VIEWER)
+        else:
+            principal = None
 
     if principal is not None:
         current_principal.set(principal)
