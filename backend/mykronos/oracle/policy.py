@@ -114,6 +114,13 @@ class RiskProfilePolicy:
     #: internet reaches it. Defaulted after the other fields so a caller that
     #: builds this by hand keeps working; the shipped policy states it.
     internet_facing_unknown_points: float = 0.0
+    #: What a recorded profile whose `data_classification` or
+    #: `business_criticality` is unset adds (TheHub #61556, policy 1.20). The
+    #: same argument as `internet_facing_unknown_points`: unset is not the
+    #: mildest answer. The shipped policy states each at the worst value of
+    #: its map; defaulted to 0 so a hand-built policy keeps working.
+    data_classification_unknown_points: float = 0.0
+    business_criticality_unknown_points: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -817,6 +824,14 @@ def parse_policy(document: dict[str, Any]) -> Policy:
             internet_facing_unknown_points=_number(
                 profile_raw.get("internet_facing_unknown_points", 0),
                 "risk_profile.internet_facing_unknown_points",
+            ),
+            data_classification_unknown_points=_number(
+                profile_raw.get("data_classification_unknown_points", 0),
+                "risk_profile.data_classification_unknown_points",
+            ),
+            business_criticality_unknown_points=_number(
+                profile_raw.get("business_criticality_unknown_points", 0),
+                "risk_profile.business_criticality_unknown_points",
             ),
         ),
         toxic_combinations=ToxicCombinationsPolicy(

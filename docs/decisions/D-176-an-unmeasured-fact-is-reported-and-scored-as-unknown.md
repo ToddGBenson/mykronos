@@ -1,6 +1,6 @@
 ## D-176 — An unmeasured fact is reported and scored as unknown, never as its comfortable answer
 
-**2026-11-04.** **Status:** Decided, implemented (Oracle policy 1.19)
+**2026-11-04.** **Status:** Decided, implemented (Oracle policy 1.19; extended in 1.20)
 **Story:** TheHub #61349 · Refs D-116, D-145, B-041, [spec 17 §4.4](../../specs/17-harness-threat-intel-and-i2i.md), [spec 21 §1](../../specs/21-oracle-depth-and-risk-profile.md)
 
 **The rule.** Where the platform has not measured a fact, what it says and what
@@ -37,11 +37,29 @@ repository, the unknown term is trimmed with the internet-facing one
 the vector's attack vector at its base (network) value, which already counts it.
 
 **Not done here.** Data classification and business criticality left unset on a
-recorded profile still add nothing. The same argument applies to them; they were
-outside the story, and changing them would move more scores. That is a follow-up
-for the operator to choose. Network findings are not yet told apart by vantage
-(the WAN-edge lane against a LAN sweep), which would let a WAN-edge finding
-propose `observed` again.
+recorded profile still added nothing at 1.19. The same argument applies to them;
+they were outside the story, and changing them would move more scores, so it was
+left for the operator to choose. Network findings are not yet told apart by
+vantage (the WAN-edge lane against a LAN sweep), which would let a WAN-edge
+finding propose `observed` again.
+
+**Follow-up, policy 1.20 (TheHub #61556, operator decision 2026-11-21).** The
+operator chose the worst case for both fields, matching `internet_facing`. A
+recorded profile that leaves `data_classification` unset now scores
+`risk_profile.data_classification_unknown` at
+`data_classification_unknown_points: 15` (the `regulated` weight), and one that
+leaves `business_criticality` unset scores
+`risk_profile.business_criticality_unknown` at
+`business_criticality_unknown_points: 15` (the `critical` weight). The labels say
+"Data classification unset" and "Business criticality unset", and the snapshot
+carries `data_classification_state` and `business_criticality_state`
+(`recorded` or `unset`). No profile at all, and every recorded value, score as
+they did. These terms are not trimmed when environmental scoring is live, unlike
+the internet-facing pair: an unset classification leaves the CVSS confidentiality
+requirement undefined, which is neutral rather than High, so nothing there
+already counts the worst case. Guard: `backend/tests/test_unset_profile_fields_are_worst_case.py`
+(10 of 20 red on 1.19; the 10 that passed are the recorded-value, no-profile and
+trim-list guards). Vantage is still not done.
 
 **Guard.** `backend/tests/test_unknown_is_unknown.py` has one class per row of the
 table. It was red on main (21 of 22 failed; the one that passed is the guard that

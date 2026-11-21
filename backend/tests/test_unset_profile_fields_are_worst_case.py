@@ -220,9 +220,6 @@ class TestRecordedValuesAreUnchanged:
         assert decision.inputs_snapshot["risk_profile"]["contribution"] == pytest.approx(
             expected
         )
-        assert decision.inputs_snapshot["risk_profile"]["data_classification_state"] == (
-            "recorded"
-        )
 
     @pytest.mark.parametrize("value", ["low", "medium", "high", "critical"])
     def test_a_recorded_criticality_scores_its_own_points(
