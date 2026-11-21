@@ -67,11 +67,13 @@ def _mint(client, purpose: str, minted_by: dict[str, str] | None = None) -> dict
 
 def _audit(client, action: str) -> list[AuditLogEntry]:
     with client.app.state.db.session() as session:
-        rows = session.execute(
-            select(AuditLogEntry).where(AuditLogEntry.action == action)
-        ).scalars()
+        rows = list(
+            session.execute(
+                select(AuditLogEntry).where(AuditLogEntry.action == action)
+            ).scalars()
+        )
         session.expunge_all()
-        return list(rows)
+        return rows
 
 
 def _own_request(client, headers: dict[str, str], subject: str) -> dict[str, Any]:
