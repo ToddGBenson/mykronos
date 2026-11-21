@@ -403,6 +403,9 @@ def _recounted(key: str) -> bool:
 #: nothing else counts them.
 #: An unknown internet exposure is counted there too: an unset profile field
 #: leaves MAV at the base vector's own (network) value (TheHub #61349).
+#: An unset data classification is not (TheHub #61556): it leaves CR undefined,
+#: which CVSS weighs as neutral rather than High, so nothing there counts the
+#: worst case its term scores, and the term is kept.
 DOUBLE_COUNTED = (
     "risk_profile.internet_facing",
     "risk_profile.internet_facing_unknown",

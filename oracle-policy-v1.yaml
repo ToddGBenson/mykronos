@@ -148,7 +148,19 @@
 # has never fetched instead of counting it as not listed, and the work queue
 # lists an EPSS nobody scored as unknown (zero points, ordered above an equal
 # rank whose EPSS was measured) rather than as 0.
-version: "1.19"
+#
+# 1.20 - unset is the worst case for the other two asset facts (TheHub #61556,
+# D-176, operator decision 2026-11-21). Adds
+# risk_profile.data_classification_unknown_points and
+# business_criticality_unknown_points. A repository whose risk profile exists
+# but leaves data_classification or business_criticality unset used to score
+# exactly like one recorded `public` or `low`; each unset field now adds its
+# map's worst value as its own term (risk_profile.data_classification_unknown,
+# risk_profile.business_criticality_unknown), labelled "unset", until somebody
+# records a value. Changes existing scores on exactly those repositories and
+# no others: no profile at all stays `available: false` and adds nothing, and
+# a recorded value scores as it did under 1.19.
+version: "1.20"
 
 # ---------------------------------------------------------------------------
 # Findings
@@ -299,6 +311,16 @@ modifiers:
     # undefined modifier and what the profile builder already told people the
     # score did. The reasoning names it as unknown, never as internet-facing.
     internet_facing_unknown_points: 10
+    # A recorded profile with data_classification or business_criticality unset
+    # (1.20, TheHub #61556). Each the worst value of its map below, for the same
+    # reason as internet_facing_unknown_points; tests pin them to that maximum,
+    # so raising a recorded weight without raising these fails the build. The
+    # reasoning says "unset", never a value nobody recorded. Unlike the
+    # internet-facing terms, the unset classification term is not trimmed when
+    # environmental scoring is live: an unset classification leaves the CVSS
+    # confidentiality requirement undefined, which is neutral, not High.
+    data_classification_unknown_points: 15
+    business_criticality_unknown_points: 15
     data_classification_points:
       public: 0
       internal: 3
