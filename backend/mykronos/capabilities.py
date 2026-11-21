@@ -233,6 +233,18 @@ class SastConfig(BaseCapabilityConfig):
             "scan does not already have and sends only its conclusions."
         ),
     )
+    dataflow_reachability_timeout_minutes: int = Field(
+        default=10,
+        ge=1,
+        le=360,
+        description=(
+            "Minutes the dataflow reachability step may run before the job "
+            "cancels it (TheHub #61555). The step is advisory and "
+            "continue-on-error, so a timeout loses the reachability verdicts "
+            "and nothing else; raise it for a repository whose CodeQL "
+            "database is large. 360 is the most an Actions job step allows."
+        ),
+    )
 
 
 class SecretsConfig(BaseCapabilityConfig):

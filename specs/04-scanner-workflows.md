@@ -127,6 +127,17 @@ Capability-specific extra fields (e.g., DAST's target URL, Cloud's account
 IDs) are documented in that capability's own config schema file under
 `workflow-templates/config-schemas/`.
 
+SAST's own fields (the model is `SastConfig`; any other key is refused with a
+422, so a field the template reads must be declared there):
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `languages` | string list | auto-detected | CodeQL language matrix |
+| `queries` | string | `security-extended` | CodeQL query suite |
+| `import_reachability` | bool | `true` | Python import analysis alongside the scan |
+| `dataflow_reachability` | bool | `true` | CodeQL dataflow reachability for Python and JS/TS (TheHub #60891) |
+| `dataflow_reachability_timeout_minutes` | int, 1 to 360 | `10` | Minutes the dataflow reachability step may run before the job cancels it. The step is advisory (`continue-on-error`), so a timeout loses the verdicts and nothing else (TheHub #61555) |
+
 ## 6. No-op / not-applicable behavior
 
 If a scanner finds nothing to scan (e.g., IaC scan on a repo with no IaC
