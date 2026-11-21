@@ -84,6 +84,23 @@ describe.each(ROUTES)("%s", (path, handler, good) => {
     expect(limited.status).toBe(429);
     expect(((await limited.json()) as { detail: string }).detail).toMatch(/hour/);
   });
+
+  it("passes the backend's Retry-After on with a 429", async () => {
+    POST.mockResolvedValueOnce({
+      error: { detail: "At most 20 per hour." },
+      response: { status: 429, headers: new Headers({ "retry-after": "1234" }) },
+    });
+    const limited = await handler(post(path, JSON.stringify(good)));
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("1234");
+
+    POST.mockResolvedValueOnce({
+      error: { detail: "Nope." },
+      response: { status: 422, headers: new Headers() },
+    });
+    const refused = await handler(post(path, JSON.stringify(good)));
+    expect(refused.headers.get("retry-after")).toBeNull();
+  });
 });
 
 describe("the shared guard", () => {

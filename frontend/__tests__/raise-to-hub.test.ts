@@ -12,7 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { RaiseToHub } from "@/components/raise-to-hub";
-import { hubLinkText, raisedLookup } from "@/lib/raise-to-hub";
+import { alreadyRaisedText, hubLinkText, raisedFromAnswer, raisedLookup } from "@/lib/raise-to-hub";
 
 describe("RaiseToHub", () => {
   it("offers to raise when nothing is linked", () => {
@@ -71,5 +71,47 @@ describe("raisedLookup", () => {
     });
     expect(map.get("a")?.hub_id).toBe(1);
     expect(raisedLookup({ ok: false, error: "HTTP 500" }).size).toBe(0);
+  });
+});
+
+describe("raisedFromAnswer", () => {
+  const NOW = new Date("2026-11-21T07:00:00Z");
+
+  it("treats a 201 as raised by you, just now", () => {
+    const { link, already } = raisedFromAnswer(
+      "f-1",
+      { hub_kind: "story", hub_id: 12, already_raised: false },
+      NOW,
+    );
+    expect(already).toBe(false);
+    expect(link).toMatchObject({ subject: "f-1", hub_id: 12, raised_by: "you", status: "open" });
+    expect(link.raised_at).toBe("2026-11-21T07:00:00.000Z");
+  });
+
+  it("treats already_raised as an earlier item, not raised by you just now", () => {
+    const { link, already } = raisedFromAnswer(
+      "f-1",
+      { hub_kind: "story", hub_id: 12, already_raised: true },
+      NOW,
+    );
+    expect(already).toBe(true);
+    expect(link.raised_by).not.toBe("you");
+    expect(link.raised_at).toBeNull();
+  });
+});
+
+describe("alreadyRaisedText", () => {
+  it("names the item and says nothing new was filed", () => {
+    const text = alreadyRaisedText({
+      subject: "f-1",
+      hub_kind: "story",
+      hub_id: 12,
+      status: "open",
+      raised_by: "earlier",
+      raised_at: null,
+    });
+    expect(text).toContain("TheHub story #12");
+    expect(text).toMatch(/already raised/);
+    expect(text).toMatch(/nothing new was filed/);
   });
 });
