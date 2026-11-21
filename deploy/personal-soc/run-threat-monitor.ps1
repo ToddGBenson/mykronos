@@ -44,9 +44,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$Repo = (Join-Path $env:USERPROFILE 'personal-soc'),
-    [string]$Claude = (Join-Path $env:USERPROFILE '.local\bin\claude.exe'),
-    [string]$BreachScript = (Join-Path $env:USERPROFILE '.claude\skills\personal-threat-monitor\scripts\Get-NewBreaches.ps1'),
+    [string]$Repo = (Join-Path $HOME 'personal-soc'),
+    [string]$Claude = (Join-Path $HOME '.local\bin\claude.exe'),
+    [string]$BreachScript = (Join-Path $HOME '.claude\skills\personal-threat-monitor\scripts\Get-NewBreaches.ps1'),
     [switch]$AllowBash
 )
 
@@ -66,7 +66,9 @@ function Invoke-BreachWatch {
         return [pscustomobject]@{ Code = 2; State = 'unknown'
             Text = "Breach watch UNKNOWN: Get-NewBreaches.ps1 not found at $Script. Install the current skills. This is not a pass." }
     }
-    $domains = Join-Path (Split-Path -Parent $Script) '..\references\account-domains.local.txt'
+    # Join-Path segments, not a backslash string: this also runs under pwsh on Linux in CI.
+    $skillRoot = Split-Path -Parent (Split-Path -Parent $Script)
+    $domains = Join-Path (Join-Path $skillRoot 'references') 'account-domains.local.txt'
     if (-not (Test-Path -LiteralPath $domains -PathType Leaf)) {
         return [pscustomobject]@{ Code = 2; State = 'not-configured'
             Text = 'Breach watch not configured: references/account-domains.local.txt is missing, so no breach signal this run. This is not a pass.' }
