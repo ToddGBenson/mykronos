@@ -107,12 +107,17 @@ function Read-EnvValue {
 # docker.exe's own argv, on this host. It is set on the child's environment
 # (or this process's, for the length probe) and forwarded by name with
 # `-e VAULT_TOKEN`, as vault-secret.ps1 does.
+# Since TheHub #60836 the token is the operator's admin token from the DPAPI
+# file VaultLocalSecret.ps1 reads, with init.json's root token as the fallback
+# until that move is made.
+. (Join-Path $PSScriptRoot "VaultLocalSecret.ps1")
 $initFile = Join-Path $PSScriptRoot "vault\init.json"
-if (-not (Test-Path $initFile)) {
-    throw "Missing $initFile - that is where the root token lives. Vault cannot be written without it."
+$admin = Get-VaultAdminToken -InitFile $initFile
+if (-not $admin) {
+    throw "No Vault token: neither $(Get-VaultLocalSecretPath) nor $initFile holds one. Vault cannot be written without it."
 }
-$token = (Get-Content $initFile -Raw | ConvertFrom-Json).root_token
-if (-not $token) { throw "No root_token in $initFile." }
+$token = $admin.Token
+$admin = $null
 
 function Write-VaultValue {
     param([string]$Path, [string]$Value)

@@ -53,12 +53,20 @@
 #>
 [CmdletBinding()]
 param(
-  [string] $EnvFile = (Join-Path $PSScriptRoot '.env'),
-  [string] $InitFile = (Join-Path $PSScriptRoot 'vault/init.json'),
+  [string] $EnvFile,
+  [string] $InitFile,
   [string] $Container = 'mykronos-vault'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolved here, not as param defaults: under [CmdletBinding()] Windows
+# PowerShell 5.1 can evaluate a default while $PSScriptRoot is still empty
+# (the defect #1204 fixes in vault-unseal.ps1, TheHub #62158).
+if (-not $EnvFile) { $EnvFile = Join-Path $PSScriptRoot '.env' }
+if (-not $InitFile) { $InitFile = Join-Path $PSScriptRoot 'vault/init.json' }
+
+. (Join-Path $PSScriptRoot 'VaultLocalSecret.ps1')
 
 $TokenKey = 'CONCOURSE_VAULT_TOKEN'
 $TokenTtl = '87600h'
@@ -207,6 +215,19 @@ this is its only unseal key. Move the file aside yourself once you are sure,
 then re-run.
 "@
   }
+  if (Test-Path -LiteralPath (Get-VaultLocalSecretPath)) {
+    # TheHub #60836: the DPAPI file is read before init.json, so one left from
+    # an earlier Vault would unseal and mint with the old material and fail
+    # blaming the keys.
+    throw @"
+Vault is uninitialised, but the DPAPI file $(Get-VaultLocalSecretPath)
+already exists.
+
+It belongs to a Vault whose data is gone, and it would be used in place of the
+new init.json. Refusing: if the old volume can be restored, it holds that
+Vault's only unseal key. Move it aside yourself once you are sure, then re-run.
+"@
+  }
 
   Write-Host "Initialising Vault (one key share, threshold one - see VAULT.md)..." -ForegroundColor Cyan
   $init = Invoke-Vault @('operator', 'init', '-key-shares=1', '-key-threshold=1', '-format=json')
@@ -219,12 +240,13 @@ then re-run.
   Set-Content -Path $InitFile -Value $init.Stdout -Encoding ascii
   Write-Host "Wrote $InitFile (gitignored)." -ForegroundColor Green
   Write-Host "  PUT A COPY IN A PASSWORD MANAGER. Lose it and every secret in Vault is gone." -ForegroundColor Yellow
-} elseif (-not (Test-Path $InitFile)) {
+} elseif (-not (Test-Path $InitFile) -and -not (Test-Path (Get-VaultLocalSecretPath))) {
   throw @"
-Vault is initialised, but there is no $InitFile to unseal it or to mint a token.
+Vault is initialised, but there is neither $InitFile nor the DPAPI file
+$(Get-VaultLocalSecretPath) to unseal it or to mint a token.
 
-Restore the file from your password manager and re-run. Without it this script
-cannot write the token; with only the root token, set $TokenKey in
+Restore the unseal material from your offline copy and re-run. Without it this
+script cannot write the token; with only an admin token, set $TokenKey in
 $EnvFile by hand to a token holding the 'concourse' policy.
 "@
 }
@@ -233,8 +255,12 @@ $EnvFile by hand to a token holding the 'concourse' policy.
 & (Join-Path $PSScriptRoot 'vault-unseal.ps1') -InitFile $InitFile -Container $Container
 if ($LASTEXITCODE -ne 0) { throw "vault-unseal.ps1 failed (exit $LASTEXITCODE)." }
 
-$root = (Get-Content $InitFile -Raw | ConvertFrom-Json).root_token
-if (-not $root) { throw "No root_token in $InitFile." }
+# TheHub #60836: the operator's admin token from the DPAPI file once init.json
+# is gone; the root token in init.json on a new host, before the move.
+$admin = Get-VaultAdminToken -InitFile $InitFile
+if (-not $admin) { throw "No Vault token in $(Get-VaultLocalSecretPath) or $InitFile." }
+$root = $admin.Token
+$admin = $null
 
 # --- 4. Mounts --------------------------------------------------------------
 $list = Invoke-Vault @('secrets', 'list', '-format=json') -Token $root

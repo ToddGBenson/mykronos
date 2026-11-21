@@ -103,14 +103,25 @@ assets:
         - deploy/concourse/Import-EnvSecretsToVault.ps1
 
   - id: vault-unseal-material
-    name: Vault unseal key and root token (deploy/concourse/vault/init.json)
+    name: Vault unseal key and admin token (DPAPI file; init.json until the move)
     description: >-
-      vault-init.ps1 writes the single unseal key and the root token to
-      deploy/concourse/vault/init.json in plaintext (git-ignored). The file was
-      present on 2026-10-17 (391 bytes, ACL SYSTEM/Administrators/tgb_;
-      contents not read). Anyone who can read it as tgb_ owns every secret in
-      Vault, and can unseal it after any restart, so "seals on every restart"
-      is not a control while it exists.
+      Since TheHub #60836 the resting place is a DPAPI CurrentUser file
+      (%LOCALAPPDATA%\mykronos-vault\vault-local.clixml), read through
+      deploy/concourse/VaultLocalSecret.ps1. Nothing in this repository writes
+      it or sets its ACL: the operator's move must create the file and its
+      directory owner-only with inheritance off and read that back, and the
+      reader does not check it. DPAPI is the control; the ACL is a second layer. It
+      holds the single unseal key and an admin-policy token that replaces the
+      root token, which the operator's move revokes. A file that exists but
+      cannot be used is refused, never treated as absent. Before the move,
+      vault-init.ps1's plaintext deploy/concourse/vault/init.json (git-ignored)
+      held the unseal key and the root token; the move deletes it after a
+      verified unseal from the DPAPI file, and readers fall back to it only
+      while no DPAPI file exists, with a warning each time. Observed
+      2026-10-17: init.json present (391 bytes, contents not read). DPAPI
+      stops another account, a disk or backup copy, and the checkout; it does
+      not stop code running as the operator, which can decrypt it, so
+      "seals on every restart" is still not a control against that user.
     exposure: local
     sensitivity: credentials
     cr: H
@@ -121,6 +132,7 @@ assets:
         - deploy/concourse/vault-init.ps1
         - deploy/concourse/vault-unseal.ps1
         - deploy/concourse/Install-VaultUnsealTask.ps1
+        - deploy/concourse/VaultLocalSecret.ps1
 
   - id: platform-secrets
     name: Platform secrets in env/.env (gate token, admin token, TheHub HUB_API_TOKEN, Concourse local user)
@@ -526,8 +538,11 @@ controls:
       Vault holds platform and personal secrets; Concourse reads concourse/*
       with a scoped read/list token. Weakly protected as observed 2026-10-17:
       unsealed, Shamir 1-of-1, file storage, TLS disabled, UI on, mlock
-      disabled, and init.json beside the compose file holds the unseal key and
-      root token in plaintext. Plaintext .env files and the GitHub App key sit
+      disabled, and init.json beside the compose file held the unseal key and
+      root token in plaintext. Since TheHub #60836 their resting place is a
+      DPAPI file only the operator's logon can decrypt, the root token is
+      replaced by an admin-policy token, and init.json is deleted once the
+      move is verified. Plaintext .env files and the GitHub App key sit
       outside Vault.
     evidence_ref: deploy/concourse/VAULT.md
     applies_to: vault-kv

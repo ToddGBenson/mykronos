@@ -116,9 +116,11 @@ function Write-Ok   { param([string]$Text) Write-Host "  OK   $Text" -Foreground
 function Write-Bad  { param([string]$Text) Write-Host "  FAIL $Text" -ForegroundColor Red }
 
 function Get-VaultToken {
-    $initFile = Join-Path $here "vault\init.json"
-    if (-not (Test-Path $initFile)) { return $null }
-    return (Get-Content $initFile -Raw | ConvertFrom-Json).root_token
+    # TheHub #60836: the admin token from the DPAPI file, else init.json's root token.
+    . (Join-Path $here "VaultLocalSecret.ps1")
+    $admin = Get-VaultAdminToken -InitFile (Join-Path $here "vault\init.json")
+    if (-not $admin) { return $null }
+    return $admin.Token
 }
 
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ $vaultToken = $null
 if ($reader.VaultPath) {
     $vaultToken = Get-VaultToken
     if (-not $vaultToken) {
-        $problems += "No vault/init.json - cannot write $($reader.VaultPath)."
+        $problems += "No Vault token (neither the DPAPI file nor vault/init.json) - cannot write $($reader.VaultPath)."
     } else {
         # Sealed Vault answers every read with an error that reads like a
         # credentials bug. Better to say so here than after the rotation.
