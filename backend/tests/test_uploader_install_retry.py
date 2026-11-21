@@ -87,7 +87,8 @@ OOM_TASKS = {
 #: judged; a step that ran and failed has its output, and stays a failure.
 LINUX_ABSENT_TASKS = {
     ("thehub.yml", job, "linux-worker-absent")
-    for job in ("post-merge", "pr-gates", "gate-smoke", "container-tiers")
+    # TheHub #62099: dast-staging's scan runs on linux-3 behind the same probe.
+    for job in ("post-merge", "pr-gates", "gate-smoke", "container-tiers", "dast-staging")
 }
 
 #: The review of #1177: this host's checks on what a remote task wrote. Each
