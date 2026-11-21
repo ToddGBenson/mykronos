@@ -53,12 +53,18 @@
 #>
 [CmdletBinding()]
 param(
-  [string] $EnvFile = (Join-Path $PSScriptRoot '.env'),
-  [string] $InitFile = (Join-Path $PSScriptRoot 'vault/init.json'),
+  [string] $EnvFile,
+  [string] $InitFile,
   [string] $Container = 'mykronos-vault'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolved here, not as param defaults: under [CmdletBinding()] Windows
+# PowerShell 5.1 can evaluate a default while $PSScriptRoot is still empty
+# (the defect #1204 fixes in vault-unseal.ps1, TheHub #62158).
+if (-not $EnvFile) { $EnvFile = Join-Path $PSScriptRoot '.env' }
+if (-not $InitFile) { $InitFile = Join-Path $PSScriptRoot 'vault/init.json' }
 
 . (Join-Path $PSScriptRoot 'VaultLocalSecret.ps1')
 
@@ -207,6 +213,19 @@ That file belongs to a Vault whose data is gone - most likely a deleted
 vault-data volume. Refusing to overwrite it: if the old volume can be restored,
 this is its only unseal key. Move the file aside yourself once you are sure,
 then re-run.
+"@
+  }
+  if (Test-Path -LiteralPath (Get-VaultLocalSecretPath)) {
+    # TheHub #60836: the DPAPI file is read before init.json, so one left from
+    # an earlier Vault would unseal and mint with the old material and fail
+    # blaming the keys.
+    throw @"
+Vault is uninitialised, but the DPAPI file $(Get-VaultLocalSecretPath)
+already exists.
+
+It belongs to a Vault whose data is gone, and it would be used in place of the
+new init.json. Refusing: if the old volume can be restored, it holds that
+Vault's only unseal key. Move it aside yourself once you are sure, then re-run.
 "@
   }
 

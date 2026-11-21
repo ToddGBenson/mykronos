@@ -395,8 +395,13 @@ def test_the_unseal_task_cannot_be_registered_as_system() -> None:
     """SYSTEM holds no key for a CurrentUser DPAPI file, so a SYSTEM task
     would fail every interval once init.json is gone."""
     text = INSTALLER.read_text(encoding="utf-8")
-    assert not re.search(r"\[switch\]\s*\$AsSystem", text, re.IGNORECASE)
-    assert "NT AUTHORITY\\SYSTEM" not in text and "-UserId 'SYSTEM'" not in text
+    assert not re.search(r"-UserId\s+[\"']?SYSTEM|ServiceAccount|-AtStartup", text)
+    # The switch is kept only to be refused, before anything is registered.
+    refusal = re.search(r"if \(\$AsSystem\) \{(.*?)\n\}", text, re.DOTALL)
+    assert refusal and "exit 1" in refusal.group(1)
+    assert refusal.start() < text.index("Register-ScheduledTask")
+    assert refusal.start() < text.index("Unregister-ScheduledTask")
+    assert len(re.findall(r"\$AsSystem\b", text)) == 2  # the param and the refusal
     assert "already sits in vault/init.json" not in text
 
 

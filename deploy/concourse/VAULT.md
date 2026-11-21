@@ -128,12 +128,16 @@ decrypt — `%LOCALAPPDATA%\mykronos-vault\vault-local.clixml`, DPAPI, read by
 for day-to-day writes, revokes the root token, and deletes `init.json`.
 `vault-unseal.ps1`, `vault-secret.ps1`, `vault-init.ps1`,
 `Import-EnvSecretsToVault.ps1` and `repair-ingestion-token.ps1` read that file
-first and `init.json` second, so they work on either side of the move.
+when it exists and `init.json` only when it does not, warning each time they
+fall back. A DPAPI file that exists but cannot be used (zero bytes, not XML,
+the wrong shape, or not decryptable by this logon) is refused with an error
+saying which; it is never read as absent, so a bad move cannot keep running on
+the plaintext root token.
 
 DPAPI makes the file useless to another account, to a copy of the disk and to
 a backup; it does not protect it from code running as the same user. A task
 that runs S4U or as SYSTEM cannot decrypt it, so the unseal task stays
-Interactive. A new root token, if one is ever needed, comes from
+Interactive and `Install-VaultUnsealTask.ps1` refuses `-AsSystem`. A new root token, if one is ever needed, comes from
 `vault operator generate-root` with the unseal key.
 
 **Keep an encrypted copy of the unseal key off this host.** There is no

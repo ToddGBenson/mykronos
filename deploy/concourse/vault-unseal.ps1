@@ -121,16 +121,18 @@ if ($status.ExitCode -eq 0) {
   }
 }
 
-# TheHub #60836: the keys come from this user's DPAPI-protected file first and
-# from init.json second, so this works before the move, during it and after
-# init.json is deleted. VaultLocalSecret.ps1 says what DPAPI does and does not
-# protect, and why an S4U or SYSTEM task cannot read the file.
+# TheHub #60836: the keys come from this user's DPAPI-protected file when it
+# exists, and from init.json only when it does not (a host before the move),
+# with a warning in the log every time. A DPAPI file that exists but cannot be
+# used stops here, init.json or not. VaultLocalSecret.ps1 says what DPAPI does
+# and does not protect, and why an S4U or SYSTEM task cannot read the file.
 . (Join-Path $PSScriptRoot 'VaultLocalSecret.ps1')
 try {
-  $material = Get-VaultUnsealKey -InitFile $InitFile
+  $material = Get-VaultUnsealKey -InitFile $InitFile -WarningAction SilentlyContinue
 } catch {
-  Stop-With "Vault is sealed and the unseal file is unreadable here: $($_.Exception.Message)"
+  Stop-With "Vault is sealed and the DPAPI file cannot be used: $($_.Exception.Message)"
 }
+if ($material -and $material.Warning) { Write-Step "WARNING: $($material.Warning)" 'Yellow' }
 
 if (-not $material) {
   Stop-With @"

@@ -25,10 +25,10 @@
     THIS IS NOT VAULT AUTO-UNSEAL. Vault's own auto-unseal means a transit
     seal or a cloud KMS holding the key - a second trust root this host does
     not have. This is automated invocation of the MANUAL unseal, using the key
-    that already sits in vault/init.json on this disk. It adds no exposure
-    that does not already exist: the file is the exposure, and it predates
-    this decision. What it removes is the requirement for a human to be
-    watching.
+    on this disk. Since TheHub #60836 that key is in a DPAPI file only the
+    operator's own logon can decrypt (VaultLocalSecret.ps1), not in the
+    plaintext vault/init.json; the task runs as that logon for that reason.
+    What it removes is the requirement for a human to be watching.
 
 .PARAMETER IntervalMinutes
     How often to re-check. 5 by default, which bounds a sealed window at about
@@ -38,16 +38,11 @@
     is allowed to be faster than the repair.
 
 .PARAMETER AsSystem
-    Register under SYSTEM instead of the calling account, and trigger at boot
-    rather than at logon. Needs an elevated session.
-
-    Not the default, and this is the one genuinely uncertain choice here.
-    Docker Desktop on this host is login-scoped - the engine is not running
-    before somebody logs in - so a SYSTEM task firing at boot has nothing to
-    talk to, and the current user is the account that demonstrably can reach
-    the engine. If SYSTEM can reach the pipe on your machine, this switch is
-    strictly better: it covers a reboot with no login. Verify rather than
-    assume, which is what the first run below is for.
+    Refused (TheHub #60836). It registered the task under SYSTEM at boot. The
+    unseal key now lives in a DPAPI file protected for the operator's own
+    logon, and SYSTEM holds no key for it, so a SYSTEM task would fail every
+    interval. Kept only so an old command line gets this answer rather than
+    "parameter not found". The task runs Interactive as the calling account.
 
 .NOTES
     ASCII only - see setup.ps1. Windows PowerShell 5.1 reads a BOM-less file
@@ -73,17 +68,12 @@ if (-not (Test-Path $unsealer)) {
     throw "vault-unseal.ps1 not found next to this script: $unsealer"
 }
 
-# Fail early and clearly. Register-ScheduledTask's own error for this is
-# "Access is denied", which sends people to file permissions rather than to
-# the elevation they actually need.
+# Refused before anything is registered or replaced.
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)
-if ($AsSystem -and -not $isAdmin) {
-    Write-Host "Registering a SYSTEM task needs an elevated session." -ForegroundColor Red
-    Write-Host "  Either: start PowerShell with 'Run as Administrator' and re-run this," -ForegroundColor Yellow
-    Write-Host "  or:     drop -AsSystem and it registers under $($identity.Name)." -ForegroundColor Yellow
+if ($AsSystem) {
+    Write-Host "-AsSystem is refused: SYSTEM cannot decrypt the DPAPI file that holds" -ForegroundColor Red
+    Write-Host "  the unseal key (TheHub #60836), so the task would fail every run." -ForegroundColor Yellow
+    Write-Host "  Drop -AsSystem and it registers under $($identity.Name)." -ForegroundColor Yellow
     exit 1
 }
 
@@ -105,11 +95,7 @@ $action = New-ScheduledTaskAction -Execute "powershell.exe" `
 # vault-unseal.ps1 is idempotent and exits 0 the moment it sees an unsealed
 # Vault or no container, so re-checking costs one `docker inspect` and one
 # `vault status` per run.
-$startup = if ($AsSystem) {
-    New-ScheduledTaskTrigger -AtStartup
-} else {
-    New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
-}
+$startup = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
 # Docker takes a while to be ready. An unseal attempt against an engine that
 # is still starting exits 0 with "nothing to unseal" and would otherwise be
 # the only attempt until the repetition caught up.
@@ -132,13 +118,10 @@ $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-if ($AsSystem) {
-    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    $who = "SYSTEM (elevated)"
-} else {
-    $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
-    $who = $identity.Name
-}
+# Interactive, as the calling account: the only logon that can decrypt the
+# DPAPI file (VaultLocalSecret.ps1). S4U and SYSTEM cannot.
+$principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+$who = $identity.Name
 
 Register-ScheduledTask -TaskName $TaskName -Action $action `
     -Trigger @($startup, $repeating) -Settings $settings -Principal $principal `
