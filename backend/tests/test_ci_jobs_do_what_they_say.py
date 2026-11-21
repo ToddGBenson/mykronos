@@ -255,7 +255,7 @@ class TestInsiderFailsWhenGitHubDidNotAnswer:
 @pytest.mark.parametrize(
     ("job", "task"),
     [
-        ("unit", "pytest"),
+        ("unit", "upload-unit"),
         ("coverage", "upload-coverage"),
         ("lint-and-types", "ruff-and-mypy"),
         ("qa-spec-links", "check-links"),
