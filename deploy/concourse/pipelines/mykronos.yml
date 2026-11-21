@@ -405,7 +405,8 @@ anchors:
   # The `try:` is what lets a timed-out remote task reach `remote_result`: a
   # wrapper timeout on its own fails the build, which red_main reads as red.
   linux_probe: &linux_probe
-    try:
+    # `linux_first` is the probe alone, for the gating lanes below.
+    try: &linux_first
       do:
         - task: linux-worker-probe
           tags: [linux]
@@ -443,12 +444,19 @@ anchors:
 
             step = os.environ.get("LINUX_STEP", "the remote step")
             HEX40 = re.compile(r"[0-9a-f]{40}")
+            # [TheHub #61951] A gating lane, which ran on this host when no
+            # linux worker finished it: a re-run needs no linux worker.
+            fallback = bool(os.environ.get("HOST_FALLBACK"))
 
 
             def refuse(why):
                 print(f"::error::NOT A VERDICT, NOT UPLOADED: {step}: {why}.")
-                print("          The next step errors the build. Re-run once fly workers")
-                print("          lists linux-1 or linux-2 as running.")
+                if fallback:
+                    print("          The next step errors the build. Re-run it: it runs on this")
+                    print("          host when no linux worker finishes it.")
+                else:
+                    print("          The next step errors the build. Re-run once fly workers")
+                    print("          lists linux-1 or linux-2 as running.")
                 sys.exit(0)
 
 
@@ -486,13 +494,19 @@ anchors:
             if not host:
                 refuse("this host's checkout has no 40-hex HEAD")
             rc = read("ran/rc", 8)
+            if rc is None and fallback:
+                refuse("neither a linux worker nor this host's own run got past its setup "
+                       "(apt, pip or npm: see the step before this one). A lock file this "
+                       "commit broke fails there every time: then fix the commit, not the run")
             if rc is None:
                 refuse("no linux worker finished it within its wrapping timeout (the "
                        "remote host was off, asleep or unreachable, or the step was interrupted)")
             if not re.fullmatch(r"\d{1,3}", rc):
                 refuse(f"ran/rc is {rc[:8]!r}, not an exit code")
             if int(rc) != 0:
-                print(f"{step} ran on a linux worker and exited {rc}: its own verdict stands.")
+                # A fallback lane's run may be this host's (review of #1213).
+                where = "" if fallback else " on a linux worker"
+                print(f"{step} ran{where} and exited {rc}: its own verdict stands.")
                 sys.exit(int(rc))
 
             short = bool(os.environ.get("SHORT_COMMIT"))
@@ -560,6 +574,64 @@ anchors:
   remote_checked: &remote_checked
     load_var: remote-result-missing-or-refused-not-a-verdict-re-run
     file: checked/ok
+
+  # -- The gating lanes: a linux worker first, then this host (TheHub #61951)
+  #
+  # `unit` and `frontend` gate everything behind them, so the rule above (no
+  # linux worker: ERRORED, the cost accepted for the scans) would stop the
+  # risk gate whenever the laptops are off. Their tag is a preference, not a
+  # pin. Concourse has no fallback from a tagged step, so the plan makes one:
+  #
+  #   try: do: [linux_first, remote task(s)], timeout   the remote run. The
+  #       probe's 5m wrapper fails when no linux worker takes it, and a `do:`
+  #       stops at a failed step. A worker that drops after the probe makes
+  #       the remote task wait out the cap before this host starts.
+  #   try: do: [linux_finished + on_error], on_failure   the same task(s),
+  #       untagged, on this host, once, when linux-finished does not pass.
+  #   remote_result with HOST_FALLBACK, remote_checked, the upload   as above.
+  #
+  # This host runs the lane in each of the four ways a remote run can end
+  # without a verdict:
+  #   no worker was up   the probe times out, the `do:` stops, no ran/rc.
+  #   the run hit its cap   Concourse sends SIGTERM and keeps the outputs;
+  #       the scripts' TERM trap clears the EXIT trap first, so no ran/rc
+  #       (review of #1213: the EXIT trap alone wrote 0, and the build
+  #       errored instead of running here).
+  #   setup failed there   ran/rc is written only once apt, pip and npm are
+  #       done, so a laptop's network fault (#62067) costs a run here. A
+  #       setup that fails here too ERRORS the build rather than failing it.
+  #   the worker was lost   its outputs, `ran` with them, are on a worker
+  #       nobody can reach, so linux-finished ERRORS reading them, and
+  #       on_failure never runs on an error (atc/exec/on_failure.go): its
+  #       on_error runs the copy instead. It sits inside the `do:` because
+  #       on_error wraps on_failure on one step (atc/steps.go), which would
+  #       run a copy that errored a second time. on_error runs its hook
+  #       outside the build's context, so an abort does not stop that copy
+  #       before its own timeout. From the 8.3.3 source, not yet seen on a
+  #       real build.
+  #
+  # The cap is #1178's max(2 x p95, p95 + 10m), measured on this host: a
+  # laptop run up to 2x passes, so AC2's 1.5x duration check is what says a
+  # lane should go back. The upload never leaves this host. Measured per
+  # AC: the build's `selected-worker` event names the worker.
+  linux_finished: &linux_finished
+    task: linux-finished
+    timeout: 5m
+    image: python
+    config:
+      platform: linux
+      inputs: [{ name: ran, optional: true }]
+      run:
+        path: sh
+        args:
+          - -c
+          - |
+            if [ -s ran/rc ]; then
+              echo "${LINUX_STEP} finished on a linux worker; remote-result checks it next."
+              exit 0
+            fi
+            echo "No linux worker finished ${LINUX_STEP}: it runs on this host next (TheHub #61951)."
+            exit 1
 
 
   # -- PS-2: fail before scanning, not after (spec 04 SS2, spec 05 SS4) ----
@@ -879,7 +951,11 @@ jobs:
     # with the remote host off those jobs ERROR within 5m. `sast` and
     # `dependencies` gate `oracle-gate` through `passed:`, so with the remote
     # host off nothing is judged until it is back: the cost the operator
-    # accepted.
+    # accepted. `unit` itself and `frontend` are the exception (TheHub
+    # #61951): they run on this host when no linux worker finishes them
+    # (`linux_finished` in `anchors:`), so they keep their serial groups
+    # here. On a laptop, `unit` can share a worker with a `linux-suites`
+    # suite; -n 2 and the memory-kill check in its task cover that.
     #
     # `linux-3` carries `linux,small` and so also takes `[linux]` steps;
     # Concourse has no "not small" tag. Recommended (not required here, as
@@ -894,49 +970,174 @@ jobs:
       - get: python
         attempts: *retry_fetch
       - *preflight
-      - task: pytest
-        # [TheHub #61210] CPU shares, as every thehub.yml task carries them
-        # (#61009, D-174): 512 is cpu.weight 59 inside the worker, so the
-        # suite yields to sibling tasks there. Never `memory:` - runc refuses
-        # the task container on these workers - so memory is bounded by -n
-        # and the serial group instead.
-        container_limits: {cpu: 512}
-        timeout: 120m
-        image: python
-        # Worker-local pip cache. These tasks reinstall the same dependency
-        # set on every commit; without it each run re-downloads the lot, which
-        # is where `unit` spent most of its 19 minutes.
+      # [TheHub #61951] The suite on a linux worker, or on this host when
+      # none finishes it; the upload here. See "The gating lanes" in
+      # `anchors:`. Compute only: no credential, no host address.
+      - try:
+          do:
+            - *linux_first
+            - &unit_suite
+              task: pytest
+              tags: [linux]
+              # [TheHub #61210] CPU shares, as every thehub.yml task carries them
+              # (#61009, D-174): 512 is cpu.weight 59 inside the worker, so the
+              # suite yields to sibling tasks there. Never `memory:` - runc refuses
+              # the task container on these workers - so memory is bounded by -n
+              # and the serial group instead.
+              container_limits: {cpu: 512}
+              image: python
+              # Worker-local pip cache. These tasks reinstall the same dependency
+              # set on every commit; without it each run re-downloads the lot, which
+              # is where `unit` spent most of its 19 minutes.
+              params:
+                PIP_CACHE_DIR: /pipcache
+                # The spec 05 section 9 and spec 10 section 6 performance budgets are
+                # claims about a developer's machine -- "against a locally running
+                # instance", in the spec's own words. This worker is a container
+                # inside Docker Desktop on a host also running the Mykronos stack, a
+                # registry, MinIO, TheHub's twelve services and up to four pipeline
+                # jobs at once. The same commit measured 61.3s on one run and passed
+                # on the next two, which is contention rather than code.
+                #
+                # 3x, and the number is from the measurement rather than a round
+                # one: the worst observed run was 61.3s, so a 2x budget of 60s would
+                # have failed the very run that motivated this. 90s clears it with
+                # margin for a worse day.
+                #
+                # It still does not absorb a real regression. D-003 replaced a
+                # row-by-row insert that took 21 seconds for this batch with a
+                # vectorised scan that takes 0.7 -- a 30x difference on that step
+                # alone. Anything of that order blows through 90s as easily as
+                # through 30. What 3x buys is tolerance of a contended worker, not
+                # tolerance of slow code. The job echoes the factor below, so a
+                # relaxed budget is never a silent one.
+                MYKRONOS_PERF_MULTIPLIER: "3" 
+              config:
+                platform: linux
+                inputs: [{ name: source }]
+                # [TheHub #61117] Holds `verdict` only when the run reached one;
+                # the load_var step after this task reads it. [TheHub #61951]
+                # `results` carries the report, rc and commit to upload-unit,
+                # and `ran` the exit code to remote-result.
+                outputs: [{ name: judged }, { name: results }, { name: ran }]
+                caches: [{ path: /pipcache }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      RAN_DIR="$PWD/ran"
+                      # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                      # route is dead, so this must land before apt opens a socket. See the
+                      # note at the top of `anchors:`.
+                      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                      apt-get update -qq && apt-get install -y -qq git >/dev/null
+                      cd source/backend
+                      # The locked set, hash-checked, then the project itself without a
+                      # second resolve: what this lane tests is what the image ships
+                      # (backend/requirements-dev.txt, scripts/lock_backend.py).
+                      pip install --quiet --require-hashes -r requirements-dev.txt
+                      pip install --quiet --no-deps -e .
+                      git -C .. rev-parse HEAD > ../../results/commit
+                      # [TheHub #61951] rc on exit for remote-result, from here on:
+                      # a failed setup judged nothing, and leaves no ran/rc. A
+                      # signal is not an exit (review of #1213): the wrapper
+                      # timeout's SIGTERM ran the EXIT trap with `$?` 0 and the
+                      # cut-off run read as finished, so a signal clears it first.
+                      trap 'trap - EXIT; exit 143' TERM INT HUP
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+
+                      # Said out loud, every run. A performance budget that was
+                      # quietly relaxed is a budget nobody knows the value of.
+                      echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER:-1}"                      "for this worker (spec 05 section 9 is 30s at x1)."
+
+                      # JUnit XML so the result reaches Mykronos as a ScanRun with
+                      # no findings (D-046). `|| true` on pytest, then the exit code
+                      # is recovered from the report: a failing suite must still
+                      # report, because "the tests failed" and "nothing told us
+                      # anything" are different facts and the second is worse.
+                      mkdir -p ../../results
+                      rc=0
+                      # -n 4: the suite is dominated by per-test fixture setup - a
+                      # fresh DuckDB catalog per test - and that work is already
+                      # isolated, so it parallelises without touching a test. 32
+                      # minutes to 6 on this host at -n 6.
+                      # [TheHub #61117] 4, not 6: unit #485 and #486 lost xdist
+                      # workers to memory (`[gwN] node down: Not properly
+                      # terminated`) with lint-and-types not running, so the serial
+                      # group alone does not fit six workers in a 3 GiB worker that
+                      # other pipelines' jobs share. Fewer workers is slower, not
+                      # weaker: every test still runs.
+                      # [TheHub #61607] 2, not 4: unit #496 was SIGKILLed because
+                      # its worker, not the task, ran out; at -n 2 the suite holds
+                      # fewer xdist workers beside the light jobs on worker-1.
+                      # No --cov here, deliberately (D-117): this worker measured the
+                      # same suite at 218s clean against 541s with coverage - 2.5x, on
+                      # a lane that carries `trigger: true` with seven jobs gating on
+                      # `passed: [unit, ...]`. Coverage is collected by the weekly
+                      # `coverage` job below instead (D-121), where nothing waits on it.
+                      # (It was on the Actions unit lane until D-118 retired that lane.)
+                      python ../scripts/memory_kill.py run -- python -m pytest -q -n 2 --junitxml=../../results/unit.xml || rc=$?
+
+                      # [TheHub #61117] Killed for memory is not a verdict. pytest
+                      # SIGKILLed (137), or exit 1 where every failure is a crashed
+                      # xdist worker, measured nothing about this commit: say so,
+                      # upload nothing, and leave judged/verdict unwritten so the
+                      # next step errors the build. A real failure anywhere in the
+                      # report (unit #486) is a verdict and goes on as before. A
+                      # classifier that cannot run says so and changes nothing: it
+                      # must never turn a green suite red (review F2 on #1084).
+                      OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
+                        || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
+                      if [ -n "$OOM" ]; then
+                        echo "::error::${OOM}"
+                        echo "Not uploaded: a run killed for memory judged nothing on this commit."
+                        exit 0
+                      fi
+                      printf '%s\n' "$rc" > ../../judged/verdict
+                      # The suite's exit code, for upload-unit on this host.
+                      printf '%s\n' "$rc" > ../../results/rc
+          # [TheHub #61951] max(2 x p95, p95 + 10m), #1178's rule for a
+          # remote wrapper: p95 64.7m over the 37 succeeded of the job's last
+          # 60 builds (Concourse, 2026-11-21), so 2 x 64.7, rounded up. Then
+          # this host runs it.
+          timeout: 130m
+      # The same copy on linux-finished's failure (no ran/rc) and on its
+      # error (a lost worker's `ran` cannot be read): see `linux_finished`.
+      - try:
+          do:
+            - <<: *linux_finished
+              params: { LINUX_STEP: unit/pytest }
+              on_error: &unit_on_this_host
+                <<: *unit_suite
+                task: pytest-on-this-host
+                tags: []
+                timeout: 120m
+          on_failure: *unit_on_this_host
+      - <<: *remote_result
+        input_mapping: { result: results }
         params:
-          <<: *mykronos_env
-          PIP_CACHE_DIR: /pipcache
-          # The spec 05 section 9 and spec 10 section 6 performance budgets are
-          # claims about a developer's machine -- "against a locally running
-          # instance", in the spec's own words. This worker is a container
-          # inside Docker Desktop on a host also running the Mykronos stack, a
-          # registry, MinIO, TheHub's twelve services and up to four pipeline
-          # jobs at once. The same commit measured 61.3s on one run and passed
-          # on the next two, which is contention rather than code.
-          #
-          # 3x, and the number is from the measurement rather than a round
-          # one: the worst observed run was 61.3s, so a 2x budget of 60s would
-          # have failed the very run that motivated this. 90s clears it with
-          # margin for a worse day.
-          #
-          # It still does not absorb a real regression. D-003 replaced a
-          # row-by-row insert that took 21 seconds for this batch with a
-          # vectorised scan that takes 0.7 -- a 30x difference on that step
-          # alone. Anything of that order blows through 90s as easily as
-          # through 30. What 3x buys is tolerance of a contended worker, not
-          # tolerance of slow code. The job echoes the factor below, so a
-          # relaxed budget is never a silent one.
-          MYKRONOS_PERF_MULTIPLIER: "3" 
+          LINUX_STEP: unit/pytest
+          COMMIT_FILE: commit
+          HOST_FALLBACK: "1"
+      - *remote_checked
+      # [TheHub #61117] ERRORED, not FAILED, when the task above was killed
+      # for memory and judged nothing. The task then writes no
+      # judged/verdict, so this step cannot read it and Concourse errors the
+      # build here: the step's name is what the build page shows. Start-Here's
+      # deploy check and the overnight loop re-trigger an errored build once
+      # and stop on a failed one, so a memory kill no longer stops them.
+      - load_var: killed-for-memory-not-a-test-failure-re-run
+        file: judged/verdict
+      # [TheHub #61951] The upload, on this host, with the ingestion token:
+      # the report the suite made, wherever it ran.
+      - task: upload-unit
+        timeout: 15m
+        image: python
+        params: *mykronos_env
         config:
           platform: linux
-          inputs: [{ name: source }]
-          # [TheHub #61117] Holds `verdict` only when the run reached one;
-          # the load_var step after this task reads it.
-          outputs: [{ name: judged }]
-          caches: [{ path: /pipcache }]
+          inputs: [{ name: source }, { name: results }]
           run:
             path: bash
             args:
@@ -947,64 +1148,10 @@ jobs:
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
                 apt-get update -qq && apt-get install -y -qq git >/dev/null
-                cd source/backend
-                # The locked set, hash-checked, then the project itself without a
-                # second resolve: what this lane tests is what the image ships
-                # (backend/requirements-dev.txt, scripts/lock_backend.py).
-                pip install --quiet --require-hashes -r requirements-dev.txt
-                pip install --quiet --no-deps -e .
-
-                # Said out loud, every run. A performance budget that was
-                # quietly relaxed is a budget nobody knows the value of.
-                echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER:-1}"                      "for this worker (spec 05 section 9 is 30s at x1)."
-
-                # JUnit XML so the result reaches Mykronos as a ScanRun with
-                # no findings (D-046). `|| true` on pytest, then the exit code
-                # is recovered from the report: a failing suite must still
-                # report, because "the tests failed" and "nothing told us
-                # anything" are different facts and the second is worse.
-                mkdir -p ../../results
-                rc=0
-                # -n 4: the suite is dominated by per-test fixture setup - a
-                # fresh DuckDB catalog per test - and that work is already
-                # isolated, so it parallelises without touching a test. 32
-                # minutes to 6 on this host at -n 6.
-                # [TheHub #61117] 4, not 6: unit #485 and #486 lost xdist
-                # workers to memory (`[gwN] node down: Not properly
-                # terminated`) with lint-and-types not running, so the serial
-                # group alone does not fit six workers in a 3 GiB worker that
-                # other pipelines' jobs share. Fewer workers is slower, not
-                # weaker: every test still runs.
-                # [TheHub #61607] 2, not 4: unit #496 was SIGKILLed because
-                # its worker, not the task, ran out; at -n 2 the suite holds
-                # fewer xdist workers beside the light jobs on worker-1.
-                # No --cov here, deliberately (D-117): this worker measured the
-                # same suite at 218s clean against 541s with coverage - 2.5x, on
-                # a lane that carries `trigger: true` with seven jobs gating on
-                # `passed: [unit, ...]`. Coverage is collected by the weekly
-                # `coverage` job below instead (D-121), where nothing waits on it.
-                # (It was on the Actions unit lane until D-118 retired that lane.)
-                python ../scripts/memory_kill.py run -- python -m pytest -q -n 2 --junitxml=../../results/unit.xml || rc=$?
-
-                # [TheHub #61117] Killed for memory is not a verdict. pytest
-                # SIGKILLed (137), or exit 1 where every failure is a crashed
-                # xdist worker, measured nothing about this commit: say so,
-                # upload nothing, and leave judged/verdict unwritten so the
-                # next step errors the build. A real failure anywhere in the
-                # report (unit #486) is a verdict and goes on as before. A
-                # classifier that cannot run says so and changes nothing: it
-                # must never turn a green suite red (review F2 on #1084).
-                OOM="$(python ../scripts/memory_kill.py pytest --rc "$rc" --junit ../../results/unit.xml)" \
-                  || { echo "::warning::scripts/memory_kill.py could not run (see above); treating this run as judged."; OOM=""; }
-                if [ -n "$OOM" ]; then
-                  echo "::error::${OOM}"
-                  echo "Not uploaded: a run killed for memory judged nothing on this commit."
-                  exit 0
-                fi
-                printf '%s\n' "$rc" > ../../judged/verdict
-
+                rc="$(cat results/rc)"
                 bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                cd source/backend
                 # `git -C ..`: this shell is in source/backend, so the repo
                 # root is one level up, not two. `../..` reached the task
                 # working directory, which is not a repository - rev-parse
@@ -1013,7 +1160,15 @@ jobs:
                 # stages cross-check reported unit as never_reported, which
                 # is how this was found.
                 upload_rc=0
-                MYKRONOS_JOB=unit python -m mykronos.upload                   --capability unit --tool junit                   --results-path ../../results                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN"                   --repo ToddGBenson/mykronos                   --commit-sha "$(git -C .. rev-parse HEAD)"                   --branch "$SCANNED_BRANCH"                   --workspace "$PWD"                   --severity-threshold low --blocking false || upload_rc=$?
+                MYKRONOS_JOB=unit python -m mykronos.upload \
+                  --capability unit --tool junit \
+                  --results-path ../../results \
+                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                  --repo ToddGBenson/mykronos \
+                  --commit-sha "$(git -C .. rev-parse HEAD)" \
+                  --branch "$SCANNED_BRANCH" \
+                  --workspace "$PWD" \
+                  --severity-threshold low --blocking false || upload_rc=$?
 
                 # The upload's verdict is checked, not swallowed. This line ended in
                 # `|| true` until 2026-10-20, which is how the 422 described above
@@ -1025,14 +1180,6 @@ jobs:
                   echo "::error::The unit result did not reach Mykronos: the upload exited $upload_rc (see its log above)."
                   exit "$upload_rc"
                 fi
-      # [TheHub #61117] ERRORED, not FAILED, when the task above was killed
-      # for memory and judged nothing. The task then writes no
-      # judged/verdict, so this step cannot read it and Concourse errors the
-      # build here: the step's name is what the build page shows. Start-Here's
-      # deploy check and the overnight loop re-trigger an errored build once
-      # and stop on a failed one, so a memory kill no longer stops them.
-      - load_var: killed-for-memory-not-a-test-failure-re-run
-        file: judged/verdict
 
   # Coverage, deliberately not on the lane that gates seven jobs (D-121).
   #
@@ -1667,95 +1814,143 @@ jobs:
       # contract is regenerated here rather than trusted from the committed
       # copy. A backend change that breaks the frontend should fail this job,
       # not surface as a runtime error in a browser.
-      - task: dump-openapi
-        timeout: 25m
-        image: python
-        config:
-          platform: linux
-          inputs: [{ name: source }]
-          outputs: [{ name: contract }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                cd source/backend
-                pip install --quiet --require-hashes -r requirements.txt
-                pip install --quiet --no-deps -e .
-                cd ..
-                python scripts/dump_openapi.py "${TARGET}/openapi.json"
-                echo "Schema is $(wc -c < "${TARGET}/openapi.json") bytes"
+      #
+      # [TheHub #61951] Both tasks on a linux worker, or on this host when
+      # none finishes them; the report here. See "The gating lanes" in
+      # `anchors:`.
+      - try:
+          do:
+            - *linux_first
+            - &frontend_contract
+              task: dump-openapi
+              tags: [linux]
+              image: python
+              config:
+                platform: linux
+                inputs: [{ name: source }]
+                # [TheHub #61951] `ran` holds rc only when the dump failed, a
+                # verdict; after a good dump lint-types-build fills it.
+                outputs: [{ name: contract }, { name: ran }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      set -euo pipefail
+                      RAN_DIR="$PWD/ran"
+                      cd source/backend
+                      pip install --quiet --require-hashes -r requirements.txt
+                      pip install --quiet --no-deps -e .
+                      # A signal writes no ran/rc (review of #1213; see unit).
+                      trap 'trap - EXIT; exit 143' TERM INT HUP
+                      trap 'rc=$?; [ "$rc" -eq 0 ] || printf "%s\n" "$rc" > "$RAN_DIR/rc"' EXIT
+                      cd ..
+                      python scripts/dump_openapi.py "${TARGET}/openapi.json"
+                      echo "Schema is $(wc -c < "${TARGET}/openapi.json") bytes"
+              params:
+                TARGET: ../contract
+
+            - &frontend_build
+              task: lint-types-build
+              tags: [linux]
+              image: node
+              config:
+                platform: linux
+                inputs: [{ name: source }, { name: contract }]
+                # PS-1. Four exit codes leave this task as files, because the thing
+                # that can report them to Mykronos cannot run here: node:slim has no
+                # python and the uploader is a python package. Splitting the verdict
+                # from the reporting is what lets `ensure` below report a build that
+                # broke - which, until now, reported nothing at all.
+                outputs: [{ name: verdict }, { name: ran }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      set -uo pipefail
+                      RAN_DIR="$PWD/ran"
+                      cp contract/openapi.json source/frontend/openapi.json
+                      cd source/frontend
+                      npm ci
+                      # [TheHub #61951] rc on exit for remote-result, once npm ci is
+                      # done; a signal writes none (review of #1213; see unit).
+                      trap 'trap - EXIT; exit 143' TERM INT HUP
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+
+                      # errexit is on from `bash -ec` and `set -uo pipefail` does not
+                      # clear it, so every measured command below runs with it off
+                      # deliberately - otherwise the first failure kills the shell
+                      # before any exit code reaches `verdict/`.
+                      set +e
+
+                      # Compared as files rather than through `git diff`. node:slim
+                      # has no git, and the question being asked is whether the
+                      # committed types match what the schema generates - which is a
+                      # question about two files, not about the index.
+                      rc_contract=0
+                      npx openapi-typescript openapi.json -o /tmp/api-types.d.ts
+                      if ! diff -q lib/api-types.d.ts /tmp/api-types.d.ts >/dev/null; then
+                        echo "::error::The committed API types are out of date."
+                        echo "The backend's OpenAPI schema has changed. Regenerate with:"
+                        echo "  python scripts/dump_openapi.py frontend/openapi.json"
+                        echo "  cd frontend && npx openapi-typescript openapi.json -o lib/api-types.d.ts"
+                        diff lib/api-types.d.ts /tmp/api-types.d.ts > /tmp/contract.txt
+                        head -40 /tmp/contract.txt
+                        rc_contract=1
+                      fi
+
+                      # The contract check no longer short-circuits the other two. A
+                      # stale generated type says nothing about whether the lint
+                      # passes, and reporting one result where three were available
+                      # was a side effect of `exit 1` rather than a decision.
+                      npm run lint 2>&1 | tee /tmp/lint.txt
+                      rc_lint=${PIPESTATUS[0]}
+
+                      # The perimeter gate's runtime tests (vitest). proxy.ts is the only
+                      # lock on the public dashboard, and neither a lint nor a build says
+                      # whether it still refuses a wrong token.
+                      npm test 2>&1 | tee /tmp/test.txt
+                      rc_test=${PIPESTATUS[0]}
+
+                      npm run build 2>&1 | tee /tmp/build.txt
+                      rc_build=${PIPESTATUS[0]}
+
+                      for pair in "contract:$rc_contract" "lint:$rc_lint" "test:$rc_test" "build:$rc_build"; do
+                        echo "${pair#*:}" > "../../verdict/${pair%%:*}.rc"
+                      done
+                      cp /tmp/contract.txt /tmp/lint.txt /tmp/test.txt /tmp/build.txt ../../verdict/ 2>/dev/null || true
+                      # The commit built, for remote-result. No git here: the git
+                      # resource writes it to .git/ref.
+                      cp ../.git/ref ../../verdict/commit
+
+                      [ "$rc_contract" -eq 0 ] && [ "$rc_lint" -eq 0 ] && [ "$rc_test" -eq 0 ] && [ "$rc_build" -eq 0 ]
+          # [TheHub #61951] max(2 x p95, p95 + 10m), #1178's rule: p95 12.3m
+          # over the 52 succeeded of the job's last 60 builds (2026-11-21), so
+          # 2 x 12.3, rounded up. Then this host runs both.
+          timeout: 25m
+      # The same copies on linux-finished's failure and on its error.
+      - try:
+          do:
+            - <<: *linux_finished
+              params: { LINUX_STEP: frontend/lint-types-build }
+              on_error: &frontend_on_this_host
+                do:
+                  - <<: *frontend_contract
+                    task: dump-openapi-on-this-host
+                    tags: []
+                    timeout: 25m
+                  - <<: *frontend_build
+                    task: lint-types-build-on-this-host
+                    tags: []
+                    timeout: 90m
+          on_failure: *frontend_on_this_host
+      - <<: *remote_result
+        input_mapping: { result: verdict }
         params:
-          TARGET: ../contract
-
-      - task: lint-types-build
-        timeout: 90m
-        image: node
-        config:
-          platform: linux
-          inputs: [{ name: source }, { name: contract }]
-          # PS-1. Four exit codes leave this task as files, because the thing
-          # that can report them to Mykronos cannot run here: node:slim has no
-          # python and the uploader is a python package. Splitting the verdict
-          # from the reporting is what lets `ensure` below report a build that
-          # broke - which, until now, reported nothing at all.
-          outputs: [{ name: verdict }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -uo pipefail
-                cp contract/openapi.json source/frontend/openapi.json
-                cd source/frontend
-                npm ci
-
-                # errexit is on from `bash -ec` and `set -uo pipefail` does not
-                # clear it, so every measured command below runs with it off
-                # deliberately - otherwise the first failure kills the shell
-                # before any exit code reaches `verdict/`.
-                set +e
-
-                # Compared as files rather than through `git diff`. node:slim
-                # has no git, and the question being asked is whether the
-                # committed types match what the schema generates - which is a
-                # question about two files, not about the index.
-                rc_contract=0
-                npx openapi-typescript openapi.json -o /tmp/api-types.d.ts
-                if ! diff -q lib/api-types.d.ts /tmp/api-types.d.ts >/dev/null; then
-                  echo "::error::The committed API types are out of date."
-                  echo "The backend's OpenAPI schema has changed. Regenerate with:"
-                  echo "  python scripts/dump_openapi.py frontend/openapi.json"
-                  echo "  cd frontend && npx openapi-typescript openapi.json -o lib/api-types.d.ts"
-                  diff lib/api-types.d.ts /tmp/api-types.d.ts > /tmp/contract.txt
-                  head -40 /tmp/contract.txt
-                  rc_contract=1
-                fi
-
-                # The contract check no longer short-circuits the other two. A
-                # stale generated type says nothing about whether the lint
-                # passes, and reporting one result where three were available
-                # was a side effect of `exit 1` rather than a decision.
-                npm run lint 2>&1 | tee /tmp/lint.txt
-                rc_lint=${PIPESTATUS[0]}
-
-                # The perimeter gate's runtime tests (vitest). proxy.ts is the only
-                # lock on the public dashboard, and neither a lint nor a build says
-                # whether it still refuses a wrong token.
-                npm test 2>&1 | tee /tmp/test.txt
-                rc_test=${PIPESTATUS[0]}
-
-                npm run build 2>&1 | tee /tmp/build.txt
-                rc_build=${PIPESTATUS[0]}
-
-                for pair in "contract:$rc_contract" "lint:$rc_lint" "test:$rc_test" "build:$rc_build"; do
-                  echo "${pair#*:}" > "../../verdict/${pair%%:*}.rc"
-                done
-                cp /tmp/contract.txt /tmp/lint.txt /tmp/test.txt /tmp/build.txt ../../verdict/ 2>/dev/null || true
-
-                [ "$rc_contract" -eq 0 ] && [ "$rc_lint" -eq 0 ] && [ "$rc_test" -eq 0 ] && [ "$rc_build" -eq 0 ]
-
+          LINUX_STEP: frontend/lint-types-build
+          COMMIT_FILE: commit
+          HOST_FALLBACK: "1"
         # PS-3: reported whether the four commands above passed, failed, or
         # never got as far as writing a verdict.
         ensure:
@@ -1765,7 +1960,11 @@ jobs:
           params: *mykronos_env
           config:
             platform: linux
-            inputs: [{ name: source }, { name: verdict, optional: true }]
+            inputs:
+              - { name: source }
+              - { name: verdict, optional: true }
+              - { name: ran, optional: true }
+              - { name: checked, optional: true }
             outputs: [{ name: results }]
             run:
               path: bash
@@ -1773,6 +1972,14 @@ jobs:
                 - -ec
                 - |
                   set -uo pipefail
+                  # [TheHub #61951] A verdict only: checked by remote-result
+                  # (`checked/ok`), or a run that failed (`ran/rc` not 0),
+                  # which stands without the commit check, as there. Missing
+                  # or refused is not reported; remote_checked errors the build.
+                  case "$(cat ran/rc 2>/dev/null)" in
+                    0) [ -s checked/ok ] || { echo "Not reported: remote-result refused this run."; exit 0; } ;;
+                    ''|*[!0-9]*) echo "Not reported: no run finished to a verdict."; exit 0 ;;
+                  esac
                   # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
                   # route is dead, so this must land before apt opens a socket. See the
                   # note at the top of `anchors:`.
@@ -1804,10 +2011,11 @@ jobs:
                     --branch "$SCANNED_BRANCH" --workspace "$PWD/source" \
                     --severity-threshold low --blocking false
 
-                  # The report is this task's only job. `lint-types-build`
+                  # The report is this task's only job. `remote-result`
                   # already decided the build; failing here as well would
                   # replace a real verdict with a reporting error.
                   exit 0
+      - *remote_checked
 
   # -- Stage 2: security (spec 15 §4) -------------------------------------
   #

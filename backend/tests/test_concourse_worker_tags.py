@@ -111,6 +111,13 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         ("mykronos", "time-travel", "linux-worker-probe"),
         ("mykronos", "sast", "linux-worker-probe"),
         ("mykronos", "dependencies", "linux-worker-probe"),
+        # TheHub #61951: the gating lanes, a linux worker first and this host
+        # when none finishes them (test_mykronos_gating_lanes_on_linux.py).
+        ("mykronos", "unit", "linux-worker-probe"),
+        ("mykronos", "unit", "pytest"),
+        ("mykronos", "frontend", "linux-worker-probe"),
+        ("mykronos", "frontend", "dump-openapi"),
+        ("mykronos", "frontend", "lint-types-build"),
     }
 )
 
@@ -195,6 +202,12 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
     ("mykronos", "sast", "semgrep"): {"source": None},
     ("mykronos", "dependencies", "linux-worker-probe"): {},
     ("mykronos", "dependencies", "osv-scanner"): {"source": None},
+    ("mykronos", "unit", "linux-worker-probe"): {},
+    ("mykronos", "unit", "pytest"): {"source": None},
+    ("mykronos", "frontend", "linux-worker-probe"): {},
+    ("mykronos", "frontend", "dump-openapi"): {"source": None},
+    # The schema dump-openapi wrote on the same worker.
+    ("mykronos", "frontend", "lint-types-build"): {"source": None, "contract": None},
 }
 
 # The gating remote tasks, and the host step after each that decides the
@@ -449,8 +462,8 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
-    # #1177's 9 TheHub steps and #1178's 8 mykronos steps.
-    assert len(REMOTE_COMPUTE) == 17
+    # #1177's 9 TheHub steps, #1178's 8 mykronos steps and #61951's 5.
+    assert len(REMOTE_COMPUTE) == 22
     assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),

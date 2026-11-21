@@ -335,10 +335,17 @@ class TestTheJobErrorsInsteadOfFailing:
         outputs = {o["name"] for o in find(plan, task)["config"].get("outputs") or []}
         assert "judged" in outputs, f"{job}/{task} has no `judged` output for the verdict"
         # A remote suite's host-side check (`remote-result` and its load_var,
-        # review of #1178) may come first: it errors the build as well.
+        # review of #1178) may come first: it errors the build as well. So may
+        # a gating lane's run on this host when no linux worker finished it
+        # (`linux-finished`, TheHub #61951), which writes the same outputs.
         j = i + 1
         while j < len(plan) and (
-            plan[j].get("task") == "remote-result" or plan[j].get("file") == "checked/ok"
+            plan[j].get("task") == "remote-result"
+            or plan[j].get("file") == "checked/ok"
+            or any(
+                s.get("task") == "linux-finished"
+                for s in (plan[j].get("try") or {}).get("do") or []
+            )
         ):
             j += 1
         after = plan[j] if j < len(plan) else {}
