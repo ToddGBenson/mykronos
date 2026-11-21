@@ -18,7 +18,8 @@ from sqlalchemy import select
 
 from mykronos.approvals import pull_requests, reviewer
 from mykronos.approvals.policy import cached_policy
-from mykronos.db.models import ApprovalRequest, ApprovalStamp, Delegation
+from mykronos.config import Settings
+from mykronos.db.models import ApprovalEvent, ApprovalRequest, ApprovalStamp, Delegation
 from mykronos.github.client import PullRequest, PullRequestFile
 from mykronos.schemas import utcnow
 from tests.conftest import REPO
@@ -465,6 +466,16 @@ class TestARefusedKeyConcludesTheCheck:
         assert _checks(github)[-1]["conclusion"] is None
 
 
+def _poll(client, now, **kw: Any) -> list[str]:
+    """One run of the `pull-request-stamps` job's request step, at `now`."""
+    policy = cached_policy(client.app.state.settings.approval_policy_path)
+    return asyncio.run(
+        pull_requests.request_missing(
+            client.app.state.db, policy, client.app.state.github_factory, now=now, **kw
+        )
+    )
+
+
 class TestRequestsNobodyMade:
     """The job opens a request for a head nobody asked about, after a grace
     period in which an agent author can ask under its own name."""
@@ -477,12 +488,7 @@ class TestRequestsNobodyMade:
         pull_requests._first_seen.clear()
 
     def _run(self, client, now):
-        policy = cached_policy(client.app.state.settings.approval_policy_path)
-        return asyncio.run(
-            pull_requests.request_missing(
-                client.app.state.db, policy, client.app.state.github_factory, now=now
-            )
-        )
+        return _poll(client, now)
 
     def test_it_waits_out_the_grace_period_then_asks(
         self, client, admin_auth, github, onboarded, required
@@ -556,3 +562,135 @@ class TestRequestsNobodyMade:
 
         assert response.status_code == 409
         assert "fresh_context" in response.json()["detail"]
+
+
+class TestAListedRepositoryIsAskedAbout:
+    """TheHub #61953: TheHub's develop requires no check, so the job never
+    asked about its pull requests and every release began with a script that
+    filed the requests by hand. A listed repository is asked about anyway."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self):
+        pull_requests._first_seen.clear()
+
+    def _pending(self, client, admin_auth) -> list[dict[str, Any]]:
+        listed = client.get("/api/approvals?state=pending", headers=admin_auth)
+        assert listed.status_code == 200, listed.text
+        return [r for r in listed.json() if r["duty"] == pull_requests.DUTY]
+
+    def test_one_request_per_head_and_a_second_poll_files_nothing(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        _open_pr(github, ["docs/a.md"])
+        _open_pr(github, ["docs/b.md"], number=8, sha="c" * 40)
+        github.repos[REPO].pull_requests[-1].draft = True
+        start = utcnow()
+
+        assert _poll(client, start, request_repos={REPO}) == []
+        [opened] = _poll(client, start + timedelta(minutes=11), request_repos={REPO})
+        assert _poll(client, start + timedelta(minutes=13), request_repos={REPO}) == []
+
+        [pending] = self._pending(client, admin_auth)
+        assert pending["id"] == opened
+        assert pending["subject_ref"] == f"{REPO}#7@{SHA}"
+        # The job only asks; nothing decides, and the requester is the job.
+        assert pending["decisions"] == []
+        assert (pending["requested_by"], pending["requester_kind"]) == (
+            "job:pull-request-requests",
+            "automation",
+        )
+        # Whether the branch requires the check is not asked of a listed
+        # repository: reading protection needs a permission it may not grant.
+        assert not [c for c in github.calls if c[0] == "get_branch_protection"]
+
+    def test_thehub_is_listed_by_default(self) -> None:
+        field = Settings.model_fields["pull_request_auto_request_repos"]
+        assert field.default_factory is not None
+        assert "ToddGBenson/TheHub" in field.default_factory()  # type: ignore[call-arg]
+
+
+class TestANewHeadSupersedesTheOld:
+    """A pending request names one commit. Once the pull request moves past
+    it, approving it covers nothing, so the job marks it superseded instead
+    of leaving it in the pending list for its seven days (TheHub #61953)."""
+
+    @pytest.fixture(autouse=True)
+    def required(self, github):
+        github.repos[REPO].branch_protection["main"] = {
+            "required_status_checks": {"checks": [{"context": pull_requests.CHECK_NAME}]}
+        }
+        pull_requests._first_seen.clear()
+
+    def _run(self, client, now):
+        return _poll(client, now)
+
+    def test_a_push_supersedes_the_old_head_and_asks_about_the_new_one(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        _open_pr(github, ["docs/a.md"])
+        start = utcnow()
+        self._run(client, start)
+        [old] = self._run(client, start + timedelta(minutes=11))
+
+        _open_pr(github, ["docs/a.md"], sha=NEXT_SHA)  # a new push
+        assert self._run(client, start + timedelta(minutes=12)) == []
+        [new] = self._run(client, start + timedelta(minutes=23))
+
+        with client.app.state.db.session() as session:
+            assert session.get(ApprovalRequest, old).state == "superseded"
+            assert session.get(ApprovalRequest, new).subject_ref == f"{REPO}#7@{NEXT_SHA}"
+            events = session.execute(
+                select(ApprovalEvent.event, ApprovalEvent.payload)
+                .where(ApprovalEvent.request_id == old)
+                .order_by(ApprovalEvent.seq)
+            ).all()
+        assert events[-1] == ("superseded", {"head_sha": NEXT_SHA})
+        listed = client.get("/api/approvals?state=pending", headers=admin_auth).json()
+        assert [r["id"] for r in listed if r["duty"] == pull_requests.DUTY] == [new]
+        # Nobody can approve the commit the pull request left behind.
+        body = client.get(f"/api/approvals/{old}", headers=admin_auth).json()
+        assert _decide(client, admin_auth, body).status_code == 409
+
+    def test_a_request_filed_by_hand_is_superseded_too(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        _open_pr(github, ["docs/a.md"])
+        old = _request(client, _agent(client, admin_auth)).json()["id"]
+
+        _open_pr(github, ["docs/a.md"], sha=NEXT_SHA)
+        self._run(client, utcnow())
+
+        with client.app.state.db.session() as session:
+            assert session.get(ApprovalRequest, old).state == "superseded"
+
+    def test_an_approved_old_head_keeps_its_decision(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        _open_pr(github, ["docs/a.md"])
+        body = _request(client, _agent(client, admin_auth)).json()
+        assert _decide(client, admin_auth, body).json()["state"] == "approved"
+
+        _open_pr(github, ["docs/a.md"], sha=NEXT_SHA)
+        self._run(client, utcnow())
+
+        with client.app.state.db.session() as session:
+            assert session.get(ApprovalRequest, body["id"]).state == "approved"
+        # The superseded commit's check is left as it was: the same commit can
+        # be another pull request's head, and a red posted on it would be its.
+        assert _checks(github, SHA)[-1]["conclusion"] == "success"
+
+    def test_another_pull_request_is_not_superseded(
+        self, client, admin_auth, github, onboarded
+    ) -> None:
+        _open_pr(github, ["docs/a.md"], number=7)
+        _open_pr(github, ["docs/a.md"], number=70, sha="d" * 40)
+        agent = _agent(client, admin_auth)
+        seven = _request(client, agent, number=7).json()["id"]
+        seventy = _request(client, agent, number=70).json()["id"]
+
+        _open_pr(github, ["docs/a.md"], number=7, sha=NEXT_SHA)
+        self._run(client, utcnow())
+
+        with client.app.state.db.session() as session:
+            assert session.get(ApprovalRequest, seven).state == "superseded"
+            assert session.get(ApprovalRequest, seventy).state == "pending"

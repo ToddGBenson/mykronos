@@ -444,6 +444,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    pull_request_auto_request_repos: list[str] = Field(
+        default_factory=lambda: ["ToddGBenson/TheHub"],
+        description=(
+            "Repositories whose open, non-draft pull request heads the platform "
+            "asks to have approved (a `pull_request_merge` request from "
+            "job:pull-request-requests, after the same ten-minute grace) although "
+            "their default branch does not require the `independent-review` check. "
+            "A repository whose default branch requires the check is asked about "
+            "whatever this lists. TheHub's develop requires no check, but its merge "
+            "waits on the approval at the head, so until TheHub #61953 its requests "
+            "were filed by hand before every release. A JSON list in the "
+            "environment; an empty list asks only where the check is required. "
+            "deploy/mykronos/docker-compose.yml does not pass it: the default is "
+            "this deployment's value."
+        ),
+    )
+
     agent_playbooks_path: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2] / "agent-playbooks-v1.yaml",
         description=(
