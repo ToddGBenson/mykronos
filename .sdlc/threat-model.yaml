@@ -359,7 +359,12 @@ trust_boundaries:
       hostnames, not just the LAN. Exemptions (/healthz, /api/ingest/*,
       /api/oracle/*, /api/patchwork/run, /api/repo-read/posture-summary,
       /webhooks/github) each carry their own token or HMAC. Fails open if the
-      token is unset.
+      token is unset. Since TheHub #61954 a person-minted mka_ credential with
+      purpose security-champion or delivery passes without the token for the
+      GETs in gate.AGENT_READ only, served as a viewer and audited per use;
+      any other request it makes is a 403, and a request carrying a proxy
+      header (Cf-Connecting-Ip, X-Forwarded-For) is not offered this, so the
+      tunnel still requires the token.
     exposure: internet
     evidence_ref: backend/mykronos/gate.py
 
