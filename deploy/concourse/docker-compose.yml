@@ -615,6 +615,12 @@ services:
       CONCOURSE_VAULT_CLIENT_TOKEN: ${CONCOURSE_VAULT_TOKEN:?set it in .env - run setup.ps1, or see vault-init.ps1}
 
       CONCOURSE_LOG_LEVEL: info
+
+      # TheHub #60802 (folded into 60839): a resolved ((var)) that a step
+      # echoes is shown as ((redacted)) in the build log. The pipelines are
+      # public, and the Hub copies failing-step log lines into stories, so
+      # this is the second layer behind each script's own care.
+      CONCOURSE_ENABLE_REDACT_SECRETS: "true"
     volumes:
       # The whole directory now, read-only: the web node needs three keys from
       # it rather than one file.

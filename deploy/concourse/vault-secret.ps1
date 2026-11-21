@@ -69,20 +69,23 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Vault needs a token and this script never supplied one, so every call came
-# back 403 - including `get` and `list`, not just writes. The root token lives
-# in vault/init.json, gitignored, the same file vault-unseal.ps1 reads.
+# back 403 - including `get` and `list`, not just writes. The token is the
+# operator's admin token from the DPAPI file VaultLocalSecret.ps1 reads, or,
+# until that move is made, the root token in vault/init.json (TheHub #60836).
 #
 # Held in an environment variable and never passed as an argument: `-e
 # VAULT_TOKEN` with no value forwards this process's variable into the
-# container, so the token never appears in any command line. The AppRole a
+# container, so the token never appears in any command line. The token a
 # pipeline uses cannot write here - that 403 is the policy working - which is
-# why this is the root token and why the file it comes from is not committed.
+# why this is the operator's token and why neither file is committed.
+. (Join-Path $PSScriptRoot 'VaultLocalSecret.ps1')
 $initFile = Join-Path $PSScriptRoot 'vault\init.json'
-if (-not (Test-Path $initFile)) {
-  Write-Error "Missing $initFile - that is where the root token lives. Vault cannot be read or written without it."
+$admin = Get-VaultAdminToken -InitFile $initFile
+if (-not $admin) {
+  Write-Error "No Vault token: neither $(Get-VaultLocalSecretPath) nor $initFile holds one. Vault cannot be read or written without it."
 }
-$env:VAULT_TOKEN = (Get-Content $initFile -Raw | ConvertFrom-Json).root_token
-if (-not $env:VAULT_TOKEN) { Write-Error "No root_token in $initFile." }
+$env:VAULT_TOKEN = $admin.Token
+$admin = $null
 
 function Invoke-Vault {
   param([string[]] $VaultArgs)

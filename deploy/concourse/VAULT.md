@@ -118,11 +118,27 @@ read healthy.
 
 ## The unseal key and root token
 
-`vault/init.json` — gitignored, and the ignore rule was added *before* the file
-was created.
+`vault-init.ps1` writes them to `vault/init.json` — gitignored, and the ignore
+rule was added *before* the file was created.
 
-**Put a copy in a password manager.** There is no recovery path by design: lose
-this file and every secret in the store is unrecoverable.
+That plaintext file is the bootstrap, not the resting place (TheHub #60836).
+The operator moves its contents into a file only their Windows account can
+decrypt — `%LOCALAPPDATA%\mykronos-vault\vault-local.clixml`, DPAPI, read by
+`VaultLocalSecret.ps1` — mints an admin-policy token to replace the root token
+for day-to-day writes, revokes the root token, and deletes `init.json`.
+`vault-unseal.ps1`, `vault-secret.ps1`, `vault-init.ps1`,
+`Import-EnvSecretsToVault.ps1` and `repair-ingestion-token.ps1` read that file
+first and `init.json` second, so they work on either side of the move.
+
+DPAPI makes the file useless to another account, to a copy of the disk and to
+a backup; it does not protect it from code running as the same user. A task
+that runs S4U or as SYSTEM cannot decrypt it, so the unseal task stays
+Interactive. A new root token, if one is ever needed, comes from
+`vault operator generate-root` with the unseal key.
+
+**Keep an encrypted copy of the unseal key off this host.** There is no
+recovery path by design: lose the key and every secret in the store is
+unrecoverable. The DPAPI file dies with the Windows profile.
 
 One key share, threshold one. Splitting the seal across five shares only protects
 you if five different *people* hold them; here every share would live in the same
@@ -138,14 +154,14 @@ file on the same disk, so shares would be ceremony impersonating a control.
 - **No Vault auto-unseal.** Vault's own auto-unseal means a transit seal or a
   cloud KMS holding the key — a second trust root this host does not have, and
   that is still true. What #60474 added is not that: it is *automated invocation
-  of the manual unseal*, using the key that already sits in `vault/init.json` on
-  this disk. It adds no exposure that does not already exist — the file is the
-  exposure, and it predates the decision. What it removes is the requirement
+  of the manual unseal*, using the key this machine already holds (the DPAPI
+  file above, or `vault/init.json` before the move). What it removes is the requirement
   that a human be watching. The seal is still a real seal; nobody is holding the
   key but this machine.
-- **Root token on disk.** Acceptable for a single-operator host, and the reason
-  Concourse gets its own scoped token instead. For anything shared, use AppRole
-  and stop writing the root token down.
+- **An admin token on disk.** After the move the root token is revoked and the
+  operator's admin-policy token (one year, renewable) sits in the DPAPI file.
+  Acceptable for a single-operator host, and the reason Concourse gets its own
+  scoped token instead. For anything shared, use AppRole.
 
 ## Rollback
 

@@ -121,38 +121,51 @@ if ($status.ExitCode -eq 0) {
   }
 }
 
-if (-not (Test-Path $InitFile)) {
+# TheHub #60836: the keys come from this user's DPAPI-protected file first and
+# from init.json second, so this works before the move, during it and after
+# init.json is deleted. VaultLocalSecret.ps1 says what DPAPI does and does not
+# protect, and why an S4U or SYSTEM task cannot read the file.
+. (Join-Path $PSScriptRoot 'VaultLocalSecret.ps1')
+try {
+  $material = Get-VaultUnsealKey -InitFile $InitFile
+} catch {
+  Stop-With "Vault is sealed and the unseal file is unreadable here: $($_.Exception.Message)"
+}
+
+if (-not $material) {
   Stop-With @"
-Vault is sealed and there is no init file at $InitFile.
+Vault is sealed and there is no unseal material: no DPAPI file at
+$(Get-VaultLocalSecretPath) and no init file at $InitFile.
 
 Either Vault has never been initialised on this host, or the unseal material was
 lost. If it is lost, the data is unrecoverable - there is no recovery path by
-design, which is why the bootstrap tells you to put a copy in a password manager.
+design, which is why the bootstrap tells you to keep a copy off this host.
 "@
 }
 
-$init = Get-Content $InitFile -Raw | ConvertFrom-Json
-
-foreach ($key in $init.unseal_keys_b64) {
-  # The key is passed as an argument here and so is visible in the container's
-  # process list for the life of the exec. It is already at rest in $InitFile
-  # on this disk; if that ever stops being true, this becomes stdin.
+foreach ($key in $material.Keys) {
+  # The key is passed as an argument here and so is visible in the Vault
+  # container's process list for the life of the exec - to someone who can
+  # already exec into that container.
   $unseal = Invoke-Docker @('exec', '-e', 'VAULT_ADDR=http://127.0.0.1:8200',
                             $Container, 'vault', 'operator', 'unseal', $key)
   if ($unseal.ExitCode -ne 0) {
     # Deliberately not echoing docker's output: `vault operator unseal` quotes
     # the rejected key back in its error, and this line can reach a log file.
-    Stop-With "unseal failed (exit $($unseal.ExitCode)) applying a key from $InitFile."
+    Stop-With "unseal failed (exit $($unseal.ExitCode)) applying a key from $($material.Source)."
   }
 }
+$key = $null
 
 $final = Invoke-Docker @('exec', $Container, 'sh', '-c',
                          'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json')
 if ($final.ExitCode -ne 0 -or (($final.Output -join "`n") | ConvertFrom-Json).sealed) {
-  Stop-With "Vault is still sealed after applying every key in $InitFile."
+  Stop-With "Vault is still sealed after applying every key from $($material.Source)."
 }
+$source = $material.Source
+$material = $null
 
-Write-Step "Vault unsealed." 'Green'
+Write-Step "Vault unsealed. (keys from $source)" 'Green'
 Write-Step "Concourse will resolve ((vars)) again on the next build; jobs that" 'DarkGray'
 Write-Step "failed while it was sealed need re-triggering, they do not retry." 'DarkGray'
 exit 0
