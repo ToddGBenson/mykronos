@@ -281,6 +281,20 @@ class TestFilingIsLimitedPerActor:
         assert "Retry-After" in refused.headers
         assert "hour" in refused.json()["detail"]
 
+    def test_a_hub_failure_does_not_spend_the_limit(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        from mykronos.ratelimit import SlidingWindowLimiter
+
+        hub = StoryHub(status=500, body={"detail": "down"})
+        _attach(client, hub)
+        client.app.state.feedback_limiter = SlidingWindowLimiter(1, 3600.0)  # type: ignore[attr-defined]
+        assert client.post(URL, json=_report(), headers=admin_auth).status_code == 502
+        hub.status = 201
+        hub.body = {"id": 70002}
+
+        assert client.post(URL, json=_report(), headers=admin_auth).status_code == 201
+
     def test_the_status_read_is_not_limited(
         self, client: TestClient, admin_auth: dict[str, str]
     ) -> None:

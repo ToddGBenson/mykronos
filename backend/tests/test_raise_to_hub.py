@@ -428,6 +428,53 @@ class TestTheRaisedListReadsTheHubOncePerTtl:
         assert len(page()) == 2
         assert reads() - before == first + 2
 
+    def test_a_cold_page_reads_the_hub_a_few_at_a_time(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        lane: str,
+        hub: RaiseHub,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+
+        from mykronos.api import raise_hub
+
+        database = client.app.state.db  # type: ignore[attr-defined]
+        subjects = [f"{REPO}:lane-{n}" for n in range(30)]
+        for n, subject in enumerate(subjects):
+            with database.session() as session:
+                database.audit(
+                    session,
+                    actor="operator",
+                    action="hub_raised",
+                    entity_type="lane",
+                    entity_id=subject,
+                    hub_kind="incident",
+                    hub_id=5000 + n,
+                    title="t",
+                )
+        live = {"now": 0, "peak": 0}
+
+        async def slow(_hub: object, _kind: str, _hub_id: int) -> str:
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
+            await asyncio.sleep(0.01)
+            live["now"] -= 1
+            return "open"
+
+        monkeypatch.setattr(raise_hub, "_hub_status", slow)
+
+        response = client.get(
+            "/api/dashboard/raised",
+            params={"kind": "lane", "subject": subjects},
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 200, response.text
+        assert len(response.json()["links"]) == 30
+        assert 1 < live["peak"] <= raise_hub.STATUS_READ_CONCURRENCY
+
     def test_a_failed_read_is_not_cached(
         self,
         client: TestClient,
@@ -483,6 +530,59 @@ class TestOneSubjectIsRaisedOnce:
         assert second.status_code == 201
         assert second.json()["hub_id"] != first.json()["hub_id"]
         assert len(hub.incidents) == 2
+
+    def test_a_done_story_may_be_raised_again(
+        self, client: TestClient, admin_auth: dict[str, str], lane: str, hub: RaiseHub
+    ) -> None:
+        """TheHub closes a story by moving it to the done bucket and stamping
+        `closed_at`; its gate stays wherever it was (TheHub #61379)."""
+        first = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+        assert first.status_code == 201
+        hub.created[first.json()["hub_id"]].update(
+            {"gate": "designed", "bucket": "done", "closed_at": "2026-11-01T10:00:00"}
+        )
+
+        second = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+
+        assert second.status_code == 201, second.text
+        assert second.json()["already_raised"] is False
+        assert second.json()["hub_id"] != first.json()["hub_id"]
+        assert len(hub.created) == 2
+
+    def test_a_story_with_closed_at_alone_is_over_too(
+        self, client: TestClient, admin_auth: dict[str, str], lane: str, hub: RaiseHub
+    ) -> None:
+        first = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+        hub.created[first.json()["hub_id"]]["closed_at"] = "2026-11-01T10:00:00"
+
+        second = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+
+        assert second.status_code == 201 and len(hub.created) == 2
+
+    def test_a_story_in_the_sprint_bucket_is_still_open(
+        self, client: TestClient, admin_auth: dict[str, str], lane: str, hub: RaiseHub
+    ) -> None:
+        first = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+        hub.created[first.json()["hub_id"]].update({"gate": "in_progress", "bucket": "sprint"})
+
+        second = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+
+        assert second.status_code == 200 and second.json()["already_raised"] is True
+        assert len(hub.created) == 1
+
+    def test_the_raised_list_calls_a_done_story_done(
+        self, client: TestClient, admin_auth: dict[str, str], lane: str, hub: RaiseHub
+    ) -> None:
+        first = _raise(client, admin_auth, kind="lane", subject=lane, raise_as="story")
+        hub.created[first.json()["hub_id"]].update({"gate": "designed", "bucket": "done"})
+
+        links = client.get(
+            "/api/dashboard/raised",
+            params={"kind": "lane", "subject": lane},
+            headers=admin_auth,
+        ).json()["links"]
+
+        assert links[0]["status"] == "done"
 
     def test_a_story_and_an_incident_for_one_subject_are_different_raises(
         self, client: TestClient, admin_auth: dict[str, str], lane: str, hub: RaiseHub
@@ -581,6 +681,60 @@ class TestARaiseIsLimitedPerActor:
                 client, admin_auth, kind="lane", subject=lanes[0], raise_as="incident"
             ).status_code in (200, 201)
         assert len(hub.incidents) == 1
+
+    def test_a_hub_failure_does_not_spend_the_limit(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        lanes: list[str],
+        hub: RaiseHub,
+    ) -> None:
+        from mykronos.ratelimit import SlidingWindowLimiter
+
+        client.app.state.raise_limiter = SlidingWindowLimiter(1, 3600.0)  # type: ignore[attr-defined]
+        hub.failing.add("/api/incidents")
+        failed = _raise(client, admin_auth, kind="lane", subject=lanes[0], raise_as="incident")
+        assert failed.status_code == 502
+        hub.failing.discard("/api/incidents")
+
+        retried = _raise(client, admin_auth, kind="lane", subject=lanes[0], raise_as="incident")
+
+        assert retried.status_code == 201, retried.text
+
+    def test_a_refusal_is_audited_and_is_not_a_raise(
+        self,
+        client: TestClient,
+        admin_auth: dict[str, str],
+        lanes: list[str],
+        hub: RaiseHub,
+    ) -> None:
+        from mykronos.ratelimit import SlidingWindowLimiter
+
+        client.app.state.raise_limiter = SlidingWindowLimiter(1, 3600.0)  # type: ignore[attr-defined]
+        assert _raise(
+            client, admin_auth, kind="lane", subject=lanes[0], raise_as="incident"
+        ).status_code == 201
+        refused = _raise(client, admin_auth, kind="lane", subject=lanes[1], raise_as="incident")
+        assert refused.status_code == 429
+
+        with client.app.state.db.session() as session:  # type: ignore[attr-defined]
+            rows = list(
+                session.execute(
+                    select(AuditLogEntry).where(AuditLogEntry.action == "hub_raise_refused")
+                ).scalars()
+            )
+            details = [(r.entity_id, dict(r.detail or {})) for r in rows]
+        assert len(details) == 1
+        assert details[0][0] == lanes[1]
+        assert details[0][1]["outcome"] == "rate_limited"
+        # The refusal is not a raise: the subject has no Hub id and the list does not link it.
+        assert len(_audits(client)) == 1
+        links = client.get(
+            "/api/dashboard/raised",
+            params={"kind": "lane", "subject": lanes[1]},
+            headers=admin_auth,
+        ).json()["links"]
+        assert links == []
 
     def test_the_default_limit_is_a_setting(self, settings: Any) -> None:
         assert settings.hub_filings_per_actor_per_hour >= 1
