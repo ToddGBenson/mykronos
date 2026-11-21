@@ -362,6 +362,91 @@ class TestItRunsWhereTheScansRun:
         assert "/api/ingest/reachability" in pipeline
 
 
+class TestTheDataflowTimeoutCanBeSet:
+    """TheHub #61555: the template read `dataflow_reachability_timeout_minutes`
+    from the repo config, but `SastConfig` is `extra="forbid"` and declared no
+    such field. Any value was refused, so the default of 10 always applied."""
+
+    @staticmethod
+    def _render(config: dict) -> str:
+        from mykronos.config import get_settings
+        from mykronos.installer import TemplateLibrary
+
+        return (
+            TemplateLibrary(get_settings().workflow_templates_dir)
+            .render(
+                "sast",
+                repo_full_name="acme/widgets",
+                default_branch="main",
+                ingestion_api_url="https://mykronos.example",
+                token_secret_name="MYKRONOS_TOKEN",
+                upload_action_ref="ToddGBenson/mykronos@v1",
+                mykronos_package_spec="mykronos @ git+https://example.invalid@v1",
+                config=config,
+            )
+            .content
+        )
+
+    def test_a_repo_config_with_the_field_is_accepted(self) -> None:
+        from mykronos.capabilities import validate_config
+
+        validated = validate_config(
+            "sast", {"dataflow_reachability_timeout_minutes": 25}
+        )
+
+        assert validated["dataflow_reachability_timeout_minutes"] == 25
+
+    def test_the_lane_template_receives_the_validated_value(self) -> None:
+        from mykronos.capabilities import validate_config
+
+        validated = validate_config(
+            "sast", {"dataflow_reachability_timeout_minutes": 25}
+        )
+
+        rendered = self._render(validated)
+
+        step = rendered.split("- name: Dataflow reachability", 1)[1]
+        assert "timeout-minutes: 25" in step.split("- name:", 1)[0]
+
+    def test_the_default_is_still_ten(self) -> None:
+        from mykronos.capabilities import SastConfig, validate_config
+
+        assert SastConfig().dataflow_reachability_timeout_minutes == 10
+        rendered = self._render(validate_config("sast", {}))
+        step = rendered.split("- name: Dataflow reachability", 1)[1]
+        assert "timeout-minutes: 10" in step.split("- name:", 1)[0]
+
+    def test_it_is_bounded(self) -> None:
+        import pytest
+
+        from mykronos.capabilities import CapabilityConfigError, validate_config
+
+        for bad in (0, -1, 361):
+            with pytest.raises(CapabilityConfigError):
+                validate_config(
+                    "sast", {"dataflow_reachability_timeout_minutes": bad}
+                )
+
+    def test_the_config_endpoint_accepts_it(self, client, admin_auth) -> None:
+        from tests.test_onboarding import onboard
+
+        repo_id = onboard(client, admin_auth).json()["id"]
+
+        response = client.patch(
+            f"/api/repos/{repo_id}/capabilities",
+            json={
+                "capabilities": ["sast"],
+                "config": {"sast": {"dataflow_reachability_timeout_minutes": 25}},
+            },
+            headers=admin_auth,
+        )
+
+        assert response.status_code == 200, response.text
+        stored = client.get(f"/api/repos/{repo_id}", headers=admin_auth).json()
+        sast = stored["capability_config"]["sast"]
+        assert sast["dataflow_reachability_timeout_minutes"] == 25
+
+
 class TestTheStepCannotFailTheScan:
     """It did, once, and the shape is worth pinning.
 
