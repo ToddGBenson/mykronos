@@ -1,0 +1,40 @@
+# One-off task: what a job container on a Docker-run Linux worker resolves
+# through (TheHub #62067). Run it on the worker you are checking:
+#
+#   CHECK_HOSTS="<name> <name>" fly -t mykronos execute --tag linux \
+#     --config check-job-dns.yml
+#
+# `fly execute` takes CHECK_HOSTS from your own environment. The task prints
+# the job container's /etc/resolv.conf (the router must be first), then asks
+# each nameserver in that order for each name. A name that one nameserver
+# cannot answer fails the task, so a dead first resolver is found here and
+# not by a pip install. Pulling this image from Docker Hub is itself the
+# Docker Hub evidence: the fetch ran on the worker.
+---
+platform: linux
+image_resource:
+  type: registry-image
+  source: { repository: curlimages/curl, tag: "8.11.1" }
+params:
+  CHECK_HOSTS: ""
+run:
+  path: sh
+  args:
+    - -ec
+    - |
+      echo "== /etc/resolv.conf in this job container"
+      cat /etc/resolv.conf
+      servers=$(sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf)
+      [ -n "$servers" ] || { echo "no nameserver in resolv.conf"; exit 1; }
+      failed=0
+      for host in registry-1.docker.io $CHECK_HOSTS; do
+        for server in $servers; do
+          if nslookup "$host" "$server" >/dev/null 2>&1; then
+            echo "ok    $host via $server"
+          else
+            echo "FAIL  $host via $server"
+            failed=1
+          fi
+        done
+      done
+      exit $failed

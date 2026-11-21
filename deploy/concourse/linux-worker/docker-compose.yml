@@ -1,0 +1,84 @@
+# Reference compose for a Concourse worker run as the concourse/concourse
+# image on a Linux host (TheHub #62067). linux-1, linux-2 and linux-3 each
+# kept a hand-edited copy of this; this file is the one they are aligned to.
+# README: "Running the worker in Docker instead of the installer".
+#
+#   cp .env.example .env     # then fill in .env; it is gitignored
+#   docker compose config    # prints the resolvers; the router must be first
+#   docker compose up -d worker-1                   # one worker
+#   docker compose --profile pair up -d             # worker-1 and worker-2
+#
+# Resolvers. A task container must not fall through to Google directly:
+# Docker's embedded resolver (127.0.0.11) is unreachable from inside a task
+# container, and with nothing else configured the worker ended up asking
+# 8.8.8.8 with no local cache, so any loss on that path failed a lookup (keel
+# and binnacle pr-checks, NameResolutionError for pypi.org, 2026-11-18).
+# Both settings below take the same three values, in the same order:
+#
+#   WORKER_DNS_1   the LAN router      required, no default
+#   WORKER_DNS_2   the ISP resolver    required, no default
+#   WORKER_DNS_3   a public resolver   defaults to 8.8.8.8
+#
+# The first two have no default on purpose: a missing .env stops `up` with an
+# error naming the variable, instead of quietly bringing back Google alone.
+# The addresses live in the host's own .env and never in this public repo.
+#
+# `dns:` sets the worker container's own upstreams. CONCOURSE_CONTAINERD_DNS_SERVER
+# is what task containers are handed, so they ask these servers directly and
+# the DNS proxy (which forwards to Docker's resolver) is not in the path.
+#
+# The entrypoint wrapper sits beside this file: cgroup v2 delegation and the
+# stale /run/containerd clear (TheHub #61894, #62024).
+x-worker: &worker
+  image: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
+  restart: unless-stopped
+  command: worker
+  privileged: true
+  entrypoint: ["dumb-init", "/cgroup-wrapper.sh"]
+  cpus: ${WORKER_CPUS:-6}
+  mem_limit: ${WORKER_MEM_LIMIT:-6g}
+  dns:
+    - ${WORKER_DNS_1:?}
+    - ${WORKER_DNS_2:?}
+    - ${WORKER_DNS_3:-8.8.8.8}
+
+x-worker-env: &worker-env
+  CONCOURSE_TSA_HOST: ${CONCOURSE_TSA_HOST:?}
+  CONCOURSE_TSA_PUBLIC_KEY: /keys/tsa_host_key.pub
+  CONCOURSE_WORK_DIR: /worker-state
+  CONCOURSE_BAGGAGECLAIM_DRIVER: overlay
+  CONCOURSE_RUNTIME: containerd
+  CONCOURSE_TAG: linux
+  CONCOURSE_CONTAINERD_DNS_SERVER: ${WORKER_DNS_1:?},${WORKER_DNS_2:?},${WORKER_DNS_3:-8.8.8.8}
+
+services:
+  worker-1:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      CONCOURSE_NAME: ${WORKER_NAME_1:?}
+      CONCOURSE_TSA_WORKER_PRIVATE_KEY: /keys/worker-1_key
+    volumes:
+      - ./cgroup-wrapper.sh:/cgroup-wrapper.sh:ro
+      - ./keys/tsa_host_key.pub:/keys/tsa_host_key.pub:ro
+      - ./keys/worker-1_key:/keys/worker-1_key:ro
+      - worker-1-state:/worker-state
+
+  # Opt in with `--profile pair`: a second worker on the same host, with its
+  # own name, key and state volume.
+  worker-2:
+    <<: *worker
+    profiles: ["pair"]
+    environment:
+      <<: *worker-env
+      CONCOURSE_NAME: ${WORKER_NAME_2:-worker-2-unset}
+      CONCOURSE_TSA_WORKER_PRIVATE_KEY: /keys/worker-2_key
+    volumes:
+      - ./cgroup-wrapper.sh:/cgroup-wrapper.sh:ro
+      - ./keys/tsa_host_key.pub:/keys/tsa_host_key.pub:ro
+      - ./keys/worker-2_key:/keys/worker-2_key:ro
+      - worker-2-state:/worker-state
+
+volumes:
+  worker-1-state:
+  worker-2-state:

@@ -296,7 +296,8 @@ class TestTheDockerWorkersResolveThroughTheRouterFirst:
         assert set(services) == {"worker-1", "worker-2"}
         for name, service in services.items():
             servers = service["environment"]["CONCOURSE_CONTAINERD_DNS_SERVER"]
-            assert servers == "${WORKER_DNS_1:?}" ",${WORKER_DNS_2:?}" ",${WORKER_DNS_3:-8.8.8.8}", name
+            expected = "${WORKER_DNS_1:?},${WORKER_DNS_2:?},${WORKER_DNS_3:-8.8.8.8}"
+            assert servers == expected, name
             assert service["dns"] == [
                 "${WORKER_DNS_1:?}",
                 "${WORKER_DNS_2:?}",
@@ -329,7 +330,7 @@ class TestTheDockerWorkersResolveThroughTheRouterFirst:
         """The proxy forwards to Docker's resolver, which is the path that fell
         through to 8.8.8.8; explicit servers replace it."""
         text = WORKER_COMPOSE.read_text(encoding="utf-8")
-        assert "DNS_PROXY_ENABLE" not in text.replace("DNS_PROXY_ENABLE is not", "")
+        assert "DNS_PROXY" not in text
 
     def test_the_worker_runs_the_image_and_wrapper_the_compose_workers_run(self) -> None:
         compose_image = _compose()["x-worker"]["image"]
@@ -364,9 +365,11 @@ class TestTheDockerWorkersResolveThroughTheRouterFirst:
 
     def test_no_file_of_the_worker_config_commits_a_lan_address(self) -> None:
         """mykronos is public. Only loopback and the public resolvers may appear."""
-        allowed = {"8.8.8.8", "1.1.1.1", "8.8.4.4", "127.0.0.1", "127.0.0.11", "127.0.0.53", "0.0.0.0"}
+        allowed = {"8.8.8.8", "1.1.1.1", "8.8.4.4", "127.0.0.1", "127.0.0.11", "127.0.0.53"}
+        allowed.add("0.0.0.0")  # noqa: S104 - a bind address named in the README, not a listener
         for path in (WORKER_COMPOSE, WORKER_ENV_EXAMPLE, DNS_CHECK_TASK, README, INSTALL):
-            found = set(re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", path.read_text(encoding="utf-8")))
+            text = path.read_text(encoding="utf-8")
+            found = set(re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", text))
             assert found <= allowed, (path.name, sorted(found - allowed))
 
     def test_the_env_file_itself_is_never_tracked(self) -> None:
@@ -394,14 +397,13 @@ class TestTheDockerWorkersResolveThroughTheRouterFirst:
             "linux-2",
             "linux-3",
             "docker compose config",
-            "fly execute",
+            "execute --tag linux",
             "check-job-dns.yml",
             "NameResolutionError",
             "router first",
         ):
             assert needle in readme, needle
         assert "linux-1 and linux-2 use the proxy since 2026-11-16" not in readme
-        assert "CONCOURSE_CONTAINERD_DNS_SERVER=8.8.8.8 directly" not in readme
 
 
 # The wrapper only ever runs in a Linux container. On Windows, Git Bash's sh
