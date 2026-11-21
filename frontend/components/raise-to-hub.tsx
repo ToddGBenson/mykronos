@@ -9,7 +9,13 @@
 
 import { useState } from "react";
 
-import { hubLinkText, type RaiseKind, type RaisedLink } from "@/lib/raise-to-hub";
+import {
+  alreadyRaisedText,
+  hubLinkText,
+  raisedFromAnswer,
+  type RaiseKind,
+  type RaisedLink,
+} from "@/lib/raise-to-hub";
 
 type Draft = { title: string; evidence: string };
 
@@ -32,6 +38,7 @@ export function RaiseToHub({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [raised, setRaised] = useState<RaisedLink | null>(link ?? null);
+  const [duplicate, setDuplicate] = useState(false);
 
   if (raised) {
     return (
@@ -40,7 +47,7 @@ export function RaiseToHub({
         className="font-mono text-[11px] text-ink-2"
         title={`Raised by ${raised.raised_by}${raised.raised_at ? ` at ${raised.raised_at.slice(0, 16)}` : ""}`}
       >
-        {hubLinkText(raised)} · by {raised.raised_by}
+        {duplicate ? alreadyRaisedText(raised) : `${hubLinkText(raised)} · by ${raised.raised_by}`}
       </span>
     );
   }
@@ -74,17 +81,13 @@ export function RaiseToHub({
       const body = (await response.json().catch(() => ({}))) as {
         hub_kind: string;
         hub_id: number;
+        already_raised?: boolean;
         detail?: string;
       };
       if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
-      setRaised({
-        subject,
-        hub_kind: body.hub_kind,
-        hub_id: body.hub_id,
-        status: "open",
-        raised_by: "you",
-        raised_at: new Date().toISOString(),
-      });
+      const answer = raisedFromAnswer(subject, body, new Date());
+      setDuplicate(answer.already);
+      setRaised(answer.link);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

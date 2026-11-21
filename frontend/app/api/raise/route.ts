@@ -7,7 +7,7 @@
 import { NextResponse } from "next/server";
 
 import { backendClient } from "@/lib/api";
-import { crossOriginRefusal } from "@/lib/same-origin";
+import { crossOriginRefusal, retryAfter } from "@/lib/same-origin";
 
 export async function POST(request: Request) {
   const refusal = crossOriginRefusal(request.headers);
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     if (!data) {
       return NextResponse.json(
         (error as object) ?? { detail: "The backend refused the request." },
-        { status: response.status },
+        { status: response.status, headers: retryAfter(response) },
       );
     }
     // 201 for a new item, 200 when this subject was already raised and is still open.

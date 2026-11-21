@@ -26,3 +26,12 @@ export function crossOriginRefusal(headers: Headers): string | null {
   }
   return null;
 }
+
+/**
+ * The backend's Retry-After, to put on the answer a proxy gives the browser
+ * (TheHub #61379): a 429 that names when to come back is no use without it.
+ */
+export function retryAfter(response: { headers?: Headers }): Record<string, string> {
+  const value = response.headers?.get("retry-after");
+  return value ? { "Retry-After": value } : {};
+}
