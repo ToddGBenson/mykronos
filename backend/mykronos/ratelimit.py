@@ -37,6 +37,14 @@ class SlidingWindowLimiter:
         hits.append(now)
         return True, 0
 
+    def refund(self, key: str) -> None:
+        """Give back the newest hit recorded for ``key``. For a request that was
+        allowed but then failed for a reason that is not the caller's: it must
+        not use up the caller's allowance (TheHub #61379)."""
+        hits = self._hits.get(key)
+        if hits:
+            hits.pop()
+
     def reset(self, key: str | None = None) -> None:
         if key is None:
             self._hits.clear()

@@ -142,12 +142,15 @@ async def file_feedback(request: Request, body: FeedbackIn, principal: HumanDep)
             headers={"Retry-After": str(retry_after)},
         )
 
+    # The hit was recorded by `check`; a failure on TheHub's side gives it back.
     try:
         result = await hub.create_story(story_payload(body, principal.actor))
     except po.HubUnavailableError as exc:
+        request.app.state.feedback_limiter.refund(principal.actor)
         audit("unreachable")
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     if not result.ok:
+        request.app.state.feedback_limiter.refund(principal.actor)
         audit("refused", hub_status=result.status)
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
