@@ -441,6 +441,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error("Approval policy unavailable; approvals will refuse: %s", exc)
     app.state.db.create_all()
     app.state.limiter = SlidingWindowLimiter(settings.rate_limit_requests_per_minute)
+    # One hour's window per actor for what is filed on TheHub (TheHub #61379).
+    app.state.raise_limiter = SlidingWindowLimiter(
+        settings.hub_filings_per_actor_per_hour, window_seconds=3600.0
+    )
+    app.state.feedback_limiter = SlidingWindowLimiter(
+        settings.hub_filings_per_actor_per_hour, window_seconds=3600.0
+    )
+    # Serialises raises, so a duplicate check sees the raise before it.
+    app.state.raise_lock = asyncio.Lock()
     app.state.templates = TemplateLibrary(settings.workflow_templates_dir)
     app.state.github_factory = _build_github_factory(settings)
     # Patchwork's bump-image-date reads tags here; None when unconfigured.

@@ -7,9 +7,17 @@
 import { NextResponse } from "next/server";
 
 import { backendClient } from "@/lib/api";
+import { crossOriginRefusal, retryAfter } from "@/lib/same-origin";
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as Record<string, unknown>;
+  const refusal = crossOriginRefusal(request.headers);
+  if (refusal) return NextResponse.json({ detail: refusal }, { status: 403 });
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ detail: "The request body is not JSON." }, { status: 400 });
+  }
   try {
     const { data, error, response } = await backendClient().POST("/api/dashboard/raise", {
       body: body as never,
@@ -17,10 +25,11 @@ export async function POST(request: Request) {
     if (!data) {
       return NextResponse.json(
         (error as object) ?? { detail: "The backend refused the request." },
-        { status: response.status },
+        { status: response.status, headers: retryAfter(response) },
       );
     }
-    return NextResponse.json(data, { status: 201 });
+    // 201 for a new item, 200 when this subject was already raised and is still open.
+    return NextResponse.json(data, { status: response.status === 200 ? 200 : 201 });
   } catch {
     return NextResponse.json({ detail: "Could not reach the Mykronos backend." }, { status: 502 });
   }

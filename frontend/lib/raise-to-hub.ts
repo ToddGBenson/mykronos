@@ -17,6 +17,35 @@ export function hubLinkText(link: RaisedLink): string {
   return `TheHub ${link.hub_kind} #${link.hub_id} · ${status}`;
 }
 
+/** What the control shows for a subject that was already raised and is still open. */
+export function alreadyRaisedText(link: RaisedLink): string {
+  return `TheHub ${link.hub_kind} #${link.hub_id} · already raised, so nothing new was filed (the title and note were not sent)`;
+}
+
+/**
+ * The link the control shows for the backend's answer to a raise. A 201 is
+ * raised by you, just now. `already_raised` is an item that was there before:
+ * it is not claimed as yours, and it has no time.
+ */
+export function raisedFromAnswer(
+  subject: string,
+  answer: { hub_kind: string; hub_id: number; already_raised?: boolean },
+  now: Date,
+): { link: RaisedLink; already: boolean } {
+  const already = answer.already_raised === true;
+  return {
+    already,
+    link: {
+      subject,
+      hub_kind: answer.hub_kind,
+      hub_id: answer.hub_id,
+      status: "open",
+      raised_by: already ? "an earlier raise" : "you",
+      raised_at: already ? null : now.toISOString(),
+    },
+  };
+}
+
 /** The links by subject. A failed read is an empty map: the rows still offer to raise. */
 export function raisedLookup(read: RaisedRead): Map<string, RaisedLink> {
   const map = new Map<string, RaisedLink>();

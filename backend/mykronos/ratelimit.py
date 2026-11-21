@@ -37,8 +37,26 @@ class SlidingWindowLimiter:
         hits.append(now)
         return True, 0
 
+    def refund(self, key: str) -> None:
+        """Give back the newest hit recorded for ``key``. For a request that was
+        allowed but then failed for a reason that is not the caller's: it must
+        not use up the caller's allowance (TheHub #61379)."""
+        hits = self._hits.get(key)
+        if hits:
+            hits.pop()
+
     def reset(self, key: str | None = None) -> None:
         if key is None:
             self._hits.clear()
         else:
             self._hits.pop(key, None)
+
+
+def hourly_refusal(what: str, actor: str, limit: int, retry_after: int) -> str:
+    """The 429 message for a per-actor hourly limit (TheHub #61379): what is
+    limited, how many, who used them, and when to come back."""
+    minutes = max(1, -(-retry_after // 60))
+    return (
+        f"{what} is limited to {limit} per hour for each actor, and {actor} has used "
+        f"them. Try again in about {minutes} minute(s)."
+    )

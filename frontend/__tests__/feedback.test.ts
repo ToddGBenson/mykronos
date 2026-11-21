@@ -79,6 +79,7 @@ describe("the target", () => {
     const response = await route.POST(
       new Request("http://dashboard.test/api/feedback", {
         method: "POST",
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(feedbackBody({ ...BLANK_DRAFT, summary: "abc" }, "/x", "0.1.0")),
       }),
     );
@@ -97,7 +98,11 @@ describe("the target", () => {
     });
 
     const response = await route.POST(
-      new Request("http://dashboard.test/api/feedback", { method: "POST", body: "{}" }),
+      new Request("http://dashboard.test/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
     );
 
     expect(response.status).toBe(503);

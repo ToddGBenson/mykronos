@@ -3587,6 +3587,12 @@ export interface paths {
          *     or health dependency, with MyKronos's evidence attached (TheHub #60911).
          *     The raise is audited with the caller's actor, kind and provenance, which is
          *     also how the row it came from finds its Hub id again.
+         *
+         *     A subject whose earlier raise is still open in TheHub is not raised again:
+         *     the answer is that item, with `already_raised` and a 200. Each actor may
+         *     file `hub_filings_per_actor_per_hour` new items an hour (429 past it, audited
+         *     as `hub_raise_refused`); a duplicate or a failure on TheHub's side does not
+         *     spend it (TheHub #61379).
          */
         post: operations["raise_in_hub_api_dashboard_raise_post"];
         delete?: never;
@@ -5248,8 +5254,9 @@ export interface paths {
          * File Feedback
          * @description File one TheHub backlog story from the dashboard's Feedback dialog.
          *
-         *     503 when no Hub is configured, and 502 when TheHub refused or could not be
-         *     reached. Every attempt is audit-logged.
+         *     503 when no Hub is configured, 502 when TheHub refused or could not be
+         *     reached, and 429 past `hub_filings_per_actor_per_hour` reports an hour
+         *     from one actor (TheHub #61379). Every attempt is audit-logged.
          */
         post: operations["file_feedback_api_feedback_post"];
         delete?: never;
@@ -11962,6 +11969,11 @@ export interface components {
             hub_id: number;
             /** Title */
             title: string;
+            /**
+             * Already Raised
+             * @default false
+             */
+            already_raised: boolean;
         };
         /** RaisedLinkOut */
         RaisedLinkOut: {
