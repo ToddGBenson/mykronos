@@ -8364,20 +8364,30 @@ jobs:
       - get: zap
         attempts: *retry_fetch
       - *preflight
-      # One task, for the same reason dast-demo uses one: Concourse creates
-      # output volumes root-owned and this image runs as the unprivileged `zap`
-      # user, so a separate upload task cannot read the report.
+      # TheHub #62099: staging runs on the laptop that hosts the `linux-3`
+      # worker (incident 37414 took it off this host), reachable only over
+      # that laptop's docker bridge -- no LAN listener, no firewall change. So
+      # the scan runs ON linux-3 (`small` is its tag alone) and the upload,
+      # which only this host can reach, is `report-dast` below. Only the
+      # target crosses to linux-3: no token is in this task's params.
+      #
+      # It runs as root because Concourse creates output volumes root-owned
+      # and the image's `zap` user could not write the report into `dast`
+      # (the reason this used to be one task). Root inside this disposable
+      # container only; nothing here is privileged.
       - task: zap-baseline
+        tags: [small]
         container_limits: {cpu: 512}
         image: zap
         timeout: 45m
         config:
           platform: linux
           inputs: [{ name: source }]
+          outputs: [{ name: dast }]
           params:
-            <<: *mykronos_env
             TARGET_URL: ((thehub-staging-url))
           run:
+            user: root
             path: bash
             args:
               - -ec
@@ -8442,16 +8452,9 @@ jobs:
                   exit 1
                 }
 
-                pip install --quiet --user --break-system-packages \
-                  --no-warn-script-location \
-                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
-                  echo "::error::Could not install the Mykronos uploader."
-                  exit 1
-                }
-
-                # The source volume is root-owned and this task runs as `zap`,
-                # so git refuses it as dubious ownership; the git resource in
-                # this same build put it there, so marking it safe is correct.
+                # The source volume came from the git resource in this same build;
+                # marking it safe keeps git from refusing it as dubious ownership
+                # whichever user runs this.
                 git config --global --add safe.directory "$PWD/source"
                 COMMIT_SHA=$(git -C source rev-parse HEAD)
 
@@ -8499,8 +8502,8 @@ jobs:
                 # reported as "the target serves different content", which is a
                 # different problem with a different fix.
                 # Into a writable directory, and NOT the working directory.
-                # This task runs as the unprivileged `zap` user against a
-                # root-owned volume, so `-o served.probe` failed with curl 23,
+                # This task ran as the image's `zap` user against a root-owned
+                # volume until #62099, so `-o served.probe` failed with curl 23,
                 # "Failure writing output to destination" -- the fetch had
                 # already succeeded. `zap-baseline` uses /zap/wrk for the same
                 # reason, and that directory is created above.
@@ -8556,10 +8559,52 @@ jobs:
 
                 echo "Target verified: ${PROBE_REL} served by ${TARGET_URL} matches ${COMMIT_SHA}."
 
+                # Hand the verified report to the host (#62099). Only after every
+                # check above has passed: a refusal exits before this, the job
+                # stops, and report-dast never runs.
+                cp -a /zap/wrk/. dast/
+                printf '%s\n' "$COMMIT_SHA" > dast/commit-sha
+                chmod -R a+rX dast
+                echo "ZAP reported $(grep -o '"alert"' dast/zap.json | wc -l) alert entries against staging"
 
+      # The upload, from this host (#62099): linux-3 cannot reach Mykronos,
+      # and the token stays here. It re-refuses an empty report rather than
+      # trusting the handover.
+      - task: report-dast
+        container_limits: {cpu: 512}
+        image: python
+        timeout: 15m
+        params: *mykronos_env
+        config:
+          platform: linux
+          inputs: [{ name: source }, { name: dast }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                test -s dast/zap.json || {
+                  echo "::error::ZAP wrote no report."
+                  exit 1
+                }
+                COMMIT_SHA=$(cat dast/commit-sha 2>/dev/null || true)
+                test -n "$COMMIT_SHA" || {
+                  echo "::error::The scan handed over no commit; nothing is filed."
+                  exit 1
+                }
+                # pip installs the uploader from git, and python:3.14-slim has no
+                # git. apt over IPv4 only (#59976).
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git >/dev/null || {
+                  echo "::error::Could not install git for the Mykronos uploader."
+                  exit 1
+                }
+                git config --global --add safe.directory "$PWD/source"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 MYKRONOS_JOB=dast-staging python3 -m mykronos.upload \
                   --capability dast --tool zap-staging \
-                  --results-path /zap/wrk \
+                  --results-path dast \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$COMMIT_SHA" \
@@ -8569,7 +8614,6 @@ jobs:
                   echo "::error::Uploading the DAST findings to Mykronos failed."
                   exit 1
                 }
-                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against staging"
 
   # == Cloud posture ========================================================
   #
