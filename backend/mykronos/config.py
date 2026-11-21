@@ -455,7 +455,9 @@ class Settings(BaseSettings):
             "whatever this lists. TheHub's develop requires no check, but its merge "
             "waits on the approval at the head, so until TheHub #61953 its requests "
             "were filed by hand before every release. A JSON list in the "
-            "environment; an empty list asks only where the check is required."
+            "environment; an empty list asks only where the check is required. "
+            "deploy/mykronos/docker-compose.yml does not pass it: the default is "
+            "this deployment's value."
         ),
     )
 
