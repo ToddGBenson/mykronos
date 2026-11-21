@@ -344,6 +344,6 @@ class TestPersonOnlyActionsStayRefused:
         revoked = gated.post("/api/risk-acceptances/x/revoke", json={"reason": "x"}, headers=full)
 
         assert decided.status_code == 409
-        assert "own" in decided.json()["detail"].lower()
+        assert "the approver is the requester" in decided.json()["detail"]
         assert unminted.status_code == 403
         assert revoked.status_code == 403
