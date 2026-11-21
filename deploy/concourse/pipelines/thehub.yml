@@ -8364,202 +8364,280 @@ jobs:
       - get: zap
         attempts: *retry_fetch
       - *preflight
-      # One task, for the same reason dast-demo uses one: Concourse creates
-      # output volumes root-owned and this image runs as the unprivileged `zap`
-      # user, so a separate upload task cannot read the report.
-      - task: zap-baseline
+      # TheHub #62099: staging runs on the laptop that hosts the `linux-3`
+      # worker (incident 37414 took it off this host), reachable only over
+      # that laptop's docker bridge -- no LAN listener, no firewall change. So
+      # the scan runs ON linux-3 (`small` is its tag alone) and the upload,
+      # which only this host can reach, is `report-dast` below. Only the
+      # target crosses to linux-3: no token is in this task's params.
+      #
+      # It runs as root because Concourse creates output volumes root-owned
+      # and the image's `zap` user could not write the report into `dast`
+      # (the reason this used to be one task). Root inside this disposable
+      # container only; nothing here is privileged.
+      #
+      # Review of #1215: a task's own `timeout:` starts only once a worker is
+      # chosen, so with linux-3 off a bare tagged step held serial group
+      # `dast` (and every DAST lane behind it) forever, reporting nothing.
+      # So, as every remote job here does: a 5m probe first, and the scan in a
+      # `do:` whose `timeout:` includes the wait for a worker, both with
+      # `linux_absent` on failure and error. An absent laptop then reads as
+      # errored (nothing judged), never failed and never green; a scan that
+      # ran writes `ran/rc` and keeps its own verdict.
+      - do:
+          - <<: *linux_probe
+            tags: [small]
+            image: python
+        timeout: 5m
+        on_failure:
+          <<: *linux_absent
+          input_mapping: { ran: probed }
+          params: { LINUX_STEP: the linux-3 probe }
+        on_error:
+          <<: *linux_absent
+          input_mapping: { ran: probed }
+          params: { LINUX_STEP: the linux-3 probe }
+      - do:
+          - task: zap-baseline
+            tags: [small]
+            container_limits: {cpu: 512}
+            image: zap
+            timeout: 45m
+            config:
+              platform: linux
+              inputs: [{ name: source }]
+              outputs: [{ name: dast }, { name: ran }]
+              params:
+                TARGET_URL: ((thehub-staging-url))
+              run:
+                user: root
+                path: bash
+                args:
+                  - -ec
+                  - |
+                    trap 'printf "%s\n" "$?" > ran/rc' EXIT
+                    set -uo pipefail
+
+                    # The tool, before the target (#59975). Every curl below is
+                    # written `if ! curl ...`, and that construct cannot tell
+                    # "there is no curl in this image" (127) from "the target did
+                    # not answer" (7): both simply make the `if` true, and the
+                    # message that prints names the target either way. This job
+                    # spent two days being read as a staging outage on exactly that
+                    # ambiguity while the real cause -- curl 23, an unwritable
+                    # destination -- sat in the build log.
+                    #
+                    # So the binary is established once, up front, in its own words.
+                    # After this line every later curl failure is a statement about
+                    # the target or the filesystem, never about the toolchain, and
+                    # the messages below are entitled to say so.
+                    #
+                    # Not hypothetical in this estate: `python:3.14-slim`, which the
+                    # report-to-hub tasks in this same pipeline use, ships with no
+                    # curl at all and they apt-get it before use.
+                    if ! command -v curl >/dev/null 2>&1; then
+                      echo "::error::curl is not installed in this task's image."
+                      echo "::error::This is a MISSING TOOL, not an unreachable target -- nothing"
+                      echo "::error::about $TARGET_URL has been tested. Install curl in the image"
+                      echo "::error::or add it to this task; do not read this as a staging outage."
+                      exit 1
+                    fi
+
+                    # Reachability first (L0001). Staging is deployed by hand, so
+                    # "nobody has brought it up since the last reboot" is a normal
+                    # state here in a way it is not for demo -- and an unreachable
+                    # target produces an empty report that reads as a clean one.
+                    if ! curl --fail --silent --max-time 30 \
+                         --retry 5 --retry-delay 6 --retry-all-errors \
+                         -o /dev/null "$TARGET_URL"; then
+                      echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
+                      echo "::error::curl is present and ran (checked above), so this is the TARGET,"
+                      echo "::error::not the tooling."
+                      exit 1
+                    fi
+
+                    # zap-baseline hardcodes /zap/wrk as its report directory and
+                    # checks only that it exists; the image ships without it.
+                    mkdir -p /zap/wrk
+
+                    # -I: informational warnings do not fail the run -- the severity
+                    # decision is Mykronos's. -m 5 bounds the spider.
+                    rc=0
+                    zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
+
+                    # 0 = nothing, 1 = a FAIL, 2 = warnings. All are results.
+                    if [ "$rc" -gt 2 ]; then
+                      echo "::error::zap-baseline exited $rc - a scan failure, not a result"
+                      exit "$rc"
+                    fi
+
+                    test -s /zap/wrk/zap.json || {
+                      echo "::error::ZAP wrote no report."
+                      exit 1
+                    }
+
+                    # The source volume came from the git resource in this same build;
+                    # marking it safe keeps git from refusing it as dubious ownership
+                    # whichever user runs this.
+                    git config --global --add safe.directory "$PWD/source"
+                    COMMIT_SHA=$(git -C source rev-parse HEAD)
+
+                    test -n "$COMMIT_SHA" || {
+                      echo "::error::Could not determine the commit under scan."
+                      exit 1
+                    }
+
+                    # Prove the target actually serves this commit (#305).
+                    #
+                    # This job checks out `source` and then scans a long-running
+                    # container that mounts a host directory. Nothing connected the
+                    # two, so `rev-parse HEAD` described the checkout while ZAP
+                    # described whatever the container happened to hold. Measured
+                    # 2026-09-14:
+                    #
+                    #   staging served   772c9fc080f9   2026-04-26
+                    #   DAST recorded    675086e86237   2026-09-12
+                    #   production ran   f725fe1e293d   2026-09-13
+                    #
+                    # Three different commits, and four and a half months of ZAP
+                    # results filed against code that was never scanned.
+                    #
+                    # The check compares a served asset against the checkout copy
+                    # byte for byte. Deliberately NOT `sw.js` or `index.html`:
+                    # deploy.sh sed-stamps those and then restores the placeholder
+                    # afterwards (its Story #2809 block), so they differ from the
+                    # checkout even when the deploy is correct. Nothing under
+                    # frontend/js/ is ever stamped, so those files compare cleanly.
+                    #
+                    # The file is chosen deterministically rather than hardcoded, so
+                    # a rename cannot silently turn this check off.
+                    PROBE_REL=$(cd source/frontend && ls js/*.js 2>/dev/null | sort | head -1)
+
+                    test -n "$PROBE_REL" || {
+                      echo "::error::No asset under frontend/js/ to verify the target with."
+                      exit 1
+                    }
+
+                    WANT=$(sha256sum "source/frontend/${PROBE_REL}" | cut -d" " -f1)
+
+                    # To a file, not down a pipe. `curl | sha256sum` hashes an empty
+                    # stream when the fetch fails, and the sha256 of nothing is a
+                    # real-looking hash that differs from WANT -- so a 404 would be
+                    # reported as "the target serves different content", which is a
+                    # different problem with a different fix.
+                    # Into a writable directory, and NOT the working directory.
+                    # This task ran as the image's `zap` user against a root-owned
+                    # volume until #62099, so `-o served.probe` failed with curl 23,
+                    # "Failure writing output to destination" -- the fetch had
+                    # already succeeded. `zap-baseline` uses /zap/wrk for the same
+                    # reason, and that directory is created above.
+                    PROBE_FILE="/zap/wrk/served.probe"
+
+                    # The exit code is kept, because curl reports "could not
+                    # resolve", "connection refused", "HTTP 404" and "could not
+                    # write the file" through the same non-zero return, and those
+                    # need different things done. The first version of this printed
+                    # "Could not fetch" for all of them and named the wrong cause
+                    # in production on the first run.
+                    rc=0
+                    curl -fsS --max-time 20 -o "$PROBE_FILE" "${TARGET_URL%/}/${PROBE_REL}" || rc=$?
+                    if [ "$rc" -ne 0 ]; then
+                      case "$rc" in
+                        23) echo "::error::Fetched ${PROBE_REL} but could not write ${PROBE_FILE}." ;;
+                        22) echo "::error::The target returned an HTTP error for ${TARGET_URL%/}/${PROBE_REL}." ;;
+                        6|7) echo "::error::Could not reach ${TARGET_URL%/} to fetch ${PROBE_REL} -- the TARGET is unreachable from this task. curl is present and ran." ;;
+                        28) echo "::error::Timed out fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
+                        # 127 cannot happen after the `command -v curl` guard at the
+                        # top of this script, and is kept anyway: if that guard is
+                        # ever moved or dropped, this is the line that stops a
+                        # missing binary being filed as an unreachable target again.
+                        127) echo "::error::curl is not installed in this task's image -- a MISSING TOOL, not an unreachable target. ${TARGET_URL%/} was never contacted." ;;
+                        *)  echo "::error::curl exited ${rc} fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
+                      esac
+                      echo "::error::The scan ran, but what it scanned cannot be established, so"
+                      echo "::error::no findings are filed (#305)."
+                      exit 1
+                    fi
+                    GOT=$(sha256sum "$PROBE_FILE" | cut -d" " -f1)
+
+                    if [ "$WANT" != "$GOT" ]; then
+                      echo "::error::The target is not serving the commit this scan would record."
+                      echo "::error::  probe    : ${PROBE_REL}"
+                      echo "::error::  checkout : ${COMMIT_SHA}"
+                      echo "::error::  expected : ${WANT}"
+                      echo "::error::  served   : ${GOT}"
+                      echo "::error::"
+                      echo "::error::Staging mounts frontend-staging/, which is only refreshed by"
+                      echo "::error::scripts/hydrate-staging-frontend.sh. Nothing automated calls it,"
+                      echo "::error::so the tree can sit months behind frontend/. Run it on the host"
+                      echo "::error::and re-run this job."
+                      echo "::error::"
+                      echo "::error::Note a mismatch can also mean the asset 404d into the SPA"
+                      echo "::error::fallback: staging nginx answers a missing file with 200 and"
+                      echo "::error::index.html, so an absent asset never shows up as a 404."
+                      echo "::error::"
+                      echo "::error::Findings are NOT filed. A DAST result attributed to code that"
+                      echo "::error::was never served is worse than no DAST result (#305)."
+                      exit 1
+                    fi
+
+                    echo "Target verified: ${PROBE_REL} served by ${TARGET_URL} matches ${COMMIT_SHA}."
+
+                    # Hand the verified report to the host (#62099). Only after every
+                    # check above has passed: a refusal exits before this, the job
+                    # stops, and report-dast never runs.
+                    cp -a /zap/wrk/. dast/
+                    printf '%s\n' "$COMMIT_SHA" > dast/commit-sha
+                    chmod -R a+rX dast
+                    echo "ZAP reported $(grep -o '"alert"' dast/zap.json | wc -l) alert entries against staging"
+
+        timeout: 50m
+        on_failure:
+          <<: *linux_absent
+          params: { LINUX_STEP: dast-staging/zap-baseline }
+        on_error:
+          <<: *linux_absent
+          params: { LINUX_STEP: dast-staging/zap-baseline }
+
+      # The upload, from this host (#62099): linux-3 cannot reach Mykronos,
+      # and the token stays here. It re-refuses an empty report rather than
+      # trusting the handover.
+      - task: report-dast
         container_limits: {cpu: 512}
+        # The job's own zap image, on this host: it ships git and pip, so the
+        # upload needs no package install that could fail after a finished
+        # scan (review of #1215). Root so pip may install into the image's
+        # Python (PEP 668 is why PIP_BREAK_SYSTEM_PACKAGES is set), in this
+        # disposable container only; nothing here is privileged.
         image: zap
-        timeout: 45m
+        timeout: 15m
+        params:
+          <<: *mykronos_env
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
         config:
           platform: linux
-          inputs: [{ name: source }]
-          params:
-            <<: *mykronos_env
-            TARGET_URL: ((thehub-staging-url))
+          inputs: [{ name: source }, { name: dast }]
           run:
+            user: root
             path: bash
             args:
               - -ec
               - |
                 set -uo pipefail
-
-                # The tool, before the target (#59975). Every curl below is
-                # written `if ! curl ...`, and that construct cannot tell
-                # "there is no curl in this image" (127) from "the target did
-                # not answer" (7): both simply make the `if` true, and the
-                # message that prints names the target either way. This job
-                # spent two days being read as a staging outage on exactly that
-                # ambiguity while the real cause -- curl 23, an unwritable
-                # destination -- sat in the build log.
-                #
-                # So the binary is established once, up front, in its own words.
-                # After this line every later curl failure is a statement about
-                # the target or the filesystem, never about the toolchain, and
-                # the messages below are entitled to say so.
-                #
-                # Not hypothetical in this estate: `python:3.14-slim`, which the
-                # report-to-hub tasks in this same pipeline use, ships with no
-                # curl at all and they apt-get it before use.
-                if ! command -v curl >/dev/null 2>&1; then
-                  echo "::error::curl is not installed in this task's image."
-                  echo "::error::This is a MISSING TOOL, not an unreachable target -- nothing"
-                  echo "::error::about $TARGET_URL has been tested. Install curl in the image"
-                  echo "::error::or add it to this task; do not read this as a staging outage."
-                  exit 1
-                fi
-
-                # Reachability first (L0001). Staging is deployed by hand, so
-                # "nobody has brought it up since the last reboot" is a normal
-                # state here in a way it is not for demo -- and an unreachable
-                # target produces an empty report that reads as a clean one.
-                if ! curl --fail --silent --max-time 30 \
-                     --retry 5 --retry-delay 6 --retry-all-errors \
-                     -o /dev/null "$TARGET_URL"; then
-                  echo "::error::$TARGET_URL is not answering after retries. Refusing to report an empty scan as clean."
-                  echo "::error::curl is present and ran (checked above), so this is the TARGET,"
-                  echo "::error::not the tooling."
-                  exit 1
-                fi
-
-                # zap-baseline hardcodes /zap/wrk as its report directory and
-                # checks only that it exists; the image ships without it.
-                mkdir -p /zap/wrk
-
-                # -I: informational warnings do not fail the run -- the severity
-                # decision is Mykronos's. -m 5 bounds the spider.
-                rc=0
-                zap-baseline.py -t "$TARGET_URL" -J zap.json -I -m 5 || rc=$?
-
-                # 0 = nothing, 1 = a FAIL, 2 = warnings. All are results.
-                if [ "$rc" -gt 2 ]; then
-                  echo "::error::zap-baseline exited $rc - a scan failure, not a result"
-                  exit "$rc"
-                fi
-
-                test -s /zap/wrk/zap.json || {
+                test -s dast/zap.json || {
                   echo "::error::ZAP wrote no report."
                   exit 1
                 }
-
-                pip install --quiet --user --break-system-packages \
-                  --no-warn-script-location \
-                  "mykronos @ git+https://github.com/ToddGBenson/mykronos@${MYKRONOS_REF}#subdirectory=backend" || {
-                  echo "::error::Could not install the Mykronos uploader."
-                  exit 1
-                }
-
-                # The source volume is root-owned and this task runs as `zap`,
-                # so git refuses it as dubious ownership; the git resource in
-                # this same build put it there, so marking it safe is correct.
-                git config --global --add safe.directory "$PWD/source"
-                COMMIT_SHA=$(git -C source rev-parse HEAD)
-
+                COMMIT_SHA=$(cat dast/commit-sha 2>/dev/null || true)
                 test -n "$COMMIT_SHA" || {
-                  echo "::error::Could not determine the commit under scan."
+                  echo "::error::The scan handed over no commit; nothing is filed."
                   exit 1
                 }
-
-                # Prove the target actually serves this commit (#305).
-                #
-                # This job checks out `source` and then scans a long-running
-                # container that mounts a host directory. Nothing connected the
-                # two, so `rev-parse HEAD` described the checkout while ZAP
-                # described whatever the container happened to hold. Measured
-                # 2026-09-14:
-                #
-                #   staging served   772c9fc080f9   2026-04-26
-                #   DAST recorded    675086e86237   2026-09-12
-                #   production ran   f725fe1e293d   2026-09-13
-                #
-                # Three different commits, and four and a half months of ZAP
-                # results filed against code that was never scanned.
-                #
-                # The check compares a served asset against the checkout copy
-                # byte for byte. Deliberately NOT `sw.js` or `index.html`:
-                # deploy.sh sed-stamps those and then restores the placeholder
-                # afterwards (its Story #2809 block), so they differ from the
-                # checkout even when the deploy is correct. Nothing under
-                # frontend/js/ is ever stamped, so those files compare cleanly.
-                #
-                # The file is chosen deterministically rather than hardcoded, so
-                # a rename cannot silently turn this check off.
-                PROBE_REL=$(cd source/frontend && ls js/*.js 2>/dev/null | sort | head -1)
-
-                test -n "$PROBE_REL" || {
-                  echo "::error::No asset under frontend/js/ to verify the target with."
-                  exit 1
-                }
-
-                WANT=$(sha256sum "source/frontend/${PROBE_REL}" | cut -d" " -f1)
-
-                # To a file, not down a pipe. `curl | sha256sum` hashes an empty
-                # stream when the fetch fails, and the sha256 of nothing is a
-                # real-looking hash that differs from WANT -- so a 404 would be
-                # reported as "the target serves different content", which is a
-                # different problem with a different fix.
-                # Into a writable directory, and NOT the working directory.
-                # This task runs as the unprivileged `zap` user against a
-                # root-owned volume, so `-o served.probe` failed with curl 23,
-                # "Failure writing output to destination" -- the fetch had
-                # already succeeded. `zap-baseline` uses /zap/wrk for the same
-                # reason, and that directory is created above.
-                PROBE_FILE="/zap/wrk/served.probe"
-
-                # The exit code is kept, because curl reports "could not
-                # resolve", "connection refused", "HTTP 404" and "could not
-                # write the file" through the same non-zero return, and those
-                # need different things done. The first version of this printed
-                # "Could not fetch" for all of them and named the wrong cause
-                # in production on the first run.
-                rc=0
-                curl -fsS --max-time 20 -o "$PROBE_FILE" "${TARGET_URL%/}/${PROBE_REL}" || rc=$?
-                if [ "$rc" -ne 0 ]; then
-                  case "$rc" in
-                    23) echo "::error::Fetched ${PROBE_REL} but could not write ${PROBE_FILE}." ;;
-                    22) echo "::error::The target returned an HTTP error for ${TARGET_URL%/}/${PROBE_REL}." ;;
-                    6|7) echo "::error::Could not reach ${TARGET_URL%/} to fetch ${PROBE_REL} -- the TARGET is unreachable from this task. curl is present and ran." ;;
-                    28) echo "::error::Timed out fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
-                    # 127 cannot happen after the `command -v curl` guard at the
-                    # top of this script, and is kept anyway: if that guard is
-                    # ever moved or dropped, this is the line that stops a
-                    # missing binary being filed as an unreachable target again.
-                    127) echo "::error::curl is not installed in this task's image -- a MISSING TOOL, not an unreachable target. ${TARGET_URL%/} was never contacted." ;;
-                    *)  echo "::error::curl exited ${rc} fetching ${TARGET_URL%/}/${PROBE_REL}." ;;
-                  esac
-                  echo "::error::The scan ran, but what it scanned cannot be established, so"
-                  echo "::error::no findings are filed (#305)."
-                  exit 1
-                fi
-                GOT=$(sha256sum "$PROBE_FILE" | cut -d" " -f1)
-
-                if [ "$WANT" != "$GOT" ]; then
-                  echo "::error::The target is not serving the commit this scan would record."
-                  echo "::error::  probe    : ${PROBE_REL}"
-                  echo "::error::  checkout : ${COMMIT_SHA}"
-                  echo "::error::  expected : ${WANT}"
-                  echo "::error::  served   : ${GOT}"
-                  echo "::error::"
-                  echo "::error::Staging mounts frontend-staging/, which is only refreshed by"
-                  echo "::error::scripts/hydrate-staging-frontend.sh. Nothing automated calls it,"
-                  echo "::error::so the tree can sit months behind frontend/. Run it on the host"
-                  echo "::error::and re-run this job."
-                  echo "::error::"
-                  echo "::error::Note a mismatch can also mean the asset 404d into the SPA"
-                  echo "::error::fallback: staging nginx answers a missing file with 200 and"
-                  echo "::error::index.html, so an absent asset never shows up as a 404."
-                  echo "::error::"
-                  echo "::error::Findings are NOT filed. A DAST result attributed to code that"
-                  echo "::error::was never served is worse than no DAST result (#305)."
-                  exit 1
-                fi
-
-                echo "Target verified: ${PROBE_REL} served by ${TARGET_URL} matches ${COMMIT_SHA}."
-
-
+                git config --global --add safe.directory "$PWD/source"
+                bash -c "$MYKRONOS_INSTALL_UPLOADER"
                 MYKRONOS_JOB=dast-staging python3 -m mykronos.upload \
                   --capability dast --tool zap-staging \
-                  --results-path /zap/wrk \
+                  --results-path dast \
                   --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
                   --repo ToddGBenson/TheHub \
                   --commit-sha "$COMMIT_SHA" \
@@ -8569,7 +8647,6 @@ jobs:
                   echo "::error::Uploading the DAST findings to Mykronos failed."
                   exit 1
                 }
-                echo "ZAP reported $(grep -o '"alert"' /zap/wrk/zap.json | wc -l) alert entries against staging"
 
   # == Cloud posture ========================================================
   #

@@ -45,7 +45,9 @@ PARAM = "MYKRONOS_INSTALL_UPLOADER"
 # mykronos.yml 16 -> 17 in TheHub #61761: `sast` splits into a remote `semgrep`,
 # which still installs the package for `mykronos.reachability` and holds no
 # token, and `upload-semgrep` on this host, which uploads.
-CALL_SITES = {"mykronos.yml": 17, "thehub.yml": 17, "personal-soc.yml": 7}
+# thehub.yml 17 -> 18 in TheHub #62099: dast-staging's zap-baseline moves to
+# linux-3 holding no token, and `report-dast` on this host installs and uploads.
+CALL_SITES = {"mykronos.yml": 17, "thehub.yml": 18, "personal-soc.yml": 7}
 
 #: The only tasks that may declare `infra`, and why each is safe: each runs
 #: before anything in its job reaches a verdict, so a failed install there means
@@ -85,7 +87,8 @@ OOM_TASKS = {
 #: judged; a step that ran and failed has its output, and stays a failure.
 LINUX_ABSENT_TASKS = {
     ("thehub.yml", job, "linux-worker-absent")
-    for job in ("post-merge", "pr-gates", "gate-smoke", "container-tiers")
+    # TheHub #62099: dast-staging's scan runs on linux-3 behind the same probe.
+    for job in ("post-merge", "pr-gates", "gate-smoke", "container-tiers", "dast-staging")
 }
 
 #: The review of #1177: this host's checks on what a remote task wrote. Each
