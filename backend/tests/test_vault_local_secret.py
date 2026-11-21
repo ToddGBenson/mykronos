@@ -340,6 +340,40 @@ def test_the_admin_token_readers_refuse_a_broken_file_beside_init_json(
 
 
 @needs_shell
+# PowerShell double-quoted text: backtick escapes, so the second is a tab, CR, LF and spaces.
+@pytest.mark.parametrize("value", [" ", "`t`r`n  "], ids=["space", "mixed-whitespace"])
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_blank_admin_token_is_refused_as_the_wrong_shape(
+    shell: str, value: str, tmp_path: Path
+) -> None:
+    """A whitespace-only AdminToken is no token: refused like a blank
+    UnsealKeys, never forwarded to Vault, and init.json is not consulted."""
+    env, _ = _fake_docker(tmp_path, key="unused")
+    init = tmp_path / "init.json"
+    init.write_text(INIT_JSON, encoding="ascii")
+    env = dict(env, HELPER=str(HELPER), INIT=str(init))
+    made = _run(
+        shell,
+        [
+            "-Command",
+            "$ErrorActionPreference='Stop';"
+            f" @{{ UnsealKeys = (ConvertTo-SecureString 'k' -AsPlainText -Force);"
+            f" AdminToken = (ConvertTo-SecureString \"{value}\" -AsPlainText -Force) }} |"
+            " Export-Clixml -LiteralPath $env:MYKRONOS_VAULT_LOCAL_SECRET",
+        ],
+        env,
+    )
+    assert made.returncode == 0, made.stderr
+
+    result = _run(shell, ["-Command", ADMIN_TOKEN_PROBE], env)
+
+    out = result.stdout + result.stderr
+    assert result.returncode == 3, out
+    assert "wrong shape" in out and "AdminToken is empty" in out
+    assert "root token" not in out
+
+
+@needs_shell
 @pytest.mark.parametrize("shell", SHELLS)
 def test_the_admin_token_readers_warn_when_they_fall_back_to_the_root_token(
     shell: str, tmp_path: Path

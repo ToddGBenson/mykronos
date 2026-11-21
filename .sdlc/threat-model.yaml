@@ -106,8 +106,11 @@ assets:
     name: Vault unseal key and admin token (DPAPI file; init.json until the move)
     description: >-
       Since TheHub #60836 the resting place is a DPAPI CurrentUser file
-      (%LOCALAPPDATA%\mykronos-vault\vault-local.clixml, owner-only ACL with
-      inheritance off), read through deploy/concourse/VaultLocalSecret.ps1. It
+      (%LOCALAPPDATA%\mykronos-vault\vault-local.clixml), read through
+      deploy/concourse/VaultLocalSecret.ps1. Nothing in this repository writes
+      it or sets its ACL: the operator's move must create the file and its
+      directory owner-only with inheritance off and read that back, and the
+      reader does not check it. DPAPI is the control; the ACL is a second layer. It
       holds the single unseal key and an admin-policy token that replaces the
       root token, which the operator's move revokes. A file that exists but
       cannot be used is refused, never treated as absent. Before the move,

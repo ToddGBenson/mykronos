@@ -132,7 +132,9 @@ when it exists and `init.json` only when it does not, warning each time they
 fall back. A DPAPI file that exists but cannot be used (zero bytes, not XML,
 the wrong shape, or not decryptable by this logon) is refused with an error
 saying which; it is never read as absent, so a bad move cannot keep running on
-the plaintext root token.
+the plaintext root token. A file holding UnsealKeys but no AdminToken (a move
+stopped between its two writes) is refused the same way by every token reader
+until the move is re-run and writes AdminToken; the unsealer still reads it.
 
 DPAPI makes the file useless to another account, to a copy of the disk and to
 a backup; it does not protect it from code running as the same user. A task

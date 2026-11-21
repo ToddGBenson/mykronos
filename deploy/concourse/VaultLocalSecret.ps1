@@ -159,7 +159,8 @@ function Get-VaultAdminToken {
   $path = Get-VaultLocalSecretPath
   if (Test-Path -LiteralPath $path) {
     $token = Read-VaultLocalSecret -Name 'AdminToken' -Path $path
-    if (-not $token) {
+    # Blank or whitespace-only is no token, as a blank UnsealKeys is no key.
+    if ([string]::IsNullOrWhiteSpace($token)) {
       throw "the DPAPI file $path has the wrong shape: AdminToken is empty. Not falling back to init.json while this file exists."
     }
     return [pscustomobject]@{ Token = $token; Source = "the admin token in $path"; Warning = $null }
