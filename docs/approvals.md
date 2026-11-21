@@ -76,9 +76,10 @@ account.
 
 **Requests nobody made.** Every two minutes `job:pull-request-requests` looks
 at the open pull requests of each onboarded repository whose default branch
-requires `independent-review`, and of each repository in
-`MYKRONOS_PULL_REQUEST_AUTO_REQUEST_REPOS` (by default TheHub, whose develop
-requires no check but whose merge waits on the approval at the head). A
+requires `independent-review`, and of each repository in the
+`pull_request_auto_request_repos` setting, by default TheHub, whose develop
+requires no check but whose merge waits on the approval at the head. The compose file does
+not pass that setting, so the deployed stack reads its default. A
 non-draft head that nobody has asked about for ten minutes gets a request,
 filed as the job, which only asks: it never decides. When a pull request moves
 to a new head, any pending request for an earlier head becomes `superseded`,
