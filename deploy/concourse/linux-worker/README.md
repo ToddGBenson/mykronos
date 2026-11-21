@@ -77,27 +77,34 @@ the worker.
 
 The tasks routed here are listed in `REMOTE_COMPUTE` in
 `backend/tests/test_concourse_worker_tags.py` (TheHub #61659), which also
-checks each one is compute only: no params, no pipeline var, no host
-address, no registry read or push, a public image, not privileged. Today
-that is thehub's `image-refresh` `build` alone.
+checks each one is compute only: no credential, no host address, no
+pipeline var but the non-secret ones it lists, no registry read or push, a
+public image, not privileged. The result leaves in an output, and a task on
+this host checks it and uploads it.
 
-**Only non-gating lanes may carry `linux`.** Concourse has no fallback from
-a tagged step to an untagged worker: while no `linux` worker is registered,
-a tagged step waits for one. A task's own `timeout:` does not cover that
-wait (in 8.3.3 it starts only once a worker is chosen), so each routed task
-sits in a `do:` whose `timeout:` bounds the wait too, and the test checks
-it: with the remote host offline the run fails after 20m instead of holding
-its serial group indefinitely. On a lane that
-gates a merge or a delivery (`pr-gates`, or a job in another's `passed:`
-list) that is a false red, or a stopped delivery, every time the remote host
-is off or asleep. Moving a gating lane needs an always-on remote host or a
-second worker on this host carrying the same tag. `fly workers` shows
-whether a `linux` worker is registered.
+**A tagged step never falls back to an untagged worker.** While no `linux`
+worker is registered, a tagged step waits for one. A task's own `timeout:`
+does not cover that wait (in 8.3.3 it starts only once a worker is chosen),
+so each routed task sits in a `do:` or `try:` whose `timeout:` bounds the
+wait too, and the test checks it. An offline remote host then costs one of
+two things:
 
-The follow-up is the heavy lanes, `unit`'s pytest, `sast`'s semgrep,
-`dependencies`' osv-scanner, `secrets`' gitleaks and `prompt-evals`. Each
-runs its scan and its MyKronos upload in one task, so each first needs a
-compute task writing to an output and a separate upload task on this host.
+- the scans and long suites (mykronos `sast`, `dependencies`, `coverage`,
+  `time-travel`; thehub's `pr-gates`, `post-merge`, `container-tiers`) ask
+  for a remote worker first and ERROR within 5m when none answers, so
+  nothing behind them is judged until it is back (operator decision
+  2026-11-16);
+- mykronos's gating lanes `unit` and `frontend` (TheHub #61951) prefer a
+  remote worker and run on this host when none finishes them, so an offline
+  laptop costs a slower build, never a stopped risk gate. See "The gating
+  lanes" in `deploy/concourse/pipelines/mykronos.yml`.
+
+Still on this host: mykronos `lint-and-types`, `qa-spec-links`, `secrets`,
+`ai` and `iac` (the next slice of #61951), and the jobs that need this
+host's Docker engine, registry or MyKronos API: `build`, `publish-*`,
+`promote`, `demo-and-dast`, `oracle-gate`. `fly workers` shows whether a
+`linux` worker is registered; a build's `selected-worker` events name the
+worker each step ran on.
 
 ## Where things are on the Linux box
 

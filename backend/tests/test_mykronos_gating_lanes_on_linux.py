@@ -284,8 +284,12 @@ def test_the_frontend_report_uploads_a_verdict_and_nothing_else(
         (tmp_path / "ran" / "rc").write_text(rc + "\n", encoding="ascii")
     if ok:
         (tmp_path / "checked" / "ok").write_text(HOST + "\n", encoding="ascii")
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash on this host")
+    # The task's own shell: `bash -ec` and `set -uo pipefail`.
     proc = subprocess.run(
-        [_sh(), "-c", f"set -u\n{_report_gate()}\necho REPORTED"],
+        [bash, "-ec", f"set -uo pipefail\n{_report_gate()}\necho REPORTED"],
         cwd=tmp_path,
         capture_output=True,
         text=True,

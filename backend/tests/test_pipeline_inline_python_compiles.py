@@ -81,8 +81,9 @@ RUNTIME_ONLY: dict[tuple[str, str, str], str] = {}
 
 # How many inline programs each pipeline holds (#62133 N3). A change that adds
 # or removes one updates this on purpose; an extractor that stops seeing one
-# fails here instead of compiling less.
-PROGRAM_COUNTS = {"mykronos": 21, "thehub": 42, "personal-soc": 6}
+# fails here instead of compiling less. mykronos 21 -> 23 (TheHub #61951):
+# `remote-result` on unit and frontend; unit's uploader line moved, not added.
+PROGRAM_COUNTS = {"mykronos": 23, "thehub": 42, "personal-soc": 6}
 
 
 def _tasks(node: Any, name: str = "") -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:
