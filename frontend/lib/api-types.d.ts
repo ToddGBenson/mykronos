@@ -3590,8 +3590,9 @@ export interface paths {
          *
          *     A subject whose earlier raise is still open in TheHub is not raised again:
          *     the answer is that item, with `already_raised` and a 200. Each actor may
-         *     file `hub_filings_per_actor_per_hour` new items an hour (429 past it); a
-         *     duplicate does not spend it (TheHub #61379).
+         *     file `hub_filings_per_actor_per_hour` new items an hour (429 past it, audited
+         *     as `hub_raise_refused`); a duplicate or a failure on TheHub's side does not
+         *     spend it (TheHub #61379).
          */
         post: operations["raise_in_hub_api_dashboard_raise_post"];
         delete?: never;
