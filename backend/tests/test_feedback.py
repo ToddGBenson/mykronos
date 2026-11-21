@@ -261,3 +261,32 @@ class TestTheShape:
         r = client.post(URL, json=_report(bucket="sprint"), headers=admin_auth)
 
         assert r.status_code == 422
+
+
+class TestFilingIsLimitedPerActor:
+    def test_an_actor_over_the_limit_is_refused_and_nothing_more_is_filed(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        from mykronos.ratelimit import SlidingWindowLimiter
+
+        hub = StoryHub()
+        _attach(client, hub)
+        client.app.state.feedback_limiter = SlidingWindowLimiter(2, 3600.0)  # type: ignore[attr-defined]
+
+        codes = [client.post(URL, json=_report(), headers=admin_auth).status_code for _ in range(3)]
+
+        assert codes == [201, 201, 429]
+        assert len(hub.calls) == 2
+        refused = client.post(URL, json=_report(), headers=admin_auth)
+        assert "Retry-After" in refused.headers
+        assert "hour" in refused.json()["detail"]
+
+    def test_the_status_read_is_not_limited(
+        self, client: TestClient, admin_auth: dict[str, str]
+    ) -> None:
+        from mykronos.ratelimit import SlidingWindowLimiter
+
+        _attach(client, StoryHub())
+        client.app.state.feedback_limiter = SlidingWindowLimiter(1, 3600.0)  # type: ignore[attr-defined]
+        for _ in range(3):
+            assert client.get(URL, headers=admin_auth).status_code == 200
