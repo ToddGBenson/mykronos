@@ -331,7 +331,7 @@ class TestInternetFacingUnsetIsNotFalse:
         assert unset.overall_risk_score > recorded_false.overall_risk_score
 
     def test_the_policy_version_moved(self, policy: Any) -> None:
-        assert policy.version == "1.19"
+        assert policy.version == "1.20"
 
 
 # ---------------------------------------------------------------------------

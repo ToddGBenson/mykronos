@@ -157,7 +157,10 @@ class TestTheOracleInput:
         an auditable state, and not the same as never having been asked.
 
         Re-baselined at policy 1.19 (TheHub #61349): an unset internet_facing
-        is unknown, not false, and scores its own term. It was 0.0."""
+        is unknown, not false, and scores its own term. It was 0.0.
+        Re-baselined at policy 1.20 (TheHub #61556): an unset
+        data_classification and business_criticality score their worst
+        cases too."""
         repo_id = onboard(client, admin_auth).json()["id"]
         put_profile(client, admin_auth, repo_id)
         seed(client, run_compaction)
@@ -169,6 +172,8 @@ class TestTheOracleInput:
         assert profile["internet_facing_state"] == "unknown"
         assert profile["contribution"] == pytest.approx(
             policy.risk_profile.internet_facing_unknown_points
+            + policy.risk_profile.data_classification_unknown_points
+            + policy.risk_profile.business_criticality_unknown_points
         )
 
     def test_each_recorded_fact_is_its_own_term(
@@ -181,6 +186,8 @@ class TestTheOracleInput:
             repo_id,
             internet_facing=True,
             data_classification="regulated",
+            # Recorded, so only the two facts under test score (policy 1.20).
+            business_criticality="low",
         )
         seed(client, run_compaction)
 
@@ -201,12 +208,14 @@ class TestTheOracleInput:
         """Unbounded by design — an asset in three regimes carries three
         kinds of exposure, and a cap would hide the third."""
         repo_id = onboard(client, admin_auth).json()["id"]
-        # internet_facing recorded, so only the regimes score (policy 1.19).
+        # Every field recorded, so only the regimes score (policies 1.19, 1.20).
         put_profile(
             client,
             admin_auth,
             repo_id,
             internet_facing=False,
+            data_classification="public",
+            business_criticality="low",
             compliance_scope=["pci", "hipaa", "soc2"],
         )
         seed(client, run_compaction)

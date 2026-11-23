@@ -993,8 +993,14 @@ def _risk_profile_snapshot(
             )
         )
 
+    # Unset is not the mildest answer either (TheHub #61556, policy 1.20). The
+    # same rule as internet_facing above: a recorded profile that leaves these
+    # unset used to add nothing, which is what `public` and `low` add. Each
+    # unset field now scores the policy's stated worst case as its own term,
+    # and the explanation says "unset", never a value nobody recorded.
     classification = profile.get("data_classification")
     if classification:
+        classification_state = "recorded"
         points = weights.data_classification_points.get(str(classification), 0.0)
         if points:
             terms.append(
@@ -1005,9 +1011,27 @@ def _risk_profile_snapshot(
                     detail=f"data_classification={classification}, worth {points:g} points.",
                 )
             )
+    else:
+        classification_state = "unset"
+        if weights.data_classification_unknown_points:
+            terms.append(
+                Term(
+                    key="risk_profile.data_classification_unknown",
+                    label="Data classification unset",
+                    contribution=weights.data_classification_unknown_points,
+                    detail=(
+                        "The risk profile exists but data_classification is unset, "
+                        "so what data this application handles is unknown, which "
+                        "is not the same as public. Scored at the worst case, "
+                        f"{weights.data_classification_unknown_points:g} points, "
+                        "until somebody records a classification."
+                    ),
+                )
+            )
 
     criticality = profile.get("business_criticality")
     if criticality:
+        criticality_state = "recorded"
         points = weights.business_criticality_points.get(str(criticality), 0.0)
         if points:
             terms.append(
@@ -1016,6 +1040,23 @@ def _risk_profile_snapshot(
                     label=f"Business criticality: {criticality}",
                     contribution=points,
                     detail=f"business_criticality={criticality}, worth {points:g} points.",
+                )
+            )
+    else:
+        criticality_state = "unset"
+        if weights.business_criticality_unknown_points:
+            terms.append(
+                Term(
+                    key="risk_profile.business_criticality_unknown",
+                    label="Business criticality unset",
+                    contribution=weights.business_criticality_unknown_points,
+                    detail=(
+                        "The risk profile exists but business_criticality is unset, "
+                        "so how much the business depends on this application is "
+                        "unknown, which is not the same as low. Scored at the worst "
+                        f"case, {weights.business_criticality_unknown_points:g} "
+                        "points, until somebody records a criticality."
+                    ),
                 )
             )
 
@@ -1040,7 +1081,9 @@ def _risk_profile_snapshot(
             "internet_facing": internet_facing,
             "internet_facing_state": internet_facing_state,
             "data_classification": classification,
+            "data_classification_state": classification_state,
             "business_criticality": criticality,
+            "business_criticality_state": criticality_state,
             "compliance_scope": scope,
             "recorded_by": profile.get("updated_by") or None,
             "contribution": round(sum(t.contribution for t in terms), 2),
