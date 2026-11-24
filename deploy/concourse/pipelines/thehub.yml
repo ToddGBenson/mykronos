@@ -951,7 +951,7 @@ anchors:
         # ends, so the same suite would only be killed at the same point.
         #
         # The callers measure their own elapsed time around this guard and
-        # turn a run past their soft timeout into a PARTIAL (unit: 4200s), so
+        # turn a run past their soft timeout into a PARTIAL (unit: 4800s), so
         # the wait and a second run must fit in what is left of it:
         # MEMORY_GUARD_SOFT_TIMEOUT_S is that timeout, and a caller that does
         # not set it (or has a hard cap with no room) is never re-run.
@@ -3955,9 +3955,11 @@ jobs:
         # mean 21.7, p95 52.1, max 66.2 minutes. The old 60m cap sat BELOW the
         # observed maximum, so the slow tail was a coin flip, and build #75
         # lost three real failures to it. 90m is p95 x 1.7 and clears the max.
-        # There is also a 70m soft timeout inside the task -- see the pytest
+        # 90m -> 100m once the suite needed ~4,230s: a 4,800s unit soft limit
+        # plus the 600s tests/security step must fit under the cap.
+        # There is also an 80m soft timeout inside the task -- see the pytest
         # step -- so a slow run reports rather than being killed silently.
-        timeout: 90m
+        timeout: 100m
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -4477,8 +4479,8 @@ jobs:
                 # `timeout -s INT` sends SIGINT, which Python raises as
                 # KeyboardInterrupt and pytest handles: it stops, tears down,
                 # and WRITES THE REPORT for everything that finished. The
-                # remaining 20 minutes before the hard cap are for the upload.
-                SOFT_TIMEOUT_S=4200   # 70m
+                # remaining 20 minutes before the 100m hard cap are for the upload.
+                SOFT_TIMEOUT_S=4800   # 80m
                 # [#61106] Both tiers run under memory-guard. A tier it killed,
                 # or saw SIGKILLed, exits 137 and leaves a reason in its own
                 # directory here; the end of this script decides what that
@@ -4553,8 +4555,8 @@ jobs:
                 #
                 # Skipped only if the unit tier already hit its soft timeout:
                 # the job exits 124 below either way, and the line says so.
-                # 10m soft cap (measured ~2.5m serial); 70m + 10m leaves the
-                # last 10m of the 90m hard cap for the upload.
+                # 10m soft cap (measured ~2.5m serial); 80m + 10m leaves the
+                # last 10m of the 100m hard cap for the upload.
                 SEC_SOFT_TIMEOUT_S=600
                 sec_rc=0
                 SEC_TIMED_OUT=false
