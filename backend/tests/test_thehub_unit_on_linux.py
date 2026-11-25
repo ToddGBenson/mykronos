@@ -254,7 +254,9 @@ def test_linux_finished_is_the_anchor_mykronos_uses() -> None:
     theirs = yaml.safe_load(
         (PIPELINE.parent / "mykronos.yml").read_text(encoding="utf-8")
     )["anchors"]["linux_finished"]
-    assert ours["config"]["run"] == theirs["config"]["run"]
+    # The same script; only the name of the step that checks next differs.
+    assert ours["config"]["run"]["args"][:-1] == theirs["config"]["run"]["args"][:-1]
+    assert _script(ours) == _script(theirs).replace("remote-result", "linux-verdict")
     assert ours["config"]["inputs"] == theirs["config"]["inputs"] == [
         {"name": "ran", "optional": True}
     ]

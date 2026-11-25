@@ -72,6 +72,9 @@ INFRA_TASKS = {
 #: executed, by backend/tests/test_thehub_memory_guard.py.
 OOM_TASKS = {
     ("thehub.yml", "unit", "pytest"),
+    # TheHub #62325: the same task, run on this host when no linux worker
+    # finished it. Neither copy installs the uploader now; upload-unit does.
+    ("thehub.yml", "unit", "pytest-on-this-host"),
     ("thehub.yml", "post-merge", "grade"),
     # TheHub #61321: the deploy's tiers in the commit's image. It installs no
     # uploader, and writes memory-infra only when a tier was killed for memory.
@@ -102,7 +105,7 @@ HOST_CHECK_TASKS = {
     ("thehub.yml", "container-tiers", "fetch-image"),
     *(
         ("thehub.yml", job, "linux-verdict")
-        for job in ("pr-gates", "gate-smoke", "container-tiers")
+        for job in ("pr-gates", "gate-smoke", "container-tiers", "unit")
     ),
 }
 
