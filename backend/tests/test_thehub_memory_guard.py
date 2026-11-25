@@ -121,7 +121,10 @@ def test_a_suite_inside_its_budget_is_left_alone(tmp_path: Path) -> None:
 
 # -- wiring --------------------------------------------------------------------
 
-GUARDED = {("unit", "pytest"), ("post-merge", "grade")}
+# TheHub #62325: unit's suite is `pytest-on-linux` in the plan; its copy on
+# this host, `pytest`, is the same task merged under the fallback's hooks
+# (test_thehub_unit_on_linux.py holds that they are identical).
+GUARDED = {("unit", "pytest-on-linux"), ("post-merge", "grade")}
 
 
 @pytest.mark.parametrize("job,name", sorted(GUARDED))
@@ -160,7 +163,7 @@ _START = "UNIT_OOM=false"
 
 
 def _unit_tail() -> str:
-    script = _script(_task("unit", "pytest"))
+    script = _script(_task("unit", "pytest-on-linux"))
     return script[script.index(_START) :]
 
 

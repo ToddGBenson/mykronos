@@ -797,6 +797,12 @@ anchors:
               exit 1
             }
             rc="$(head -c 16 ran/rc 2>/dev/null | tr -d '[:space:]')"
+            # [TheHub #62325] A job that ran on this host when no linux worker
+            # finished it (`unit`): no ran/rc means this host's run stopped in
+            # its setup too, or hit its cap, so a re-run needs no linux worker.
+            if [ -z "$rc" ] && [ -n "${HOST_FALLBACK:-}" ]; then
+              refuse "neither a linux worker nor this host's own run finished: this host's stopped in its setup (apt or pip) or was cut off at its cap, see the step before this one. A requirements file this commit broke fails setup every time: then fix the commit, not the run"
+            fi
             case "$rc" in ''|*[!0-9]*) refuse "ran/rc is not an exit code" ;; esac
             [ "${#rc}" -le 3 ] || refuse "ran/rc is not an exit code"
             want="$(head -c 64 "expect/${EXPECT}" 2>/dev/null | tr -d '[:space:]')"
@@ -811,6 +817,62 @@ anchors:
             fi
             echo "${LINUX_STEP:-the remote step} exited ${rc}; this host accepts it."
             exit "$rc"
+
+  # -- The gating lane: a linux worker first, then this host (TheHub #62325)
+  #
+  # `unit` gates build, containers, Oracle and both deploys, so the rule for
+  # the suites above (no linux worker: ERRORED, `linux_absent`) would stop
+  # every deploy whenever the laptops are off. Its tag is a preference, not
+  # a pin, as mykronos.yml's `unit` and `frontend` are (mykronos #1213,
+  # TheHub #61951), and the plan makes the fallback Concourse does not have:
+  #
+  #   export_tree   the tree with no history and its commit, here.
+  #   try: do: [probe (5m), pytest [linux]], timeout   the remote run. The
+  #       probe's wrapper fails when no linux worker takes it, and a `do:`
+  #       stops at a failed step.
+  #   try: do: [linux_finished + on_error], on_failure   the same task, with
+  #       this host's tag, once, when linux-finished does not pass.
+  #   linux_verdict with HOST_FALLBACK, then upload-unit (its `ensure`).
+  #
+  # This host runs the suite in each of the four ways a remote run can end
+  # without a verdict:
+  #   no worker was up   the probe times out, the `do:` stops, no ran/rc.
+  #   the run hit its cap   Concourse sends SIGTERM and keeps the outputs;
+  #       the script's TERM trap clears the EXIT trap first, so no ran/rc.
+  #   setup failed there   ran/rc is written only once apt and pip are done,
+  #       so a laptop's network fault costs a run here. A setup that fails
+  #       here too ERRORS the build (linux_verdict, HOST_FALLBACK) rather
+  #       than failing it.
+  #   the worker was lost   its outputs, `ran` with them, are on a worker
+  #       nobody can reach, so linux-finished ERRORS reading them, and
+  #       on_failure never runs on an error: its on_error runs the copy
+  #       instead, inside the `do:` so it cannot run twice (on one step
+  #       on_error wraps on_failure). From Concourse 8.3.3's source.
+  #
+  # The run and the copy are one task: one script, one soft timeout, one
+  # memory guard. The upload and every report stay on this host; the
+  # verdict is bound to the commit `export_tree` wrote. Copied from
+  # mykronos.yml's anchor of the same name, with this host's tag.
+  linux_finished: &linux_finished
+    task: linux-finished
+    tags: [thehub]
+    container_limits: {cpu: 512}
+    timeout: 5m
+    image: python
+    config:
+      platform: linux
+      inputs: [{ name: ran, optional: true }]
+      run:
+        path: sh
+        args:
+          - -c
+          - |
+            if [ -s ran/rc ]; then
+              echo "${LINUX_STEP} finished on a linux worker; linux-verdict checks it next."
+              exit 0
+            fi
+            echo "No linux worker finished ${LINUX_STEP}: it runs on this host next (TheHub #61951)."
+            exit 1
 
   # -- A memory budget for the full pytest suites (TheHub #61106) ----------
   #
@@ -2721,8 +2783,14 @@ jobs:
   # holds: every heavy task of a job in them is tagged `linux`, and what
   # they run here is short (export, fetch, verdict, reports; the test holds
   # that list). Only unit-chain, scanners and dast run heavy work here, and
-  # `pytest-memory` keeps `unit`, the one full suite left on the host, apart
-  # from any suite that comes back to it.
+  # `pytest-memory` keeps `unit` apart from any suite that comes back to it.
+  #
+  # [TheHub #62325] `unit` is in neither lane but runs on a linux worker
+  # first too, and on this host when none finishes it (`linux_finished` in
+  # `anchors:`). So three heavy jobs can share one remote worker: unit
+  # (2048), a suite (2560 or 2304) and a pull request's run (2304), 6.75 GiB
+  # at their budgets against a 5g worker. Placement normally spreads them;
+  # when it does not, one is killed for memory and reads as errored.
   #
   # What runs remotely is compute only. No credential, no host address and
   # no git history: every report and check run stays on this host
@@ -3906,759 +3974,949 @@ jobs:
       - <<: *check_run
         tags: [thehub]
         params: { <<: *check_params, JOB: unit, PHASE: start }
-      - task: pytest
+      # [TheHub #62325] The suite on a linux worker, or on this host when
+      # none finishes it; the verdict and the upload here. See "The gating
+      # lane" above `linux_finished` in `anchors:`. The tree with no
+      # history, and its commit, both from this host's checkout.
+      - <<: *export_tree
+        image: python
+      # [TheHub #62325, review F1] The guards that ask git about the checkout
+      # skip on a tree with no .git, which is what both copies of the suite
+      # now run on: a plaintext .env backup must stay ignored, no personal
+      # PDF may be tracked, the guarded deploy scripts stay 100755 in the
+      # index, and the committed sw.js keeps its cache-bust placeholder. They
+      # run here, on this host's checkout, with no conftest (they import
+      # pytest, the standard library and tests.repo_tree only), and a skip
+      # that names git or the repository is a failure: on a checkout with
+      # git there is no reason left for one.
+      - task: git-guards
         tags: [thehub]
         container_limits: {cpu: 512}
+        timeout: 15m
         image: python
-        # 45 minutes was not a slow test suite; it was a full reinstall of
-        # TheHub's dependency set on every run, from PyPI, with nothing kept
-        # between builds. The cache is a worker-local volume Concourse mounts
-        # back into this task each time, so the second run downloads only what
-        # changed. First run after a requirements change is still slow, which
-        # is the honest cost of a changed dependency rather than a fixed tax on
-        # every commit.
         params:
-          <<: *mykronos_env
-          PIP_CACHE_DIR: /pipcache
-          # #358: a missing node is a failure, not a skip (see the install).
-          REQUIRE_NODE: "1"
-          # [#61106] The memory budget for each pytest tier, enforced by
-          # memory-guard because `container_limits.memory` is refused on these
-          # workers (see the anchor). [#61607] 2048, not post-merge's 2560:
-          # the last four green runs peaked at 1263-1330 MiB (memory-guard,
-          # #384-#390), so 2048 clears them by ~700 MiB and leaves 1 GiB of
-          # worker-2's 3g (compose, tags) for the steps beside it.
-          MEMORY_GUARD: *memory_guard
-          MEMORY_BUDGET_MB: "2048"
-        # A build that hangs must fail rather than occupy a worker. One ran for
-        # 47 minutes and was still going when it was killed by hand; nothing in
-        # the pipeline would ever have stopped it, and `unit` gates build,
-        # containers, Oracle and both deploys.
-        #
-        # 40m rather than the 25m this started at, and the number came from
-        # measurement: at 25m the first run died inside `pip install -r
-        # backend/requirements.txt` with a cold cache. TheHub's dependency set
-        # is genuinely large, so a cold install is slow once and warm installs
-        # are minutes. A cap that kills the run which populates the cache never
-        # lets the cache exist.
-        #
-        # 60m now, for the same reason one more time. The kernel OOM-killed
-        # the Concourse container and the restart swept the worker's volumes,
-        # including /pipcache - so the next run was cold again and died at 40m,
-        # having spent almost all of it installing. The measurement that
-        # settles the number: unit/24 ran 3173 tests in 187 seconds. Three
-        # minutes of that half-hour is testing; the rest is pip. The cap has to
-        # cover a cold install or the cache can never come back, and every run
-        # after it is minutes.
-        #
-        # [#55173] 60m -> 90m. Measured over 71 runs longer than five minutes:
-        # mean 21.7, p95 52.1, max 66.2 minutes. The old 60m cap sat BELOW the
-        # observed maximum, so the slow tail was a coin flip, and build #75
-        # lost three real failures to it. 90m is p95 x 1.7 and clears the max.
-        # 90m -> 100m once the suite needed ~4,230s: a 4,800s unit soft limit
-        # plus the 600s tests/security step must fit under the cap.
-        # There is also an 80m soft timeout inside the task -- see the pytest
-        # step -- so a slow run reports rather than being killed silently.
-        timeout: 100m
+          GUARDS: >-
+            tests/unit/scripts/test_env_backups_stay_out_of_git.py
+            tests/unit/test_no_personal_pdfs_in_tree_or_image.py
+            tests/unit/scripts/test_a_skipped_deploy_control_is_not_a_silent_one.py
+            tests/unit/scripts/test_offline_cache_allowlist.py
         config:
           platform: linux
           inputs: [{ name: source }]
-          # [#61106] `infra` is mounted at memory-infra, a path
-          # install_uploader never writes (it looks for ./infra and ../infra),
-          # so the upload below cannot launder a real failure through it. Only
-          # the OOM block at the end of this script writes it. `notify` carries
-          # the Slack line for that case.
-          outputs: [{ name: infra, path: memory-infra }, { name: notify }]
-          caches: [{ path: /pipcache }]
           run:
             path: bash
             args:
               - -ec
               - |
-                set -euo pipefail
-                TASK_ROOT="$PWD"
-                cd source
-
-                # L0001's three states, applied to a test suite. A repository
-                # with no tests is not a repository whose tests pass, and this
-                # job must not be the thing that says otherwise - but it must
-                # not be permanently red either, because a red lane gets
-                # paused and then nothing runs at all.
-                if [ ! -d backend/tests/unit ] && [ ! -d tests ] && [ ! -d test ]; then
-                  echo "=================================================="
-                  echo "NO TEST SUITE FOUND."
-                  echo "There is no tests/ or test/ directory in this"
-                  echo "repository. This job did not run any tests and this"
-                  echo "green tick is NOT a passing test run."
-                  echo "=================================================="
-                  exit 0
-                fi
-
+                set -uo pipefail
                 # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
                 # route is dead, so this must land before apt opens a socket. See the
                 # note at the top of `anchors:`.
                 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq git build-essential >/dev/null
-
-                # #358: node, because python:3.14-slim has none and TheHub's
-                # behavioural JS tests (sw.js, the tile renderers, the sync
-                # queue) skip on `shutil.which("node") is None` - so this lane
-                # reported green on tests it never ran. Debian's own `nodejs`
-                # (trixie: 20.x) rather than a downloaded tarball: it comes
-                # from the same signed archive as everything else installed
-                # here, so there is no second checksum to keep current. The
-                # tests drive plain ES modules and need nothing newer.
-                # REQUIRE_NODE=1 (params above) turns that skip into a failure
-                # once TheHub honours it; until then it is inert.
-                apt-get install -y -qq nodejs >/dev/null
-                echo "node $(node --version)"
-
-                # Searched one level down as well as at the root. TheHub keeps
-                # its dependencies in backend/requirements.txt and its tests in
-                # backend/tests, and the first version of this job looked only
-                # at the root -- so it installed nothing, then failed on
-                # `ModuleNotFoundError: No module named 'faker'` and read like
-                # a broken test suite rather than a job that never installed
-                # anything.
-                #
-                # An install failure is a real failure: it means the declared
-                # dependencies do not resolve, which the pipeline should say
-                # out loud rather than skip past on its way to a green tick.
-                FOUND=0
-                for req in requirements.txt requirements-dev.txt \
-                           */requirements.txt */requirements-dev.txt; do
-                  [ -f "$req" ] || continue
-                  echo "Installing $req"
-                  pip install --quiet -r "$req"
-                  FOUND=1
-                done
-
-                if [ "$FOUND" -eq 0 ]; then
-                  echo "=================================================="
-                  echo "NO REQUIREMENTS FILE FOUND."
-                  echo "There is a test directory but nothing declaring what"
-                  echo "it needs, so pytest is about to run against a bare"
-                  echo "interpreter. Whatever it reports is about this job,"
-                  echo "not about the code."
-                  echo "=================================================="
-                fi
-
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
                 pip install --quiet pytest
-
-                # -- A real Postgres, because that is what these tests need --
-                #
-                # Running tests/unit against the SQLite fallback produced 258
-                # failures and 113 errors out of ~3100, and TheHub's own
-                # conftest predicts every one of them: it says the fallback
-                # creates "only tables that are compatible with SQLite" and
-                # that "some PostgreSQL-specific features won't work". The
-                # failures were `no such table: dev_epics`, `near "'7 days'":
-                # syntax error` and `unrecognized token: ":"` -- missing
-                # schema, INTERVAL literals and :: casts. Postgres SQL, run on
-                # SQLite.
-                #
-                # So the directory name is a poor guide and the `unit` marker
-                # is no better: pytest.ini declares it and not one test file
-                # uses it. About a third of tests/unit touches a database.
-                #
-                # Postgres runs inside this task rather than beside it because
-                # a Concourse task is one container, and spec 15 section 7
-                # refuses the Docker socket that would let it start a second.
-                # pgvector is not optional -- library_items.embedding is a
-                # Vector(1536), so `create_all` fails with `type "vector" does
-                # not exist` without it.
-                # Version detected rather than pinned. TheHub's compose runs
-                # pgvector/pgvector:pg16, but this base is Debian trixie, whose
-                # default is 17 -- so `postgresql-16` installs nothing and the
-                # pgvector package name has to follow whatever landed. Checked
-                # against the real image rather than assumed.
-                echo "Installing PostgreSQL with pgvector..."
-                apt-get install -y -qq postgresql postgresql-contrib >/dev/null 2>&1
-                PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
-                if [ -z "$PGVER" ]; then
-                  echo "::error::PostgreSQL did not install; these tests need it."
-                  exit 1
-                fi
-                apt-get install -y -qq "postgresql-${PGVER}-pgvector" >/dev/null 2>&1                   || echo "note: pgvector unavailable - vector-typed models will not build"
-
-                service postgresql start >/dev/null 2>&1                   || pg_ctlcluster "$PGVER" main start || true
-
-                # Readiness, not a sleep: the tests fail in a confusing way if
-                # they start before the socket is listening.
-                for _ in $(seq 1 30); do
-                  su postgres -c "pg_isready -q" && break
-                  sleep 1
-                done
-                su postgres -c "pg_isready" || {
-                  echo "::error::PostgreSQL did not start. These tests need it;"
-                  echo "          running them without it reports TheHub's code"
-                  echo "          as broken when it is this task that is."
-                  exit 1
-                }
-
-                su postgres -c "psql -q -c \"ALTER USER postgres PASSWORD 'test'\"" >/dev/null
-                su postgres -c "psql -q -c 'CREATE DATABASE thehub_test'" >/dev/null
-                # The extensions create_all depends on, before it runs.
-                for ext in vector pgcrypto "uuid-ossp"; do
-                  su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'"                     >/dev/null 2>&1 || echo "note: extension $ext unavailable"
-                done
-
-                # -- Native enum types, which create_all cannot make --------
-                #
-                # 391 of the 433 errors on the first Postgres run were one
-                # line: `type "meal_type_enum" does not exist`. TheHub declares
-                # four enums as real Postgres types in its SQL migrations, and
-                # the models reference them without defining them, so
-                # `Base.metadata.create_all` emits a column of a type nothing
-                # created.
-                #
-                # Replayed from db/migrations rather than transcribed here.
-                # There are only four today and typing them into this file
-                # would work exactly until somebody adds a fifth, at which
-                # point the lane fails with a message about a type nobody
-                # changed. Reading them from the migrations means the pipeline
-                # follows the schema instead of tracking it.
-                #
-                # Only CREATE TYPE ... AS ENUM is replayed, not the migrations
-                # themselves: those are ordered, cumulative and assume a live
-                # database, and running 277 of them here would be a migration
-                # test wearing a unit test's name.
-                echo "Creating native enum types from db/migrations..."
-                python - <<'ENUMS'
-                import glob, re, subprocess
-                pattern = re.compile(
-                    r"CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(([^)]*)\)",
-                    re.IGNORECASE | re.DOTALL,
-                )
-                seen = {}
-                # Searched from the repository root, not from backend/. This
-                # runs before the `cd backend` further down, and the first
-                # version globbed "db/migrations/*.sql" against the checkout
-                # root -- where TheHub keeps no such directory. It matched
-                # nothing, created nothing, and the count guard below caught it
-                # in six minutes instead of twenty-three.
-                paths = sorted(glob.glob("**/db/migrations/*.sql", recursive=True))
-                if not paths:
-                    print("  no db/migrations/*.sql found anywhere in the checkout")
-                for path in paths:
-                    with open(path, encoding="utf-8", errors="replace") as handle:
-                        for name, values in pattern.findall(handle.read()):
-                            seen.setdefault(name.lower(), " ".join(values.split()))
-                print(f"  found {len(seen)} enum type(s): {', '.join(sorted(seen))}")
-                for name, values in seen.items():
-                    # Plain CREATE TYPE, and the statement goes to psql on
-                    # stdin rather than through `-c` in a shell string.
-                    #
-                    # The obvious version wrapped a `DO $$ ... $$` block in
-                    # double quotes for `su -c`, which the shell expands: `$$`
-                    # is the PID. It would have created a type named after
-                    # whatever process ran it, or more likely failed with a
-                    # syntax error nobody would connect to quoting.
-                    #
-                    # No duplicate guard is needed because the database is
-                    # created fresh in this task a few lines above; a failure
-                    # here is tolerated (check=False) and reported by the count
-                    # check that follows.
-                    subprocess.run(
-                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
-                        input=f"CREATE TYPE {name} AS ENUM ({values});",
-                        text=True,
-                        check=False,
-                    )
-                ENUMS
-
-                MADE=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM pg_type WHERE typtype = 'e'\"")
-                echo "  created ${MADE} enum type(s) in thehub_test"
-                if [ "${MADE:-0}" -eq 0 ]; then
-                  echo "::error::No enum types were created. create_all will fail"
-                  echo "          with 'type ... does not exist' on ~400 tests."
-                  exit 1
-                fi
-
-                export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
-                export TEST_DATABASE_URL="$DATABASE_URL"
-
-                # -- Build the schema with TheHub's own initialiser ----------
-                #
-                # `tests/conftest.py` calls `Base.metadata.create_all`, but it
-                # imports exactly two model modules -- threat_intelligence and
-                # user. SQLAlchemy's metadata only holds what has been
-                # imported, so create_all builds two tables and every test
-                # touching anything else fails on `relation "..." does not
-                # exist`. That is what the remaining 133 failures were.
-                #
-                # scripts/init_db.py exists precisely for this. It does
-                # `import models`, whose package __init__ pulls in all 181
-                # model modules, and its own comment spells out the trap:
-                # "Without it, create_all() runs against an empty registry
-                # (silent no-op)". Running TheHub's initialiser rather than
-                # reimplementing it here also means the schema follows their
-                # models without this file knowing anything about them.
-                #
-                # It runs after the enum replay because create_all emits
-                # columns of those native types and cannot make them itself.
-                cd backend
-                echo "Building the full schema with scripts/init_db.py..."
-                python scripts/init_db.py 2>&1 | tail -5
-
-                # -- Then the migrations, for what the ORM does not own ----
-                #
-                # create_all builds every table SQLAlchemy knows about, and
-                # TheHub has tables it does not: deploy_runs, epic_stage_history,
-                # story_gate_history, agent_learning_ledger and friends are
-                # created and written by raw SQL (api/ops.py inserts into
-                # deploy_runs directly). No model, so no create_all, so 44
-                # `relation "..." does not exist` failures.
-                #
-                # Order matters and was measured, not guessed. Replaying the
-                # migrations into an *empty* database applies 32 of 277 and
-                # produces 31 tables -- they are overwhelmingly ALTER TABLE
-                # against a schema create_all is expected to have made. Run
-                # after it, the ALTERs land and the CREATEs that create_all
-                # could not cover fill the gaps.
-                #
-                # Most will still fail, and that is expected rather than
-                # tolerated blindly: a migration whose CREATE TABLE already
-                # exists is a no-op by another name. Each runs in its own psql
-                # session so one failure cannot poison the next, and the counts
-                # are printed so a sudden change in them is visible.
-                echo "Replaying migrations for tables the ORM does not own..."
-                applied=0; skipped=0
-                for f in $(ls db/migrations/*.sql | sort -V); do
-                  if su postgres -c "psql -q -v ON_ERROR_STOP=1 -d thehub_test -f $PWD/$f" >/dev/null 2>&1; then
-                    applied=$((applied+1))
-                  else
-                    skipped=$((skipped+1))
+                git config --global --add safe.directory "$PWD/source"
+                cd source/backend
+                for f in $GUARDS; do
+                  if [ ! -f "$f" ]; then
+                    echo "::error::$f is not in this commit: update GUARDS in thehub.yml's unit/git-guards."
+                    exit 1
                   fi
                 done
-                echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
-
-                # -- One user, because a third of these tests assume one ---
-                #
-                # Helpers like `_mk_story` do `db.query(User).first()` and then
-                # `user.id`, so on a database with no users they raise
-                # `AttributeError: 'NoneType' object has no attribute 'id'` --
-                # 34 failures, none of them about the code under test.
-                #
-                # They pass in TheHub's own environment because `make test`
-                # runs inside a container pointed at a database that has real
-                # users in it. The tests are relying on ambient data rather
-                # than a fixture, which is worth fixing in TheHub; until then
-                # CI has to provide the environment they were written for
-                # rather than pretend the difference is theirs.
-                #
-                # Deliberately one inert row: a fixed uuid, an unroutable
-                # address and a password hash that is not a hash of anything.
-                # It exists to be found by `.first()`, not to be logged in as.
-                echo "Seeding the single user those tests expect to find..."
-                su postgres -c "psql -q -d thehub_test" <<'SEED' || true
-                INSERT INTO users (id, email, username, password_hash, is_active)
-                VALUES ('00000000-0000-0000-0000-000000000001',
-                        'ci@invalid.test', 'ci', 'x-not-a-hash', true)
-                ON CONFLICT DO NOTHING;
-                SEED
-
-                # -- Mirror Python-side defaults into the database ---------
-                #
-                # 22 of the remaining failures were `null value in column
-                # "tags" of relation "dev_stories"` and friends -- tags,
-                # kpi_sketch, autonomy_disabled, cached, status.
-                #
-                # Each is declared `Column(..., nullable=False, default=X)`.
-                # That default is applied by the ORM, not by the database, so
-                # create_all emits NOT NULL with no DEFAULT and any raw-SQL
-                # INSERT in the code under test fails. The real database does
-                # not fail, because those columns arrived via `ALTER TABLE ADD
-                # COLUMN ... DEFAULT`, and the migration replay above skips
-                # exactly those statements: create_all already made the column.
-                #
-                # So the defaults are read back out of SQLAlchemy's own
-                # metadata and applied, for columns that are NOT NULL, have a
-                # scalar Python-side default and no server_default. Derived
-                # rather than listed, for the same reason the enums are read
-                # from db/migrations: a list typed here is right until somebody
-                # adds a column.
-                #
-                # This is a CI accommodation, not a fix. The real correction is
-                # `server_default=` alongside `default=` in TheHub's models, so
-                # the model describes the schema it actually needs.
-                echo "Mirroring model defaults onto NOT NULL columns..."
-                python - <<'DEFAULTS'
-                import subprocess
-                import models  # noqa: F401 - populates the metadata
-                from db.session import Base
-                from sqlalchemy import DateTime
-
-                def literal_for(d, col):
-                    """SQL literal for a Python-side default, or None to skip.
-
-                    bool is checked before int on purpose: in Python
-                    ``False == 0`` and ``True == 1``, so a dict keyed on both
-                    collapses to one entry and every boolean column would emit
-                    ``SET DEFAULT 0`` -- which Postgres rejects for a boolean,
-                    leaving the column with no default and the failure it was
-                    meant to fix.
-                    """
-                    if d is list:
-                        return "'[]'::jsonb"
-                    if d is dict:
-                        return "'{}'::jsonb"
-                    if callable(d):
-                        # A timestamp default is the one callable worth
-                        # translating: `default=datetime.utcnow` and
-                        # `func.now()` both mean "now" to the database, and
-                        # raw-SQL inserts that omit started_at rely on it.
-                        # Everything else callable is Python-side logic with no
-                        # SQL equivalent, and guessing one would be worse than
-                        # leaving the column without a default.
-                        return "now()" if isinstance(col.type, DateTime) else None
-                    if isinstance(d, bool):
-                        return "true" if d else "false"
-                    if isinstance(d, int) and not isinstance(d, bool):
-                        return str(d)
-                    if isinstance(d, str):
-                        return "'" + d.replace("'", "''") + "'"
-                    return None
-
-                stmts = []
-                for table in Base.metadata.tables.values():
-                    for col in table.columns:
-                        if col.nullable or col.server_default is not None:
-                            continue
-                        d = getattr(col.default, "arg", None)
-                        if d is None:
-                            continue
-                        literal = literal_for(d, col)
-                        if literal is None:
-                            continue
-                        stmts.append(
-                            f"ALTER TABLE {table.name} "
-                            f"ALTER COLUMN {col.name} SET DEFAULT {literal};"
-                        )
-
-                print(f"  {len(stmts)} column default(s) to mirror")
-                if stmts:
-                    subprocess.run(
-                        ["su", "postgres", "-c", "psql -q -d thehub_test"],
-                        input="\n".join(stmts), text=True, check=False,
-                    )
-                DEFAULTS
-
-                USERS=$(su postgres -c "psql -tAq -d thehub_test -c 'SELECT count(*) FROM users'")
-                echo "  users table has ${USERS} row(s)"
-
-                TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
-                echo "  schema has ${TABLES} table(s)"
-                if [ "${TABLES:-0}" -lt 50 ]; then
-                  echo "::error::Only ${TABLES} tables were created. The model"
-                  echo "          registry was not fully populated, and the"
-                  echo "          failures that follow would be about missing"
-                  echo "          tables rather than about TheHub's code."
-                  exit 1
-                fi
-                cd ..
-                echo "PostgreSQL ready; tests will use it rather than the SQLite fallback."
-
-                # -- What this lane runs, and what it deliberately does not --
-                #
-                # `tests/unit`, which is TheHub's own `make test-unit`, plus
-                # `tests/security` as its own step after it (#357, see below).
-                # Running the whole tree here produced several hundred errors
-                # and failures in a row and then hit the timeout, and none of
-                # it was about TheHub's code.
-                #
-                # TheHub's suite is written to run *inside its own container*:
-                # `make test` and the integration runner in scripts/deploy.sh
-                # both go through `docker-compose exec -T backend pytest`, so
-                # the tests get Postgres, Redis, the app's environment and its
-                # fixtures. This task is a bare python image with the
-                # requirements pip-installed and none of those services -- and
-                # spec 15 section 7 is why it cannot have them, since reaching
-                # the host's daemon is the grant this whole design refuses.
-                #
-                # `tests/unit` is the part with no external dependencies, which
-                # is what pytest.ini's own `unit` marker says it is. That makes
-                # this lane's claim narrow and true rather than broad and
-                # false.
-                #
-                # It is stated on every run because the gap matters: nothing
-                # downstream should read a green `unit` as "TheHub's tests
-                # pass". The integration suite still runs where it can, which
-                # is deploy.sh on the host.
-                echo "=================================================="
-                # No backticks in this string: inside double quotes bash
-                # would run `make test-unit` as a command substitution, in a
-                # container with no make and no reason to.
-                echo "Running tests/unit - TheHub's own make test-unit - then"
-                echo "tests/security as a separate serial step (#357)."
-                echo "tests/integration is NOT run here: it needs Postgres,"
-                echo "Redis and the app environment, which live in TheHub's"
-                echo "own container. A green tick on this job means the unit"
-                echo "and security tests pass, not that the suite passes."
-                echo "=================================================="
-
-                cd backend
-
-                # TheHub resolves its YAML config through HUB_CONFIG_DIR,
-                # defaulting to /app/config -- the path inside its own
-                # container. A checkout has no /app, so lifecycle_pipelines.yaml
-                # and studio_stage_guide.yaml loaded as empty and the tests that
-                # read them failed on the consequences rather than the cause:
-                # `assert 0 == 19` canonical stages, `KeyError: 'dev_ready'`,
-                # `Stage 'loop' missing gate_md in YAML`.
-                #
-                # The env var is the mechanism the code already provides for
-                # this, so nothing in TheHub needs changing - it just has to be
-                # told where the repository is.
-                export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
-                echo "HUB_CONFIG_DIR=$HUB_CONFIG_DIR"
-                test -f "$HUB_CONFIG_DIR/lifecycle_pipelines.yaml" || {
-                  echo "::error::No lifecycle_pipelines.yaml under $HUB_CONFIG_DIR."
-                  echo "          The stage tests would fail on empty config."
-                  exit 1
-                }
-
-                # TheHub reads its config through TWO mechanisms, and this job
-                # was setting only one of them.
-                #
-                #   HUB_CONFIG_DIR   read directly by four modules
-                #                    (lifecycle_pipelines, stage_guide,
-                #                    dev_routing, irra_actions), default
-                #                    /app/config
-                #   CONFIG_DIR       pydantic settings.config_dir, default the
-                #                    RELATIVE "config" -- and this task has
-                #                    already `cd backend`, so it resolved to
-                #                    backend/config
-                #
-                # backend/config exists, which is why nothing complained: it is
-                # a five-file legacy subset. The real config is the 63-file
-                # directory at the repo root. hub-config.yaml is not in the
-                # subset, so hub_config logged "No hub-config.yaml found, using
-                # defaults" and handed back its fallback zone -- America/
-                # New_York instead of the configured America/Phoenix. Any test
-                # asserting a local time then failed on a zone nobody chose,
-                # and agent_rollout.yaml was simply absent.
-                #
-                # The `test -f` above passes throughout, because
-                # lifecycle_pipelines.yaml IS reached via HUB_CONFIG_DIR. A
-                # guard that proves less than it appears to.
-                #
-                # Prod is the mirror image and correct by accident: compose
-                # sets CONFIG_DIR=/app/config and leaves HUB_CONFIG_DIR empty,
-                # so the four modules fall back to a default that happens to be
-                # where the volume is mounted. Both variables want the same
-                # directory in every environment; here it is already computed.
-                export CONFIG_DIR="$HUB_CONFIG_DIR"
-                echo "CONFIG_DIR=$CONFIG_DIR"
-                test -f "$CONFIG_DIR/hub-config.yaml" || {
-                  echo "::error::No hub-config.yaml under $CONFIG_DIR."
-                  echo "          hub_config would silently fall back to its"
-                  echo "          default timezone and any test asserting a"
-                  echo "          local time would fail on the wrong zone."
-                  exit 1
-                }
-
-                # `-p no:cacheprovider` because the checkout is thrown away
-                # after the build; writing .pytest_cache into it is pure IO.
-                #
-                # JUnit XML so the result reaches Mykronos as a ScanRun with no
-                # findings (D-046) - this lane ran for months without reporting,
-                # so the platform could not tell TheHub's tests passed from
-                # TheHub's tests never ran. The exit code is recovered after
-                # the upload: a failing suite must still report.
-                mkdir -p /tmp/results
-
-                # [#55173] A SOFT timeout below Concourse's hard one.
-                #
-                # Build #75 was killed by the 60m cap at 62 minutes having
-                # already observed three failures. A hard kill takes the task
-                # down before --junitxml is written, so the run produced no
-                # verdict whatsoever - worse than a red build, because nobody
-                # can tell a slow suite from a broken one.
-                #
-                # `timeout -s INT` sends SIGINT, which Python raises as
-                # KeyboardInterrupt and pytest handles: it stops, tears down,
-                # and WRITES THE REPORT for everything that finished. The
-                # remaining 20 minutes before the 100m hard cap are for the upload.
-                SOFT_TIMEOUT_S=4800   # 80m
-                # [#61106] Both tiers run under memory-guard. A tier it killed,
-                # or saw SIGKILLed, exits 137 and leaves a reason in its own
-                # directory here; the end of this script decides what that
-                # means for the job.
-                MEMGUARD=/tmp/memory-guard
-                rm -rf "$MEMGUARD"
                 rc=0
-                started=$(date +%s)
-                if command -v timeout >/dev/null 2>&1; then
-                  MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
-                    MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S" MEMORY_GUARD_EXPECTED_S=2760 \
-                    python -c "$MEMORY_GUARD" timeout -s INT "${SOFT_TIMEOUT_S}s" \
-                    python -m pytest tests/unit -q -p no:cacheprovider \
-                    --junitxml=/tmp/results/unit.xml || rc=$?
-                else
-                  # Stated rather than silently skipped: without coreutils
-                  # there is no soft timeout and the hard cap is all there is.
-                  echo "::warning::the timeout command is unavailable - no soft timeout; a slow run will be killed without a verdict"
-                  MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
-                    python -c "$MEMORY_GUARD" python -m pytest tests/unit -q -p no:cacheprovider \
-                    --junitxml=/tmp/results/unit.xml || rc=$?
-                fi
-                elapsed=$(( $(date +%s) - started ))
-
-                TIMED_OUT=false
-                if [ "$elapsed" -ge "$SOFT_TIMEOUT_S" ]; then
-                  TIMED_OUT=true
-                  echo "=================================================="
-                  echo "UNIT SUITE HIT THE ${SOFT_TIMEOUT_S}s SOFT TIMEOUT after ${elapsed}s."
-                  echo "The results below are PARTIAL - they cover the tests"
-                  echo "that finished, not the whole suite. A pass here is not"
-                  echo "evidence the suite passes."
-                  echo "=================================================="
-                fi
-
-                # -- tests/security, its own serial step [#357] -------------
-                #
-                # Twelve modules that production comments in TheHub's
-                # middleware/api_gate.py cite by name as the thing that "fails
-                # the build" -- and no stage ran them. They are not moved into
-                # tests/unit: TheHub's test-offline.sh parallelises that tier
-                # and test_rate_limit.py is red under `-n 6`, because another
-                # worker's limiter.reset() wipes a burst mid-count. Here they run
-                # serially, after the unit tier, in their own pytest process.
-                #
-                # The environment is scoped to this subshell, not exported to
-                # the unit run above, so tests/unit is graded exactly as before:
-                #
-                #   SINGLE_USER_MODE=true  what prod and TheHub's own offline
-                #                          runner use. Without it 18 of these
-                #                          tests 401 on `client` requests and
-                #                          fail for a reason that is about this
-                #                          task, not the code.
-                #   HUB_API_TOKEN          random per build, never a real
-                #                          credential. Any non-empty value makes
-                #                          main.py install the API Gate, which
-                #                          test_authz_bypass exists to probe.
-                #                          Unset, 31 tests SKIP -- and a skip in
-                #                          this job reads as a pass.
-                #   HUB_REQUIRE_ARMED_GATE that skip becomes a FAILURE naming the
-                #                          missing variable, so a future edit
-                #                          that drops the token goes red rather
-                #                          than green-over-nothing.
-                #   REDIS_URL=memory://    slowapi's in-process store. The limiter
-                #                          stores in Redis and fails OPEN when it
-                #                          cannot reach it (swallow_errors, #59983),
-                #                          and this task has no Redis: in build 324
-                #                          four 429 tests got 200/201/401 and logged
-                #                          "Failed to rate limit. Swallowing error".
-                #                          One serial pytest process, so the memory
-                #                          store counts exactly what Redis would.
-                #
-                # Skipped only if the unit tier already hit its soft timeout:
-                # the job exits 124 below either way, and the line says so.
-                # 10m soft cap (measured ~2.5m serial); 80m + 10m leaves the
-                # last 10m of the 100m hard cap for the upload.
-                SEC_SOFT_TIMEOUT_S=600
-                sec_rc=0
-                SEC_TIMED_OUT=false
-                if [ "$TIMED_OUT" = true ]; then
-                  echo "::warning::tests/security NOT RUN - the unit tier used the whole soft timeout"
-                else
-                  echo "=================================================="
-                  echo "Running tests/security - serial, API Gate armed, skips refused."
-                  echo "=================================================="
-                  sec_started=$(date +%s)
-                  (
-                    export SINGLE_USER_MODE=true
-                    HUB_API_TOKEN="ci-$(python -c 'import secrets; print(secrets.token_hex(16))')"
-                    export HUB_API_TOKEN
-                    export HUB_REQUIRE_ARMED_GATE=1
-                    export REDIS_URL=memory://
-                    # unit #360 was killed HERE: "Killed ... pytest tests/security".
-                    export MEMORY_GUARD_DIR="$MEMGUARD/security"
-                    export MEMORY_GUARD_LABEL="pytest tests/security"
-                    export MEMORY_GUARD_SOFT_TIMEOUT_S="$SEC_SOFT_TIMEOUT_S"
-                    export MEMORY_GUARD_EXPECTED_S=600
-                    if command -v timeout >/dev/null 2>&1; then
-                      python -c "$MEMORY_GUARD" timeout -s INT "${SEC_SOFT_TIMEOUT_S}s" \
-                        python -m pytest tests/security -q -p no:cacheprovider -ra \
-                        --junitxml=/tmp/results/security.xml
-                    else
-                      python -c "$MEMORY_GUARD" python -m pytest tests/security -q -p no:cacheprovider -ra \
-                        --junitxml=/tmp/results/security.xml
-                    fi
-                  ) || sec_rc=$?
-                  if [ $(( $(date +%s) - sec_started )) -ge "$SEC_SOFT_TIMEOUT_S" ]; then
-                    SEC_TIMED_OUT=true
-                    echo "TESTS/SECURITY HIT ITS ${SEC_SOFT_TIMEOUT_S}s SOFT TIMEOUT - results are PARTIAL."
-                  fi
-                fi
-
-                bash -c "$MYKRONOS_INSTALL_UPLOADER"
-                python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
-                upload_rc=0
-                MYKRONOS_JOB=unit python -m mykronos.upload \
-                  --capability unit --tool junit \
-                  --results-path /tmp/results \
-                  --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
-                  --repo ToddGBenson/TheHub \
-                  --commit-sha "$(git rev-parse HEAD)" \
-                  --branch "$SCANNED_BRANCH" \
-                  --workspace "$PWD" \
-                  --severity-threshold low --blocking false || upload_rc=$?
-
-                # [#55173] 124 distinguishes "ran out of time" from "tests
-                # failed". #75 reported neither: an errored build carries no
-                # verdict, so three real failures read the same as a crash.
-                # The junit above has already been uploaded either way.
-                if [ "$TIMED_OUT" = true ]; then
-                  echo "::error::unit suite exceeded its ${SOFT_TIMEOUT_S}s soft timeout - partial results uploaded"
-                  exit 124
-                fi
-                if [ "$SEC_TIMED_OUT" = true ]; then
-                  echo "::error::tests/security exceeded its ${SEC_SOFT_TIMEOUT_S}s soft timeout - partial results uploaded"
-                  exit 124
-                fi
-                # [#61106] A tier killed for memory reached no verdict. It is
-                # only a tier's OWN 137 with memory-guard's reason beside it.
-                UNIT_OOM=false
-                SEC_OOM=false
-                if [ "$rc" -eq 137 ] && [ -s "$MEMGUARD/unit/reason" ]; then UNIT_OOM=true; fi
-                if [ "$sec_rc" -eq 137 ] && [ -s "$MEMGUARD/security/reason" ]; then SEC_OOM=true; fi
-
-                # [#357] Either tier failing fails the job. The unit verdict is
-                # reported first because it was the job's only verdict until now.
-                # A REAL failure in either tier wins over an OOM in the other:
-                # a verdict is never downgraded to an outage.
-                if [ "$rc" -ne 0 ] && [ "$UNIT_OOM" = false ]; then
+                # --color=no after pytest.ini's --color=yes, so the summary
+                # lines below are plain text to read.
+                python -m pytest --noconftest -ra -q -p no:cacheprovider --color=no $GUARDS \
+                  > guards.log 2>&1 || rc=$?
+                cat guards.log
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::the git-backed guards failed (exit $rc) on this host's checkout."
                   exit "$rc"
                 fi
-                if [ "$sec_rc" -ne 0 ] && [ "$SEC_OOM" = false ]; then
-                  echo "::error::tests/security failed (exit ${sec_rc}) - the unit tier passed or was killed for memory"
-                  exit "$sec_rc"
+                SKIPS="$(grep -E '^SKIPPED' guards.log | grep -Ei 'git|repo|checkout|reachable' || true)"
+                if [ -n "$SKIPS" ]; then
+                  printf '%s\n' "$SKIPS"
+                  echo "::error::a git-backed guard skipped on a checkout that has git: it guarded nothing."
+                  exit 1
                 fi
+                echo "The git-backed guards ran on this host's checkout, and none skipped for want of git."
+      - try:
+          do:
+            # The probe alone, with no linux_absent: no linux worker is not
+            # an outage for this job, it is a run on this host.
+            - do:
+                - <<: *linux_probe
+                  image: python
+              timeout: 5m
+            # [TheHub #62325] Compute only: no credential, no host address,
+            # no git history (`export-tree`'s tree and the commit beside it).
+            # The ingestion params and the upload are `upload-unit`'s, below.
+            # [review F2] The remote copy has the new name: a task cache is
+            # scoped by worker, job and step name, so the copy on this host
+            # keeps `pytest` and the warm /pipcache this host built under it.
+            - &thehub_unit_suite
+              task: pytest-on-linux
+              tags: [linux]
+              container_limits: {cpu: 512}
+              image: python
+              input_mapping: { source: tree }
+              # 45 minutes was not a slow test suite; it was a full reinstall of
+              # TheHub's dependency set on every run, from PyPI, with nothing kept
+              # between builds. The cache is a worker-local volume Concourse mounts
+              # back into this task each time, so the second run downloads only what
+              # changed. First run after a requirements change is still slow, which
+              # is the honest cost of a changed dependency rather than a fixed tax on
+              # every commit.
+              params:
+                PIP_CACHE_DIR: /pipcache
+                # #358: a missing node is a failure, not a skip (see the install).
+                REQUIRE_NODE: "1"
+                # [#61106] The memory budget for each pytest tier, enforced by
+                # memory-guard because `container_limits.memory` is refused on these
+                # workers (see the anchor). [#61607] 2048, not post-merge's 2560:
+                # the last four green runs peaked at 1263-1330 MiB (memory-guard,
+                # #384-#390), so 2048 clears them by ~700 MiB and leaves 1 GiB of
+                # worker-2's 3g (compose, tags) for the steps beside it. Unchanged
+                # on a linux worker's 5g. There it can share a worker with a
+                # `linux-suites` suite (2560 or 2304) and a `linux-pr` run (2304):
+                # 2048 + 2560 + 2304 = 6.75 GiB at all three budgets, over 5g.
+                # Fewest-build-containers placement normally spreads them; when
+                # it does not, the kill is a 137 and the job errors (no fallback:
+                # a 137 writes ran/rc, a follow-up on TheHub #62325).
+                MEMORY_GUARD: *memory_guard
+                MEMORY_BUDGET_MB: "2048"
+              config:
+                platform: linux
+                inputs: [{ name: source }, { name: commit }]
+                # [#61106] `infra` is mounted at memory-infra, a path
+                # install_uploader never writes (it looks for ./infra and ../infra),
+                # so an install can never launder a real failure through it. Only
+                # the OOM block at the end of this script writes it. `notify` carries
+                # the Slack line for that case. [TheHub #62325] `ran` is rc and
+                # commit for linux-finished and linux-verdict; `results` is the
+                # junit for upload-unit, on this host.
+                outputs:
+                  - { name: infra, path: memory-infra }
+                  - { name: notify }
+                  - { name: ran }
+                  - { name: results }
+                caches: [{ path: /pipcache }]
+                run:
+                  path: bash
+                  args:
+                    - -ec
+                    - |
+                      set -euo pipefail
+                      TASK_ROOT="$PWD"
+                      RAN_DIR="$TASK_ROOT/ran"
+                      RESULTS="$TASK_ROOT/results"
+                      # The commit this host exported, for linux-verdict to check.
+                      head -c 64 commit/sha > "$RAN_DIR/commit"
+                      cd source
 
-                # Only now, with no real verdict anywhere, does the reason
-                # reach `infra`: the job's hooks then report `errored` to
-                # TheHub (exit_code 137, reason first) and `cancelled` to the
-                # check, and Slack says re-run rather than "the answer was bad".
-                if [ "$UNIT_OOM" = true ] || [ "$SEC_OOM" = true ]; then
-                  mkdir -p "$TASK_ROOT/memory-infra" "$TASK_ROOT/notify"
-                  cat "$MEMGUARD"/*/reason > "$TASK_ROOT/memory-infra/reason"
-                  printf '137\n' > "$TASK_ROOT/memory-infra/exit_code"
-                  REASON="$(head -1 "$TASK_ROOT/memory-infra/reason")"
-                  echo "::error::${REASON}"
-                  echo "*TheHub*: unit - NO VERDICT for $(git rev-parse --short=12 HEAD): ${REASON#INFRASTRUCTURE, NOT A VERDICT: } This is not a test failure and not a red commit: re-run the job." > "$TASK_ROOT/notify/message.txt"
-                  exit 137
-                fi
-                # The upload's exit code is kept and fails the job AFTER both test tiers' verdicts
-                # (2026-10-21). It ended `|| true`, so a refused token, a schema
-                # 422 or an adapter that read nothing left this job green while
-                # Mykronos recorded no run - the lane looked reported and was not.
-                if [ "$upload_rc" -ne 0 ]; then
-                  echo "::error::Uploading the unit results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
-                  exit "$upload_rc"
-                fi
-                exit 0
+                      # L0001's three states, applied to a test suite. A repository
+                      # with no tests is not a repository whose tests pass, and this
+                      # job must not be the thing that says otherwise - but it must
+                      # not be permanently red either, because a red lane gets
+                      # paused and then nothing runs at all.
+                      if [ ! -d backend/tests/unit ] && [ ! -d tests ] && [ ! -d test ]; then
+                        echo "=================================================="
+                        echo "NO TEST SUITE FOUND."
+                        echo "There is no tests/ or test/ directory in this"
+                        echo "repository. This job did not run any tests and this"
+                        echo "green tick is NOT a passing test run."
+                        echo "=================================================="
+                        # Ran to its end: a verdict of nothing, not a lost run.
+                        printf '0\n' > "$RAN_DIR/rc"
+                        exit 0
+                      fi
+
+                      # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                      # route is dead, so this must land before apt opens a socket. See the
+                      # note at the top of `anchors:`.
+                      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                      apt-get update -qq && apt-get install -y -qq git build-essential >/dev/null
+
+                      # #358: node, because python:3.14-slim has none and TheHub's
+                      # behavioural JS tests (sw.js, the tile renderers, the sync
+                      # queue) skip on `shutil.which("node") is None` - so this lane
+                      # reported green on tests it never ran. Debian's own `nodejs`
+                      # (trixie: 20.x) rather than a downloaded tarball: it comes
+                      # from the same signed archive as everything else installed
+                      # here, so there is no second checksum to keep current. The
+                      # tests drive plain ES modules and need nothing newer.
+                      # REQUIRE_NODE=1 (params above) turns that skip into a failure
+                      # once TheHub honours it; until then it is inert.
+                      apt-get install -y -qq nodejs >/dev/null
+                      echo "node $(node --version)"
+
+                      # Searched one level down as well as at the root. TheHub keeps
+                      # its dependencies in backend/requirements.txt and its tests in
+                      # backend/tests, and the first version of this job looked only
+                      # at the root -- so it installed nothing, then failed on
+                      # `ModuleNotFoundError: No module named 'faker'` and read like
+                      # a broken test suite rather than a job that never installed
+                      # anything.
+                      #
+                      # An install failure is a real failure: it means the declared
+                      # dependencies do not resolve, which the pipeline should say
+                      # out loud rather than skip past on its way to a green tick.
+                      FOUND=0
+                      for req in requirements.txt requirements-dev.txt \
+                                 */requirements.txt */requirements-dev.txt; do
+                        [ -f "$req" ] || continue
+                        echo "Installing $req"
+                        pip install --quiet -r "$req"
+                        FOUND=1
+                      done
+
+                      if [ "$FOUND" -eq 0 ]; then
+                        echo "=================================================="
+                        echo "NO REQUIREMENTS FILE FOUND."
+                        echo "There is a test directory but nothing declaring what"
+                        echo "it needs, so pytest is about to run against a bare"
+                        echo "interpreter. Whatever it reports is about this job,"
+                        echo "not about the code."
+                        echo "=================================================="
+                      fi
+
+                      pip install --quiet pytest
+
+                      # -- A real Postgres, because that is what these tests need --
+                      #
+                      # Running tests/unit against the SQLite fallback produced 258
+                      # failures and 113 errors out of ~3100, and TheHub's own
+                      # conftest predicts every one of them: it says the fallback
+                      # creates "only tables that are compatible with SQLite" and
+                      # that "some PostgreSQL-specific features won't work". The
+                      # failures were `no such table: dev_epics`, `near "'7 days'":
+                      # syntax error` and `unrecognized token: ":"` -- missing
+                      # schema, INTERVAL literals and :: casts. Postgres SQL, run on
+                      # SQLite.
+                      #
+                      # So the directory name is a poor guide and the `unit` marker
+                      # is no better: pytest.ini declares it and not one test file
+                      # uses it. About a third of tests/unit touches a database.
+                      #
+                      # Postgres runs inside this task rather than beside it because
+                      # a Concourse task is one container, and spec 15 section 7
+                      # refuses the Docker socket that would let it start a second.
+                      # pgvector is not optional -- library_items.embedding is a
+                      # Vector(1536), so `create_all` fails with `type "vector" does
+                      # not exist` without it.
+                      # Version detected rather than pinned. TheHub's compose runs
+                      # pgvector/pgvector:pg16, but this base is Debian trixie, whose
+                      # default is 17 -- so `postgresql-16` installs nothing and the
+                      # pgvector package name has to follow whatever landed. Checked
+                      # against the real image rather than assumed.
+                      echo "Installing PostgreSQL with pgvector..."
+                      apt-get install -y -qq postgresql postgresql-contrib >/dev/null 2>&1
+                      PGVER=$(ls /usr/lib/postgresql 2>/dev/null | head -1)
+                      if [ -z "$PGVER" ]; then
+                        echo "::error::PostgreSQL did not install; these tests need it."
+                        exit 1
+                      fi
+                      apt-get install -y -qq "postgresql-${PGVER}-pgvector" >/dev/null 2>&1                   || echo "note: pgvector unavailable - vector-typed models will not build"
+
+                      # [TheHub #62325] rc on exit for linux-finished and linux-verdict,
+                      # from here on: apt and pip are done, so a setup that failed (a
+                      # laptop's network) judged nothing and leaves no ran/rc, and this
+                      # host runs the suite instead. A signal is not an exit (review of
+                      # mykronos #1213): the wrapper timeout's SIGTERM would run the EXIT
+                      # trap with `$?` 0, so a signal clears it first.
+                      trap 'trap - EXIT; exit 143' TERM INT HUP
+                      trap 'printf "%s\n" "$?" > "$RAN_DIR/rc"' EXIT
+
+                      service postgresql start >/dev/null 2>&1                   || pg_ctlcluster "$PGVER" main start || true
+
+                      # Readiness, not a sleep: the tests fail in a confusing way if
+                      # they start before the socket is listening.
+                      for _ in $(seq 1 30); do
+                        su postgres -c "pg_isready -q" && break
+                        sleep 1
+                      done
+                      su postgres -c "pg_isready" || {
+                        echo "::error::PostgreSQL did not start. These tests need it;"
+                        echo "          running them without it reports TheHub's code"
+                        echo "          as broken when it is this task that is."
+                        exit 1
+                      }
+
+                      su postgres -c "psql -q -c \"ALTER USER postgres PASSWORD 'test'\"" >/dev/null
+                      su postgres -c "psql -q -c 'CREATE DATABASE thehub_test'" >/dev/null
+                      # The extensions create_all depends on, before it runs.
+                      for ext in vector pgcrypto "uuid-ossp"; do
+                        su postgres -c "psql -q -d thehub_test -c 'CREATE EXTENSION IF NOT EXISTS \"$ext\"'"                     >/dev/null 2>&1 || echo "note: extension $ext unavailable"
+                      done
+
+                      # -- Native enum types, which create_all cannot make --------
+                      #
+                      # 391 of the 433 errors on the first Postgres run were one
+                      # line: `type "meal_type_enum" does not exist`. TheHub declares
+                      # four enums as real Postgres types in its SQL migrations, and
+                      # the models reference them without defining them, so
+                      # `Base.metadata.create_all` emits a column of a type nothing
+                      # created.
+                      #
+                      # Replayed from db/migrations rather than transcribed here.
+                      # There are only four today and typing them into this file
+                      # would work exactly until somebody adds a fifth, at which
+                      # point the lane fails with a message about a type nobody
+                      # changed. Reading them from the migrations means the pipeline
+                      # follows the schema instead of tracking it.
+                      #
+                      # Only CREATE TYPE ... AS ENUM is replayed, not the migrations
+                      # themselves: those are ordered, cumulative and assume a live
+                      # database, and running 277 of them here would be a migration
+                      # test wearing a unit test's name.
+                      echo "Creating native enum types from db/migrations..."
+                      python - <<'ENUMS'
+                      import glob, re, subprocess
+                      pattern = re.compile(
+                          r"CREATE\s+TYPE\s+(\w+)\s+AS\s+ENUM\s*\(([^)]*)\)",
+                          re.IGNORECASE | re.DOTALL,
+                      )
+                      seen = {}
+                      # Searched from the repository root, not from backend/. This
+                      # runs before the `cd backend` further down, and the first
+                      # version globbed "db/migrations/*.sql" against the checkout
+                      # root -- where TheHub keeps no such directory. It matched
+                      # nothing, created nothing, and the count guard below caught it
+                      # in six minutes instead of twenty-three.
+                      paths = sorted(glob.glob("**/db/migrations/*.sql", recursive=True))
+                      if not paths:
+                          print("  no db/migrations/*.sql found anywhere in the checkout")
+                      for path in paths:
+                          with open(path, encoding="utf-8", errors="replace") as handle:
+                              for name, values in pattern.findall(handle.read()):
+                                  seen.setdefault(name.lower(), " ".join(values.split()))
+                      print(f"  found {len(seen)} enum type(s): {', '.join(sorted(seen))}")
+                      for name, values in seen.items():
+                          # Plain CREATE TYPE, and the statement goes to psql on
+                          # stdin rather than through `-c` in a shell string.
+                          #
+                          # The obvious version wrapped a `DO $$ ... $$` block in
+                          # double quotes for `su -c`, which the shell expands: `$$`
+                          # is the PID. It would have created a type named after
+                          # whatever process ran it, or more likely failed with a
+                          # syntax error nobody would connect to quoting.
+                          #
+                          # No duplicate guard is needed because the database is
+                          # created fresh in this task a few lines above; a failure
+                          # here is tolerated (check=False) and reported by the count
+                          # check that follows.
+                          subprocess.run(
+                              ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                              input=f"CREATE TYPE {name} AS ENUM ({values});",
+                              text=True,
+                              check=False,
+                          )
+                      ENUMS
+
+                      MADE=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM pg_type WHERE typtype = 'e'\"")
+                      echo "  created ${MADE} enum type(s) in thehub_test"
+                      if [ "${MADE:-0}" -eq 0 ]; then
+                        echo "::error::No enum types were created. create_all will fail"
+                        echo "          with 'type ... does not exist' on ~400 tests."
+                        exit 1
+                      fi
+
+                      export DATABASE_URL="postgresql://postgres:test@localhost:5432/thehub_test"
+                      export TEST_DATABASE_URL="$DATABASE_URL"
+
+                      # -- Build the schema with TheHub's own initialiser ----------
+                      #
+                      # `tests/conftest.py` calls `Base.metadata.create_all`, but it
+                      # imports exactly two model modules -- threat_intelligence and
+                      # user. SQLAlchemy's metadata only holds what has been
+                      # imported, so create_all builds two tables and every test
+                      # touching anything else fails on `relation "..." does not
+                      # exist`. That is what the remaining 133 failures were.
+                      #
+                      # scripts/init_db.py exists precisely for this. It does
+                      # `import models`, whose package __init__ pulls in all 181
+                      # model modules, and its own comment spells out the trap:
+                      # "Without it, create_all() runs against an empty registry
+                      # (silent no-op)". Running TheHub's initialiser rather than
+                      # reimplementing it here also means the schema follows their
+                      # models without this file knowing anything about them.
+                      #
+                      # It runs after the enum replay because create_all emits
+                      # columns of those native types and cannot make them itself.
+                      cd backend
+                      echo "Building the full schema with scripts/init_db.py..."
+                      python scripts/init_db.py 2>&1 | tail -5
+
+                      # -- Then the migrations, for what the ORM does not own ----
+                      #
+                      # create_all builds every table SQLAlchemy knows about, and
+                      # TheHub has tables it does not: deploy_runs, epic_stage_history,
+                      # story_gate_history, agent_learning_ledger and friends are
+                      # created and written by raw SQL (api/ops.py inserts into
+                      # deploy_runs directly). No model, so no create_all, so 44
+                      # `relation "..." does not exist` failures.
+                      #
+                      # Order matters and was measured, not guessed. Replaying the
+                      # migrations into an *empty* database applies 32 of 277 and
+                      # produces 31 tables -- they are overwhelmingly ALTER TABLE
+                      # against a schema create_all is expected to have made. Run
+                      # after it, the ALTERs land and the CREATEs that create_all
+                      # could not cover fill the gaps.
+                      #
+                      # Most will still fail, and that is expected rather than
+                      # tolerated blindly: a migration whose CREATE TABLE already
+                      # exists is a no-op by another name. Each runs in its own psql
+                      # session so one failure cannot poison the next, and the counts
+                      # are printed so a sudden change in them is visible.
+                      echo "Replaying migrations for tables the ORM does not own..."
+                      applied=0; skipped=0
+                      for f in $(ls db/migrations/*.sql | sort -V); do
+                        if su postgres -c "psql -q -v ON_ERROR_STOP=1 -d thehub_test -f $PWD/$f" >/dev/null 2>&1; then
+                          applied=$((applied+1))
+                        else
+                          skipped=$((skipped+1))
+                        fi
+                      done
+                      echo "  applied ${applied}, skipped ${skipped} (already-present objects)"
+
+                      # -- One user, because a third of these tests assume one ---
+                      #
+                      # Helpers like `_mk_story` do `db.query(User).first()` and then
+                      # `user.id`, so on a database with no users they raise
+                      # `AttributeError: 'NoneType' object has no attribute 'id'` --
+                      # 34 failures, none of them about the code under test.
+                      #
+                      # They pass in TheHub's own environment because `make test`
+                      # runs inside a container pointed at a database that has real
+                      # users in it. The tests are relying on ambient data rather
+                      # than a fixture, which is worth fixing in TheHub; until then
+                      # CI has to provide the environment they were written for
+                      # rather than pretend the difference is theirs.
+                      #
+                      # Deliberately one inert row: a fixed uuid, an unroutable
+                      # address and a password hash that is not a hash of anything.
+                      # It exists to be found by `.first()`, not to be logged in as.
+                      echo "Seeding the single user those tests expect to find..."
+                      su postgres -c "psql -q -d thehub_test" <<'SEED' || true
+                      INSERT INTO users (id, email, username, password_hash, is_active)
+                      VALUES ('00000000-0000-0000-0000-000000000001',
+                              'ci@invalid.test', 'ci', 'x-not-a-hash', true)
+                      ON CONFLICT DO NOTHING;
+                      SEED
+
+                      # -- Mirror Python-side defaults into the database ---------
+                      #
+                      # 22 of the remaining failures were `null value in column
+                      # "tags" of relation "dev_stories"` and friends -- tags,
+                      # kpi_sketch, autonomy_disabled, cached, status.
+                      #
+                      # Each is declared `Column(..., nullable=False, default=X)`.
+                      # That default is applied by the ORM, not by the database, so
+                      # create_all emits NOT NULL with no DEFAULT and any raw-SQL
+                      # INSERT in the code under test fails. The real database does
+                      # not fail, because those columns arrived via `ALTER TABLE ADD
+                      # COLUMN ... DEFAULT`, and the migration replay above skips
+                      # exactly those statements: create_all already made the column.
+                      #
+                      # So the defaults are read back out of SQLAlchemy's own
+                      # metadata and applied, for columns that are NOT NULL, have a
+                      # scalar Python-side default and no server_default. Derived
+                      # rather than listed, for the same reason the enums are read
+                      # from db/migrations: a list typed here is right until somebody
+                      # adds a column.
+                      #
+                      # This is a CI accommodation, not a fix. The real correction is
+                      # `server_default=` alongside `default=` in TheHub's models, so
+                      # the model describes the schema it actually needs.
+                      echo "Mirroring model defaults onto NOT NULL columns..."
+                      python - <<'DEFAULTS'
+                      import subprocess
+                      import models  # noqa: F401 - populates the metadata
+                      from db.session import Base
+                      from sqlalchemy import DateTime
+
+                      def literal_for(d, col):
+                          """SQL literal for a Python-side default, or None to skip.
+
+                          bool is checked before int on purpose: in Python
+                          ``False == 0`` and ``True == 1``, so a dict keyed on both
+                          collapses to one entry and every boolean column would emit
+                          ``SET DEFAULT 0`` -- which Postgres rejects for a boolean,
+                          leaving the column with no default and the failure it was
+                          meant to fix.
+                          """
+                          if d is list:
+                              return "'[]'::jsonb"
+                          if d is dict:
+                              return "'{}'::jsonb"
+                          if callable(d):
+                              # A timestamp default is the one callable worth
+                              # translating: `default=datetime.utcnow` and
+                              # `func.now()` both mean "now" to the database, and
+                              # raw-SQL inserts that omit started_at rely on it.
+                              # Everything else callable is Python-side logic with no
+                              # SQL equivalent, and guessing one would be worse than
+                              # leaving the column without a default.
+                              return "now()" if isinstance(col.type, DateTime) else None
+                          if isinstance(d, bool):
+                              return "true" if d else "false"
+                          if isinstance(d, int) and not isinstance(d, bool):
+                              return str(d)
+                          if isinstance(d, str):
+                              return "'" + d.replace("'", "''") + "'"
+                          return None
+
+                      stmts = []
+                      for table in Base.metadata.tables.values():
+                          for col in table.columns:
+                              if col.nullable or col.server_default is not None:
+                                  continue
+                              d = getattr(col.default, "arg", None)
+                              if d is None:
+                                  continue
+                              literal = literal_for(d, col)
+                              if literal is None:
+                                  continue
+                              stmts.append(
+                                  f"ALTER TABLE {table.name} "
+                                  f"ALTER COLUMN {col.name} SET DEFAULT {literal};"
+                              )
+
+                      print(f"  {len(stmts)} column default(s) to mirror")
+                      if stmts:
+                          subprocess.run(
+                              ["su", "postgres", "-c", "psql -q -d thehub_test"],
+                              input="\n".join(stmts), text=True, check=False,
+                          )
+                      DEFAULTS
+
+                      USERS=$(su postgres -c "psql -tAq -d thehub_test -c 'SELECT count(*) FROM users'")
+                      echo "  users table has ${USERS} row(s)"
+
+                      TABLES=$(su postgres -c "psql -tAq -d thehub_test -c \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'\"")
+                      echo "  schema has ${TABLES} table(s)"
+                      if [ "${TABLES:-0}" -lt 50 ]; then
+                        echo "::error::Only ${TABLES} tables were created. The model"
+                        echo "          registry was not fully populated, and the"
+                        echo "          failures that follow would be about missing"
+                        echo "          tables rather than about TheHub's code."
+                        exit 1
+                      fi
+                      cd ..
+                      echo "PostgreSQL ready; tests will use it rather than the SQLite fallback."
+
+                      # -- What this lane runs, and what it deliberately does not --
+                      #
+                      # `tests/unit`, which is TheHub's own `make test-unit`, plus
+                      # `tests/security` as its own step after it (#357, see below).
+                      # Running the whole tree here produced several hundred errors
+                      # and failures in a row and then hit the timeout, and none of
+                      # it was about TheHub's code.
+                      #
+                      # TheHub's suite is written to run *inside its own container*:
+                      # `make test` and the integration runner in scripts/deploy.sh
+                      # both go through `docker-compose exec -T backend pytest`, so
+                      # the tests get Postgres, Redis, the app's environment and its
+                      # fixtures. This task is a bare python image with the
+                      # requirements pip-installed and none of those services -- and
+                      # spec 15 section 7 is why it cannot have them, since reaching
+                      # the host's daemon is the grant this whole design refuses.
+                      #
+                      # `tests/unit` is the part with no external dependencies, which
+                      # is what pytest.ini's own `unit` marker says it is. That makes
+                      # this lane's claim narrow and true rather than broad and
+                      # false.
+                      #
+                      # It is stated on every run because the gap matters: nothing
+                      # downstream should read a green `unit` as "TheHub's tests
+                      # pass". The integration suite still runs where it can, which
+                      # is deploy.sh on the host.
+                      echo "=================================================="
+                      # No backticks in this string: inside double quotes bash
+                      # would run `make test-unit` as a command substitution, in a
+                      # container with no make and no reason to.
+                      echo "Running tests/unit - TheHub's own make test-unit - then"
+                      echo "tests/security as a separate serial step (#357)."
+                      echo "tests/integration is NOT run here: it needs Postgres,"
+                      echo "Redis and the app environment, which live in TheHub's"
+                      echo "own container. A green tick on this job means the unit"
+                      echo "and security tests pass, not that the suite passes."
+                      echo "=================================================="
+
+                      cd backend
+
+                      # TheHub resolves its YAML config through HUB_CONFIG_DIR,
+                      # defaulting to /app/config -- the path inside its own
+                      # container. A checkout has no /app, so lifecycle_pipelines.yaml
+                      # and studio_stage_guide.yaml loaded as empty and the tests that
+                      # read them failed on the consequences rather than the cause:
+                      # `assert 0 == 19` canonical stages, `KeyError: 'dev_ready'`,
+                      # `Stage 'loop' missing gate_md in YAML`.
+                      #
+                      # The env var is the mechanism the code already provides for
+                      # this, so nothing in TheHub needs changing - it just has to be
+                      # told where the repository is.
+                      export HUB_CONFIG_DIR="$(cd .. && pwd)/config"
+                      echo "HUB_CONFIG_DIR=$HUB_CONFIG_DIR"
+                      test -f "$HUB_CONFIG_DIR/lifecycle_pipelines.yaml" || {
+                        echo "::error::No lifecycle_pipelines.yaml under $HUB_CONFIG_DIR."
+                        echo "          The stage tests would fail on empty config."
+                        exit 1
+                      }
+
+                      # TheHub reads its config through TWO mechanisms, and this job
+                      # was setting only one of them.
+                      #
+                      #   HUB_CONFIG_DIR   read directly by four modules
+                      #                    (lifecycle_pipelines, stage_guide,
+                      #                    dev_routing, irra_actions), default
+                      #                    /app/config
+                      #   CONFIG_DIR       pydantic settings.config_dir, default the
+                      #                    RELATIVE "config" -- and this task has
+                      #                    already `cd backend`, so it resolved to
+                      #                    backend/config
+                      #
+                      # backend/config exists, which is why nothing complained: it is
+                      # a five-file legacy subset. The real config is the 63-file
+                      # directory at the repo root. hub-config.yaml is not in the
+                      # subset, so hub_config logged "No hub-config.yaml found, using
+                      # defaults" and handed back its fallback zone -- America/
+                      # New_York instead of the configured America/Phoenix. Any test
+                      # asserting a local time then failed on a zone nobody chose,
+                      # and agent_rollout.yaml was simply absent.
+                      #
+                      # The `test -f` above passes throughout, because
+                      # lifecycle_pipelines.yaml IS reached via HUB_CONFIG_DIR. A
+                      # guard that proves less than it appears to.
+                      #
+                      # Prod is the mirror image and correct by accident: compose
+                      # sets CONFIG_DIR=/app/config and leaves HUB_CONFIG_DIR empty,
+                      # so the four modules fall back to a default that happens to be
+                      # where the volume is mounted. Both variables want the same
+                      # directory in every environment; here it is already computed.
+                      export CONFIG_DIR="$HUB_CONFIG_DIR"
+                      echo "CONFIG_DIR=$CONFIG_DIR"
+                      test -f "$CONFIG_DIR/hub-config.yaml" || {
+                        echo "::error::No hub-config.yaml under $CONFIG_DIR."
+                        echo "          hub_config would silently fall back to its"
+                        echo "          default timezone and any test asserting a"
+                        echo "          local time would fail on the wrong zone."
+                        exit 1
+                      }
+
+                      # `-p no:cacheprovider` because the checkout is thrown away
+                      # after the build; writing .pytest_cache into it is pure IO.
+                      #
+                      # JUnit XML so the result reaches Mykronos as a ScanRun with no
+                      # findings (D-046) - this lane ran for months without reporting,
+                      # so the platform could not tell TheHub's tests passed from
+                      # TheHub's tests never ran. [TheHub #62325] It goes to `results`,
+                      # and upload-unit sends it on this host whatever the exit code
+                      # below: a failing suite must still report.
+                      mkdir -p "$RESULTS"
+
+                      # [#55173] A SOFT timeout below Concourse's hard one.
+                      #
+                      # Build #75 was killed by the 60m cap at 62 minutes having
+                      # already observed three failures. A hard kill takes the task
+                      # down before --junitxml is written, so the run produced no
+                      # verdict whatsoever - worse than a red build, because nobody
+                      # can tell a slow suite from a broken one.
+                      #
+                      # `timeout -s INT` sends SIGINT, which Python raises as
+                      # KeyboardInterrupt and pytest handles: it stops, tears down,
+                      # and WRITES THE REPORT for everything that finished. `-k 60s`
+                      # SIGKILLs a pytest that has not stopped a minute later, so a
+                      # teardown that hangs costs a minute, not the rest of the cap;
+                      # the elapsed check below still reads it as the soft timeout.
+                      # 80m here and 10m for tests/security leave 10m of the copy on
+                      # this host's 100m for setup (minutes, with a warm pip cache).
+                      # The upload is no longer in this task: upload-unit has its own 15m.
+                      SOFT_TIMEOUT_S=4800   # 80m
+                      # [#61106] Both tiers run under memory-guard. A tier it killed,
+                      # or saw SIGKILLed, exits 137 and leaves a reason in its own
+                      # directory here; the end of this script decides what that
+                      # means for the job.
+                      MEMGUARD=/tmp/memory-guard
+                      rm -rf "$MEMGUARD"
+                      rc=0
+                      started=$(date +%s)
+                      if command -v timeout >/dev/null 2>&1; then
+                        MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
+                          MEMORY_GUARD_SOFT_TIMEOUT_S="$SOFT_TIMEOUT_S" MEMORY_GUARD_EXPECTED_S=4300 \
+                          python -c "$MEMORY_GUARD" timeout -s INT -k 60s "${SOFT_TIMEOUT_S}s" \
+                          python -m pytest tests/unit -q -p no:cacheprovider \
+                          --junitxml="$RESULTS/unit.xml" || rc=$?
+                      else
+                        # Stated rather than silently skipped: without coreutils
+                        # there is no soft timeout and the hard cap is all there is.
+                        echo "::warning::the timeout command is unavailable - no soft timeout; a slow run will be killed without a verdict"
+                        MEMORY_GUARD_DIR="$MEMGUARD/unit" MEMORY_GUARD_LABEL="pytest tests/unit" \
+                          python -c "$MEMORY_GUARD" python -m pytest tests/unit -q -p no:cacheprovider \
+                          --junitxml="$RESULTS/unit.xml" || rc=$?
+                      fi
+                      elapsed=$(( $(date +%s) - started ))
+
+                      TIMED_OUT=false
+                      if [ "$elapsed" -ge "$SOFT_TIMEOUT_S" ]; then
+                        TIMED_OUT=true
+                        echo "=================================================="
+                        echo "UNIT SUITE HIT THE ${SOFT_TIMEOUT_S}s SOFT TIMEOUT after ${elapsed}s."
+                        echo "The results below are PARTIAL - they cover the tests"
+                        echo "that finished, not the whole suite. A pass here is not"
+                        echo "evidence the suite passes."
+                        echo "=================================================="
+                      fi
+
+                      # -- tests/security, its own serial step [#357] -------------
+                      #
+                      # Twelve modules that production comments in TheHub's
+                      # middleware/api_gate.py cite by name as the thing that "fails
+                      # the build" -- and no stage ran them. They are not moved into
+                      # tests/unit: TheHub's test-offline.sh parallelises that tier
+                      # and test_rate_limit.py is red under `-n 6`, because another
+                      # worker's limiter.reset() wipes a burst mid-count. Here they run
+                      # serially, after the unit tier, in their own pytest process.
+                      #
+                      # The environment is scoped to this subshell, not exported to
+                      # the unit run above, so tests/unit is graded exactly as before:
+                      #
+                      #   SINGLE_USER_MODE=true  what prod and TheHub's own offline
+                      #                          runner use. Without it 18 of these
+                      #                          tests 401 on `client` requests and
+                      #                          fail for a reason that is about this
+                      #                          task, not the code.
+                      #   HUB_API_TOKEN          random per build, never a real
+                      #                          credential. Any non-empty value makes
+                      #                          main.py install the API Gate, which
+                      #                          test_authz_bypass exists to probe.
+                      #                          Unset, 31 tests SKIP -- and a skip in
+                      #                          this job reads as a pass.
+                      #   HUB_REQUIRE_ARMED_GATE that skip becomes a FAILURE naming the
+                      #                          missing variable, so a future edit
+                      #                          that drops the token goes red rather
+                      #                          than green-over-nothing.
+                      #   REDIS_URL=memory://    slowapi's in-process store. The limiter
+                      #                          stores in Redis and fails OPEN when it
+                      #                          cannot reach it (swallow_errors, #59983),
+                      #                          and this task has no Redis: in build 324
+                      #                          four 429 tests got 200/201/401 and logged
+                      #                          "Failed to rate limit. Swallowing error".
+                      #                          One serial pytest process, so the memory
+                      #                          store counts exactly what Redis would.
+                      #
+                      # Skipped only if the unit tier already hit its soft timeout:
+                      # the job exits 124 below either way, and the line says so.
+                      # 10m soft cap (measured ~2.5m serial); 80m + 10m leaves the
+                      # last 10m of the copy on this host's 100m for setup.
+                      SEC_SOFT_TIMEOUT_S=600
+                      sec_rc=0
+                      SEC_TIMED_OUT=false
+                      if [ "$TIMED_OUT" = true ]; then
+                        echo "::warning::tests/security NOT RUN - the unit tier used the whole soft timeout"
+                      else
+                        echo "=================================================="
+                        echo "Running tests/security - serial, API Gate armed, skips refused."
+                        echo "=================================================="
+                        sec_started=$(date +%s)
+                        (
+                          export SINGLE_USER_MODE=true
+                          HUB_API_TOKEN="ci-$(python -c 'import secrets; print(secrets.token_hex(16))')"
+                          export HUB_API_TOKEN
+                          export HUB_REQUIRE_ARMED_GATE=1
+                          export REDIS_URL=memory://
+                          # unit #360 was killed HERE: "Killed ... pytest tests/security".
+                          export MEMORY_GUARD_DIR="$MEMGUARD/security"
+                          export MEMORY_GUARD_LABEL="pytest tests/security"
+                          export MEMORY_GUARD_SOFT_TIMEOUT_S="$SEC_SOFT_TIMEOUT_S"
+                          export MEMORY_GUARD_EXPECTED_S=600
+                          if command -v timeout >/dev/null 2>&1; then
+                            python -c "$MEMORY_GUARD" timeout -s INT -k 60s "${SEC_SOFT_TIMEOUT_S}s" \
+                              python -m pytest tests/security -q -p no:cacheprovider -ra \
+                              --junitxml="$RESULTS/security.xml"
+                          else
+                            python -c "$MEMORY_GUARD" python -m pytest tests/security -q -p no:cacheprovider -ra \
+                              --junitxml="$RESULTS/security.xml"
+                          fi
+                        ) || sec_rc=$?
+                        if [ $(( $(date +%s) - sec_started )) -ge "$SEC_SOFT_TIMEOUT_S" ]; then
+                          SEC_TIMED_OUT=true
+                          echo "TESTS/SECURITY HIT ITS ${SEC_SOFT_TIMEOUT_S}s SOFT TIMEOUT - results are PARTIAL."
+                        fi
+                      fi
+
+                      # [#55173] 124 distinguishes "ran out of time" from "tests
+                      # failed". #75 reported neither: an errored build carries no
+                      # verdict, so three real failures read the same as a crash.
+                      # upload-unit sends the junit above either way.
+                      if [ "$TIMED_OUT" = true ]; then
+                        echo "::error::unit suite exceeded its ${SOFT_TIMEOUT_S}s soft timeout - partial results reported"
+                        exit 124
+                      fi
+                      if [ "$SEC_TIMED_OUT" = true ]; then
+                        echo "::error::tests/security exceeded its ${SEC_SOFT_TIMEOUT_S}s soft timeout - partial results reported"
+                        exit 124
+                      fi
+                      # [#61106] A tier killed for memory reached no verdict. It is
+                      # only a tier's OWN 137 with memory-guard's reason beside it.
+                      UNIT_OOM=false
+                      SEC_OOM=false
+                      if [ "$rc" -eq 137 ] && [ -s "$MEMGUARD/unit/reason" ]; then UNIT_OOM=true; fi
+                      if [ "$sec_rc" -eq 137 ] && [ -s "$MEMGUARD/security/reason" ]; then SEC_OOM=true; fi
+
+                      # [#357] Either tier failing fails the job. The unit verdict is
+                      # reported first because it was the job's only verdict until now.
+                      # A REAL failure in either tier wins over an OOM in the other:
+                      # a verdict is never downgraded to an outage.
+                      if [ "$rc" -ne 0 ] && [ "$UNIT_OOM" = false ]; then
+                        exit "$rc"
+                      fi
+                      if [ "$sec_rc" -ne 0 ] && [ "$SEC_OOM" = false ]; then
+                        echo "::error::tests/security failed (exit ${sec_rc}) - the unit tier passed or was killed for memory"
+                        exit "$sec_rc"
+                      fi
+
+                      # Only now, with no real verdict anywhere, does the reason
+                      # reach `infra`: the job's hooks then report `errored` to
+                      # TheHub (exit_code 137, reason first) and `cancelled` to the
+                      # check, and Slack says re-run rather than "the answer was bad".
+                      if [ "$UNIT_OOM" = true ] || [ "$SEC_OOM" = true ]; then
+                        mkdir -p "$TASK_ROOT/memory-infra" "$TASK_ROOT/notify"
+                        cat "$MEMGUARD"/*/reason > "$TASK_ROOT/memory-infra/reason"
+                        printf '137\n' > "$TASK_ROOT/memory-infra/exit_code"
+                        REASON="$(head -1 "$TASK_ROOT/memory-infra/reason")"
+                        echo "::error::${REASON}"
+                        echo "*TheHub*: unit - NO VERDICT for $(head -c 12 "$TASK_ROOT/commit/sha"): ${REASON#INFRASTRUCTURE, NOT A VERDICT: } This is not a test failure and not a red commit: re-run the job." > "$TASK_ROOT/notify/message.txt"
+                        exit 137
+                      fi
+                      exit 0
+          # [TheHub #62325] max(2 x p95, p95 + 10m), #1178's rule for a remote
+          # wrapper. The suite's p95 is this host's: #434 ran pytest 4,747 s
+          # (79.1m; the runs before it 4,150-4,750 s), so 2 x 79.1 = 158.2,
+          # rounded up to 160m; p95 + 10m is only 89m. It also holds what the
+          # task allows itself, so the cap does not cut a run the script would
+          # have ended with a verdict: the 5m probe, a cold pip cache on a
+          # worker that has none (over 40m: the old 40m cap here died inside
+          # pip), 80m of tests/unit and 10m of tests/security. A worker lost
+          # after the probe costs the whole 160m before this host's 100m.
+          timeout: 160m
+      # The same copy on linux-finished's failure (no ran/rc) and on its
+      # error (a lost worker's `ran` cannot be read): see `linux_finished`.
+      - try:
+          do:
+            - <<: *linux_finished
+              params: { LINUX_STEP: unit/pytest-on-linux }
+              on_error: &unit_on_this_host
+                <<: *thehub_unit_suite
+                # The step name and placement the suite had before TheHub
+                # #62325: worker-2, and its warm pip cache.
+                task: pytest
+                tags: [thehub]
+                # A build that hangs must fail rather than occupy a worker. One ran for
+                # 47 minutes and was still going when it was killed by hand; nothing in
+                # the pipeline would ever have stopped it, and `unit` gates build,
+                # containers, Oracle and both deploys.
+                #
+                # 40m rather than the 25m this started at, and the number came from
+                # measurement: at 25m the first run died inside `pip install -r
+                # backend/requirements.txt` with a cold cache. TheHub's dependency set
+                # is genuinely large, so a cold install is slow once and warm installs
+                # are minutes. A cap that kills the run which populates the cache never
+                # lets the cache exist.
+                #
+                # 60m now, for the same reason one more time. The kernel OOM-killed
+                # the Concourse container and the restart swept the worker's volumes,
+                # including /pipcache - so the next run was cold again and died at 40m,
+                # having spent almost all of it installing. The measurement that
+                # settles the number: unit/24 ran 3173 tests in 187 seconds. Three
+                # minutes of that half-hour is testing; the rest is pip. The cap has to
+                # cover a cold install or the cache can never come back, and every run
+                # after it is minutes.
+                #
+                # [#55173] 60m -> 90m. Measured over 71 runs longer than five minutes:
+                # mean 21.7, p95 52.1, max 66.2 minutes. The old 60m cap sat BELOW the
+                # observed maximum, so the slow tail was a coin flip, and build #75
+                # lost three real failures to it. 90m is p95 x 1.7 and clears the max.
+                # 90m -> 100m once the suite needed ~4,230s: a 4,800s unit soft limit
+                # plus the 600s tests/security step must fit under the cap.
+                # There is also an 80m soft timeout inside the task -- see the pytest
+                # step -- so a slow run reports rather than being killed silently.
+                timeout: 100m
+          on_failure: *unit_on_this_host
+      # The exit code, decided here from ran/rc and ran/commit against the
+      # commit this host exported, wherever the suite ran.
+      - <<: *linux_verdict
+        input_mapping: { expect: commit }
+        params: { EXPECT: sha, LINUX_STEP: unit/pytest, HOST_FALLBACK: "1" }
+        # The upload, on this host, with the ingestion token, after the
+        # verdict and whatever it was: a red suite still reports, as it did
+        # when the upload sat before the exit in one task. Only a result
+        # linux-verdict accepts is sent (it checks the same files).
+        ensure:
+          task: upload-unit
+          tags: [thehub]
+          container_limits: {cpu: 512}
+          timeout: 15m
+          image: python
+          params: *mykronos_env
+          config:
+            platform: linux
+            inputs:
+              - { name: source }
+              - { name: commit }
+              - { name: ran, optional: true }
+              - { name: results, optional: true }
+            run:
+              path: bash
+              args:
+                - -ec
+                - |
+                  # What linux-verdict accepts, or nothing: an exit code, for the
+                  # commit this host exported, with a report beside it.
+                  rc="$(head -c 16 ran/rc 2>/dev/null | tr -d '[:space:]' || true)"
+                  want="$(head -c 64 commit/sha 2>/dev/null | tr -d '[:space:]' || true)"
+                  got="$(head -c 64 ran/commit 2>/dev/null | tr -d '[:space:]' || true)"
+                  case "$rc" in
+                    ''|*[!0-9]*|????*)
+                      echo "Not uploaded: unit/pytest left no exit code; linux-verdict says why."
+                      exit 0 ;;
+                  esac
+                  if [ -z "$want" ] || [ "$got" != "$want" ]; then
+                    echo "Not uploaded: unit/pytest reports commit ${got:-none}, not ${want:-none}."
+                    exit 0
+                  fi
+                  if ! ls results/*.xml >/dev/null 2>&1; then
+                    echo "Not uploaded: unit/pytest exited ${rc} before pytest wrote a report."
+                    exit 0
+                  fi
+                  # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                  # route is dead, so this must land before apt opens a socket. See the
+                  # note at the top of `anchors:`.
+                  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                  apt-get update -qq && apt-get install -y -qq git >/dev/null
+                  bash -c "$MYKRONOS_INSTALL_UPLOADER"
+                  python -c "import json,importlib.metadata as m;t=m.distribution('mykronos').read_text('direct_url.json');print('mykronos uploader @', json.loads(t).get('vcs_info',{}).get('commit_id','unknown')[:12] if t else '(local install)')" || echo "mykronos uploader @ (could not resolve)"
+                  cd source/backend
+                  upload_rc=0
+                  MYKRONOS_JOB=unit python -m mykronos.upload \
+                    --capability unit --tool junit \
+                    --results-path ../../results \
+                    --ingestion-url "$MYKRONOS_URL" --token "$MYKRONOS_TOKEN" \
+                    --repo ToddGBenson/TheHub \
+                    --commit-sha "$(git rev-parse HEAD)" \
+                    --branch "$SCANNED_BRANCH" \
+                    --workspace "$PWD" \
+                    --severity-threshold low --blocking false || upload_rc=$?
+
+                  # The upload's exit code fails the job (2026-10-21). It ended
+                  # `|| true`, so a refused token, a schema 422 or an adapter that
+                  # read nothing left this job green while Mykronos recorded no
+                  # run - the lane looked reported and was not. The suite's own
+                  # exit code is linux-verdict's, above.
+                  if [ "$upload_rc" -ne 0 ]; then
+                    echo "::error::Uploading the unit results to Mykronos failed (exit $upload_rc) - this run is NOT on record there."
+                    exit "$upload_rc"
+                  fi
 
   # == Stage 2: build =======================================================
   #

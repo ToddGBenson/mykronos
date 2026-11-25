@@ -118,6 +118,10 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         ("mykronos", "frontend", "linux-worker-probe"),
         ("mykronos", "frontend", "dump-openapi"),
         ("mykronos", "frontend", "lint-types-build"),
+        # TheHub #62325: thehub's `unit` the same way, on export-tree's tree
+        # (test_thehub_unit_on_linux.py).
+        ("thehub", "unit", "linux-worker-probe"),
+        ("thehub", "unit", "pytest-on-linux"),
     }
 )
 
@@ -208,6 +212,8 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
     ("mykronos", "frontend", "dump-openapi"): {"source": None},
     # The schema dump-openapi wrote on the same worker.
     ("mykronos", "frontend", "lint-types-build"): {"source": None, "contract": None},
+    ("thehub", "unit", "linux-worker-probe"): {},
+    ("thehub", "unit", "pytest-on-linux"): {"source": "tree", "commit": None},
 }
 
 # The gating remote tasks, and the host step after each that decides the
@@ -462,8 +468,9 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     one without being reviewed as compute only (hooks, gets and puts included)."""
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
-    # #1177's 9 TheHub steps, #1178's 8 mykronos steps and #61951's 5.
-    assert len(REMOTE_COMPUTE) == 22
+    # #1177's 9 TheHub steps, #1178's 8 mykronos steps, #61951's 5 and
+    # #62325's 2.
+    assert len(REMOTE_COMPUTE) == 24
     assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
