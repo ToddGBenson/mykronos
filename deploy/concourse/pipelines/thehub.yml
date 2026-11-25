@@ -799,9 +799,9 @@ anchors:
             rc="$(head -c 16 ran/rc 2>/dev/null | tr -d '[:space:]')"
             # [TheHub #62325] A job that ran on this host when no linux worker
             # finished it (`unit`): no ran/rc means this host's run stopped in
-            # its setup too, so a re-run needs no linux worker.
+            # its setup too, or hit its cap, so a re-run needs no linux worker.
             if [ -z "$rc" ] && [ -n "${HOST_FALLBACK:-}" ]; then
-              refuse "neither a linux worker nor this host's own run got past its setup: apt or pip, see the step before this one. A requirements file this commit broke fails there every time: then fix the commit, not the run"
+              refuse "neither a linux worker nor this host's own run finished: this host's stopped in its setup (apt or pip) or was cut off at its cap, see the step before this one. A requirements file this commit broke fails setup every time: then fix the commit, not the run"
             fi
             case "$rc" in ''|*[!0-9]*) refuse "ran/rc is not an exit code" ;; esac
             [ "${#rc}" -le 3 ] || refuse "ran/rc is not an exit code"
@@ -2783,8 +2783,14 @@ jobs:
   # holds: every heavy task of a job in them is tagged `linux`, and what
   # they run here is short (export, fetch, verdict, reports; the test holds
   # that list). Only unit-chain, scanners and dast run heavy work here, and
-  # `pytest-memory` keeps `unit`, the one full suite left on the host, apart
-  # from any suite that comes back to it.
+  # `pytest-memory` keeps `unit` apart from any suite that comes back to it.
+  #
+  # [TheHub #62325] `unit` is in neither lane but runs on a linux worker
+  # first too, and on this host when none finishes it (`linux_finished` in
+  # `anchors:`). So three heavy jobs can share one remote worker: unit
+  # (2048), a suite (2560 or 2304) and a pull request's run (2304), 6.75 GiB
+  # at their budgets against a 5g worker. Placement normally spreads them;
+  # when it does not, one is killed for memory and reads as errored.
   #
   # What runs remotely is compute only. No credential, no host address and
   # no git history: every report and check run stays on this host
@@ -3974,6 +3980,66 @@ jobs:
       # history, and its commit, both from this host's checkout.
       - <<: *export_tree
         image: python
+      # [TheHub #62325, review F1] The guards that ask git about the checkout
+      # skip on a tree with no .git, which is what both copies of the suite
+      # now run on: a plaintext .env backup must stay ignored, no personal
+      # PDF may be tracked, the guarded deploy scripts stay 100755 in the
+      # index, and the committed sw.js keeps its cache-bust placeholder. They
+      # run here, on this host's checkout, with no conftest (they import
+      # pytest, the standard library and tests.repo_tree only), and a skip
+      # that names git or the repository is a failure: on a checkout with
+      # git there is no reason left for one.
+      - task: git-guards
+        tags: [thehub]
+        container_limits: {cpu: 512}
+        timeout: 15m
+        image: python
+        params:
+          GUARDS: >-
+            tests/unit/scripts/test_env_backups_stay_out_of_git.py
+            tests/unit/test_no_personal_pdfs_in_tree_or_image.py
+            tests/unit/scripts/test_a_skipped_deploy_control_is_not_a_silent_one.py
+            tests/unit/scripts/test_offline_cache_allowlist.py
+        config:
+          platform: linux
+          inputs: [{ name: source }]
+          run:
+            path: bash
+            args:
+              - -ec
+              - |
+                set -uo pipefail
+                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
+                # route is dead, so this must land before apt opens a socket. See the
+                # note at the top of `anchors:`.
+                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+                apt-get update -qq && apt-get install -y -qq git >/dev/null
+                pip install --quiet pytest
+                git config --global --add safe.directory "$PWD/source"
+                cd source/backend
+                for f in $GUARDS; do
+                  if [ ! -f "$f" ]; then
+                    echo "::error::$f is not in this commit: update GUARDS in thehub.yml's unit/git-guards."
+                    exit 1
+                  fi
+                done
+                rc=0
+                # --color=no after pytest.ini's --color=yes, so the summary
+                # lines below are plain text to read.
+                python -m pytest --noconftest -ra -q -p no:cacheprovider --color=no $GUARDS \
+                  > guards.log 2>&1 || rc=$?
+                cat guards.log
+                if [ "$rc" -ne 0 ]; then
+                  echo "::error::the git-backed guards failed (exit $rc) on this host's checkout."
+                  exit "$rc"
+                fi
+                SKIPS="$(grep -E '^SKIPPED' guards.log | grep -Ei 'git|repo|checkout|reachable' || true)"
+                if [ -n "$SKIPS" ]; then
+                  printf '%s\n' "$SKIPS"
+                  echo "::error::a git-backed guard skipped on a checkout that has git: it guarded nothing."
+                  exit 1
+                fi
+                echo "The git-backed guards ran on this host's checkout, and none skipped for want of git."
       - try:
           do:
             # The probe alone, with no linux_absent: no linux worker is not
@@ -3985,8 +4051,11 @@ jobs:
             # [TheHub #62325] Compute only: no credential, no host address,
             # no git history (`export-tree`'s tree and the commit beside it).
             # The ingestion params and the upload are `upload-unit`'s, below.
+            # [review F2] The remote copy has the new name: a task cache is
+            # scoped by worker, job and step name, so the copy on this host
+            # keeps `pytest` and the warm /pipcache this host built under it.
             - &thehub_unit_suite
-              task: pytest
+              task: pytest-on-linux
               tags: [linux]
               container_limits: {cpu: 512}
               image: python
@@ -4008,8 +4077,12 @@ jobs:
                 # the last four green runs peaked at 1263-1330 MiB (memory-guard,
                 # #384-#390), so 2048 clears them by ~700 MiB and leaves 1 GiB of
                 # worker-2's 3g (compose, tags) for the steps beside it. Unchanged
-                # on a linux worker's 5g, where a `linux-suites` suite (2560 or
-                # 2304) can share it: 4.5 GiB at both budgets.
+                # on a linux worker's 5g. There it can share a worker with a
+                # `linux-suites` suite (2560 or 2304) and a `linux-pr` run (2304):
+                # 2048 + 2560 + 2304 = 6.75 GiB at all three budgets, over 5g.
+                # Fewest-build-containers placement normally spreads them; when
+                # it does not, the kill is a 137 and the job errors (no fallback:
+                # a 137 writes ran/rc, a follow-up on TheHub #62325).
                 MEMORY_GUARD: *memory_guard
                 MEMORY_BUDGET_MB: "2048"
               config:
@@ -4732,11 +4805,12 @@ jobs:
       - try:
           do:
             - <<: *linux_finished
-              params: { LINUX_STEP: unit/pytest }
+              params: { LINUX_STEP: unit/pytest-on-linux }
               on_error: &unit_on_this_host
                 <<: *thehub_unit_suite
-                task: pytest-on-this-host
-                # worker-2, where the suite ran before TheHub #62325.
+                # The step name and placement the suite had before TheHub
+                # #62325: worker-2, and its warm pip cache.
+                task: pytest
                 tags: [thehub]
                 # A build that hangs must fail rather than occupy a worker. One ran for
                 # 47 minutes and was still going when it was killed by hand; nothing in

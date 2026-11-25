@@ -83,7 +83,11 @@ RUNTIME_ONLY: dict[tuple[str, str, str], str] = {}
 # or removes one updates this on purpose; an extractor that stops seeing one
 # fails here instead of compiling less. mykronos 21 -> 23 (TheHub #61951):
 # `remote-result` on unit and frontend; unit's uploader line moved, not added.
-PROGRAM_COUNTS = {"mykronos": 23, "thehub": 42, "personal-soc": 6}
+# thehub 42 -> 57 (TheHub #62325): unit's suite is two tasks now, the remote
+# `pytest-on-linux` (+7) and its copy `pytest` on this host, which the walker
+# reaches twice because one YAML alias sits under on_error and on_failure
+# (+7); `export-tree` in unit (+1); the uploader line moved to `upload-unit`.
+PROGRAM_COUNTS = {"mykronos": 23, "thehub": 57, "personal-soc": 6}
 
 
 def _tasks(node: Any, name: str = "") -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:

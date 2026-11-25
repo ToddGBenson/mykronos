@@ -121,7 +121,7 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         # TheHub #62325: thehub's `unit` the same way, on export-tree's tree
         # (test_thehub_unit_on_linux.py).
         ("thehub", "unit", "linux-worker-probe"),
-        ("thehub", "unit", "pytest"),
+        ("thehub", "unit", "pytest-on-linux"),
     }
 )
 
@@ -213,7 +213,7 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
     # The schema dump-openapi wrote on the same worker.
     ("mykronos", "frontend", "lint-types-build"): {"source": None, "contract": None},
     ("thehub", "unit", "linux-worker-probe"): {},
-    ("thehub", "unit", "pytest"): {"source": "tree", "commit": None},
+    ("thehub", "unit", "pytest-on-linux"): {"source": "tree", "commit": None},
 }
 
 # The gating remote tasks, and the host step after each that decides the

@@ -43,6 +43,10 @@ PIPELINE = ROOT / "deploy" / "concourse" / "pipelines" / "thehub.yml"
 HOST = "0123456789abcdef0123456789abcdef01234567"
 HOOKS = ("on_success", "on_failure", "on_error", "on_abort", "ensure")
 SETUP = ("apt-get install", "pip install")
+# [review F2] The remote copy carries the new name; the copy on this host
+# keeps the one it had on main.
+REMOTE = "pytest-on-linux"
+HOST_COPY = "pytest"
 
 
 def _doc() -> dict[str, Any]:
@@ -84,24 +88,29 @@ def _holder(plan: list[dict[str, Any]], task: str) -> int:
 # -- where each task runs ----------------------------------------------------
 
 
+def test_only_the_remote_copy_has_a_new_name() -> None:
+    names = [s.get("task") for s in _steps(_unit()["plan"])]
+    assert REMOTE in names and HOST_COPY in names and "pytest-on-this-host" not in names
+
+
 def test_the_suite_runs_on_a_linux_worker() -> None:
-    assert _task("pytest").get("tags") == ["linux"]
+    assert _task(REMOTE).get("tags") == ["linux"]
 
 
 def test_the_suite_is_given_the_tree_and_the_commit_never_the_git_get() -> None:
     """TheHub's history has held secrets (#398): no `.git` reaches a laptop."""
-    step = _task("pytest")
+    step = _task(REMOTE)
     assert step.get("input_mapping") == {"source": "tree"}
     names = [i["name"] for i in step["config"]["inputs"]]
     assert names == ["source", "commit"], names
     plan = _unit()["plan"]
     export = _holder(plan, "export-tree")
-    assert export < _holder(plan, "pytest")
+    assert export < _holder(plan, REMOTE)
     assert plan[export].get("tags") == ["thehub"]
 
 
 def test_the_suite_carries_no_credential_and_does_not_upload() -> None:
-    step = _task("pytest")
+    step = _task(REMOTE)
     params = step.get("params") or {}
     assert not any("TOKEN" in k or k.startswith("MYKRONOS_") for k in params), sorted(params)
     assert "SCANNED_BRANCH" not in params
@@ -129,7 +138,7 @@ def test_the_upload_runs_on_this_host_with_this_hosts_commit() -> None:
 
 def _remote() -> dict[str, Any]:
     plan = _unit()["plan"]
-    return plan[_holder(plan, "pytest")]
+    return plan[_holder(plan, REMOTE)]
 
 
 def test_the_suite_starts_only_once_a_linux_worker_took_the_probe() -> None:
@@ -146,7 +155,7 @@ def test_the_suite_starts_only_once_a_linux_worker_took_the_probe() -> None:
     # No linux_absent hook: no linux worker is not an outage here, it is a
     # run on this host.
     assert not any(h in first for h in HOOKS)
-    assert [s.get("task") for s in rest] == ["pytest"]
+    assert [s.get("task") for s in rest] == [REMOTE]
 
 
 def test_the_remote_wrapper_is_capped_by_the_measured_rule() -> None:
@@ -159,7 +168,7 @@ def test_the_remote_wrapper_is_capped_by_the_measured_rule() -> None:
 
 def _fallback() -> tuple[dict[str, Any], dict[str, Any]]:
     plan = _unit()["plan"]
-    after = plan[_holder(plan, "pytest") + 1]
+    after = plan[_holder(plan, REMOTE) + 1]
     assert set(after) == {"try"}, "the fallback must not fail the build itself"
     body = after["try"]
     assert [s.get("task") for s in body.get("do") or []] == ["linux-finished"], (
@@ -172,21 +181,23 @@ def _fallback() -> tuple[dict[str, Any], dict[str, Any]]:
 def test_this_host_runs_the_suite_when_no_linux_worker_finished_it() -> None:
     after, check = _fallback()
     assert check.get("tags") == ["thehub"]
-    assert check["params"]["LINUX_STEP"] == "unit/pytest"
+    assert check["params"]["LINUX_STEP"] == "unit/pytest-on-linux"
     fallback = after["try"].get("on_failure")
     assert fallback is not None and check.get("on_error") == fallback, (
         "the same copy must run on linux-finished's failure and on its error"
     )
     assert "on_failure" not in check, "on_failure beside on_error can run it twice"
-    assert fallback.get("task") == "pytest-on-this-host"
+    # [review F2] The step name the suite had on main: a task cache is
+    # scoped by step name, so this host keeps its warm /pipcache.
+    assert fallback.get("task") == HOST_COPY == "pytest"
     # This host's placement: worker-2, as before (test_concourse_worker_tags).
     assert fallback.get("tags") == ["thehub"]
     # #1222's cap, unchanged: the copy here is the job as it ran before.
     assert fallback.get("timeout") == "100m"
-    remote = _task("pytest")
+    remote = _task(REMOTE)
     same = {k: v for k, v in fallback.items() if k not in {"task", "tags", "timeout"}}
     assert same == {k: v for k, v in remote.items() if k not in {"task", "tags"}}, (
-        "pytest-on-this-host is not unit/pytest with this host's tag and cap"
+        "unit/pytest is not the remote task with this host's tag and cap"
     )
 
 
@@ -229,16 +240,16 @@ def test_this_host_runs_the_suite_once_unless_linux_finished_passed(
     finished: str, here: str
 ) -> None:
     plan = _unit()["plan"]
-    after = plan[_holder(plan, "pytest") + 1]
-    outcome = {"linux-finished": OUTCOME[finished], "pytest-on-this-host": OUTCOME[here]}
+    after = plan[_holder(plan, REMOTE) + 1]
+    outcome = {"linux-finished": OUTCOME[finished], HOST_COPY: OUTCOME[here]}
     ran: list[str] = []
     assert _concourse(after, outcome, ran) == (True, False)
-    assert ran.count("pytest-on-this-host") == (0 if finished == "succeeded" else 1), ran
+    assert ran.count(HOST_COPY) == (0 if finished == "succeeded" else 1), ran
 
 
 def test_this_host_decides_and_then_uploads() -> None:
     plan = _unit()["plan"]
-    decide = plan[_holder(plan, "pytest") + 2]
+    decide = plan[_holder(plan, REMOTE) + 2]
     assert decide.get("task") == "linux-verdict" and decide.get("tags") == ["thehub"]
     assert decide.get("input_mapping") == {"expect": "commit"}
     assert decide["params"] == {"EXPECT": "sha", "LINUX_STEP": "unit/pytest",
@@ -271,7 +282,7 @@ def _lines(script: str) -> list[str]:
 
 
 def test_ran_rc_is_written_only_once_setup_is_done_and_never_on_a_signal() -> None:
-    step = _task("pytest")
+    step = _task(REMOTE)
     lines = _lines(_script(step))
     trap = next((i for i, ln in enumerate(lines) if ln.startswith("trap ") and "RAN_DIR/rc" in ln
                  and ln.endswith("EXIT")), None)
@@ -290,7 +301,7 @@ def test_ran_rc_is_written_only_once_setup_is_done_and_never_on_a_signal() -> No
 def test_the_limits_hold_on_both_paths() -> None:
     """One script on both paths: the soft timeouts, and the memory guard
     sized by the suite's real length (#1222 review N1: 2760 was the old one)."""
-    script = _script(_task("pytest"))
+    script = _script(_task(REMOTE))
     assert "SOFT_TIMEOUT_S=4800" in script
     assert "SEC_SOFT_TIMEOUT_S=600" in script
     assert "MEMORY_GUARD_EXPECTED_S=4300" in script
@@ -301,7 +312,7 @@ def test_the_limits_hold_on_both_paths() -> None:
 
 
 def test_the_suite_writes_its_report_where_upload_unit_reads_it() -> None:
-    script = _script(_task("pytest"))
+    script = _script(_task(REMOTE))
     assert "/tmp/results" not in script
     assert '--junitxml="$RESULTS/unit.xml"' in script
     assert '--junitxml="$RESULTS/security.xml"' in script
@@ -444,7 +455,7 @@ def _run_unit(tmp_path: Path, mode: str) -> tuple[Path, str]:
     for name in ("lifecycle_pipelines.yaml", "hub-config.yaml"):
         (work / "source" / "config" / name).write_text("{}\n", encoding="ascii")
     (work / "commit" / "sha").write_text(HOST + "\n", encoding="ascii")
-    step = _task("pytest")
+    step = _task(REMOTE)
     script = _script(step).replace("/tmp/", f"{scratch}/")
     script = script.replace("/etc/apt/apt.conf.d/", f"{scratch}/")
     script = script.replace("/usr/lib/postgresql", f"{scratch}/postgresql")
@@ -506,3 +517,64 @@ def test_the_same_suite_left_to_finish_writes_ran_rc_and_the_commit(tmp_path: Pa
     assert (work / "ran" / "rc").read_text(encoding="ascii").strip() == "0", out
     assert (work / "ran" / "commit").read_text(encoding="ascii").strip() == HOST, out
     assert _linux_finished(work) == 0
+
+
+# -- the git-backed guards, on this host's checkout (review F1) --------------
+
+GUARDS = (
+    "tests/unit/scripts/test_env_backups_stay_out_of_git.py",
+    "tests/unit/test_no_personal_pdfs_in_tree_or_image.py",
+    "tests/unit/scripts/test_a_skipped_deploy_control_is_not_a_silent_one.py",
+    "tests/unit/scripts/test_offline_cache_allowlist.py",
+)
+
+
+def test_the_git_guards_run_on_this_hosts_checkout_before_the_suite() -> None:
+    plan = _unit()["plan"]
+    i = next(i for i, s in enumerate(plan) if s.get("task") == "git-guards")
+    step = plan[i]
+    # A top-level step: unit cannot go green without it.
+    assert step.get("tags") == ["thehub"]
+    assert "input_mapping" not in step, "the guards need the git get, not the tree"
+    assert [x["name"] for x in step["config"]["inputs"]] == ["source"]
+    assert i < _holder(plan, REMOTE)
+    assert tuple(str(step["params"]["GUARDS"]).split()) == GUARDS
+    script = _script(step)
+    assert "--noconftest -ra" in script and "--color=no" in script
+    assert not any("TOKEN" in k for k in step.get("params") or {})
+
+
+def _guard_gate() -> str:
+    lines = _script(_task("git-guards")).splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("rc=0"))
+    return "\n".join(lines[start:])
+
+
+@pytest.mark.parametrize(
+    ("log", "pytest_rc", "code"),
+    [
+        ("4 passed\n", 0, 0),
+        # A node skip is not about git: the suite's own REQUIRE_NODE holds it.
+        ("SKIPPED [1] tests/unit/scripts/x.py:88: node not on PATH\n", 0, 0),
+        ("SKIPPED [1] tests/unit/x.py:46: git unavailable here: not a git repository\n", 0, 1),
+        ("SKIPPED [6] tests/unit/scripts/y.py:36: repo root not reachable\n", 0, 1),
+        ("SKIPPED [1] z.py:204: git not available or not a repository\n", 0, 1),
+        ("1 failed\n", 1, 1),
+    ],
+)
+def test_a_guard_that_skips_for_want_of_git_fails_the_step(
+    tmp_path: Path, log: str, pytest_rc: int, code: int
+) -> None:
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "python").write_text(
+        f"#!/bin/sh\nprintf '%s' \"$STUB_LOG\"\nexit {pytest_rc}\n", encoding="ascii"
+    )
+    (stubs / "python").chmod(0o755)
+    proc = subprocess.run(
+        [_sh(), "-ec", "set -uo pipefail\n" + _guard_gate()], cwd=tmp_path,
+        env={**os.environ, "GUARDS": " ".join(GUARDS), "STUB_LOG": log,
+             "PATH": f"{stubs.as_posix()}{os.pathsep}{os.environ.get('PATH', '')}"},
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == code, proc.stdout + proc.stderr

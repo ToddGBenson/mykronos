@@ -96,12 +96,32 @@ def test_only_the_gate_and_its_upstream_write_the_check() -> None:
             )
 
 
+def _holds(step: Any, task: str) -> bool:
+    """Whether `task` runs anywhere inside `step`: do, try and hooks."""
+    if isinstance(step, list):
+        return any(_holds(s, task) for s in step)
+    if not isinstance(step, dict):
+        return False
+    if step.get("task") == task:
+        return True
+    keys = ("do", "in_parallel", "aggregate", "try",
+            "on_success", "on_failure", "on_error", "on_abort", "ensure")
+    return any(_holds(step[k], task) for k in keys if k in step)
+
+
 def test_the_first_lane_reports_the_start_before_it_tests() -> None:
     plan = _jobs()["unit"]["plan"]
     names = [step.get("task") for step in plan]
     start = plan[names.index(TASK)]
 
-    assert names.index(TASK) < names.index("pytest")
+    # [TheHub #62325] Both copies of the suite (on a linux worker, and on
+    # this host when none finishes it) sit inside a `try:`, and the
+    # git-backed guards are a step of their own: every one of them comes
+    # after the start.
+    tests = [i for i, step in enumerate(plan)
+             if any(_holds(step, t) for t in ("pytest", "pytest-on-linux", "git-guards"))]
+    assert len(tests) == 3, tests
+    assert names.index(TASK) < min(tests)
     assert start["params"]["PHASE"] == "start"
     assert "CONCLUSION" not in start["params"]
     assert start["params"]["JOB"] == "unit"
