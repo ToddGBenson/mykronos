@@ -649,3 +649,31 @@ def test_the_hand_bump_rule_is_recorded() -> None:
     standard = (PIPELINES.parents[2] / "docs" / "pipeline-standard.md").read_text(encoding="utf-8")
     assert "bumped by hand (TheHub #61842)" in standard
     assert "test_every_digest_pin_records_its_date" in standard
+
+
+@pytest.mark.parametrize("rc", [124, 137])
+def test_a_no_report_scan_stays_a_failure_when_the_uploader_install_times_out(
+    tmp_path: Path, rc: int
+) -> None:
+    """TheHub #62113. A scan that wrote no report is a verdict on its own: it
+    broke. The install deadline that follows must not write infra/reason and
+    turn that failure into `cancelled`."""
+    r = _run_iac(tmp_path, sarif=False, upload_rc=0, install_rc=rc)
+
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert not (tmp_path / "infra" / "reason").exists()
+    assert not (tmp_path / "uploaded").exists()
+    assert "checkov wrote no SARIF report" in r.stdout
+
+
+def test_a_no_report_scan_with_a_5xx_then_a_transport_error_is_not_called_unanswered(
+    tmp_path: Path,
+) -> None:
+    """TheHub #62113: the never-answered headline is only for an upload where
+    no attempt received an HTTP status. A 5xx earlier in the log is an answer."""
+    log = SERVER_ERROR + " " + NO_RESPONSE
+    r = _run_iac(tmp_path, sarif=False, upload_rc=1, accepted=False, upload_log=log)
+
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "never answered" not in r.stdout
+    assert not (tmp_path / "infra" / "reason").exists()

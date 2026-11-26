@@ -1192,6 +1192,14 @@ jobs:
                     inst_rc=$?
                     if [ "$inst_rc" -eq 124 ] || [ "$inst_rc" -eq 137 ]; then
                       reason="INFRASTRUCTURE, NOT A VERDICT: the uploader install did not finish inside its 240s deadline (exit ${inst_rc}), so nothing was filed or judged. Re-run the job once GitHub is reachable."
+                      # A scan that wrote no report is already a verdict: it
+                      # broke. An install outage after it does not make it
+                      # "not judged", so it stays `failure` and writes no
+                      # infra/reason (TheHub #62113).
+                      if [ "$scanned" -eq 0 ]; then
+                        echo "::error:: checkov wrote no report, and the uploader install timed out. The scan failed either way; this is not an outage." >&2
+                        exit 1
+                      fi
                       echo "::error:: ${reason}" >&2
                       wrote_infra=0
                       for dir in infra ../infra; do
