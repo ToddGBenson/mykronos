@@ -240,3 +240,40 @@ def test_the_operator_steps_update_the_checkout_before_provisioning() -> None:
     provision = section.index(r".\Connect-AgentFly.ps1 -Provision")
     recreate = section.index("docker compose up -d --no-deps concourse\n")
     assert update < provision < recreate
+
+
+GUIDE = ROOT / "docs" / "GUIDE.md"
+
+
+def test_the_guide_counts_all_three_local_users() -> None:
+    """The main team has three local users since TheHub #61752; the guide
+    said two, and a reader who counts two thinks the viewer is a stray."""
+    flat = " ".join(GUIDE.read_text(encoding="utf-8").split())
+    assert "two local users" not in flat
+    assert "three local users" in flat
+    assert "CONCOURSE_HUB_VIEWER_USER" in flat
+
+
+def test_the_helper_header_counts_all_three_local_users() -> None:
+    header = " ".join(HELPER.read_text(encoding="utf-8").split("#>", 1)[0].split())
+    assert "two local users" not in header
+    assert "three local users" in header
+
+
+def test_rotate_says_the_viewer_copy_goes_stale() -> None:
+    """-Rotate mints a new viewer password; TheHub still holds the old one
+    until the viewer login is re-provisioned there."""
+    header = " ".join(SETUP.read_text(encoding="utf-8").split("#>", 1)[0].split())
+    assert "CONCOURSE_HUB_VIEWER_PASSWORD" in header
+    assert "stale" in header
+
+
+def test_no_required_env_message_names_a_script_the_repo_lacks() -> None:
+    """A `:?` message that names a file this repository does not contain
+    sends a reader looking for something they cannot find."""
+    scripts = {p.name for p in ROOT.rglob("*.ps1")}
+    for msg in re.findall(r"\$\{\w+:\?([^}]*)\}", COMPOSE.read_text(encoding="utf-8")):
+        for name in re.findall(r"[\w-]+(?:\.ps1)?(?=\s|$)", msg):
+            if name.endswith(".ps1"):
+                assert name in scripts, f"{name} is named by `{msg}` but is not in the repo"
+        assert "OPS6" not in msg, msg

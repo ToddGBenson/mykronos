@@ -8,9 +8,10 @@
     user, so an agent can refresh its own token.
 
 .DESCRIPTION
-    D-182. The main team has two local users (docker-compose.yml): the
-    operator, who is owner, and the agents' user, who holds the Concourse
-    `pipeline-operator` role and nothing more. Every fly token lasts 24 hours
+    D-182. The main team has three local users (docker-compose.yml): the
+    operator, who is owner; the agents' user, who holds the Concourse
+    `pipeline-operator` role and nothing more; and TheHub's read-only
+    `viewer`. Every fly token lasts 24 hours
     (Concourse's --auth-duration default), so a login that only the operator
     could perform lapsed every day. This one reads the agents' password from
     .env and logs in again without anyone at the keyboard.

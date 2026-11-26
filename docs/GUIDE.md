@@ -122,8 +122,9 @@ docker inspect mykronos-backend --format '{{range .Mounts}}{{.Source}}{{println}
 after a reboot run `deploy/concourse/vault-unseal.ps1`. Jobs that failed while
 it was sealed do not retry on their own.
 
-**Agents log in to Concourse as themselves.** The main team has two local
-users: the operator (owner) and `CONCOURSE_AGENT_USER` (`pipeline-operator`).
+**Agents log in to Concourse as themselves.** The main team has three local
+users: the operator (owner), `CONCOURSE_AGENT_USER` (`pipeline-operator`) and
+`CONCOURSE_HUB_VIEWER_USER` (`viewer`, TheHub's read-only login).
 Agents trigger, rerun and check; they never pause, pin, unpin or disable a
 resource version, never clear a cache, and abort only their own builds,
 though the role allows all of those. An agent refreshes its
