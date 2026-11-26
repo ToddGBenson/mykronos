@@ -23,7 +23,7 @@
 # server.js, which would silently diverge from how the app is run locally.
 # One way to start it is worth more than the megabytes.
 
-FROM node:22-slim AS deps
+FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -32,14 +32,14 @@ RUN npm ci --no-audit --no-fund
 
 # The runtime tree, resolved from the same lockfile so it cannot drift from
 # what the build compiled against.
-FROM node:22-slim AS prod-deps
+FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS prod-deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 
-FROM node:22-slim AS build
+FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS build
 
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
@@ -80,7 +80,7 @@ RUN npm run build
 # every image - the backend keeps its Debian base because it is the process
 # holding the lake, and being able to get a shell next to it matters more
 # there.
-FROM gcr.io/distroless/nodejs22-debian13:nonroot AS runtime
+FROM gcr.io/distroless/nodejs22-debian13:nonroot@sha256:c73ddeb03e1dc2d579aa111c83d6699c6b8b487e35c0c631d4a3a20229fc25ee AS runtime
 
 # `nonroot` is uid 65532, built into the image. The previous stage created
 # uid 10001 by hand because a Debian base ships only root; distroless does
