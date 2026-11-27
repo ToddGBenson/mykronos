@@ -555,11 +555,12 @@ services:
       # login, which holds pipeline-operator on it and nothing more (D-182);
       # and TheHub's read-only login for the Ops Dashboard workers row, which
       # holds viewer and nothing more (TheHub #61752, operator decision
-      # 2026-11-18; created by the operator script
-      # Create-ConcourseViewer-OPS6.ps1). Comma-separated USER:PASSWORD pairs,
+      # 2026-11-18; setup.ps1 writes it into a fresh .env, and an existing .env
+      # gets it from an operator-run script kept outside this repository).
+      # Comma-separated USER:PASSWORD pairs,
       # so no password may contain a comma (setup.ps1's and the script's
       # URL-safe base64 never does).
-      CONCOURSE_ADD_LOCAL_USER: ${CONCOURSE_LOCAL_USER:?set it in .env}:${CONCOURSE_LOCAL_PASSWORD:?set it in .env},${CONCOURSE_AGENT_USER:?set it in .env - see Connect-AgentFly.ps1}:${CONCOURSE_AGENT_PASSWORD:?set it in .env - see Connect-AgentFly.ps1},${CONCOURSE_HUB_VIEWER_USER:?set it in .env - the operator script Create-ConcourseViewer-OPS6 for TheHub 61752 writes it}:${CONCOURSE_HUB_VIEWER_PASSWORD:?set it in .env - the operator script Create-ConcourseViewer-OPS6 for TheHub 61752 writes it}
+      CONCOURSE_ADD_LOCAL_USER: ${CONCOURSE_LOCAL_USER:?set it in .env}:${CONCOURSE_LOCAL_PASSWORD:?set it in .env},${CONCOURSE_AGENT_USER:?set it in .env - see Connect-AgentFly.ps1}:${CONCOURSE_AGENT_PASSWORD:?set it in .env - see Connect-AgentFly.ps1},${CONCOURSE_HUB_VIEWER_USER:?set it in .env - setup.ps1 generates it}:${CONCOURSE_HUB_VIEWER_PASSWORD:?set it in .env - setup.ps1 generates it}
 
       # Who holds which role on the main team is the team config below, not
       # CONCOURSE_MAIN_TEAM_LOCAL_USER. That variable can only grant owner, and
@@ -709,7 +710,7 @@ configs:
           users: ["${CONCOURSE_AGENT_USER:?set it in .env - see Connect-AgentFly.ps1}"]
       - name: viewer
         local:
-          users: ["${CONCOURSE_HUB_VIEWER_USER:?set it in .env - the operator script Create-ConcourseViewer-OPS6 for TheHub 61752 writes it}"]
+          users: ["${CONCOURSE_HUB_VIEWER_USER:?set it in .env - setup.ps1 generates it}"]
 
 networks:
   concourse:

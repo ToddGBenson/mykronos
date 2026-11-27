@@ -13,6 +13,9 @@
     CONCOURSE_VAULT_TOKEN is not generated here: it comes out of Vault, so
     vault-init.ps1 initialises Vault and writes it before the stack starts
     (#60753). With -Rotate it mints a fresh one, since the new .env has none.
+    -Rotate mints a new CONCOURSE_HUB_VIEWER_PASSWORD too, so any copy of the
+    viewer login held elsewhere (TheHub's) goes stale until it is re-provisioned
+    there.
     -Rotate also rewrites .env without CONCOURSE_BIND, which falls back to
     loopback (fails safe); re-add it if the host serves a named runner (D-178).
     The same goes for CONCOURSE_TSA_BIND_IP (the TSA, 2222, for a worker on
