@@ -23,7 +23,7 @@
 # server.js, which would silently diverge from how the app is run locally.
 # One way to start it is worth more than the megabytes.
 
-FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS deps
+FROM node:25-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -32,14 +32,14 @@ RUN npm ci --no-audit --no-fund
 
 # The runtime tree, resolved from the same lockfile so it cannot drift from
 # what the build compiled against.
-FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS prod-deps
+FROM node:25-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS prod-deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 
-FROM node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb AS build
+FROM node:25-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS build
 
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
