@@ -189,8 +189,36 @@ updates:
       - dependency-name: eslint
         update-types: ["version-update:semver-major"]
 
-  # No `docker` entry. Both Dockerfiles use floating tags (`python:3.13-slim`,
-  # `node:22-slim`, `gcr.io/distroless/nodejs22-debian13:nonroot`) rather than
-  # digests, so there is no pin for Dependabot to roll forward -- a rebuild
-  # already picks up the current image. Add one here if those are ever pinned
-  # to digests, which would be the better control.
+  # Base-image digests. Every Dockerfile FROM carries an @sha256 digest
+  # (tests/test_dockerfile_pins.py), so a rebuild cannot silently change the
+  # base; Dependabot is what rolls those digests forward, keeping the tag
+  # comment-free and the pin current. The same cooldown reasoning as above
+  # applies: a freshly pushed tag is the window in which a hijacked publish is
+  # still live.
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(docker)"
+    labels: ["dependencies", "docker"]
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(docker)"
+    labels: ["dependencies", "docker"]
