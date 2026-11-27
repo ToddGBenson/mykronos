@@ -634,6 +634,9 @@ EXTRA_VAULT_VARS = {
     # "The key itself is in Vault (concourse/main/thehub/source-deploy-key), so
     # it never appears in `fly get-pipeline` output" -- pipelines/thehub.yml.
     "thehub": frozenset({"source-deploy-key"}),
+    # TheHub #60867: the insider lane's read-only GitHub token, stored by the
+    # operator at concourse/main/mykronos/github_read_token (Apply-Decisions-1121).
+    "mykronos": frozenset({"github_read_token"}),
 }
 
 #: Vars a `set_pipeline` step cannot supply and Vault does not hold, so the

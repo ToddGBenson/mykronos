@@ -2892,10 +2892,12 @@ jobs:
   # introduced the commit is looked up instead. Spec 16 §6 is the full
   # explanation.
   #
-  # Unauthenticated: this repository is public, and the App is not installed on
-  # it (D-007). That buys a 60-requests-per-hour limit, which two calls per
-  # build sits well inside. If the limit is ever hit the lookup fails, the job
-  # takes the no-pull-request path below, and nothing is recorded - which is
+  # Authenticated since TheHub #60867: a fine-grained, read-only token for this
+  # repository alone (Metadata, Contents, Pull requests: read), in Vault at
+  # concourse/main/mykronos/github_read_token. The App is still not installed on
+  # it (D-007). The token is what lets the collaborator-role call answer, and it
+  # lifts the 60-requests-per-hour anonymous limit. If a lookup still fails, the
+  # job takes the no-pull-request path below, and nothing is recorded - which is
   # the honest outcome and is announced rather than inferred.
   - name: insider
     public: true
@@ -2917,7 +2919,13 @@ jobs:
       - task: aegis
         timeout: 25m
         image: python
-        params: *mykronos_env
+        params:
+          <<: *mykronos_env
+          # TheHub #60867. Read-only on this repository only; never echoed (no
+          # set -x below). It must be in Vault BEFORE this file reaches main:
+          # the pipeline sets itself, and an unresolvable var errors this job
+          # and oracle-gate behind it.
+          GITHUB_TOKEN: ((github_read_token))
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -2938,15 +2946,14 @@ jobs:
                 SHA=$(git rev-parse HEAD)
                 API=https://api.github.com/repos/ToddGBenson/mykronos
 
-                # Authenticated when a token is present. This pipeline has no
-                # GitHub credential today (nothing in this file or its vars
-                # reads one), so every call below is anonymous: 60 requests an
-                # hour shared by the whole host, and the collaborator-role
-                # call can never succeed. Adding a GITHUB_TOKEN param to this
-                # task, resolved from a Vault var, is all it takes once a token
-                # exists there - nothing here needs to change. (Not wired now:
-                # an unresolvable var would error this job, and `oracle-gate`
-                # waits on it.) The
+                # Authenticated when a token is present: GITHUB_TOKEN is the
+                # task param above, the github_read_token var from Vault
+                # (TheHub #60867; the var is not named in its brackets here,
+                # because Concourse would resolve it inside this script text),
+                # read-only on this repository. With it the
+                # collaborator-role call can answer and the anonymous 60-an-hour
+                # limit no longer applies. Unset (a hand run), every call is
+                # anonymous as before. The
                 # header is built into an array and never echoed; this script
                 # has no `set -x`.
                 GH_AUTH=()
