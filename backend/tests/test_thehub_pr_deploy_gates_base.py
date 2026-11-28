@@ -166,3 +166,101 @@ def test_the_judge_tree_is_the_base_commit_extracted_by_the_pick() -> None:
     gates = _script("gates")
     assert "bash pr/scripts/pr_deploy_gates.sh" not in gates
     assert '"$JUDGE/scripts/pr_deploy_gates.sh"' in gates
+
+
+# -- the committed SBOM, judged in `gates` (TheHub #62416) ---------------------
+#
+# From #61636 to #62416 the committed-SBOM test ran in pr-gates' integration
+# task, from the branch's own checkout. That task left the pull request with
+# the integration tier (dev process v2 step 4); the check stays on the pull
+# request, in `gates`: DEVELOP's copy of the test, over the branch's
+# requirements.txt and SBOM laid on the judge tree.
+
+SBOM_TEST = "backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py"
+SBOM = "docs/sbom/latest-python.cdx.json"
+# A stand-in for develop's test: every requirement line must be in the SBOM.
+DEVELOP_SBOM_TEST = textwrap.dedent("""\
+    from pathlib import Path
+
+
+    def test_every_requirement_is_in_the_sbom():
+        root = Path(__file__).resolve().parents[4]
+        sbom = (root / "docs" / "sbom" / "latest-python.cdx.json").read_text()
+        for line in (root / "backend" / "requirements.txt").read_text().splitlines():
+            assert line in sbom, "develop's SBOM test: not in the SBOM: " + line
+""")
+SBOM_FILES = {SBOM_TEST: DEVELOP_SBOM_TEST, SBOM: '{"c": ["requests==2.33.0"]}\n'}
+WITH_HTTPX = "requests==2.33.0\nhttpx==0.28.1\n"
+SBOM_RAN = "== the committed SBOM against this pull request's requirements.txt =="
+
+
+def test_a_requirements_change_with_a_stale_sbom_is_refused(tmp_path) -> None:
+    """#692's shape: a new requirement and no regenerated SBOM."""
+    repo, base = _setup(tmp_path, **SBOM_FILES)
+    head = repo.commit("feat: httpx", {"backend/requirements.txt": WITH_HTTPX})
+    rc, log = _judge(repo, base, head)
+    assert rc != 0, log
+    assert SBOM_RAN in log, log
+    assert "develop's SBOM test: not in the SBOM: httpx==0.28.1" in log, log
+    assert "regenerate the SBOM in the same pull request" in log, log
+
+
+def test_a_requirements_change_with_its_sbom_passes(tmp_path) -> None:
+    repo, base = _setup(tmp_path, **SBOM_FILES)
+    head = repo.commit("feat: httpx, and its SBOM", {
+        "backend/requirements.txt": WITH_HTTPX,
+        SBOM: '{"c": ["requests==2.33.0", "httpx==0.28.1"]}\n',
+    })
+    rc, log = _judge(repo, base, head)
+    assert rc == 0, log
+    assert SBOM_RAN in log and "1 passed" in log, log
+
+
+def test_an_sbom_only_change_is_checked_too(tmp_path) -> None:
+    repo, base = _setup(tmp_path, **SBOM_FILES)
+    head = repo.commit("chore: hand-edit the SBOM", {SBOM: '{"c": []}\n'})
+    rc, log = _judge(repo, base, head)
+    assert rc != 0, log
+    assert "not in the SBOM: requests==2.33.0" in log, log
+
+
+def test_the_branch_cannot_edit_the_sbom_test_to_pass(tmp_path) -> None:
+    repo, base = _setup(tmp_path, **SBOM_FILES)
+    head = repo.commit("feat: httpx, and a test that passes", {
+        "backend/requirements.txt": WITH_HTTPX,
+        SBOM_TEST: "def test_ok():\n    pass\n",
+    })
+    rc, log = _judge(repo, base, head)
+    assert rc != 0, log
+    assert "develop's SBOM test" in log, log
+
+
+def test_a_pull_request_that_changes_neither_runs_no_sbom_test(tmp_path) -> None:
+    repo, base = _setup(tmp_path, **SBOM_FILES)
+    head = repo.commit("docs", {"docs/a.md": "a\n"})
+    rc, log = _judge(repo, base, head)
+    assert rc == 0, log
+    assert SBOM_RAN not in log, log
+
+
+def test_a_base_without_the_sbom_test_says_so(tmp_path) -> None:
+    repo, base = _setup(tmp_path)
+    head = repo.commit("feat: httpx", {"backend/requirements.txt": WITH_HTTPX})
+    rc, log = _judge(repo, base, head)
+    assert rc == 0, log
+    assert "::warning::the base branch has no " + SBOM_TEST in log, log
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="git checks symlinks out as files on Windows")
+def test_a_symlinked_sbom_is_refused(tmp_path) -> None:
+    repo, base = _setup(tmp_path, **SBOM_FILES)
+    repo.git("rm", "-q", SBOM)
+    # `git rm` took docs/sbom/ with its only file.
+    (repo.dir / SBOM).parent.mkdir(parents=True, exist_ok=True)
+    (repo.dir / SBOM).symlink_to("/etc/hostname")
+    repo.git("add", SBOM)
+    repo.git("commit", "-q", "-m", "chore: link")
+    head = repo.git("rev-parse", "HEAD")
+    rc, log = _judge(repo, base, head)
+    assert rc != 0, log
+    assert "not a regular file" in log, log

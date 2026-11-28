@@ -79,9 +79,6 @@ OOM_TASKS = {
     # TheHub #61321: the deploy's tiers in the commit's image. It installs no
     # uploader, and writes memory-infra only when a tier was killed for memory.
     ("thehub.yml", "container-tiers", "tiers"),
-    # TheHub #61110: pr-gates' integration subset, the same script's subset
-    # tier in a cached image; memory-infra only on a memory kill.
-    ("thehub.yml", "pr-gates", "integration"),
 }
 
 #: TheHub #61760. The hook that runs when a remote `linux` step's wrapper fails
@@ -101,7 +98,6 @@ LINUX_ABSENT_TASKS = {
 #: kill's reason through from their `infra` input.
 HOST_CHECK_TASKS = {
     ("thehub.yml", "post-merge", "report-verdict"),
-    ("thehub.yml", "pr-gates", "fetch-image"),
     ("thehub.yml", "container-tiers", "fetch-image"),
     *(
         ("thehub.yml", job, "linux-verdict")

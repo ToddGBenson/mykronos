@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.pipeline_steps import find, holder
+from tests.pipeline_steps import find, flat, holder
 
 PIPELINE = Path(__file__).resolve().parents[2] / "deploy" / "concourse" / "pipelines" / "thehub.yml"
 JOB = "pr-gates"
@@ -303,270 +303,13 @@ def test_a_tick_that_judged_nothing_files_nothing_in_thehub(tmp_path) -> None:
     assert loud.returncode == 0
 
 
-# -- the cheap integration tier (TheHub #61110) ------------------------------
-#
-# #61102 deferred its AC3: the deploy's integration tier needs Postgres with
-# pgvector and the entrypoint's schema build, and a cold install alone overran
-# a pull request check's 10 minutes. So the job runs TheHub's
-# `scripts/ci/container-tiers.sh <pr> subset` inside a CACHED image -- the
-# newest develop commit `build` pushed an image for, dependencies preinstalled
-# -- and TheHub's script lays the pull request's backend/ over it and runs only
-# config/ci/pr-integration-subset.txt.
-
-INTEGRATION_PARAMS = {"CONTAINER_TIERS_DISPOSABLE", "TIER_SOFT_TIMEOUT_S", "TIER_HARD_BUDGET_S",
-                      "MEMORY_GUARD", "MEMORY_BUDGET_MB"}
+# -- what stays from the integration tier's time (TheHub #61110, #61636) -----
 
 
-def _memory_guard_anchor() -> str:
-    """The `memory_guard` anchor's text, as `unit` and `container-tiers` are given it."""
-    tiers = next(j for j in _doc()["jobs"] if j["name"] == "container-tiers")
-    task = find(tiers["plan"], "tiers")
-    guard: str = task["params"]["MEMORY_GUARD"]
-    return guard
-
-
-def test_the_cached_image_is_the_newest_develop_commit_build_pushed() -> None:
-    """Not the pull request's image (it has none) and not a moving tag: the
-    develop commit that most recently passed `build`, which pushed
-    registry/thehub:<sha>. Not a trigger: a develop commit is not a pull
-    request, and the clock already decides when this runs."""
-    plan = _job()["plan"]
-    built = next(s for s in plan if s.get("get") == "built")
-    assert built["resource"] == "source"
-    assert built["passed"] == ["build"]
-    assert not built.get("trigger")
-    pick = _step("pick")
-    assert {"name": "built"} in pick["config"]["inputs"]
-    assert {"name": "image"} in pick["config"]["outputs"]
-    assert "git -C built rev-parse HEAD" in pick["config"]["run"]["args"][-1]
-    load = next(s for s in plan if s.get("load_var") == "image_sha")
-    assert load["file"] == "image/sha" and load["format"] == "raw"
-    assert plan.index(load) > plan.index(pick)
-
-
-def test_the_integration_subset_runs_in_that_image() -> None:
-    task = _step("integration")
-    # The image is pulled on this host and handed over as an artifact: the
-    # registry never faces the LAN (review of mykronos #1177, B-054, D-109).
-    assert "image_resource" not in task["config"]
-    assert task["image"] == "thehub-image"
-    plan = _job()["plan"]
-    load = next(s for s in plan if s.get("load_var") == "image_sha")
-    fetch = next(s for s in plan if s.get("task") == "fetch-image")
-    assert fetch["params"]["REPOSITORY"] == "((registry))/thehub"
-    assert fetch["params"]["TAG"] == "((.:image_sha))"
-    assert "linux" not in (fetch.get("tags") or [])
-    assert plan.index(load) < plan.index(fetch) < holder(plan, "integration") < len(plan) - 1, (
-        "after the image is resolved and fetched, and before the success report"
-    )
-
-
-def test_the_subset_is_thehubs_tier_not_a_list_here() -> None:
-    script = _step("integration")["config"]["run"]["args"][-1]
-    assert "bash pr/scripts/ci/container-tiers.sh pr subset" in script
-    assert "tests/integration/" not in script, "the list lives in TheHub, beside the deploy"
-
-
-def test_the_integration_task_gets_no_credential() -> None:
-    """It runs the pull request's code, as `gates` does."""
-    task = _step("integration")
-    assert set(task["params"]) == INTEGRATION_PARAMS
-    config = {k: v for k, v in task["config"].items() if k != "image_resource"}
-    assert "((" not in json.dumps(config)
-    assert "((" not in json.dumps({k: v for k, v in task["params"].items() if k != "MEMORY_GUARD"})
-    assert [i["name"] for i in task["config"]["inputs"]] == ["pr"]
-
-
-def test_it_runs_in_the_memory_group_under_the_guard() -> None:
-    """#61106: never beside `unit`, `post-merge` or `container-tiers`, and a
-    memory kill says errored rather than failed. Since TheHub #61760 it runs on
-    the remote `linux` workers in its own lane, `linux-pr` (with gate-smoke),
-    so it shares no worker's memory with a full suite and holds no host lane."""
+def test_it_runs_in_the_remote_pr_lane() -> None:
+    """Since TheHub #61760 on the remote `linux` workers in its own lane,
+    `linux-pr` (with gate-smoke), so it holds no host lane."""
     assert set(_job()["serial_groups"]) == {"linux-pr"}
-    task = _step("integration")
-    assert task["params"]["MEMORY_GUARD"] == _memory_guard_anchor()
-    budget = int(task["params"]["MEMORY_BUDGET_MB"])
-    assert budget == 2304, "container-tiers' budget: Postgres shares it"
-    assert {"name": "infra", "path": "memory-infra"} in task["config"]["outputs"]
-
-
-def test_it_fits_the_ten_minute_budget() -> None:
-    """The tier's soft cap leaves room for the services and the bootstrap
-    (~3m measured in container-tiers) inside 10 minutes, and the task's hard
-    timeout is above the soft one so pytest can still write its summary."""
-    task = _step("integration")
-    soft = int(task["params"]["TIER_SOFT_TIMEOUT_S"])
-    assert soft <= 300
-    # On the timed `do:` that holds the task (TheHub #61760): a task's own
-    # `timeout:` starts only once a remote worker is chosen.
-    plan = _job()["plan"]
-    assert "timeout" not in task
-    hard = plan[holder(plan, "integration")]["timeout"]
-    assert re.fullmatch(r"\d+m", hard) and int(hard[:-1]) * 60 > soft + 180
-
-
-def _integration(tmp_path: Path, tiers_rc: int | None, *, head: bool = True,
-                 subset: bool = True, oom: bool = False) -> subprocess.CompletedProcess[str]:
-    """The integration task's script, executed, with TheHub's script stubbed."""
-    bash = shutil.which("bash")
-    if not bash:
-        pytest.skip("bash is required")
-    pr = tmp_path / "pr"
-    pr.mkdir()
-    if head:
-        (pr / ".git").mkdir()
-        (pr / ".git" / "HEAD").write_text(OPEN_HEAD + "\n")
-        (pr / ".git" / "pr-number").write_text("12\n")
-        (pr / "scripts" / "ci").mkdir(parents=True)
-        lines = [f'echo "$@" > "{(tmp_path / "args").as_posix()}"']
-        if oom:
-            lines.append('mkdir -p "$CONTAINER_TIERS_OUT"')
-            lines.append('echo oom > "$CONTAINER_TIERS_OUT/oom-reason"')
-        lines.append(f"exit {tiers_rc}")
-        (pr / "scripts" / "ci" / "container-tiers.sh").write_text("\n".join(lines) + "\n")
-        if subset:
-            (pr / "config" / "ci").mkdir(parents=True)
-            (pr / "config" / "ci" / "pr-integration-subset.txt").write_text("x  # y\n")
-    script = _step("integration")["config"]["run"]["args"][-1].replace(
-        "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
-    # From a file, not `bash -c`: Git Bash on Windows truncates a long argv.
-    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
-    return subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
-                          timeout=60)
-
-
-def test_a_tick_with_no_head_runs_nothing(tmp_path) -> None:
-    r = _integration(tmp_path, None, head=False)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert not (tmp_path / "args").exists()
-
-
-def test_a_green_subset_passes_and_ran_the_subset_tier(tmp_path) -> None:
-    r = _integration(tmp_path, 0)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert (tmp_path / "args").read_text().split() == ["pr", "subset"]
-
-
-def test_a_red_subset_fails_the_job(tmp_path) -> None:
-    """Red reaches `Concourse / thehub` through the job's on_failure hooks."""
-    r = _integration(tmp_path, 1)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "::error::" in r.stdout
-    assert not (tmp_path / "memory-infra").exists(), "a real failure is a verdict, not an outage"
-    fail = [s.get("try", s) for s in _job()["on_failure"]["do"]
-            if s.get("try", s).get("task") == "report-check-run"]
-    assert fail and fail[0]["params"]["CONCLUSION"] == "failure"
-
-
-def test_a_memory_kill_is_an_outage_not_a_verdict(tmp_path) -> None:
-    r = _integration(tmp_path, 137, oom=True)
-    assert r.returncode == 137, r.stdout + r.stderr
-    assert (tmp_path / "memory-infra" / "reason").read_text().strip() == "oom"
-    assert (tmp_path / "memory-infra" / "exit_code").read_text().strip() == "137"
-
-
-def test_a_branch_without_the_subset_says_so_and_fails(tmp_path) -> None:
-    """A head from before TheHub's half of #61110 cannot be judged: rebase it."""
-    r = _integration(tmp_path, 0, subset=False)
-    assert r.returncode != 0
-    assert "pr-integration-subset.txt" in r.stdout
-    assert not (tmp_path / "args").exists()
-
-
-# -- a requirements.txt pull request gets a verdict (TheHub #61636) ----------
-#
-# TheHub #692 (a dependency floor) changed requirements.txt, so container-tiers
-# tried `pip install -r` inside the cached develop image, which has python and
-# no pip. That printed NO VERDICT, exited 2, and the job reported failed. It
-# also merged without the regenerated committed SBOM, because nothing had judged
-# it. These tests execute the integration task's script with python3 stubbed.
-
-SBOM_TEST = "backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py"
-
-
-def _requirements_pr(tmp_path: Path, tiers_rc: int, *, pip: bool, sbom_rc: int = 0,
-                     changed: str = "backend/requirements.txt\n",
-                     req_differs: bool = True, message: str = "", ensurepip_rc: int = 0,
-                     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    """The integration script with a stub python3 that logs every call."""
-    bash = shutil.which("bash")
-    if not bash:
-        pytest.skip("bash is required")
-    pr = tmp_path / "pr"
-    (pr / ".git" / "process-gates").mkdir(parents=True)
-    (pr / ".git" / "HEAD").write_text(OPEN_HEAD + "\n")
-    (pr / ".git" / "pr-number").write_text("12\n")
-    (pr / ".git" / "process-gates" / "changed").write_text(changed)
-    (pr / "scripts" / "ci").mkdir(parents=True)
-    (pr / "config" / "ci").mkdir(parents=True)
-    (pr / "config" / "ci" / "pr-integration-subset.txt").write_text("x  # y\n")
-    (pr / "backend" / "tests" / "unit" / "scripts").mkdir(parents=True)
-    (pr / SBOM_TEST).write_text("# stub\n")
-    (pr / "backend" / "requirements.txt").write_text("soupsieve>=2.8\n")
-    app = tmp_path / "app"
-    app.mkdir()
-    (app / "requirements.txt").write_text("soupsieve>=2.7\n" if req_differs else "soupsieve>=2.8\n")
-    log = tmp_path / "calls"
-    (pr / "scripts" / "ci" / "container-tiers.sh").write_text(
-        f'echo "container-tiers $*" >> "{log.as_posix()}"\n'
-        f'echo "{message}" >&2\nexit {tiers_rc}\n')
-    stubs = tmp_path / "stubs"
-    stubs.mkdir()
-    py = stubs / "python3"
-    py.write_text(
-        "#!/bin/bash\n"
-        f'echo "python3 $*" >> "{log.as_posix()}"\n'
-        'case "$*" in\n'
-        f'  "-m pip --version") exit {0 if pip else 1} ;;\n'
-        f'  *ensurepip*) exit {ensurepip_rc} ;;\n'
-        f'  *pytest*) exit {sbom_rc} ;;\n'
-        "esac\nexit 0\n")
-    py.chmod(0o755)
-    script = _step("integration")["config"]["run"]["args"][-1].replace(
-        "/tmp/container-tiers", (tmp_path / "tiers-out").as_posix())
-    env = {**os.environ, "PATH": f"{stubs.as_posix()}:{os.environ['PATH']}",
-           "APP_DIR": app.as_posix()}
-    (tmp_path / "integration.sh").write_text(script, encoding="utf-8", newline="\n")
-    r = subprocess.run([bash, "integration.sh"], cwd=tmp_path, capture_output=True, text=True,
-                       timeout=60, env=env)
-    calls = log.read_text().splitlines() if log.exists() else []
-    return r, calls
-
-
-def test_pip_is_bootstrapped_before_the_requirements_install(tmp_path) -> None:
-    """(a) The cached image has no pip: ensurepip must run before container-tiers
-    (whose `pip install -r` is what died in #692)."""
-    r, calls = _requirements_pr(tmp_path, 0, pip=False)
-    assert r.returncode == 0, r.stdout + r.stderr
-    ensure = [i for i, c in enumerate(calls) if "-m ensurepip" in c]
-    tiers = [i for i, c in enumerate(calls) if c.startswith("container-tiers")]
-    assert ensure and tiers and ensure[0] < tiers[0], calls
-
-
-def test_pip_is_left_alone_when_requirements_match(tmp_path) -> None:
-    _, calls = _requirements_pr(tmp_path, 0, pip=False, req_differs=False)
-    assert not any("ensurepip" in c for c in calls), calls
-
-
-def test_pip_is_left_alone_when_it_exists(tmp_path) -> None:
-    _, calls = _requirements_pr(tmp_path, 0, pip=True)
-    assert not any("ensurepip" in c for c in calls), calls
-
-
-def test_no_verdict_reports_unjudged_not_failed(tmp_path) -> None:
-    """(b) container-tiers exit 2 leaves the infra marker the hooks read, so the
-    Hub stage is errored and the check run cancelled -- never failed."""
-    r, _ = _requirements_pr(tmp_path, 2, pip=True, changed="README.md\n", req_differs=False)
-    assert r.returncode == 2, r.stdout + r.stderr
-    reason = (tmp_path / "memory-infra" / "reason").read_text()
-    assert "NO VERDICT" in reason and "not a test failure" in reason.lower()
-    assert (tmp_path / "memory-infra" / "exit_code").read_text().strip() == "2"
-
-
-def test_a_real_failure_still_leaves_no_infra_marker(tmp_path) -> None:
-    r, _ = _requirements_pr(tmp_path, 1, pip=True, changed="README.md\n", req_differs=False)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert not (tmp_path / "memory-infra").exists()
 
 
 def test_the_report_hooks_downgrade_an_infra_marker() -> None:
@@ -575,52 +318,6 @@ def test_the_report_hooks_downgrade_an_infra_marker() -> None:
     text = PIPELINE.read_text(encoding="utf-8")
     assert 'if [ "$STATUS" = "failed" ] && [ -s infra/reason ]' in text
     assert '[ "${CONCLUSION:-}" = "failure" ] && [ -s infra/reason ]' in text
-
-
-def test_a_requirements_change_runs_the_committed_sbom_test(tmp_path) -> None:
-    """(c) requirements.txt among the changed paths selects the SBOM test."""
-    r, calls = _requirements_pr(tmp_path, 0, pip=True)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert any("pytest" in c and "test_the_committed_sbom_satisfies_requirements.py" in c
-               for c in calls), calls
-
-
-def test_a_stale_sbom_fails_the_pull_request(tmp_path) -> None:
-    r, _ = _requirements_pr(tmp_path, 0, pip=True, sbom_rc=1)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "latest-python.cdx.json" in r.stdout
-    assert not (tmp_path / "memory-infra").exists(), "a stale SBOM is a verdict"
-
-
-def test_a_pull_request_without_requirements_skips_the_sbom_test(tmp_path) -> None:
-    _, calls = _requirements_pr(tmp_path, 0, pip=True, changed="README.md\n", req_differs=False)
-    assert not any("pytest" in c for c in calls), calls
-
-
-# -- review of #1158: what is the pull request's fault, and what is not ------
-
-PIP_FAIL = "::error:: could not install the checkout's requirements.txt into the cached image"
-
-
-def test_a_failed_requirements_install_is_a_failure_not_an_outage(tmp_path) -> None:
-    """A pin nothing satisfies is the pull request's own fault: failure."""
-    r, _ = _requirements_pr(tmp_path, 2, pip=True, message=PIP_FAIL)
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "could not be installed" in r.stdout
-    assert not (tmp_path / "memory-infra").exists()
-
-
-def test_a_failed_pip_bootstrap_is_an_outage(tmp_path) -> None:
-    r, _ = _requirements_pr(tmp_path, 2, pip=False, ensurepip_rc=1, message=PIP_FAIL)
-    assert r.returncode == 2, r.stdout + r.stderr
-    assert (tmp_path / "memory-infra" / "reason").exists()
-
-
-def test_an_apt_failure_is_an_outage(tmp_path) -> None:
-    r, _ = _requirements_pr(tmp_path, 2, pip=True,
-                            message="::error:: apt could not install postgresql-16")
-    assert r.returncode == 2, r.stdout + r.stderr
-    assert (tmp_path / "memory-infra" / "reason").exists()
 
 
 def test_a_head_cancelled_twice_is_not_asked_again(tmp_path, mykronos) -> None:
@@ -635,3 +332,48 @@ def test_a_head_cancelled_twice_is_not_asked_again(tmp_path, mykronos) -> None:
     server.posted.clear()
     _pick(tmp_path, url)
     assert OPEN_HEAD not in [p["commit_sha"] for p in server.posted]
+
+
+# -- no integration tier on the pull request (TheHub #62416) -----------------
+#
+# Dev process v2 step 4 (epic 62412): integration, coverage and container tiers
+# run after the merge only. From #61110 to #62416 an `integration` task ran
+# TheHub's integration subset here, in the newest develop image: a 1.45 GB
+# fetch on this host and 216 s of the median judged build (588 s). That tier
+# now runs only in container-tiers, on every develop commit, gating the deploy.
+
+
+def test_the_pull_request_runs_no_integration_tier() -> None:
+    plan = _job()["plan"]
+    tasks = {s.get("task") for s in flat(plan)}
+    assert "integration" not in tasks
+    assert "fetch-image" not in tasks, "no develop image is pulled for a pull request"
+    assert not any(s.get("load_var") for s in flat(plan))
+    assert not any(s.get("get") == "built" for s in plan), "no develop image to name"
+    assert not any(s.get("get") == "image-fetcher" for s in plan), "and none to fetch with"
+    pick = _step("pick")
+    assert not pick["config"].get("inputs")
+    assert pick["config"]["outputs"] == [{"name": "pr"}]
+    script = json.dumps(_job())
+    assert "container-tiers.sh" not in script
+    assert "thehub-image" not in script
+
+
+def test_the_integration_tier_still_runs_on_every_develop_build() -> None:
+    """Where it went: container-tiers, triggered by each develop commit that
+    passed `build`, running deploy.sh's integration and unit tiers."""
+    tiers = next(j for j in _doc()["jobs"] if j["name"] == "container-tiers")
+    source = next(s for s in tiers["plan"] if s.get("get") == "source")
+    assert source.get("trigger") is True and source.get("passed") == ["build"]
+    script = find(tiers["plan"], "tiers")["config"]["run"]["args"][-1]
+    assert "bash source/scripts/ci/container-tiers.sh source all" in script, (
+        "both tiers, in full, on the commit's own checkout"
+    )
+
+
+def test_after_the_gates_only_their_verdict_and_the_check_remain() -> None:
+    """The verdict on a judged head is the gates' alone: nothing runs between
+    their linux-verdict and the success check."""
+    plan = _job()["plan"]
+    gates = holder(plan, "gates")
+    assert [s.get("task") for s in plan[gates + 1:]] == ["linux-verdict", "report-check-run"]

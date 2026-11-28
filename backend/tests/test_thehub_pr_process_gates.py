@@ -220,7 +220,10 @@ def _gates(root: Path, python_flags: str = "-X utf8",
     for d in ("hub_log", "live-pipeline"):
         (root / d).mkdir(exist_ok=True)
     path = _python3_shim(root, python_flags) + os.pathsep + os.environ.get("PATH", "")
-    r = subprocess.run(["bash", "-ec", _script("gates")],
+    # From a file, not `bash -c`: Git Bash on Windows truncates a long argv,
+    # and the task is ~10 KB since TheHub #62416.
+    (root / "gates.sh").write_text(_script("gates"), encoding="utf-8", newline="\n")
+    r = subprocess.run(["bash", "-e", "gates.sh"],
                        env={**os.environ, **(env or {}), "PATH": path},
                        cwd=root, capture_output=True, text=True, timeout=120)
     log = (root / "hub_log" / "output.log").read_text(encoding="utf-8")

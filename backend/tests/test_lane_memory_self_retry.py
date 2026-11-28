@@ -239,7 +239,7 @@ def test_thehub_guard_a_real_failure_never_retries(tmp_path: Path, rc: int) -> N
 
 
 def test_thehub_guard_without_a_soft_timeout_never_re_runs(tmp_path: Path) -> None:
-    """pr-gates/integration and the container tiers set none: a kill reports as today."""
+    """The container tiers set none: a kill reports as today."""
     r = _run_guard(tmp_path, _counting(137, 0), soft=None)
     assert r.returncode == 137
     assert (tmp_path / "runs").read_text() == "1"

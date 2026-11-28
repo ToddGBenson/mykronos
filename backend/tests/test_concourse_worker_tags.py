@@ -64,7 +64,10 @@ PIPELINES = ("mykronos", "thehub", "personal-soc")
 # The jobs that hold a lot of memory for a long time: the suites, the
 # scanners and the image builds by name, and any job that sets a memory-guard
 # budget, which is itself the statement that the job is big.
-HEAVY_NAMES = frozenset({"unit", "sast", "containers", "build"})
+# pr-gates since TheHub #62416: its integration task (and so its
+# MEMORY_BUDGET_MB) left the pull request, but its `pick` holds the deploy
+# key, so its host steps keep the placement check of a heavy job.
+HEAVY_NAMES = frozenset({"unit", "sast", "containers", "build", "pr-gates"})
 
 # Where each pipeline's heavy jobs run. Empty is worker-1, the untagged one.
 PLACEMENT: dict[str, frozenset[str]] = {
@@ -99,7 +102,6 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         ("thehub", "post-merge", "grade"),
         ("thehub", "pr-gates", "linux-worker-probe"),
         ("thehub", "pr-gates", "gates"),
-        ("thehub", "pr-gates", "integration"),
         ("thehub", "gate-smoke", "gates"),
         ("thehub", "container-tiers", "linux-worker-probe"),
         ("thehub", "container-tiers", "tiers"),
@@ -192,7 +194,6 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
     ("thehub", "post-merge", "grade"): {"source": "tree", "commit": None},
     ("thehub", "pr-gates", "linux-worker-probe"): {},
     ("thehub", "pr-gates", "gates"): {"pr": "pr-tree", "live-pipeline": None},
-    ("thehub", "pr-gates", "integration"): {"pr": "pr-tree"},
     ("thehub", "gate-smoke", "gates"): {"pr": "pr-tree", "live-pipeline": None},
     ("thehub", "container-tiers", "linux-worker-probe"): {},
     ("thehub", "container-tiers", "tiers"): {"source": "tree", "commit": None},
@@ -221,7 +222,6 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
 HOST_DECIDES = {
     ("thehub", "post-merge", "grade"): "report-verdict",
     ("thehub", "pr-gates", "gates"): "linux-verdict",
-    ("thehub", "pr-gates", "integration"): "linux-verdict",
     ("thehub", "gate-smoke", "gates"): "linux-verdict",
     ("thehub", "container-tiers", "tiers"): "linux-verdict",
 }
@@ -469,8 +469,8 @@ def test_exactly_the_declared_remote_tasks_carry_the_remote_tag() -> None:
     tagged = set().union(*(_remote_tagged(p) for p in PIPELINES))
     # Pinned literally as well: widening the list is a reviewed change here.
     # #1177's 9 TheHub steps, #1178's 8 mykronos steps, #61951's 5 and
-    # #62325's 2.
-    assert len(REMOTE_COMPUTE) == 24
+    # #62325's 2, less pr-gates' `integration` (#62416).
+    assert len(REMOTE_COMPUTE) == 23
     assert ("thehub", "image-refresh", "build") in REMOTE_COMPUTE
     assert tagged == set(REMOTE_COMPUTE), {
         "tagged, not declared": sorted(tagged - REMOTE_COMPUTE),
