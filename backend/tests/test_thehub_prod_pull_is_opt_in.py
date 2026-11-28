@@ -66,13 +66,17 @@ def test_prod_runs_the_digest_not_the_tag():
 def test_a_tag_without_a_digest_is_refused():
     src = _src(DEPLOYER)
     fn = src[src.index("function Resolve-DigestRef {"):src.index("function Invoke-ComposeUp {")]
-    assert "throw" in fn and "refusing to run production on a tag" in fn
+    # [TheHub #62399] The demo resolves its digest here too.
+    assert "throw" in fn and "refusing to run $Environment on a tag" in fn
 
 
-def test_demo_is_unchanged():
+def test_demo_rebuilds_the_whole_project_and_runs_the_digest():
+    """[TheHub #62399] Still the whole project, now by digest as prod is
+    (driven in test_thehub_demo_moves_only_by_repin.py)."""
     body = _compose_up(_src(DEPLOYER))
     demo = body[body.index("return"):]
-    assert "$env:THEHUB_IMAGE = $ImageRef" in demo
+    assert "Resolve-DigestRef -ImageRef $ImageRef" in demo
+    assert "$env:THEHUB_IMAGE = $ImageRef" not in demo
     assert "up -d --remove-orphans" in demo
 
 
