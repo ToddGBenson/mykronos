@@ -255,6 +255,8 @@ def test_a_base_without_the_sbom_test_says_so(tmp_path) -> None:
 def test_a_symlinked_sbom_is_refused(tmp_path) -> None:
     repo, base = _setup(tmp_path, **SBOM_FILES)
     repo.git("rm", "-q", SBOM)
+    # `git rm` took docs/sbom/ with its only file.
+    (repo.dir / SBOM).parent.mkdir(parents=True, exist_ok=True)
     (repo.dir / SBOM).symlink_to("/etc/hostname")
     repo.git("add", SBOM)
     repo.git("commit", "-q", "-m", "chore: link")
