@@ -764,6 +764,9 @@ anchors:
             printf '{"source":%s,"version":{"tag":"%s","digest":"%s"},"params":{}}' "$src" "$TAG" "$digest" \
               | /opt/resource/in thehub-image >/dev/null || outage "in failed"
             [ -d thehub-image/rootfs ] && [ -s thehub-image/metadata.json ] || outage "no rootfs"
+            # [TheHub #62421] The digest these bytes are, for container-tiers'
+            # per-digest verdict.
+            printf '%s\n' "$digest" > thehub-image/digest
             echo "fetched ${REPOSITORY}:${TAG} at ${digest}"
 
   # A remote task's exit code, decided on this host (see above). The remote
@@ -5187,23 +5190,33 @@ jobs:
                 # 231). --ignore-path=/proc does not help, measured; this is not the
                 # workers, it reproduces under plain `docker run`.
                 #
-                # For kaniko that stage IS the placeholder (Dockerfile: "Concourse's
-                # kaniko ... gets this stage instead"), so copying
-                # frontend_not_baked/ straight from the context builds the same
-                # /app/frontend. The rewrite goes to meta/, never into source/backend,
-                # where `COPY . .` would bake it in. When TheHub's Dockerfile drops
-                # the line this builds the Dockerfile as committed. Only a ROOT
-                # source is refused: kaniko saves a subdirectory such as /wheels or
-                # /frontend/ fine (TheHub #61642 moves the stage to that shape), but
-                # any other `COPY --from=frontend / ...` fails here by name instead
-                # of inside kaniko.
+                # [TheHub #62421] So the stage is never built: the commit's own
+                # frontend/ is, baked as deploy.sh's build bakes it, which makes
+                # the digest pushed here one production can run (deploy.sh Step
+                # 4.35 and rollback.sh 4c refuse an image whose sw.js does not
+                # carry the commit; until #62421 this copied the placeholder, so
+                # the image could be tested and scanned but never deployed).
+                # deploy.sh hands ./frontend to BuildKit as the named `frontend`
+                # context; kaniko has none, so frontend/ goes into the context as
+                # .ci-frontend/ and every copy of the stage to /app/frontend,
+                # TheHub #61642's subdirectory shape included, copies it from
+                # there. `COPY . .` also carries it to /app, so the rewrite
+                # removes it there, and --single-snapshot keeps it out of every
+                # layer. The Dockerfile's own step then stamps sw.js and fails
+                # the build if it does not carry the commit. Any other copy of
+                # the stage's ROOT still fails here by name, not inside kaniko.
                 DOCKERFILE=source/backend/Dockerfile
-                FRONTEND_COPY='COPY --from=frontend / /app/frontend/'
-                if grep -qxF "$FRONTEND_COPY" "$DOCKERFILE"; then
-                  sed 's|^COPY --from=frontend / /app/frontend/$|COPY frontend_not_baked/ /app/frontend/|' \
+                FRONTEND_COPY='^COPY --from=frontend /[^[:space:]]* /app/frontend/?$'
+                if grep -qE "$FRONTEND_COPY" "$DOCKERFILE"; then
+                  if [ ! -f source/frontend/sw.js ]; then
+                    echo "kaniko: this commit has no frontend/sw.js to bake, so its image could never be deployed (TheHub #62421)" >&2
+                    exit 1
+                  fi
+                  cp -a source/frontend source/backend/.ci-frontend
+                  awk -v re="$FRONTEND_COPY" '$0 ~ re { print "COPY .ci-frontend/ /app/frontend/"; print "RUN rm -rf /app/.ci-frontend"; next } { print }' \
                     "$DOCKERFILE" > meta/Dockerfile.kaniko
                   DOCKERFILE=meta/Dockerfile.kaniko
-                  echo "kaniko: the frontend placeholder is copied from the context (TheHub #61640)"
+                  echo "kaniko: the commit's frontend/ is baked from the context (TheHub #62421)"
                 fi
                 if grep -qiE '^[[:space:]]*COPY[[:space:]].*--from=frontend[[:space:]]+/\.?[[:space:]]' "$DOCKERFILE"; then
                   echo "kaniko: $DOCKERFILE copies the root of the frontend stage, which kaniko cannot save (TheHub #61640)" >&2
@@ -5215,8 +5228,11 @@ jobs:
                   --build-arg "HUB_BUILD_SHA=${SHA}" \
                   --build-arg "HUB_BUILD_DIRTY=clean" \
                   --destination "${REGISTRY}/thehub:${SHA}" \
+                  --digest-file meta/digest \
                   --insecure --skip-tls-verify \
                   --single-snapshot
+                # The digest container-tiers' verdict will name (#62421).
+                echo "pushed ${REGISTRY}/thehub:${SHA} at $(cat meta/digest)"
 
   # == Stage 3: security ====================================================
   #
@@ -6339,6 +6355,12 @@ jobs:
         params:
           REPOSITORY: ((registry))/thehub
           TAG: ((.:sha))
+      # [TheHub #62421] The digest fetch-image resolved here: the image the
+      # tiers run in, and the one `digest-verdict` names.
+      - load_var: digest
+        file: thehub-image/digest
+        format: trim
+        reveal: true
       - do:
           - task: tiers
             tags: [linux]
@@ -6347,6 +6369,10 @@ jobs:
             input_mapping: { source: tree }
             params:
               CONTAINER_TIERS_DISPOSABLE: "1"
+              # [TheHub #62421] deploy.sh's coverage tier is its unit run with
+              # --cov against coverage-gate.sh's floor; TheHub's script does
+              # the same in this run and reports it as a third tier.
+              CONTAINER_TIERS_COVERAGE: "1"
               TIER_SOFT_TIMEOUT_S: "3000"
               # [#61106] Enforced by memory-guard (`container_limits.memory` is
               # refused on the host's workers). 2304 MiB, not `unit`'s 2560: the
@@ -6399,6 +6425,10 @@ jobs:
                     # script needs no terminal either way.
                     bash source/scripts/ci/container-tiers.sh source all < /dev/null
                     RC=$?
+                    # [TheHub #62421] Each tier's result, as TheHub's
+                    # prod_shape.py words it, for `digest-verdict` on this host.
+                    [ -f "$CONTAINER_TIERS_OUT/tiers.json" ] && head -c 4096 "$CONTAINER_TIERS_OUT/tiers.json" > ran/tiers.json
+                    [ -f "$CONTAINER_TIERS_OUT/coverage.pct" ] && head -c 32 "$CONTAINER_TIERS_OUT/coverage.pct" > ran/coverage.pct
                     if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
                       mkdir -p memory-infra
                       cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
@@ -6425,6 +6455,95 @@ jobs:
         on_error:
           <<: *linux_absent
           params: { LINUX_STEP: container-tiers/tiers }
+        # [TheHub #62421] One verdict per digest, for the fast deploy (FD-2 of
+        # epic 61328), which pulls the digest that passed. Printed on this
+        # host, once, as a banner-framed `DIGEST VERDICT:` line naming the
+        # repo, the commit this host exported, the digest fetch-image
+        # resolved, each tier's result as TheHub's prod_shape.py words it, and
+        # the time. TheHub's `risk_gate.py digest-verdict <sha> <digest>`
+        # reads it anonymously, from this step's log events only, so a test
+        # or the remote task printing the banner forges nothing. An `ensure:`,
+        # because a red tier is as much a verdict for the digest as a green
+        # one. It never fails the build (the exit code is linux-verdict's):
+        # what this host cannot vouch for prints no verdict, which the deploy
+        # reads as `missing`.
+        ensure:
+          task: digest-verdict
+          tags: [thehub]
+          container_limits: {cpu: 512}
+          timeout: 2m
+          image: python
+          params:
+            DIGEST: ((.:digest))
+          config:
+            platform: linux
+            inputs:
+              - { name: ran, optional: true }
+              - { name: commit }
+            run:
+              path: python
+              args:
+                - -c
+                - |
+                  import datetime, json, os, re, sys
+
+                  TIERS = ("integration", "unit", "coverage")
+                  WORDS = {"passed", "failed", "partial", "no_verdict", "not_run"}
+
+                  def nothing(why):
+                      print(f"No DIGEST VERDICT for this build: {why}. TheHub's risk_gate.py digest-verdict reads that as missing.")
+                      sys.exit(0)
+
+                  def read(path, limit):
+                      try:
+                          with open(path, encoding="utf-8", errors="replace") as handle:
+                              return handle.read(limit)
+                      except OSError:
+                          return ""
+
+                  sha = read("commit/sha", 64).strip()
+                  digest = os.environ.get("DIGEST", "").strip()
+                  if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                      nothing("this host exported no 40-hex commit")
+                  if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                      nothing("fetch-image named no sha256 digest")
+                  rc = read("ran/rc", 16).strip()
+                  if not re.fullmatch(r"[0-9]{1,3}", rc):
+                      nothing("the linux task left no exit code, so it did not run to its end")
+                  judged = read("ran/commit", 64).strip()
+                  if judged != sha:
+                      nothing(f"the linux task judged {judged[:40] or 'nothing'}, not {sha}")
+                  try:
+                      said = json.loads(read("ran/tiers.json", 4096) or "{}")
+                  except ValueError:
+                      nothing("ran/tiers.json is not JSON")
+                  if not isinstance(said, dict) or set(said) - set(TIERS) \
+                          or any(said.get(t, "not_run") not in WORDS for t in TIERS):
+                      nothing("ran/tiers.json names a tier or a result this step does not know")
+                  tiers = {t: said.get(t, "not_run") for t in TIERS}
+                  if all(v == "passed" for v in tiers.values()):
+                      verdict = "green"
+                  elif "failed" in tiers.values():
+                      verdict = "red"
+                  else:
+                      verdict = "indeterminate"
+                  # container-tiers.sh exits 1 exactly when a tier failed, and 0
+                  # only when every tier it ran passed: results that say otherwise
+                  # are not a verdict.
+                  if (rc == "1") != (verdict == "red") or (verdict == "green" and rc != "0"):
+                      nothing(f"the tier runner exited {rc}, but its tiers say {tiers}")
+                  try:
+                      pct = round(float(read("ran/coverage.pct", 32).strip()), 2)
+                  except ValueError:
+                      pct = None
+                  if pct is not None and not 0 <= pct <= 100:
+                      pct = None
+                  block = {"schema": 1, "repo": "ToddGBenson/TheHub", "sha": sha, "digest": digest,
+                           "verdict": verdict, "tiers": tiers, "coverage_pct": pct,
+                           "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                  print("=" * 50)
+                  print("DIGEST VERDICT: " + json.dumps(block, sort_keys=True, separators=(",", ":")))
+                  print("=" * 50)
       # The gating exit code, decided here from `ran/rc` and `ran/commit`.
       - <<: *linux_verdict
         input_mapping: { expect: commit }
