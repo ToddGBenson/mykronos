@@ -99,7 +99,6 @@ REMOTE_COMPUTE: frozenset[tuple[str, str, str]] = frozenset(
         ("thehub", "post-merge", "grade"),
         ("thehub", "pr-gates", "linux-worker-probe"),
         ("thehub", "pr-gates", "gates"),
-        ("thehub", "pr-gates", "integration"),
         ("thehub", "gate-smoke", "gates"),
         ("thehub", "container-tiers", "linux-worker-probe"),
         ("thehub", "container-tiers", "tiers"),
@@ -192,7 +191,6 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
     ("thehub", "post-merge", "grade"): {"source": "tree", "commit": None},
     ("thehub", "pr-gates", "linux-worker-probe"): {},
     ("thehub", "pr-gates", "gates"): {"pr": "pr-tree", "live-pipeline": None},
-    ("thehub", "pr-gates", "integration"): {"pr": "pr-tree"},
     ("thehub", "gate-smoke", "gates"): {"pr": "pr-tree", "live-pipeline": None},
     ("thehub", "container-tiers", "linux-worker-probe"): {},
     ("thehub", "container-tiers", "tiers"): {"source": "tree", "commit": None},
@@ -221,7 +219,6 @@ REMOTE_INPUTS: dict[tuple[str, str, str], dict[str, str | None]] = {
 HOST_DECIDES = {
     ("thehub", "post-merge", "grade"): "report-verdict",
     ("thehub", "pr-gates", "gates"): "linux-verdict",
-    ("thehub", "pr-gates", "integration"): "linux-verdict",
     ("thehub", "gate-smoke", "gates"): "linux-verdict",
     ("thehub", "container-tiers", "tiers"): "linux-verdict",
 }
