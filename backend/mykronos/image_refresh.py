@@ -33,8 +33,9 @@ away. A MEDIUM swapped for a different MEDIUM is not progress, so it stays
 `unchanged`; a new MEDIUM never makes anything `regressed`, and never holds
 back a HIGH/CRITICAL fix. LOW and UNKNOWN never decide.
 
-The verdict authorises the demo only. Production keeps the date its compose
-file pins, and moving it is a reviewed one-line change.
+The verdict authorises a publish, and no deploy. Production keeps the date
+its compose file pins, and moving it is a reviewed one-line change; since
+TheHub #62399 the demo runs production's pins and moves only with them.
 
 **Digest-pinned references.** Production names each image as
 `<repository>:<tag>-p<YYYYMMDD>@sha256:<digest>` (TheHub #500), so the date
@@ -45,8 +46,10 @@ bytes, and the new one does not exist until the rebuild is pushed. Nothing
 in this lane writes a reference back to production's compose file. Adopting
 a candidate there is the reviewed change above, and TheHub's
 `scripts/publish-patched-images.sh` prints the `pin: <ref>@<digest>` line
-that change carries. The demo names its images by tag alone and takes the
-new date from the lane, so it needs no digest. One tag pinned to two
+that change carries. The demo names its patched images by the same
+`<tag>@<digest>` pins (TheHub #61949), so it reads no date from the lane.
+A demo reference by tag alone is still read here, for repositories that
+keep one. One tag pinned to two
 different digests across the compose files is refused: it means a tag was
 re-pushed, and which bytes run is then a question for a person.
 

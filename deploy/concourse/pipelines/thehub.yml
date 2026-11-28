@@ -2725,8 +2725,8 @@ jobs:
   #               clock: api-inventory, functional-demo, cicd-drift
   #               (quarterly). Idle for a commit's first ~35m, until
   #               deploy-demo has passed. Also image-refresh (daily),
-  #               whose kaniko build is remote but whose trivy scan and demo
-  #               redeploy are not. post-merge, container-tiers, pr-gates and
+  #               whose kaniko build is remote but whose trivy scan and
+  #               publish are not. post-merge, container-tiers, pr-gates and
   #               gate-smoke were here too, and left for the remote lanes
   #               below (2026-11-16).
   #
@@ -9084,28 +9084,35 @@ jobs:
   # Only `improved` - at least one HIGH/CRITICAL removed and none introduced,
   # or, with no HIGH/CRITICAL change, a MEDIUM removed and none introduced
   # (#869, which is why the scan reports MEDIUM too), per (vulnerability,
-  # package) pair, in every image - does anything:
+  # package) pair, in every image - does anything: the candidates are pushed
+  # (never before: the registry has deletes disabled, so pushing to find out
+  # would grow it every day forever), and only to a tag that does not exist
+  # yet: an existing tag is never overwritten (TheHub #61698; see the
+  # `publish` task).
   #
-  #   1. the candidates are pushed (never before: the registry has deletes
-  #      disabled, so pushing to find out would grow it every day forever),
-  #      and only to a tag that does not exist yet: an existing tag is never
-  #      overwritten (TheHub #61698; see the `publish` task);
-  #   2. demo is redeployed on them by publishing `<sha>+p<date>`, which the
-  #      host poller reads as "the same commit, THEHUB_DEMO_PATCH_DATE=<date>".
+  # No environment is touched here. docker-compose.yml pins each image by
+  # `<tag>@sha256`, so production moves only by a reviewed change to that
+  # file; the verdict this job prints is the evidence for that change.
   #
-  # Production is never touched here. docker-compose.yml pins its dates
-  # literally, so prod moves only by a reviewed change to that file; the
-  # verdict this job prints is the evidence for that change.
+  # [TheHub #62399] Nor the demo, any more. This job used to redeploy it on the
+  # new tags by publishing `<sha>+p<date>`, so the demo - gate off, tunnelled -
+  # ran images no one had reviewed, by a tag anyone who can push may move.
+  # Operator decision 2026-11-28 (option a): the demo runs production's pins
+  # (TheHub #61949) and gets newer images only through the same reviewed
+  # re-pin; its deploy refuses a moved tag (`publish-patched-images.sh
+  # --check-demo`, run by Invoke-TheHubDeploy.ps1), and the host poller
+  # refuses a `+p<date>` pointer.
   - name: image-refresh
     public: true
     # Still `dast` (review of mykronos #1177): `build` runs on the remote
-    # `linux` workers, but `scan` (trivy, up to 90m) and `deploy-demo` run on
+    # `linux` workers, but `scan` (trivy, up to 90m) and `publish` run on
     # this host, so the job must hold a host lane. A lane of its own would
     # have let those steps escape the three-lane bound. It runs once a day.
     serial_groups: [dast]
     # Every terminal state reports to TheHub, as every job here does
-    # (TheHub's test_no_job_is_silent). `demo` because demo is the only
-    # environment this job can change.
+    # (TheHub's test_no_job_is_silent). `demo` was the one environment this
+    # job could change; since TheHub #62399 it changes none, and the label is
+    # kept so the job's reports stay where TheHub already files them.
     on_success:
       do:
         - <<: *hub_report
@@ -9305,8 +9312,11 @@ jobs:
                   echo "Not improved; nothing to publish."
                   exit 0
                 fi
-                # Every candidate, improved or not: the demo's date is one
-                # variable, so every image carrying that date must exist.
+                # Every candidate, improved or not. That was for the demo's one
+                # date variable, which TheHub #62399 retired; it stays the rule
+                # Patchwork's image-date proposals are written against
+                # (mykronos/patchwork/image_date.py), and changing it is its
+                # own decision.
                 #
                 # [TheHub #61698] A tag is never overwritten. Build 32
                 # (2026-11-13) re-pushed thehub-nginx:...-p20261113, a tag
@@ -9321,10 +9331,10 @@ jobs:
                 #   (not "no such        not proof of absence.
                 #   manifest")
                 # No second tag (-p<date>-<n>) is offered instead: TheHub reads
-                # these images only as -p<date> (THEHUB_DEMO_PATCH_DATE, its
-                # publish-patched-images.sh and its compose pins), so a suffixed
-                # tag would be pushed for nobody. The image already at the tag
-                # is the one TheHub published and pins for that date.
+                # these images only as -p<date> (its publish-patched-images.sh
+                # and its compose pins), so a suffixed tag would be pushed for
+                # nobody. The image already at the tag is the one TheHub
+                # published and pins for that date.
                 #
                 # Kaniko builds are not reproducible, so a same-day rerun builds
                 # new bytes for tags that already exist: every tag is found
@@ -9332,11 +9342,10 @@ jobs:
                 # design (nothing this run built is offered).
                 #
                 # The run fails only when the result cannot stand: a lookup or
-                # push went unanswered (the date's image may not exist for the
-                # demo), or every candidate collided, so nothing this run built
-                # and judged is offered and the demo is not redeployed on images
-                # this run did not scan. A partial collision publishes the rest
-                # and stays green, loudly.
+                # push went unanswered (the date's image may not exist for a
+                # re-pin to adopt), or every candidate collided, so nothing this
+                # run built and judged is offered. A partial collision publishes
+                # the rest and stays green, loudly.
                 TAB=$(printf '\t')
                 pushed=0; unchanged=0; collided=0; unverified=0
                 while IFS="$TAB" read -r current candidate context args; do
@@ -9381,70 +9390,6 @@ jobs:
                   echo "::error::every candidate's tag already exists with other bytes; nothing from this run was published"
                   exit 1
                 fi
-
-      - task: deploy-demo
-        container_limits: {cpu: 512}
-        timeout: 45m
-        image: python
-        params:
-          MINIO_ENDPOINT: ((minio-endpoint))
-          MINIO_ACCESS_KEY: ((minio-access-key))
-          MINIO_SECRET_KEY: ((minio-secret-key))
-          RELEASE_BUCKET: ((thehub-release-bucket))
-          DEPLOY_TIMEOUT_MINUTES: ((deploy-timeout-minutes))
-          TARGET_URL: ((thehub-demo-url))
-          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
-          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
-        config:
-          platform: linux
-          inputs: [{ name: verdict }]
-          run:
-            path: bash
-            args:
-              - -ec
-              - |
-                set -euo pipefail
-                if ! grep -q '"verdict": "improved"' verdict/verdict.json; then
-                  echo "Not improved; demo keeps the images it runs."
-                  exit 0
-                fi
-                DATE=$(cat verdict/date)
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                apt-get update -qq && apt-get install -y -qq curl >/dev/null
-                curl -sSfL -o /usr/local/bin/mc \
-                  "https://github.com/minio/mc/releases/download/${MC_RELEASE}/mc.linux-amd64.${MC_RELEASE}"
-                echo "${MC_SHA256}  /usr/local/bin/mc" | sha256sum -c -
-                chmod +x /usr/local/bin/mc
-                SCHEME=${MINIO_ENDPOINT%%://*}
-                HOSTPORT=${MINIO_ENDPOINT#*://}
-                export MC_HOST_store="$SCHEME://$MINIO_ACCESS_KEY:$MINIO_SECRET_KEY@$HOSTPORT"
-
-                # The commit demo already serves, so this changes images and
-                # nothing else. A previous refresh's +p suffix is dropped.
-                mc --quiet cp "store/$RELEASE_BUCKET/demo.deployed" deployed
-                SHA=$(tr -d '\r\n' < deployed | cut -d+ -f1)
-                echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::demo.deployed is not a SHA"; exit 1; }
-                WANT="${SHA}+p${DATE}"
-                echo "Requesting demo at $WANT"
-                printf '%s' "$WANT" > requested
-                mc --quiet cp requested "store/$RELEASE_BUCKET/demo.requested"
-
-                DEADLINE=$(( $(date +%s) + DEPLOY_TIMEOUT_MINUTES * 60 ))
-                until mc --quiet cp "store/$RELEASE_BUCKET/demo.deployed" deployed >/dev/null 2>&1 \
-                      && [ "$(tr -d '\r\n' < deployed)" = "$WANT" ]; do
-                  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-                    echo "::error::demo never reported $WANT (waited $DEPLOY_TIMEOUT_MINUTES min)."
-                    echo "          It reads '$(tr -d '\r\n' < deployed 2>/dev/null)'. See"
-                    echo "          deploy/thehub/registry-pull-deploy.log on the deploy host."
-                    exit 1
-                  fi
-                  sleep 20
-                done
-                curl --fail --silent --show-error --max-time 30 --retry 5 --retry-delay 10 \
-                  --retry-all-errors -o /dev/null "$TARGET_URL"
-                echo "demo is serving $SHA on the p$DATE images."
-                echo "Production still pins its own date. To move it, change -p<date> to -p$DATE"
-                echo "in TheHub's docker-compose.yml; the evidence is the verdict above."
 
   # -- Auto-remediation (spec 08) -----------------------------------------
   #
