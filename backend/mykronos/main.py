@@ -20,6 +20,7 @@ from mykronos import (
     __version__,
     auto_triage,
     briefing_dm,
+    briefing_exceptions,
     briefing_flash,
     credential_expiry_incidents,
     environment,
@@ -99,6 +100,7 @@ from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     BRIEFING_DM_JOB,
     BRIEFING_FLASH_JOB,
+    BRIEFING_URGENT_JOB,
     CI_STALL_JOB,
     CREDENTIAL_EXPIRY_INCIDENTS_JOB,
     DEPENDABOT_AUTOPILOT_JOB,
@@ -927,8 +929,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # the briefing route so it says what the page says. Not due raises
             # JobNotDue and records nothing; no Slack for it raises JobSkipped.
             await briefing_dm.send_briefing_dm(
-                settings, db=app.state.db, read=briefing_dm.route_reader(app)
+                settings, db=app.state.db,
+                # The DM lists the credentials due, so it reads as a principal
+                # that may list them; the page gives a viewer the count only.
+                read=briefing_dm.route_reader(app, lists_credentials=True),
             )
+
 
         async def _briefing_flash() -> None:
             # Same-day flash DM (TheHub #60865): only an exploited or critical
@@ -937,6 +943,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await briefing_flash.send_flashes(
                 settings, db=app.state.db, read=briefing_flash.route_reader(app)
             )
+
+        async def _briefing_urgent() -> None:
+            # One urgent question per item that cannot wait for 07:00 (TheHub
+            # #62419): a release blocked over 2 h, a critical, a credential
+            # under 24 h; each at most once per 12 h. Nothing urgent is a quiet
+            # success; no Slack with something to ask raises JobSkipped.
+            await briefing_exceptions.send_urgent_questions(settings, db=app.state.db)
 
         async def _signal_filing() -> None:
             # Next-sprint candidates to TheHub's backlog (TheHub #60862),
@@ -1140,6 +1153,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # from platform health and reading as "nothing to say".
             (BRIEFING_DM_JOB, briefing_dm.TICK_SECONDS, _briefing_dm),
             (BRIEFING_FLASH_JOB, briefing_flash.TICK_SECONDS, _briefing_flash),
+            (BRIEFING_URGENT_JOB, briefing_exceptions.TICK_SECONDS, _briefing_urgent),
             # Always scheduled, for the same reason: without TheHub it records
             # `skipped` and says so.
             (SIGNAL_FILING_JOB, sprint_signal.TICK_SECONDS, _signal_filing),

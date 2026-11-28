@@ -116,7 +116,9 @@ async def daily_briefing_route(
 ) -> DailyBriefingOut:
     """What changed, so what, and whether it is work (TheHub #60860).
 
-    Overall: Needs you today, Production truth, Can we trust our signals,
+    Overall: Decide (what only the operator can decide, each with its
+    deciding command, the rest as counts; TheHub #62419), Needs you today,
+    Production truth, Can we trust our signals,
     Risk delta, Acceptances, Sprint health, Next-sprint candidates (ranked
     by risk removed x exposure / effort, with the weekly briefing-signal
     metric; TheHub #60862), Suggested focus. Per product
@@ -135,6 +137,10 @@ async def daily_briefing_route(
     read-only GitHub probe where one is registered (TheHub #60972); one
     observed done is listed in `data.board.operator_actions` only, not as a
     line, so it is not counted as needing you.
+
+    Decide lists credentials only to a principal that may write, the rule
+    `GET /api/credentials/expiring` applies; anyone else gets their count
+    (`by_class.credential`, `counts.credentials_withheld`).
     """
     from mykronos.api.dashboard import _resolve_repo
 
@@ -167,4 +173,13 @@ async def daily_briefing_route(
             delivery=delivery,
             signals=signals,
         )
+    if not principal.may_write:
+        # The credential calendar's own rule (TheHub #61104): names, expiry
+        # times and renewal steps are for a principal that may write.
+        from mykronos.briefing_exceptions import KEY, withhold_credentials
+
+        report.sections = [
+            withhold_credentials(s) if s.key == KEY else s for s in report.sections
+        ]
     return DailyBriefingOut.model_validate(dataclasses.asdict(report))
+

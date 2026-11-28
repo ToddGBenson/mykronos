@@ -22,6 +22,7 @@ from tests.conftest import REPO, finding_payload, post_findings, post_scan
 from tests.test_onboarding import onboard
 
 OVERALL = [
+    "exceptions",
     "needs_you_today",
     "production_truth",
     "trust",

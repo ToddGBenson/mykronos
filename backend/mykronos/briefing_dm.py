@@ -2,18 +2,26 @@
 
 `GET /api/briefing/daily` is the page Todd reads first thing. This is what
 puts it in front of him without his asking: once a local day, at
-`briefing_dm_time` in `briefing_dm_timezone`, a short Slack DM with
+`briefing_dm_time` in `briefing_dm_timezone`, a short Slack DM that lists
+exceptions only (TheHub #62419) and counts the rest:
 
-- how much on the page is work for him, split merge / decision / story;
+- every item only he can decide (`briefing_exceptions`: pending risk
+  acceptances, high/critical disposition requests, credentials due,
+  policy-change approvals, risk-gate refusals), each with its deciding
+  command, and the classes MyKronos has no record of yet, by name;
+- how much else on the page is work, split merge / decision / story, and
+  the rest as counts (other approvals pending, approvals decided in 24 h,
+  suggested-focus lines);
 - the open critical/high backlog, by severity: the scan post names only
   new findings (TheHub #61195), so this is where the totals are;
-- the top three suggested-focus lines;
 - every section that could not be read, by name - a briefing that leaves out
   what it could not see reads as "all clear", which is the failure the page
   itself was built against (#401);
-- one line per product;
+- the products as one count, naming any that could not be read;
 
-and a link to `/briefing` on the dashboard, where the rest is.
+and a link to `/briefing` on the dashboard, where the rest is. Before #62419
+the DM also listed the top three focus lines and one line per product; both
+are on the page.
 
 **The DM is the page, not a second opinion.** Both are read through the one
 route, `api.briefing_daily.daily_briefing_route`, so when B3 (TheHub #60861)
@@ -67,8 +75,11 @@ logger = logging.getLogger(__name__)
 #: still 07:05; a restart is caught within the same window.
 TICK_SECONDS = 300
 
-#: How many suggested-focus lines the DM carries. The page has the rest.
-FOCUS_IN_DM = 3
+#: How many exceptions the DM lists (TheHub #62419). The page has the rest.
+EXCEPTIONS_IN_DM = 10
+
+#: The operator's exceptions (`briefing_exceptions`): listed, not counted.
+EXCEPTIONS_KEY = "exceptions"
 
 #: A line in a DM is read on a phone. Long finding titles are cut, and the
 #: page carries them whole.
@@ -195,12 +206,13 @@ def work_counts(sections: Iterable[Any]) -> Counter[str]:
     """Merges, decisions and stories on the page, each line once.
 
     Suggested focus re-ranks lines from the other sections and is left out,
-    and a line that two sections both carry is counted once.
+    the exceptions are listed by name rather than counted, and a line that two
+    sections both carry is counted once.
     """
     seen: set[tuple[str, str, str]] = set()
     counts: Counter[str] = Counter()
     for section in sections:
-        if section.key == FOCUS_KEY:
+        if section.key in (FOCUS_KEY, EXCEPTIONS_KEY):
             continue
         for line in section.lines:
             identity = (line.what, line.ref, line.repo_full_name)
@@ -293,6 +305,75 @@ def product_line(product: ProductRead) -> str:
     return f"• *{name}*: " + "; ".join(parts) + "."
 
 
+def exception_lines(section: Any, *, limit: int = EXCEPTIONS_IN_DM) -> list[str]:
+    """The operator's exceptions, each with the command that decides it
+    (TheHub #62419), at most `limit` of them, then what has no record to read
+    them from. A missing or unreadable section says so: it is never an
+    all-clear."""
+    if section is None or section.status not in ("ok", "partial"):
+        return ["*Decide:* the exceptions could not be read today."]
+    items = section.data.get("items", [])
+    out = [f"*Decide ({len(items)}):*" if items else "*Decide:* nothing is waiting on you."]
+    for item in items[:limit]:
+        out.append(
+            f"• {_cut(item['what'], 2 * WHAT_CHARS)} Decide: "
+            f"{_cut(item['decide'], 2 * WHAT_CHARS)}"
+        )
+    if len(items) > limit:
+        out.append(f"…and {len(items) - limit} more on the page.")
+    gaps = [_esc(str(g.get("label", ""))) for g in section.data.get("not_read", [])]
+    if gaps:
+        out.append(f"*Not readable yet:* {'; '.join(gaps)}.")
+    return out
+
+
+def also_counted(exceptions: Any, focus: Any) -> str:
+    """Everything outside the exceptions, as counts only."""
+    counts = exceptions.data.get("counts", {}) if exceptions is not None else {}
+    parts = []
+    other = sum((counts.get("other_pending_approvals") or {}).values())
+    if other:
+        parts.append(f"{_plural(other, 'other approval')} pending")
+    decided = counts.get("decided_last_24h") or {}
+    if decided.get("total"):
+        parts.append(
+            f"{decided['total']} decided by rule or a person in 24h "
+            f"({decided.get('by_agent', 0)} by an agent)"
+        )
+    if counts.get("credentials_not_yours"):
+        parts.append(
+            f"{_plural(counts['credentials_not_yours'], 'credential')} due that a parent "
+            "agent or MyKronos renews"
+        )
+    if counts.get("stale_gate_refusals"):
+        parts.append(
+            f"{_plural(counts['stale_gate_refusals'], 'gate refusal')} not re-evaluated "
+            "for a week"
+        )
+    if focus is not None and focus.lines:
+        parts.append(f"{_plural(len(focus.lines), 'suggested focus line')} on the page")
+    return "; ".join(parts)
+
+
+def products_text(products: list[ProductRead]) -> str:
+    """The products as one count, naming only the ones that could not be read."""
+    read = [p.briefing for p in products if p.briefing is not None]
+    gaps = sum(
+        1 for b in read
+        if any(s.status in ("unavailable", "not_available") for s in b.sections)
+    )
+    text = f"*Products:* {len(read)} read" + (
+        f" ({gaps} with a section unread)" if gaps else ""
+    )
+    failed = [p for p in products if p.briefing is None]
+    if failed:
+        names = ", ".join(
+            f"{_esc(p.repo_full_name)} ({_cut(p.error, REASON_CHARS)})" for p in failed
+        )
+        text += f", {len(failed)} could not be read: {names}"
+    return text + "."
+
+
 def compose(
     overall: DailyBriefingOut,
     products: list[ProductRead],
@@ -305,49 +386,64 @@ def compose(
 
     The link comes first: `notify.MAX_TEXT` truncates the tail of a long
     message, and the page is the point of the DM.
+
+    **Never cut silently (TheHub #62419).** A message over `MAX_TEXT` would
+    lose its tail - the "Not read" list and the products - with no sign.
+    Instead the lower sections are left out whole, backlog first, then the
+    other counts, then "Needs you", and a line names what was left out;
+    after that the exceptions list shortens, saying how many more are on
+    the page. "Not read" and the products always stay.
     """
     counts = work_counts(overall.sections)
     sections = {s.key: s for s in overall.sections}
-    lines = [
-        f"<{url}|Open the full briefing>",
-        f"*Needs you:* {_counts_text(counts)}.",
-    ]
-
+    exceptions = sections.get(EXCEPTIONS_KEY)
+    also = also_counted(exceptions, sections.get(FOCUS_KEY))
     backlog = backlog_text(sections.get("risk_delta"))
-    if backlog:
-        lines.append(f"*Open critical/high backlog:* {backlog}.")
+    # Highest first; dropped from the end.
+    optional = [
+        ("Needs you", [f"*Needs you:* {_counts_text(counts)}."]),
+        ("Also counted", [f"*Also counted:* {also}."] if also else []),
+        ("Open critical/high backlog",
+         [f"*Open critical/high backlog:* {backlog}."] if backlog else []),
+    ]
+    optional = [(name, block) for name, block in optional if block]
 
-    focus = sections.get(FOCUS_KEY)
-    if focus is not None and focus.lines:
-        lines.append("*Suggested focus:*")
-        for index, line in enumerate(focus.lines[:FOCUS_IN_DM], start=1):
-            lines.append(
-                f"{index}. [{line.work}] {_cut(line.what, WHAT_CHARS)} - "
-                f"{_cut(line.so_what, WHAT_CHARS)}"
-            )
-    elif focus is not None and focus.status not in ("ok", "partial"):
-        lines.append("*Suggested focus:* could not be ranked today.")
-    else:
-        lines.append("*Suggested focus:* nothing to start with.")
-
+    tail = []
     gaps = unread(s for s in overall.sections if s.status in ("unavailable", "not_available"))
     if gaps:
         # One per line: each is cut to fit, and a joined line would be cut
         # by `notify.LINE_MAX` after the second or third.
-        lines.append("*Not read:*")
-        lines.extend(f"- {gap}" for gap in gaps)
-
+        tail.append("*Not read:*")
+        tail.extend(f"- {gap}" for gap in gaps)
     if products:
-        lines.append("*Products:*")
-        lines.extend(product_line(product) for product in products)
+        tail.append(products_text(products))
 
-    return Notification(
-        title=f"Morning briefing, {local_now:%a %d %b}",
-        detail="",
-        repo_full_name="",
-        level="info",
-        lines=tuple(lines),
-    )
+    def build(kept: int, limit: int) -> Notification:
+        lines = [f"<{url}|Open the full briefing>", *exception_lines(exceptions, limit=limit)]
+        for _name, block in optional[:kept]:
+            lines.extend(block)
+        left_out = [name for name, _block in optional[kept:]]
+        if left_out:
+            lines.append(f"*Left out to fit:* {', '.join(left_out)}; on the page.")
+        lines.extend(tail)
+        return Notification(
+            title=f"Morning briefing, {local_now:%a %d %b}",
+            detail="",
+            repo_full_name="",
+            level="info",
+            lines=tuple(lines),
+        )
+
+    kept, limit = len(optional), EXCEPTIONS_IN_DM
+    note = build(kept, limit)
+    while not note.fits and kept > 0:
+        kept -= 1
+        note = build(kept, limit)
+    while not note.fits and limit > 0:
+        limit -= 1
+        note = build(kept, limit)
+    return note
+
 
 
 # ---------------------------------------------------------------------------
@@ -368,16 +464,26 @@ def products(db: Any) -> list[tuple[str, str]]:
     return [(str(repo_id), str(name)) for repo_id, name in rows]
 
 
-def route_reader(app: FastAPI, *, actor: str = f"job:{BRIEFING_DM_JOB}") -> BriefingReader:
+def route_reader(
+    app: FastAPI, *, actor: str = f"job:{BRIEFING_DM_JOB}", lists_credentials: bool = False
+) -> BriefingReader:
     """Read the briefing through its own route, so the DM and the page cannot
     disagree. The request is synthetic: the route reads only `app.state`.
-    The briefing-signal filing job reads through it too, as itself."""
+    The briefing-signal filing job reads through it too, as itself.
+
+    The route lists credentials due only to a principal that may write (the
+    rule of `GET /api/credentials/expiring`, TheHub #62419). The DM lists
+    them, so it passes `lists_credentials` and reads as an in-process
+    automation principal with that role, as the credential-incident job
+    reads the calendar; every other reader stays a viewer."""
     from fastapi import Request
 
     from mykronos.adminauth import ActorKind, Principal, Role
     from mykronos.api.briefing_daily import daily_briefing_route
 
-    principal = Principal(actor=actor, role=Role.VIEWER, kind=ActorKind.AUTOMATION)
+    role = Role.ADMIN if lists_credentials else Role.VIEWER
+    principal = Principal(actor=actor, role=role, kind=ActorKind.AUTOMATION)
+
 
     async def read(repo_id: str | None) -> DailyBriefingOut:
         request = Request(

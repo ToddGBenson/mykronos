@@ -2135,11 +2135,19 @@ def build_overall(
         board_error=delivery.board_error,
         next_sprint=next_sprint,
     )
+    # What only the operator can decide, first (TheHub #62419). Not ranked by
+    # focus: every item in it is the operator's, and the DM lists them all.
+    from mykronos.briefing_exceptions import exceptions_section
+
+    exceptions = exceptions_section(db, settings, now=now)
     return DailyBriefing(
         generated_at=now,
         scope="overall",
         repo_full_name=None,
-        sections=[needs_you, production, trust, delta, acceptances, sprint, next_sprint, focus],
+        sections=[
+            exceptions, needs_you, production, trust, delta, acceptances, sprint,
+            next_sprint, focus,
+        ],
     )
 
 
