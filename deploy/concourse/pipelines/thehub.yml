@@ -2076,22 +2076,38 @@ jobs:
     # stage whose green means nothing, and a check nobody can see fail is
     # #59100's defect -- a scheduled task reporting `Ready` while exiting
     # non-zero -- arriving by another road. AC4.
+    #
+    # [TheHub #61938, #62349] Each report is in a `try:`. TheHub's risk gate
+    # reads this job's build status, and a failing hook fails the build: with
+    # the Hub not answering, the reports timed out (5m, two attempts) and
+    # ended builds `failed` whose grade was green (#2743) or a watermark
+    # no-op (#2292), so the gate refused tips nothing had graded red, and the
+    # watermark kept any later build from grading them again. Concourse
+    # cannot turn a hook's timeout into `errored`; `try:` keeps it out of the
+    # status altogether. A report that does not land is still red in its own
+    # step's log. The verdict is unchanged: `grade` and `report-verdict` are
+    # plan steps, never guarded, so a red or indeterminate verdict still ends
+    # the build red. `test_thehub_post_merge_reporting_cannot_fail`.
     on_success:
       do:
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: success, TARGET_ENV: prod }
+        - try:
+            <<: *hub_report
+            params: { <<: *hub_params, STAGE: post_merge_check, STATUS: success, TARGET_ENV: prod }
     on_failure:
       do:
-        - <<: *hub_report
-          params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: failed, TARGET_ENV: prod }
+        - try:
+            <<: *hub_report
+            params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: failed, TARGET_ENV: prod }
     on_error:
       do:
-        - <<: *hub_report
-          params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: errored, TARGET_ENV: prod }
+        - try:
+            <<: *hub_report
+            params: { <<: *hub_params, JOB: post-merge, STAGE: post_merge_check, STATUS: errored, TARGET_ENV: prod }
     on_abort:
       do:
-        - <<: *hub_report
-          params: { <<: *hub_params, STAGE: post_merge_check, STATUS: aborted, TARGET_ENV: prod }
+        - try:
+            <<: *hub_report
+            params: { <<: *hub_params, STAGE: post_merge_check, STATUS: aborted, TARGET_ENV: prod }
     plan:
       - get: half-hourly
         trigger: true
