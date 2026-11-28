@@ -350,6 +350,7 @@ def test_the_pull_request_runs_no_integration_tier() -> None:
     assert "fetch-image" not in tasks, "no develop image is pulled for a pull request"
     assert not any(s.get("load_var") for s in flat(plan))
     assert not any(s.get("get") == "built" for s in plan), "no develop image to name"
+    assert not any(s.get("get") == "image-fetcher" for s in plan), "and none to fetch with"
     pick = _step("pick")
     assert not pick["config"].get("inputs")
     assert pick["config"]["outputs"] == [{"name": "pr"}]
