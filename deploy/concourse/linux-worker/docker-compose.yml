@@ -30,7 +30,7 @@
 # The entrypoint wrapper sits beside this file: cgroup v2 delegation and the
 # stale /run/containerd clear (TheHub #61894, #62024).
 x-worker: &worker
-  image: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
+  image: concourse/concourse:8.3.4@sha256:a5362362e0b40b2713b08598f44c12fcd61ca9b6e31bc990cb17dcf82c962f10
   restart: unless-stopped
   command: worker
   privileged: true

@@ -120,7 +120,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$image = 'concourse/concourse:8.3.3'
+$image = 'concourse/concourse:8.3.4'
 $ruleName = 'Mykronos Concourse TSA 2222 - deny the LAN except the Linux worker'
 $tsaPort = 2222
 $installScript = Join-Path $PSScriptRoot 'linux-worker\install-concourse-worker.sh'

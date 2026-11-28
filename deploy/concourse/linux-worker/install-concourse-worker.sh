@@ -52,12 +52,13 @@
 #                          every build cache and volume in it)
 set -euo pipefail
 
-CONCOURSE_VERSION="8.3.3"
-# sha256 of the GitHub release assets, v8.3.3 (2026-11-03). The amd64 value was
-# computed from the downloaded file on 2026-11-13 and matched GitHub's digest
-# and the release's .sha1 sidecar; arm64 is GitHub's digest for that asset.
-SHA256_amd64="6b7699a3d3d1066b15011833dfb2712af5ca94b1f49090d035596f1c5fa82ba8"
-SHA256_arm64="fa459cf89446559cdb12e9b4f7bd191f5138ce50dbc25b349e48c7f7077258c5"
+CONCOURSE_VERSION="8.3.4"
+# sha256 of the GitHub release assets, v8.3.4 (2026-11-24, GHSA-9x27-gfq9-5qx8,
+# TheHub #62376). The amd64 value was computed from the downloaded file on
+# 2026-11-28 and matched GitHub's digest and the release's .sha1 sidecar;
+# arm64 is GitHub's digest for that asset.
+SHA256_amd64="1fdeda7affb67b0e572761d8045913f0c3124a73159ac53f97122292844b2b84"
+SHA256_arm64="8adca30ec41fd6a1b4892c177fb2676bc541342743afcf82831cf902d20e7cf2"
 RELEASES="https://github.com/concourse/concourse/releases/download"
 # Task containers get these resolvers, as the compose workers do: on a host
 # running systemd-resolved they would otherwise inherit 127.0.0.53, which is

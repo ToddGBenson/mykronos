@@ -50,6 +50,37 @@ function New-Secret {
     $secret
 }
 
+function Add-MissingSecret {
+    <#
+        Append NAME=<New-Secret 32> to an existing .env for each name it has no
+        line for. Existing values are kept, nothing is printed but the names,
+        and a second run changes nothing. Written for the web and TSA client
+        secrets (GHSA-9x27-gfq9-5qx8, TheHub #62376): an .env from before them
+        would otherwise stop the web node at its `:?` guard, and the fix is a
+        value nobody should have to type.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$EnvFile,
+        [Parameter(Mandatory)][string[]]$Name
+    )
+    $existing = @(Get-Content -Path $EnvFile -ErrorAction SilentlyContinue)
+    $added = @()
+    foreach ($key in $Name) {
+        $pattern = '^' + [regex]::Escape($key) + '='
+        if (-not ($existing | Where-Object { $_ -match $pattern })) {
+            $added += "$key=$(New-Secret 32)"
+            Write-Host "Added $key to $EnvFile (generated; not printed)." -ForegroundColor Green
+        }
+    }
+    if ($added.Count -gt 0) {
+        $text = [IO.File]::ReadAllText($EnvFile)
+        if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) {
+            Add-Content -Path $EnvFile -Value "" -Encoding UTF8
+        }
+        Add-Content -Path $EnvFile -Value $added -Encoding UTF8
+    }
+}
+
 if ((Test-Path $EnvFile) -and -not $Rotate) {
     Write-Host "Using the existing $EnvFile (pass -Rotate to replace it)." -ForegroundColor DarkGray
 } else {
@@ -72,6 +103,9 @@ if ((Test-Path $EnvFile) -and -not $Rotate) {
         "CONCOURSE_HUB_VIEWER_USER=thehub-viewer",
         "CONCOURSE_HUB_VIEWER_PASSWORD=$(New-Secret)",
         "CONCOURSE_POSTGRES_PASSWORD=$(New-Secret)",
+        "# Web and TSA OAuth client secrets (GHSA-9x27-gfq9-5qx8, TheHub #62376).",
+        "CONCOURSE_CLIENT_SECRET=$(New-Secret 32)",
+        "CONCOURSE_TSA_CLIENT_SECRET=$(New-Secret 32)",
         "",
         "MINIO_ROOT_USER=mykronos",
         "MINIO_ROOT_PASSWORD=$(New-Secret 32)",
@@ -84,6 +118,11 @@ if ((Test-Path $EnvFile) -and -not $Rotate) {
     Set-Content -Path $EnvFile -Value $lines -Encoding UTF8
     Write-Host "Wrote $EnvFile with generated credentials." -ForegroundColor Green
 }
+
+# An .env from before TheHub #62376 has no client secrets, and the web node
+# refuses to start without them. Generated here, before vault-init.ps1 and
+# `docker compose up`, both of which read the whole compose file.
+Add-MissingSecret -EnvFile $EnvFile -Name 'CONCOURSE_CLIENT_SECRET', 'CONCOURSE_TSA_CLIENT_SECRET'
 
 # Persistent keys. Without them, a fresh key is generated on every start,
 # every browser cookie signed with the old one becomes invalid, and the login
@@ -108,7 +147,7 @@ New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
 
 if (-not (Test-Path (Join-Path $keyDir "session_signing_key"))) {
     Write-Host "Generating the session signing key..." -ForegroundColor Cyan
-    docker run --rm -v "${keyDir}:/keys" concourse/concourse:8.3.3 generate-key -t rsa -f /keys/session_signing_key | Out-Null
+    docker run --rm -v "${keyDir}:/keys" concourse/concourse:8.3.4 generate-key -t rsa -f /keys/session_signing_key | Out-Null
 }
 
 # `-t ssh` rather than `-t rsa`: these are the SSH handshake between each
@@ -116,7 +155,7 @@ if (-not (Test-Path (Join-Path $keyDir "session_signing_key"))) {
 foreach ($name in @("tsa_host_key", "worker_key", "worker2_key")) {
     if (-not (Test-Path (Join-Path $keyDir $name))) {
         Write-Host "Generating $name..." -ForegroundColor Cyan
-        docker run --rm -v "${keyDir}:/keys" concourse/concourse:8.3.3 generate-key -t ssh -f "/keys/$name" | Out-Null
+        docker run --rm -v "${keyDir}:/keys" concourse/concourse:8.3.4 generate-key -t ssh -f "/keys/$name" | Out-Null
     }
 }
 
