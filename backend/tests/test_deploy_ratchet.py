@@ -367,6 +367,222 @@ class TestTheSameSnapshot:
         assert body["range_commits"] == [C]
 
 
+BACKEND = "localhost:5000/mykronos-backend"
+FRONTEND = "localhost:5000/mykronos-frontend"
+#: (CVE, severity, package, installed version)
+_Vuln = tuple[str, str, str, str]
+
+
+def _image_scan(
+    client: TestClient,
+    run_compaction: Any,
+    scan_run_id: str,
+    commit: str,
+    started_at: str,
+    images: dict[str, list[_Vuln]],
+) -> None:
+    """A push containers scan of images this repository rebuilds on every
+    commit (a new imageID each time, so `disclosed_ids` cannot clear them),
+    with one archived Trivy report per image."""
+    auth = {"Authorization": f"Bearer {issue_token(client, REPO, 'containers')}"}
+    post_scan(
+        client, auth, scan_run_id=scan_run_id, commit_sha=commit, pr_number=None,
+        triggered_by="push", capability="containers", tool_name="trivy",
+        tool_version="0.58.1", started_at=started_at,
+    )
+    findings = [
+        finding_payload(
+            rule_id=cve, severity=severity, title=f"{package} {cve}",
+            file_path=repository.split("/", 1)[1], line_start=1, line_end=1, symbol=None,
+            code_snippet=None, package_name=package, package_version=version,
+            raw_finding_json={"ruleId": cve, "image": f"{repository}:{commit}"},
+        )
+        for repository, vulns in images.items()
+        for cve, severity, package, version in vulns
+    ]
+    if findings:
+        post_findings(client, auth, findings, scan_run_id=scan_run_id, capability="containers")
+    settings = client.app.state.settings
+    owner, name = REPO.split("/")
+    folder = settings.raw_dir / owner / name / scan_run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    first = ""
+    for repository, vulns in images.items():
+        report = {
+            "version": "2.1.0",
+            "runs": [{
+                "results": [
+                    {
+                        "ruleId": cve,
+                        "message": {"text": (
+                            f"Package: {package}\nInstalled Version: {version}\n"
+                            f"Vulnerability {cve}\nSeverity: {severity.upper()}\n"
+                            "Fixed Version: "
+                        )},
+                    }
+                    for cve, severity, package, version in vulns
+                ],
+                "properties": {
+                    "imageName": f"{repository}:{commit}",
+                    "imageID": f"sha256:{scan_run_id}-{repository.rsplit('/', 1)[1]}",
+                },
+            }],
+        }
+        file = f"trivy-{repository.rsplit('/', 1)[1]}.sarif"
+        (folder / file).write_text(json.dumps(report), encoding="utf-8")
+        first = first or file
+    run_compaction()
+    _set_raw_ref(client.app.state.catalog, scan_run_id, f"raw/{owner}/{name}/{scan_run_id}/{first}")
+
+
+def _blocking_rules(client: TestClient, body: dict[str, Any]) -> set[str]:
+    ids = body["introduced_blocking_ids"]
+    if not ids:
+        return set()
+    marks = ", ".join("?" for _ in ids)
+    rows = client.app.state.catalog.query(
+        f"SELECT rule_id FROM findings WHERE finding_id IN ({marks})", list(ids)
+    )
+    return {str(rule) for (rule,) in rows}
+
+
+OPENSSL_RUNNING = "3.5.9-1~deb13u1"
+OPENSSL_OLDER = "3.5.7-1~deb13u3"
+
+
+class TestTheBaselineImageCarriesThePackage:
+    """TheHub #62374. A base-image CVE published after the running image was
+    last scanned is first seen by the candidate's scan, in an image the
+    candidate rebuilt, and read as introduced, although the running image
+    carries the same package at the same version."""
+
+    def test_an_advisory_on_a_package_version_the_running_image_carries_allows(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        """The incident's shape: the same openssl in both images, the
+        advisory published between the two scans."""
+        _image_scan(client, run_compaction, "ctr-d", D, "2026-11-21T15:33:00", {
+            BACKEND: [("CVE-OLD", "low", "openssl", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, D)
+        _image_scan(client, run_compaction, "ctr-c", C, "2026-11-27T04:00:00", {
+            BACKEND: [("CVE-OLD", "low", "openssl", OPENSSL_RUNNING),
+                      ("CVE-NEW", "high", "openssl", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["introduced_blocking_ids"] == [], body
+        assert INTRODUCED_BLOCKING not in _codes_of(body)
+        assert body["allow"] is True, body
+        assert body["candidate_score"] == body["baseline_score"]
+
+    def test_a_bump_into_a_vulnerable_version_still_refuses(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        """The running image has openssl, at another version, and its scan
+        never reported the advisory: the candidate moved into it."""
+        _image_scan(client, run_compaction, "ctr-d", D, "2026-11-21T15:33:00", {
+            BACKEND: [("CVE-OLD", "low", "openssl", OPENSSL_OLDER)],
+        })
+        _decide(client, oracle_auth, D)
+        _image_scan(client, run_compaction, "ctr-c", C, "2026-11-27T04:00:00", {
+            BACKEND: [("CVE-NEW", "high", "openssl", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert INTRODUCED_BLOCKING in _codes_of(body)
+        assert _blocking_rules(client, body) == {"CVE-NEW"}
+
+    def test_a_package_the_running_image_does_not_carry_still_refuses(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _image_scan(client, run_compaction, "ctr-d", D, "2026-11-21T15:33:00", {
+            BACKEND: [("CVE-OLD", "low", "zlib1g", "1.3.1")],
+        })
+        _decide(client, oracle_auth, D)
+        _image_scan(client, run_compaction, "ctr-c", C, "2026-11-27T04:00:00", {
+            BACKEND: [("CVE-OLD", "low", "zlib1g", "1.3.1"),
+                      ("CVE-NEW", "high", "openssl", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert _blocking_rules(client, body) == {"CVE-NEW"}
+
+    def test_the_same_package_in_another_running_image_does_not_count(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        """The baseline is read per image: openssl at this version in the
+        running frontend says nothing about the backend."""
+        _image_scan(client, run_compaction, "ctr-d", D, "2026-11-21T15:33:00", {
+            BACKEND: [("CVE-OLD", "low", "zlib1g", "1.3.1")],
+            FRONTEND: [("CVE-OLD2", "low", "openssl", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, D)
+        _image_scan(client, run_compaction, "ctr-c", C, "2026-11-27T04:00:00", {
+            BACKEND: [("CVE-OLD", "low", "zlib1g", "1.3.1"),
+                      ("CVE-NEW", "high", "openssl", OPENSSL_RUNNING)],
+            FRONTEND: [("CVE-OLD2", "low", "openssl", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, C)
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert _blocking_rules(client, body) == {"CVE-NEW"}
+
+    def test_a_rescan_of_the_running_image_that_reports_the_advisory_allows(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        """The running frontend's case: an older openssl, also affected. Only
+        a rescan of the running image's tag can say so, and when it does the
+        advisory is not the candidate's."""
+        _image_scan(client, run_compaction, "ctr-d", D, "2026-11-21T15:33:00", {
+            FRONTEND: [("CVE-OLD", "low", "libssl3t64", OPENSSL_OLDER)],
+        })
+        _decide(client, oracle_auth, D)
+        _image_scan(client, run_compaction, "ctr-c", C, "2026-11-27T04:00:00", {
+            FRONTEND: [("CVE-NEW", "high", "libssl3t64", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, C)
+        _image_scan(client, run_compaction, "ctr-d2", D, "2026-11-28T03:00:00", {
+            FRONTEND: [("CVE-OLD", "low", "libssl3t64", OPENSSL_OLDER),
+                       ("CVE-NEW", "high", "libssl3t64", OPENSSL_OLDER)],
+        })
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["introduced_blocking_ids"] == [], body
+        assert body["allow"] is True, body
+
+    def test_a_rescan_of_the_running_image_without_the_advisory_still_refuses(
+        self, client, run_compaction, oracle_auth, viewer_auth
+    ) -> None:
+        _image_scan(client, run_compaction, "ctr-d", D, "2026-11-21T15:33:00", {
+            FRONTEND: [("CVE-OLD", "low", "libssl3t64", OPENSSL_OLDER)],
+        })
+        _decide(client, oracle_auth, D)
+        _image_scan(client, run_compaction, "ctr-c", C, "2026-11-27T04:00:00", {
+            FRONTEND: [("CVE-NEW", "high", "libssl3t64", OPENSSL_RUNNING)],
+        })
+        _decide(client, oracle_auth, C)
+        _image_scan(client, run_compaction, "ctr-d2", D, "2026-11-28T03:00:00", {
+            FRONTEND: [("CVE-OLD", "low", "libssl3t64", OPENSSL_OLDER)],
+        })
+
+        body = _gate(client, viewer_auth, C)
+
+        assert body["allow"] is False, body
+        assert _blocking_rules(client, body) == {"CVE-NEW"}
+
+
 class TestTheRatchetOverALake:
     def _baseline(self, client, run_compaction, oracle_auth, findings) -> None:
         _push_scan(client, run_compaction, "run-d", D, "2026-11-13T04:00:00", findings)
