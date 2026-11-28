@@ -51,16 +51,24 @@ name: mykronos-concourse
 # 8.3.3, pinned by digest (2026-11-04): built on Go 1.27.3, which fixes
 # CVE-2026-111943 (HIGH, standard library) in every bin/ binary. Trivy
 # 0.73.0 on one database: 8.3.1 at 5 critical / 117 high, 8.3.3 at 0 / 7.
+#
+# 8.3.4, pinned by digest (2026-11-28, TheHub #62376): GHSA-9x27-gfq9-5qx8
+# (critical). Up to 8.3.3, a web node given no client secrets derives the web
+# and TSA OAuth client secrets from the session signing key's public modulus,
+# which /sky/issuer/keys serves to anyone, and a derived secret exchanges for
+# a system token over the worker lifecycle API. 8.3.4 stops deriving them; the
+# web node below also sets both, which closes it on any version. 8.3.4 bundles
+# the same Go module versions as 8.3.3, so it changes no other finding.
 x-worker: &worker
-  image: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
+  image: concourse/concourse:8.3.4@sha256:a5362362e0b40b2713b08598f44c12fcd61ca9b6e31bc990cb17dcf82c962f10
   # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
   # the distribution's fixes, published as <registry>/<publish>-p<date> only
   # when strictly better. Declared, not adopted: `image:` stays the vendor's
   # until a reviewed change pins a published date.
   x-mykronos-build:
     context: ../images/apk-upgrade
-    base: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
-    publish: concourse/concourse:8.3.3
+    base: concourse/concourse:8.3.4@sha256:a5362362e0b40b2713b08598f44c12fcd61ca9b6e31bc990cb17dcf82c962f10
+    publish: concourse/concourse:8.3.4
     refresh_arg: APK_REFRESH
   restart: unless-stopped
   command: worker
@@ -514,15 +522,15 @@ services:
   # cannot start. Keeping the name means compose recreates this one in place.
   # `command: web` says what it is.
   concourse:
-    image: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
+    image: concourse/concourse:8.3.4@sha256:a5362362e0b40b2713b08598f44c12fcd61ca9b6e31bc990cb17dcf82c962f10
     # Out-of-band rebuild (mykronos.yml `image-refresh`): the vendor image plus
     # the distribution's fixes, published as <registry>/<publish>-p<date> only
     # when strictly better. Declared, not adopted: `image:` stays the vendor's
     # until a reviewed change pins a published date.
     x-mykronos-build:
       context: ../images/apk-upgrade
-      base: concourse/concourse:8.3.3@sha256:5d3a30f336b063b9ed0bb2b963044b5782dc06d8efd1161e85202d60de26e923
-      publish: concourse/concourse:8.3.3
+      base: concourse/concourse:8.3.4@sha256:a5362362e0b40b2713b08598f44c12fcd61ca9b6e31bc990cb17dcf82c962f10
+      publish: concourse/concourse:8.3.4
       refresh_arg: APK_REFRESH
     container_name: mykronos-concourse
     restart: unless-stopped
@@ -599,6 +607,16 @@ services:
       # ./keys, which is gitignored.
       CONCOURSE_TSA_HOST_KEY: /keys/tsa_host_key
       CONCOURSE_TSA_AUTHORIZED_KEYS: /keys/authorized_worker_keys
+
+      # GHSA-9x27-gfq9-5qx8 (TheHub #62376). Without these two, Concourse up
+      # to 8.3.3 derives both OAuth client secrets from the session signing
+      # key's public modulus, which /sky/issuer/keys serves to anyone, and a
+      # job container on the compose network could mint a system token with
+      # them. Set explicitly they are never derived, on any version. setup.ps1
+      # generates both into .env (also into an existing one that lacks them);
+      # no default, so a missing value refuses to start rather than fall back.
+      CONCOURSE_CLIENT_SECRET: ${CONCOURSE_CLIENT_SECRET:?set it in .env - run setup.ps1}
+      CONCOURSE_TSA_CLIENT_SECRET: ${CONCOURSE_TSA_CLIENT_SECRET:?set it in .env - run setup.ps1}
 
       # ── Credential manager (Vault) ─────────────────────────────────────
       # Lookup order for ((foo)) is:

@@ -23,10 +23,9 @@ import yaml
 
 from tests.test_linux_concourse_worker import (
     ADD,
-    CONCOURSE,
     COMPOSE,
+    CONCOURSE,
     INSTALL,
-    PWSH,
     ROOT,
     SETUP,
     WORKER_COMPOSE,
@@ -104,11 +103,14 @@ class TestTheWebNodeSetsBothClientSecrets:
             ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True
         ).stdout.decode().split("\0")
         assigned = re.compile(
-            r"(CONCOURSE_(?:TSA_)?CLIENT_SECRET|--(?:tsa-)?client-secret)\s*[:=]\s*(\S*)"
+            r"(CONCOURSE_(?:TSA_)?CLIENT_SECRET|--(?:tsa-)?client-secret)[ \t]*[:=][ \t]*(\S*)"
         )
         found = []
+        this = Path(__file__).resolve()
         for rel in filter(None, tracked):
             path = ROOT / rel
+            if path.resolve() == this:
+                continue  # its own fixture writes a placeholder into a temp .env
             if not path.is_file() or path.suffix in {".png", ".jpg", ".ico", ".parquet"}:
                 continue
             try:
@@ -140,7 +142,7 @@ class TestSetupGeneratesThemIfAbsent:
         for name in SECRETS:
             assert f"'{name}'" in call.group(1), name
         assert call.start() < text.index('& (Join-Path $PSScriptRoot "vault-init.ps1")')
-        assert call.start() < text.index("docker compose up -d")
+        assert call.start() < text.index("\n    docker compose up -d\n")
 
     @needs_pwsh
     def test_adds_only_the_missing_ones_and_keeps_existing_values(self, tmp_path: Path) -> None:

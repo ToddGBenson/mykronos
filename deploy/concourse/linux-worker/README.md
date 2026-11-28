@@ -45,7 +45,7 @@ Three steps, one script each, in this order.
    Linux box once the installer has run; it copies the key to
    `/etc/concourse/worker_key`).
 
-   The installer downloads Concourse 8.3.3 (about 950 MB, pinned by sha256),
+   The installer downloads Concourse 8.3.4 (about 950 MB, pinned by sha256),
    installs it under `/usr/local/concourse`, writes `/etc/concourse/`, and
    starts `concourse-worker.service`. It waits for the worker's own health
    endpoint and prints the last log lines if that fails.
@@ -117,7 +117,7 @@ worker each step ran on.
 
 | What | Where |
 |---|---|
-| Binaries | `/usr/local/concourse` -> `/usr/local/concourse-8.3.3` |
+| Binaries | `/usr/local/concourse` -> `/usr/local/concourse-8.3.4` |
 | Config and keys | `/etc/concourse/worker.env`, `worker_key` (0600), `tsa_host_key.pub` |
 | Builds and volumes | `/opt/concourse/worker` |
 | Unit | `/etc/systemd/system/concourse-worker.service` |
