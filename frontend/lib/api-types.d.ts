@@ -48,6 +48,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Releases
+         * @description Every release with notes, newest first.
+         */
+        get: operations["releases_api_releases_get"];
+        put?: never;
+        /**
+         * Record Release
+         * @description Generate and keep the notes for a confirmed production deploy.
+         *
+         *     Refused (409) unless `sha` is the commit this backend runs, and for a
+         *     rollback, whether the gate called it one or GitHub says `sha` is behind
+         *     `previous_sha`. Those deploys produce no notice.
+         */
+        post: operations["record_release_api_releases_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/releases/{sha}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Release Page
+         * @description One release's notes, as the page deploy time rendered.
+         */
+        get: operations["release_page_api_releases__sha__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/ingest/health": {
         parameters: {
             query?: never;
@@ -9245,6 +9293,34 @@ export interface components {
             items: components["schemas"]["CheckItemOut"][];
         };
         /**
+         * GateDelta
+         * @description The deploy gate's answer deploy.ps1 acted on, as far as the notes use it.
+         */
+        GateDelta: {
+            /**
+             * Verdict
+             * @default
+             */
+            verdict: string;
+            /**
+             * Direction
+             * @default
+             */
+            direction: string;
+            /** Baseline Score */
+            baseline_score?: number | null;
+            /** Candidate Score */
+            candidate_score?: number | null;
+            /** Introduced */
+            introduced?: {
+                [key: string]: number;
+            };
+            /** Fixed */
+            fixed?: {
+                [key: string]: number;
+            };
+        };
+        /**
          * GovernanceOut
          * @description A repository's change-governance posture (spec 30).
          */
@@ -12316,6 +12392,34 @@ export interface components {
             repos: string[];
             /** Dry Run */
             dry_run: boolean;
+        };
+        /** ReleaseIn */
+        ReleaseIn: {
+            /** Sha */
+            sha: string;
+            /** Previous Sha */
+            previous_sha: string;
+            gate?: components["schemas"]["GateDelta"] | null;
+        };
+        /** ReleaseList */
+        ReleaseList: {
+            /** Releases */
+            releases: components["schemas"]["ReleaseMeta"][];
+        };
+        /** ReleaseMeta */
+        ReleaseMeta: {
+            /** Sha */
+            sha: string;
+            /** Previous Sha */
+            previous_sha: string;
+            /** Generated At */
+            generated_at: string;
+            /** Commit Count */
+            commit_count: number;
+            /** Pull Requests */
+            pull_requests: number[];
+            /** Stories */
+            stories: string[];
         };
         /** RemediationEventOut */
         RemediationEventOut: {
@@ -15483,6 +15587,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BenchRunList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    releases_api_releases_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseList"];
+                };
+            };
+        };
+    };
+    record_release_api_releases_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReleaseIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseMeta"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_page_api_releases__sha__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
                 };
             };
             /** @description Validation Error */

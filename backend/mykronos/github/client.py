@@ -389,6 +389,9 @@ class CommitInfo:
     message: str
     url: str = ""
     committed_at: datetime | None = None
+    #: Parent shas, first parent first. Read from `compare` only, so release
+    #: notes can walk the first-parent line (TheHub #61703); empty elsewhere.
+    parents: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1994,6 +1997,9 @@ class RestGitHubClient:
                 url=str(c.get("html_url") or ""),
                 committed_at=_parse_time(
                     ((c.get("commit") or {}).get("committer") or {}).get("date")
+                ),
+                parents=tuple(
+                    str(p.get("sha", "")) for p in c.get("parents") or [] if isinstance(p, dict)
                 ),
             )
             for c in item.get("commits") or []
