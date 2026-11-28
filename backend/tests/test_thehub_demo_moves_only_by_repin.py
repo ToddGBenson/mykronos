@@ -153,8 +153,13 @@ def bucket() -> Iterator[tuple[str, dict[str, str]]]:
 
 # Stands in for Invoke-TheHubDeploy.ps1 next to the poller: records how it
 # was called. PatchDate is declared so the poller as it was can bind it.
-DEPLOY_STUB = """param([string]$Environment, [string]$Sha, [int]$TimeoutMinutes, [switch]$Rebuild, [string]$PatchDate)
-Add-Content -Path (Join-Path $PSScriptRoot 'deploy-calls.log') -Value ("env={0} sha={1} rebuild={2} patchdate={3}" -f $Environment, $Sha, [bool]$Rebuild, $PatchDate)
+DEPLOY_STUB = """param(
+    [string]$Environment, [string]$Sha, [int]$TimeoutMinutes,
+    [switch]$Rebuild, [string]$PatchDate
+)
+$line = "env={0} sha={1} rebuild={2} patchdate={3}" -f $Environment, $Sha, [bool]$Rebuild,
+    $PatchDate
+Add-Content -Path (Join-Path $PSScriptRoot 'deploy-calls.log') -Value $line
 exit 0
 """
 
@@ -305,7 +310,8 @@ def _deploy(
     })
     program = (
         "$ErrorActionPreference = 'Stop'\n" + DOCKER_STUB +
-        f"try {{ & {_ps(here / DEPLOYER.name)} -Environment demo -Sha {SHA} -Rebuild -TimeoutMinutes 1 {extra}\n"
+        f"try {{ & {_ps(here / DEPLOYER.name)} -Environment demo -Sha {SHA} -Rebuild "
+        f"-TimeoutMinutes 1 {extra}\n"
         '  "EXIT=$LASTEXITCODE" } catch { "THROWN=" + $_.Exception.Message }\n'
     )
     out = subprocess.run(
@@ -324,7 +330,8 @@ def _docker(lines: list[str]) -> list[str]:
 def test_a_refused_check_stops_the_demo_deploy_before_anything_changes(tmp_path):
     out, lines, here = _deploy(tmp_path, check_exit=1)
     assert "THROWN=" in out and "--check-demo" in out, out
-    assert len(lines) == 1 and lines[0].startswith("bash ") and lines[0].endswith(" --check-demo"), lines
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("bash ") and lines[0].endswith(" --check-demo"), lines
     assert "publish-patched-images.sh" in lines[0]
     # No wipe, no pull, no compose up: the demo is left exactly as it was.
     assert _docker(lines) == [], lines
