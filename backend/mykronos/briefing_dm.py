@@ -305,21 +305,22 @@ def product_line(product: ProductRead) -> str:
     return f"• *{name}*: " + "; ".join(parts) + "."
 
 
-def exception_lines(section: Any) -> list[str]:
+def exception_lines(section: Any, *, limit: int = EXCEPTIONS_IN_DM) -> list[str]:
     """The operator's exceptions, each with the command that decides it
-    (TheHub #62419), then what has no record to read them from. A missing
-    or unreadable section says so: it is never an all-clear."""
+    (TheHub #62419), at most `limit` of them, then what has no record to read
+    them from. A missing or unreadable section says so: it is never an
+    all-clear."""
     if section is None or section.status not in ("ok", "partial"):
         return ["*Decide:* the exceptions could not be read today."]
     items = section.data.get("items", [])
     out = [f"*Decide ({len(items)}):*" if items else "*Decide:* nothing is waiting on you."]
-    for item in items[:EXCEPTIONS_IN_DM]:
+    for item in items[:limit]:
         out.append(
             f"• {_cut(item['what'], 2 * WHAT_CHARS)} Decide: "
             f"{_cut(item['decide'], 2 * WHAT_CHARS)}"
         )
-    if len(items) > EXCEPTIONS_IN_DM:
-        out.append(f"…and {len(items) - EXCEPTIONS_IN_DM} more on the page.")
+    if len(items) > limit:
+        out.append(f"…and {len(items) - limit} more on the page.")
     gaps = [_esc(str(g.get("label", ""))) for g in section.data.get("not_read", [])]
     if gaps:
         out.append(f"*Not readable yet:* {'; '.join(gaps)}.")
@@ -385,36 +386,64 @@ def compose(
 
     The link comes first: `notify.MAX_TEXT` truncates the tail of a long
     message, and the page is the point of the DM.
+
+    **Never cut silently (TheHub #62419).** A message over `MAX_TEXT` would
+    lose its tail - the "Not read" list and the products - with no sign.
+    Instead the lower sections are left out whole, backlog first, then the
+    other counts, then "Needs you", and a line names what was left out;
+    after that the exceptions list shortens, saying how many more are on
+    the page. "Not read" and the products always stay.
     """
     counts = work_counts(overall.sections)
     sections = {s.key: s for s in overall.sections}
-    lines = [f"<{url}|Open the full briefing>", *exception_lines(sections.get(EXCEPTIONS_KEY))]
-    lines.append(f"*Needs you:* {_counts_text(counts)}.")
-    also = also_counted(sections.get(EXCEPTIONS_KEY), sections.get(FOCUS_KEY))
-    if also:
-        lines.append(f"*Also counted:* {also}.")
-
+    exceptions = sections.get(EXCEPTIONS_KEY)
+    also = also_counted(exceptions, sections.get(FOCUS_KEY))
     backlog = backlog_text(sections.get("risk_delta"))
-    if backlog:
-        lines.append(f"*Open critical/high backlog:* {backlog}.")
+    # Highest first; dropped from the end.
+    optional = [
+        ("Needs you", [f"*Needs you:* {_counts_text(counts)}."]),
+        ("Also counted", [f"*Also counted:* {also}."] if also else []),
+        ("Open critical/high backlog",
+         [f"*Open critical/high backlog:* {backlog}."] if backlog else []),
+    ]
+    optional = [(name, block) for name, block in optional if block]
 
+    tail = []
     gaps = unread(s for s in overall.sections if s.status in ("unavailable", "not_available"))
     if gaps:
         # One per line: each is cut to fit, and a joined line would be cut
         # by `notify.LINE_MAX` after the second or third.
-        lines.append("*Not read:*")
-        lines.extend(f"- {gap}" for gap in gaps)
-
+        tail.append("*Not read:*")
+        tail.extend(f"- {gap}" for gap in gaps)
     if products:
-        lines.append(products_text(products))
+        tail.append(products_text(products))
 
-    return Notification(
-        title=f"Morning briefing, {local_now:%a %d %b}",
-        detail="",
-        repo_full_name="",
-        level="info",
-        lines=tuple(lines),
-    )
+    def build(kept: int, limit: int) -> Notification:
+        lines = [f"<{url}|Open the full briefing>", *exception_lines(exceptions, limit=limit)]
+        for _name, block in optional[:kept]:
+            lines.extend(block)
+        left_out = [name for name, _block in optional[kept:]]
+        if left_out:
+            lines.append(f"*Left out to fit:* {', '.join(left_out)}; on the page.")
+        lines.extend(tail)
+        return Notification(
+            title=f"Morning briefing, {local_now:%a %d %b}",
+            detail="",
+            repo_full_name="",
+            level="info",
+            lines=tuple(lines),
+        )
+
+    kept, limit = len(optional), EXCEPTIONS_IN_DM
+    note = build(kept, limit)
+    while not note.fits and kept > 0:
+        kept -= 1
+        note = build(kept, limit)
+    while not note.fits and limit > 0:
+        limit -= 1
+        note = build(kept, limit)
+    return note
+
 
 
 # ---------------------------------------------------------------------------
@@ -435,16 +464,26 @@ def products(db: Any) -> list[tuple[str, str]]:
     return [(str(repo_id), str(name)) for repo_id, name in rows]
 
 
-def route_reader(app: FastAPI, *, actor: str = f"job:{BRIEFING_DM_JOB}") -> BriefingReader:
+def route_reader(
+    app: FastAPI, *, actor: str = f"job:{BRIEFING_DM_JOB}", lists_credentials: bool = False
+) -> BriefingReader:
     """Read the briefing through its own route, so the DM and the page cannot
     disagree. The request is synthetic: the route reads only `app.state`.
-    The briefing-signal filing job reads through it too, as itself."""
+    The briefing-signal filing job reads through it too, as itself.
+
+    The route lists credentials due only to a principal that may write (the
+    rule of `GET /api/credentials/expiring`, TheHub #62419). The DM lists
+    them, so it passes `lists_credentials` and reads as an in-process
+    automation principal with that role, as the credential-incident job
+    reads the calendar; every other reader stays a viewer."""
     from fastapi import Request
 
     from mykronos.adminauth import ActorKind, Principal, Role
     from mykronos.api.briefing_daily import daily_briefing_route
 
-    principal = Principal(actor=actor, role=Role.VIEWER, kind=ActorKind.AUTOMATION)
+    role = Role.ADMIN if lists_credentials else Role.VIEWER
+    principal = Principal(actor=actor, role=role, kind=ActorKind.AUTOMATION)
+
 
     async def read(repo_id: str | None) -> DailyBriefingOut:
         request = Request(

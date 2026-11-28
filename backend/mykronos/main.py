@@ -929,8 +929,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # the briefing route so it says what the page says. Not due raises
             # JobNotDue and records nothing; no Slack for it raises JobSkipped.
             await briefing_dm.send_briefing_dm(
-                settings, db=app.state.db, read=briefing_dm.route_reader(app)
+                settings, db=app.state.db,
+                # The DM lists the credentials due, so it reads as a principal
+                # that may list them; the page gives a viewer the count only.
+                read=briefing_dm.route_reader(app, lists_credentials=True),
             )
+
 
         async def _briefing_flash() -> None:
             # Same-day flash DM (TheHub #60865): only an exploited or critical

@@ -30,21 +30,40 @@ exists.
 
 **Urgent questions.** An item that cannot wait for 07:00 - a non-PR gate
 refused for over `RELEASE_BLOCKED_HOURS`, a critical-tier approval, or a
-credential inside its last `CREDENTIAL_URGENT_HOURS` - carries a `question`:
-one question, three options, the recommended one first. `send_urgent_questions`
-DMs each one by itself and audits it (`briefing.urgent`), and an item asked
-within `ASK_AGAIN_HOURS` is not asked again. It builds the same section the
-page does, so the two cannot disagree.
+credential inside its last `CREDENTIAL_URGENT_HOURS` or lapsed within them (the
+incident job's window) - carries a `question`: one question, three options, the
+recommended one first. `send_urgent_questions` DMs each one by itself. It builds
+the same section the page does, so the two cannot disagree. After review of
+PR #1238:
+
+- a source the job cannot read is itself an urgent question ("cannot read
+  X"), and an unreadable section also fails the run: never a quiet success;
+- at most `URGENT_PER_TICK` questions a tick, the last naming how many more
+  wait, and at most `URGENT_PER_DAY` in any 24 h; the rest are on the page
+  and in the 07:00 digest;
+- an item is asked again after `ASK_AGAIN_HOURS`, except a gate refusal,
+  which is asked once per refused commit (`since_sha`) and then left to the
+  digest, as `risk_gate_notice` does for the alerts channel (#61197);
+- the ask is audited (`briefing.urgent`, outcome `asked`) BEFORE it is sent,
+  so an audit write that fails sends nothing and cannot resend every tick;
+  Slack refusing it writes outcome `undelivered`, and the next tick asks;
+- the history read is bounded by the rows' own `created_at`.
+
+**Who sees credentials.** The calendar names credentials, so
+`GET /api/credentials/expiring` refuses a principal that may not write. The
+briefing route applies the same rule through `withhold_credentials`: such a
+principal gets the count, not the rows.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from mykronos.daily_briefing import DECISION, OK, PARTIAL, Line, Section, _error, unavailable
 from mykronos.db.models import (
@@ -75,6 +94,8 @@ RELEASE_BLOCKED_HOURS = 2
 STALE_REFUSAL_DAYS = 7
 ASK_AGAIN_HOURS = 12
 TICK_SECONDS = 900
+URGENT_PER_TICK = 3
+URGENT_PER_DAY = 6
 
 ACTION = "briefing.urgent"
 
@@ -222,12 +243,19 @@ def _credentials(session: Any, db: Any, settings: Any,
         left = float(row["hours_left"])
         when = f"lapsed {-left:.0f} h ago" if left <= 0 else f"expires in {left:.0f} h"
         name = f"{row['name']} ({row['kind']})"
+        # The incident job's window: inside the last day, or lapsed within one.
+        # A credential lapsed longer ago stays in the digest, never asked.
+        urgent = ""
+        if -CREDENTIAL_URGENT_HOURS < left <= 0:
+            urgent = f"it lapsed within the last {CREDENTIAL_URGENT_HOURS} h"
+        elif 0 < left <= CREDENTIAL_URGENT_HOURS:
+            urgent = f"under {CREDENTIAL_URGENT_HOURS} h left"
         items.append(_item(
             "credential", f"credential:{row['kind']}:{actor}",
             f"{name} {when} ({row['expires_at']:%Y-%m-%d %H:%MZ}, {row['source']}).",
             "Whatever uses it stops working when it lapses.",
             str(row["renewal_step"]),
-            urgent=f"under {CREDENTIAL_URGENT_HOURS} h" if left < CREDENTIAL_URGENT_HOURS else "",
+            urgent=urgent,
             ask=f"{name} {when}. Will you renew it now?",
             options=(f"Renew it now: {row['renewal_step']}",
                      "Revoke it, if nothing uses it any more.",
@@ -293,13 +321,36 @@ def exceptions_section(db: Any, settings: Any, *, now: datetime) -> Section:
     items = [*approvals, *credentials, *refusals]
     by_class = Counter(i["class"] for i in items)
     counts.update(credentials_not_yours=not_yours, stale_gate_refusals=stale)
+    unreadable = (
+        [{"key": "unreadable:credential-file", "what": "the declared credential file",
+          "why": why}] if why else []
+    )
     return Section(
         key=KEY, title=TITLE, status=PARTIAL if reasons else OK, source=SOURCE,
         as_of=moment, reason=" ".join(reasons),
         lines=[Line(what=i["what"], so_what=i["so_what"], work=DECISION,
                     repo_full_name=i["repo_full_name"], ref=i["decide"]) for i in items],
         data={"items": items, "by_class": {c: by_class[c] for c in CLASSES},
-              "counts": counts, "not_read": [dict(g) for g in NOT_READ]},
+              "counts": counts, "not_read": [dict(g) for g in NOT_READ],
+              "unreadable": unreadable},
+    )
+
+
+def withhold_credentials(section: Section) -> Section:
+    """The section for a principal that may not list credentials: the same
+    rule as `GET /api/credentials/expiring` (TheHub #61104). The credential
+    items and their lines go; `by_class` keeps their count, and
+    `counts.credentials_withheld` says how many were left out."""
+    items = section.data.get("items", [])
+    kept = [i for i in items if i["class"] != "credential"]
+    if len(kept) == len(items):
+        return section
+    refs = {(i["what"], i["decide"]) for i in items if i["class"] == "credential"}
+    counts = {**section.data.get("counts", {}), "credentials_withheld": len(items) - len(kept)}
+    return dataclasses.replace(
+        section,
+        lines=[ln for ln in section.lines if (ln.what, ln.ref) not in refs],
+        data={**section.data, "items": kept, "counts": counts},
     )
 
 
@@ -307,82 +358,171 @@ def exceptions_section(db: Any, settings: Any, *, now: datetime) -> Section:
 
 
 class UrgentUndeliveredError(RuntimeError):
-    """Slack did not accept a question; it is not audited, so the next tick asks."""
+    """Slack did not accept a question; it is audited `undelivered`, so the
+    next tick asks again."""
 
 
-def question_note(item: dict[str, Any], *, url: str) -> Notification:
+class ExceptionsUnreadableError(RuntimeError):
+    """The exceptions could not be read. Raised after the "cannot read"
+    question, so the run is recorded as failed and platform health shows it."""
+
+
+def _unreadable(key: str, what: str, why: str) -> dict[str, Any]:
+    """A source the digest cannot read, as an urgent question of its own."""
+    return _item(
+        "unreadable", key, f"MyKronos cannot read {what}: {why}",
+        "Until it is read, the digest cannot list what waits on you there.",
+        "GET /api/dashboard/platform-health",
+        urgent=f"MyKronos cannot read {what}",
+        ask=f"MyKronos cannot read {what} ({why}). How should it be handled?",
+        options=(
+            "Have an agent fix the read today, from the backend log and platform health.",
+            "Check those sources yourself on the briefing page until it is fixed.",
+            f"Wait: a passing failure clears by itself; asked again in {ASK_AGAIN_HOURS} h "
+            "if not.",
+        ),
+    )
+
+
+def question_note(item: dict[str, Any], *, url: str, more: int = 0) -> Notification:
     """One urgent question: the ask, three options with the recommendation
-    first, and the deciding command."""
+    first, and the deciding command. `more` (the last question of a tick)
+    names how many others wait on the page."""
     from mykronos.briefing_dm import WHAT_CHARS, _cut
     from mykronos.notify import Notification
 
     question = item["question"]
     options = [_cut(o, 300) for o in question["options"]]
+    again = (
+        "not asked again for this commit; the 07:00 digest lists it"
+        if str(item["key"]).startswith("gate:") else
+        f"not asked again for {ASK_AGAIN_HOURS} h"
+    )
     lines = [
         f"*{_cut(question['ask'], 300)}*",
         f"1. (recommended) {options[0]}",
         f"2. {options[1]}",
         f"3. {options[2]}",
         f"Decide: {_cut(item['decide'], WHAT_CHARS)}",
-        f"Asked because {_cut(item['urgent'], 80)}; not asked again for "
-        f"{ASK_AGAIN_HOURS} h. <{url}|The briefing>",
+        f"Asked because {_cut(item['urgent'], 80)}; {again}. <{url}|The briefing>",
     ]
+    if more:
+        lines.append(
+            f"{more} more cannot wait either: they are on the briefing page and in the "
+            "07:00 digest, and are asked as the limits allow."
+        )
     return Notification(title="One decision cannot wait for 07:00", detail="",
                         repo_full_name="", level="critical", lines=tuple(lines))
 
 
-def _asked_since(db: Any, since: datetime) -> set[str]:
+@dataclasses.dataclass(frozen=True)
+class _History:
+    #: Keys whose latest outcome is `asked`, and when.
+    asked: dict[str, datetime]
+    #: Questions that reached Slack in the last 24 h.
+    in_last_day: int
+
+
+def _history(db: Any, moment: datetime, gate_keys: list[str]) -> _History:
+    """What was asked. Bounded by `created_at`: the last 24 h, plus every row
+    for the gate refusals being considered (asked once per commit)."""
+    since = moment - timedelta(hours=24)
+    where = AuditLogEntry.created_at > since
+    if gate_keys:
+        where = or_(where, AuditLogEntry.entity_id.in_(gate_keys))
     with db.session() as session:
         rows = session.execute(
-            select(AuditLogEntry.entity_id, AuditLogEntry.detail)
-            .where(AuditLogEntry.action == ACTION)
+            select(AuditLogEntry.entity_id, AuditLogEntry.detail, AuditLogEntry.created_at)
+            .where(AuditLogEntry.action == ACTION, where)
         ).all()
-    asked = set()
-    for entity, detail in rows:
-        stamp = (detail or {}).get("asked_at", "")
-        try:
-            at = _naive(datetime.fromisoformat(str(stamp)))
-        except ValueError:
-            continue
-        if at > since:
-            asked.add(str(entity))
-    return asked
+    events = sorted(
+        ((created, (detail or {}).get("outcome", "asked") == "undelivered", str(entity))
+         for entity, detail, created in rows),
+    )
+    asked: dict[str, datetime] = {}
+    in_last_day = 0
+    for created, undelivered, entity in events:
+        recent = created > since
+        if undelivered:
+            asked.pop(entity, None)
+            in_last_day -= recent
+        else:
+            asked[entity] = created
+            in_last_day += recent
+    return _History(asked=asked, in_last_day=max(0, in_last_day))
+
+
+def _record(db: Any, key: str, outcome: str, urgent: str, moment: datetime) -> None:
+    with db.session() as session:
+        entry = db.audit(session, actor=f"job:{BRIEFING_URGENT_JOB}", action=ACTION,
+                         entity_type="briefing_exception", entity_id=key,
+                         urgent=urgent, outcome=outcome, asked_at=moment.isoformat())
+        # The job's own clock, so the window and the record agree.
+        entry.created_at = moment
 
 
 async def send_urgent_questions(
     settings: Settings, *, db: Any, notifier: Notifier | None = None,
     now: datetime | None = None,
 ) -> list[Notification]:
-    """DM each urgent item not asked in the last `ASK_AGAIN_HOURS`, one per
-    message. Nothing urgent is a quiet success; something to ask with Slack
-    unconfigured raises `JobSkipped`."""
+    """DM the urgent items that are due, one per message, within the caps.
+    Nothing urgent is a quiet success; something to ask with Slack
+    unconfigured raises `JobSkipped`; an unreadable section is asked and then
+    raises `ExceptionsUnreadableError`."""
     from mykronos.briefing_dm import page_url, unconfigured
     from mykronos.notify import SlackNotifier
 
     moment = _naive(now or datetime.now(UTC))
     section = exceptions_section(db, settings, now=moment)
-    asked = _asked_since(db, moment - timedelta(hours=ASK_AGAIN_HOURS))
-    due = [i for i in section.data.get("items", [])
-           if i["question"] and i["key"][:255] not in asked]
-    if not due:
-        return []
-    reason = unconfigured(settings)
-    if reason:
-        raise JobSkipped(reason.replace("briefing DM", "urgent question"))
-    sender = notifier or SlackNotifier(
-        bot_token=settings.slack_bot_token, channel=settings.briefing_dm_channel
-    )
-    sent = []
-    for item in due:
-        note = question_note(item, url=page_url(settings))
-        if not await sender.send(note):
-            raise UrgentUndeliveredError(
-                "Slack did not accept an urgent question; the backend log has its reason."
+    readable = section.status in (OK, PARTIAL)
+    if readable:
+        candidates = [
+            _unreadable(u["key"], u["what"], u["why"])
+            for u in section.data.get("unreadable", [])
+        ] + [i for i in section.data.get("items", []) if i["question"]]
+    else:
+        candidates = [_unreadable("unreadable:exceptions", "the exceptions", section.reason)]
+    for item in candidates:
+        item["key"] = str(item["key"])[:255]
+    history = _history(db, moment, [i["key"] for i in candidates
+                                    if i["key"].startswith("gate:")])
+    again_after = moment - timedelta(hours=ASK_AGAIN_HOURS)
+
+    def asked(key: str) -> bool:
+        at = history.asked.get(key)
+        return at is not None and (key.startswith("gate:") or at > again_after)
+
+    due = [i for i in candidates if not asked(i["key"])]
+    sent: list[Notification] = []
+    if due:
+        reason = unconfigured(settings)
+        if reason and not readable:
+            raise ExceptionsUnreadableError(
+                f"The exceptions could not be read, and {reason[0].lower()}{reason[1:]}"
             )
-        with db.session() as session:
-            db.audit(session, actor=f"job:{BRIEFING_URGENT_JOB}", action=ACTION,
-                     entity_type="briefing_exception", entity_id=item["key"][:255],
-                     urgent=item["urgent"], asked_at=moment.isoformat())
-        sent.append(note)
+        if reason:
+            raise JobSkipped(reason.replace("briefing DM", "urgent question"))
+        sender = notifier or SlackNotifier(
+            bot_token=settings.slack_bot_token, channel=settings.briefing_dm_channel
+        )
+        budget = max(0, min(URGENT_PER_TICK, URGENT_PER_DAY - history.in_last_day))
+        batch = due[:budget]
+        for index, item in enumerate(batch):
+            more = len(due) - len(batch) if index == len(batch) - 1 else 0
+            note = question_note(item, url=page_url(settings), more=more)
+            # Recorded first: if this write fails nothing is sent, so a broken
+            # audit log cannot turn into the same DM every tick.
+            _record(db, item["key"], "asked", item["urgent"], moment)
+            if not await sender.send(note):
+                _record(db, item["key"], "undelivered", item["urgent"], moment)
+                raise UrgentUndeliveredError(
+                    "Slack did not accept an urgent question; the backend log has its "
+                    "reason."
+                )
+            sent.append(note)
+        if len(due) > len(batch):
+            logger.info("Urgent questions held by the caps: %s.", len(due) - len(batch))
     logger.info("Urgent questions sent: %s.", len(sent))
+    if not readable:
+        raise ExceptionsUnreadableError(f"The exceptions could not be read: {section.reason}")
     return sent

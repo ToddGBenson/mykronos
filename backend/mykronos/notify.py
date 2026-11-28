@@ -80,19 +80,29 @@ class Notification:
     lines: tuple[str, ...] = ()
 
     def render(self) -> str:
+        return self._text()[:MAX_TEXT]
+
+    @property
+    def fits(self) -> bool:
+        """Whether `render` sends the whole message. A message that does not
+        fit loses its tail, silently; a caller that must not lose it checks
+        this and shortens what it says (the briefing DM, TheHub #62419)."""
+        return len(self._text()) <= MAX_TEXT
+
+    def _text(self) -> str:
         icon = _ICONS.get(self.level, ":warning:")
         if self.lines:
             head = f"{icon} *{scrub(self.title)}*\n"
             if self.repo_full_name:
                 head += f"`{scrub(self.repo_full_name)}`\n"
             body = "\n".join(scrub(line, max_length=LINE_MAX) for line in self.lines)
-            return (head + body)[:MAX_TEXT]
-        text = (
+            return head + body
+        return (
             f"{icon} *{scrub(self.title)}*\n"
             f"`{scrub(self.repo_full_name)}`\n"
             f"{scrub(self.detail)}"
         )
-        return text[:MAX_TEXT]
+
 
 
 @dataclass(frozen=True)

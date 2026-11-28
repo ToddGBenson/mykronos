@@ -614,7 +614,7 @@ class TestB4TheDigestIsNeverCutSilently:
         page = with_exceptions(build(estate, quiet_settings))
         text = briefing_dm.compose(page, [], url=PAGE, local_now=NOW).render()
         assert "Left out to fit" not in text
-        assert "*Open critical/high backlog:*" in text
+        assert "*Needs you:*" in text and "*Also counted:*" in text
 
 
 class TestN1AStandingRefusalIsAskedOncePerCommit:
