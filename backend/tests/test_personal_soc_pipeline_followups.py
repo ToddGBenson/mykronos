@@ -542,7 +542,8 @@ def test_an_apt_failure_is_worded_by_its_exit_code(tmp_path: Path, where: str, b
 
 
 def test_the_apt_blocks_are_all_found() -> None:
-    assert len(_apt_blocks()) == 15
+    # 13 since guard and doc-drift stopped running apt (TheHub #62351).
+    assert len(_apt_blocks()) == 13
 
 
 _REASON_WRITE = re.compile(
@@ -578,7 +579,8 @@ def test_whatever_says_infrastructure_writes_the_reason() -> None:
             if any('"$dir/reason"' in ln for ln in following):
                 assert any("wrote_infra=1" in ln for ln in following), f"no output unsaid: {where}"
                 assert any("declares no infra output" in ln for ln in following), where
-    assert seen >= 24, seen
+    # 22 since guard and doc-drift dropped their apt handlers (TheHub #62351).
+    assert seen >= 22, seen
 
 
 def _deadline(script: str, pattern: str) -> int:

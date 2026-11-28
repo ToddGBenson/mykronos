@@ -113,7 +113,7 @@ resources:
     type: registry-image
     icon: powershell
     source: { repository: mcr.microsoft.com/dotnet/sdk, tag: "10.0" }
-    # pinned: 2026-11-28
+    # pinned: 2026-11-27
     version: { digest: "sha256:8c6edfb26c85153f236d26efebd9ad349aec403583f343f201ee67838b23658d" }
 
   # For the two jobs that are text analysis rather than PowerShell: the secret
