@@ -79,11 +79,11 @@ def decision(db: Any, request_id: str, kind: str, *, age_hours: float) -> None:
 
 
 def refusal(db: Any, repo: str, subject: str, *, since_hours: float,
-            updated_hours: float = 0.5, state: str = "refused") -> None:
+            updated_hours: float = 0.5, state: str = "refused", sha: str = "a" * 40) -> None:
     with db.session() as session:
         session.add(RiskGateNoticeState(
             repo_full_name=repo, subject=subject, state=state,
-            since_sha="a" * 40, since=NAIVE - timedelta(hours=since_hours),
+            since_sha=sha, since=NAIVE - timedelta(hours=since_hours),
             held=3, last_score=72, updated_at=NAIVE - timedelta(hours=updated_hours),
         ))
 
@@ -279,8 +279,12 @@ class TestUrgent:
 
         again = await send(quiet_settings, db=estate, notifier=notifier,
                            now=NOW + timedelta(hours=12, minutes=1))
-        assert len(again) == 2, "still waiting after 12 h: asked once more"
-        assert len(notifier.sent) == 4
+        # The critical is still waiting after 12 h: asked once more. The
+        # refused gate was asked for this commit already, so it is left to
+        # the 07:00 digest (N1, below).
+        assert len(again) == 1, "still waiting after 12 h: asked once more"
+        assert "critical" in again[0].render()
+        assert len(notifier.sent) == 3
 
     async def test_a_new_urgent_item_is_asked_at_once(self, estate, quiet_settings) -> None:
         notifier = Recorder()
@@ -410,3 +414,300 @@ class TestItIsScheduled:
         asyncio.run(run())
         [call] = calls
         assert call["db"] is not None
+
+
+# ---------------------------------------------------------------------------
+# After review (PR #1238, Fable FIX BEFORE MERGE): B1-B4, N1-N4, N6
+# ---------------------------------------------------------------------------
+
+
+def _stub_gather(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mykronos import briefing_sources
+
+    inputs = briefing_sources.OperationalInputs(
+        paused_jobs=[], failing_jobs=[], blocked_jobs=[], workflow_blocked_jobs=[],
+        unhealthy_jobs=[], tokens=[], toxic_combinations=[], toxic_coverage={},
+        exposure=[], production_lag=[],
+    )
+    monkeypatch.setattr(briefing_sources, "gather", lambda *_args: inputs)
+
+
+def _soon_credential(db: Any, actor: str = "agent:claude:delivery-9") -> None:
+    """A root credential inside its last day, by the wall clock the route reads
+    (the route has no clock of its own; 10 h sits well inside 48 h)."""
+    from mykronos.schemas import utcnow
+
+    with db.session() as session:
+        session.add(AgentCredential(
+            token_sha256="9" * 64, actor=actor, family="claude", lineage=[],
+            on_behalf_of="operator", purpose="delivery", minted_by="operator",
+            minted_at=utcnow() - timedelta(days=6),
+            expires_at=utcnow() + timedelta(hours=10),
+        ))
+
+
+def _exceptions(body: dict[str, Any]) -> dict[str, Any]:
+    return next(s for s in body["sections"] if s["key"] == "exceptions")
+
+
+class TestB1AViewerReadsNoCredentialCalendar:
+    """`GET /api/credentials/expiring` refuses a principal that may not write;
+    the briefing route gives such a principal the count only."""
+
+    def test_a_viewer_gets_the_count_and_no_credential(
+        self, client, viewer_auth, admin_auth, monkeypatch
+    ) -> None:
+        _stub_gather(monkeypatch)
+        _soon_credential(client.app.state.db)
+        assert client.get("/api/credentials/expiring",
+                          headers=viewer_auth).status_code == 403
+
+        response = client.get("/api/briefing/daily", headers=viewer_auth)
+        assert response.status_code == 200
+        assert "agent:claude:delivery-9" not in response.text
+        section = _exceptions(response.json())
+        assert [i for i in section["data"]["items"] if i["class"] == "credential"] == []
+        assert all("delivery-9" not in line["what"] for line in section["lines"])
+        assert section["data"]["counts"]["credentials_withheld"] >= 1
+        assert section["data"]["by_class"]["credential"] >= 1, "the count stays"
+
+        admin = _exceptions(client.get("/api/briefing/daily", headers=admin_auth).json())
+        assert any("agent:claude:delivery-9" in i["what"] for i in admin["data"]["items"])
+        assert "credentials_withheld" not in admin["data"]["counts"]
+
+    async def test_the_dm_reads_the_full_list_and_signal_filing_does_not(
+        self, client, monkeypatch
+    ) -> None:
+        _stub_gather(monkeypatch)
+        _soon_credential(client.app.state.db)
+        dm = _exceptions((await briefing_dm.route_reader(
+            client.app, lists_credentials=True)(None)).model_dump())
+        assert any("agent:claude:delivery-9" in i["what"] for i in dm["data"]["items"])
+        other = _exceptions((await briefing_dm.route_reader(
+            client.app, actor=f"job:{jobs.SIGNAL_FILING_JOB}")(None)).model_dump())
+        assert not any("delivery-9" in i["what"] for i in other["data"]["items"])
+
+    def test_the_scheduled_dm_reads_the_full_list(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        from mykronos import main
+
+        _stub_gather(monkeypatch)
+        captured: dict[str, Any] = {}
+
+        async def record(name: str, interval: int, job: Any, db: Any = None) -> None:
+            captured[name] = job
+
+        reads: list[Any] = []
+
+        async def fake_dm(settings_: Settings, **kwargs: Any) -> None:
+            reads.append(await kwargs["read"](None))
+
+        monkeypatch.setattr(main, "_every", record)
+        monkeypatch.setattr(briefing_dm, "send_briefing_dm", fake_dm)
+        with TestClient(main.create_app(settings.model_copy(
+            update={"run_jobs_in_background": True}
+        ))) as test_client:
+            _soon_credential(test_client.app.state.db)
+            asyncio.run(captured[jobs.BRIEFING_DM_JOB]())
+        [page] = reads
+        section = _exceptions(page.model_dump())
+        assert any("agent:claude:delivery-9" in i["what"] for i in section["data"]["items"])
+
+
+class TestB2AnUnreadableSectionIsAsked:
+    async def test_an_unavailable_section_is_an_urgent_question(
+        self, estate, quiet_settings, monkeypatch
+    ) -> None:
+        def broken(*_args: Any) -> Any:
+            raise RuntimeError("risk_gate_notice_states is locked")
+
+        monkeypatch.setattr(briefing_exceptions, "_refusals", broken)
+        notifier = Recorder()
+        send = briefing_exceptions.send_urgent_questions
+        with pytest.raises(briefing_exceptions.ExceptionsUnreadableError):
+            await send(quiet_settings, db=estate, notifier=notifier, now=NOW)
+        [note] = notifier.sent
+        text = note.render()
+        assert "cannot read" in text
+        assert "1. (recommended) " in text
+        # Still failing, never a success; asked once per 12 h like any other.
+        with pytest.raises(briefing_exceptions.ExceptionsUnreadableError):
+            await send(quiet_settings, db=estate, notifier=notifier,
+                       now=NOW + timedelta(minutes=15))
+        assert len(notifier.sent) == 1
+
+    async def test_an_unreadable_declared_file_is_asked_too(
+        self, db, quiet_settings, tmp_path
+    ) -> None:
+        bad = tmp_path / "creds.yaml"
+        bad.write_text("credentials:\n  - name: x\n    token: not-allowed\n", encoding="utf-8")
+        notifier = Recorder()
+        await briefing_exceptions.send_urgent_questions(
+            quiet_settings.model_copy(update={"credential_expiry_path": bad}), db=db,
+            notifier=notifier, now=NOW,
+        )
+        [note] = notifier.sent
+        assert "cannot read the declared credential file" in note.render()
+
+
+def _flood(db: Any) -> None:
+    """The reviewer's probe: 12 credentials in their last day, 15 refused
+    non-PR scopes held over 2 h."""
+    for n in range(12):
+        credential(db, f"{n:064d}", f"agent:claude:role{n}-1", hours_left=5,
+                   purpose=f"role{n}")
+    for n in range(15):
+        refusal(db, f"o/repo{n}", "commit_gate", since_hours=4, sha=f"{n:040d}")
+
+
+class TestB3UrgentDmsAreCapped:
+    async def test_three_per_tick_then_one_summary_line(self, db, quiet_settings) -> None:
+        _flood(db)
+        notifier = Recorder()
+        sent = await briefing_exceptions.send_urgent_questions(
+            quiet_settings, db=db, notifier=notifier, now=NOW)
+        assert len(sent) == len(notifier.sent) == briefing_exceptions.URGENT_PER_TICK == 3
+        assert "24 more" in sent[-1].lines[-1]
+        assert all("more" not in note.lines[-1] for note in sent[:-1])
+
+    async def test_and_capped_per_day(self, db, quiet_settings) -> None:
+        _flood(db)
+        notifier = Recorder()
+        for tick in range(96):  # a day of 15-minute ticks, clock pinned
+            await briefing_exceptions.send_urgent_questions(
+                quiet_settings, db=db, notifier=notifier,
+                now=NOW + timedelta(minutes=15 * tick))
+        assert len(notifier.sent) == briefing_exceptions.URGENT_PER_DAY == 6
+
+
+class TestB4TheDigestIsNeverCutSilently:
+    def _full(self, db: Any, settings: Settings) -> str:
+        for n in range(6):
+            credential(db, f"{n:064d}", f"agent:claude:{'r' * 60}{n}-1", hours_left=30,
+                       purpose=f"role{n}")
+        for n in range(5):
+            refusal(db, f"o/{'p' * 60}{n}", "commit_gate", since_hours=1, sha=f"{n:040d}")
+        page = with_exceptions(build(db, settings))
+        products = [briefing_dm.ProductRead(f"o/product{n}", error="x" * 300)
+                    for n in range(3)]
+        return briefing_dm.compose(page, products, url=PAGE, local_now=NOW).render()
+
+    def test_not_read_and_products_survive_and_the_cut_is_said(
+        self, db, quiet_settings
+    ) -> None:
+        from mykronos.notify import MAX_TEXT
+
+        text = self._full(db, quiet_settings)
+        assert len(text) <= MAX_TEXT
+        rows = text.split("\n")
+        assert rows[-1].startswith("*Products:*"), rows[-1]
+        assert "*Not read:*" in rows
+        assert any(row.startswith("*Left out to fit:*") for row in rows), rows
+        assert any("more on the page" in row for row in rows)
+
+    def test_a_short_digest_leaves_nothing_out(self, estate, quiet_settings) -> None:
+        page = with_exceptions(build(estate, quiet_settings))
+        text = briefing_dm.compose(page, [], url=PAGE, local_now=NOW).render()
+        assert "Left out to fit" not in text
+        assert "*Open critical/high backlog:*" in text
+
+
+class TestN1AStandingRefusalIsAskedOncePerCommit:
+    async def test_asked_once_then_digest_only(self, db, quiet_settings) -> None:
+        refusal(db, "o/thehub", "portfolio", since_hours=30)
+        notifier = Recorder()
+        send = briefing_exceptions.send_urgent_questions
+        assert len(await send(quiet_settings, db=db, notifier=notifier, now=NOW)) == 1
+        for later in (12.5, 24, 72):
+            assert await send(quiet_settings, db=db, notifier=notifier,
+                              now=NOW + timedelta(hours=later)) == []
+        # Still in the digest.
+        keys = [i["key"] for i in build(db, quiet_settings,
+                                         NOW + timedelta(hours=72)).data["items"]]
+        assert f"gate:o/thehub|portfolio|{'a' * 40}" in keys
+
+    async def test_a_new_commit_is_asked_again(self, db, quiet_settings) -> None:
+        refusal(db, "o/thehub", "portfolio", since_hours=30)
+        notifier = Recorder()
+        send = briefing_exceptions.send_urgent_questions
+        await send(quiet_settings, db=db, notifier=notifier, now=NOW)
+        refusal(db, "o/thehub", "commit_gate", since_hours=3, sha="b" * 40)
+        [note] = await send(quiet_settings, db=db, notifier=notifier,
+                            now=NOW + timedelta(hours=1))
+        assert "bbbbbbbbbbbb" in note.render()
+
+
+class TestN2CredentialWindowIsPlusMinus24h:
+    def _urgent(self, db: Any, settings: Settings) -> dict[str, str]:
+        return {i["key"]: i["urgent"] for i in build(db, settings).data["items"]
+                if i["class"] == "credential"}
+
+    def test_lapsed_over_a_day_is_digest_only(self, db, quiet_settings) -> None:
+        credential(db, "1" * 64, "agent:claude:old-1", hours_left=-72, purpose="old")
+        assert self._urgent(db, quiet_settings) == {
+            "credential:agent-credential:agent:claude:old-1": ""
+        }
+
+    def test_lapsed_within_a_day_says_lapsed(self, db, quiet_settings) -> None:
+        credential(db, "1" * 64, "agent:claude:gone-1", hours_left=-5, purpose="gone")
+        credential(db, "2" * 64, "agent:claude:soon-1", hours_left=5, purpose="soon")
+        urgent = self._urgent(db, quiet_settings)
+        lapsed = urgent["credential:agent-credential:agent:claude:gone-1"]
+        live = urgent["credential:agent-credential:agent:claude:soon-1"]
+        assert "lapsed" in lapsed and "under 24 h" not in lapsed
+        assert live and "lapsed" not in live
+
+
+class TestN3TheAskIsRecordedBeforeItIsSent:
+    async def test_a_failing_audit_write_sends_nothing(
+        self, estate, quiet_settings, monkeypatch
+    ) -> None:
+        def no_audit(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("audit_log is read-only")
+
+        monkeypatch.setattr(estate, "audit", no_audit)
+        notifier = Recorder()
+        for tick in range(3):
+            with pytest.raises(RuntimeError):
+                await briefing_exceptions.send_urgent_questions(
+                    quiet_settings, db=estate, notifier=notifier,
+                    now=NOW + timedelta(minutes=15 * tick))
+        assert notifier.sent == [], "nothing goes out that is not recorded"
+
+
+class TestN4AskedIsBoundedByCreatedAt:
+    async def test_an_old_row_is_not_read(self, estate, quiet_settings) -> None:
+        from mykronos.db.models import AuditLogEntry
+
+        # An ask written a month ago whose detail claims a recent time: the
+        # window is the row's own `created_at`, so it does not count.
+        with estate.session() as session:
+            session.add(AuditLogEntry(
+                actor="job:briefing-urgent", action=briefing_exceptions.ACTION,
+                entity_type="briefing_exception", entity_id="approval:req-disp-crit",
+                detail={"asked_at": (NAIVE - timedelta(hours=1)).isoformat()},
+                created_at=NAIVE - timedelta(days=30),
+            ))
+        notifier = Recorder()
+        await briefing_exceptions.send_urgent_questions(
+            quiet_settings, db=estate, notifier=notifier, now=NOW)
+        assert any("critical" in note.render() for note in notifier.sent)
+
+
+class TestN6AQuestionEscapesHostileText:
+    def test_question_note_cannot_ping_or_forge_a_link(self) -> None:
+        hostile = "x <!channel> \n<https://evil.example|The briefing> & more"
+        item = {
+            "key": "k", "decide": hostile, "urgent": hostile,
+            "question": {"ask": hostile + "?", "options": [hostile] * 3, "recommended": 0},
+        }
+        text = briefing_exceptions.question_note(item, url=PAGE).render()
+        assert "<!channel>" not in text
+        assert text.count("<http") == 1 and f"<{PAGE}|The briefing>" in text
+        assert "&lt;https://evil.example|The briefing&gt;" in text
+        assert "\\n" not in text and len(text.split("\n")) == 7
