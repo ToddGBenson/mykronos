@@ -400,8 +400,10 @@ function Invoke-Cycle {
         # twice rather than trusting the writer.
         #
         # Demo may also carry `+p<YYYYMMDD>`: the same commit on a newer
-        # snapshot of its patched images, published by the image-refresh lane.
-        # Never prod, whose image dates move only by a reviewed compose change.
+        # snapshot of its patched images, which the image-refresh lane
+        # published until TheHub #62399. It is still RECOGNISED - so a demo
+        # the host already serves at one is acknowledged, not reported every
+        # minute - and never deployed (below). Never prod.
         $shaPattern = if ($environment -eq "demo") { '^[0-9a-f]{40}(\+p\d{8})?$' } else { '^[0-9a-f]{40}$' }
         if ($requested -notmatch $shaPattern) {
             Write-Host "$environment.requested is not a commit SHA ('$requested') - ignoring." -ForegroundColor Red
@@ -465,6 +467,20 @@ function Invoke-Cycle {
             continue
         }
 
+        # [TheHub #62399] A patch-date request is refused, not deployed. The
+        # demo's patched images are production's digest pins (TheHub #61949),
+        # so newer ones reach it only through a reviewed re-pin of
+        # production, never through a pointer. Recorded like a failed deploy,
+        # so it is reported once and not retried; a plain SHA clears it.
+        if ($requestedDate) {
+            Set-Content -Path $failedFile -Value $requested -NoNewline -Encoding ASCII
+            Write-Host ("$environment.requested asks for $requestedSha on p$requestedDate images. " +
+                "Not deployed: the demo's images move only by a reviewed re-pin of production " +
+                "(TheHub #62399). Recorded in $(Split-Path $failedFile -Leaf); publishing a plain SHA clears it.") -ForegroundColor Red
+            $script:failures++
+            continue
+        }
+
         Write-Host "$environment : $current -> $requested" -ForegroundColor Cyan
 
         # Invoke-TheHubDeploy reports every real failure with `throw`, not an
@@ -493,7 +509,6 @@ function Invoke-Cycle {
         # where the volumes would actually be deleted.
         $rebuild = @{}
         if ($environment -eq "demo") { $rebuild["Rebuild"] = $true }
-        if ($requestedDate) { $rebuild["PatchDate"] = $requestedDate }
 
         $deployError = $null
         try {

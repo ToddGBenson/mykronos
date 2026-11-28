@@ -49,6 +49,7 @@
       THEHUB_PROD_COMPOSE=C:\path\to\TheHub\docker-compose.yml
       THEHUB_PROD_PROJECT=thehub-main
       THEHUB_PROD_URL=http://localhost:8000
+      THEHUB_BASH=C:\Program Files\Git\bin\bash.exe   (optional; see Get-Bash)
 
     TheHub's compose files must take their image from ${THEHUB_IMAGE}. That is
     the one change this deploy model asks of TheHub itself, and it is what
@@ -73,14 +74,12 @@ param(
     # compose file and seed_demo.py rather than inherited from the last run.
     # Demo only, and refused for prod at the point of destruction rather than
     # only here.
-    [switch]$Rebuild,
-
-    # The package snapshot of the demo's patched third-party images
-    # (postgres, redis): their tags end -p<this>. Set by the image-refresh
-    # lane after a strictly better Trivy verdict; absent, the date
-    # docker-compose.demo.yml pins is used. Demo only - production's dates
-    # are literal in its compose file and move by a reviewed change.
-    [string]$PatchDate
+    #
+    # [TheHub #62399] There is no patch-date switch any more. The demo's
+    # patched images (postgres, redis) are production's `<tag>@sha256` pins in
+    # docker-compose.demo.yml (TheHub #61949), so they move only when
+    # production's pin moves, by a reviewed change - never by an argument.
+    [switch]$Rebuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -112,25 +111,6 @@ if ($Sha -notmatch '^[0-9a-f]{40}$') {
                  "deploys a commit; it does not run commands." -f $Sha)
     exit 64
 }
-if ($PatchDate -and ($PatchDate -notmatch '^\d{8}$' -or $Environment -ne "demo")) {
-    Write-Error "PatchDate '$PatchDate' is not YYYYMMDD, or this is not demo."
-    exit 64
-}
-
-# What is deployed is the commit AND the image snapshot, so both go in the
-# state file the poller compares with. Recording only the SHA would make a
-# `<sha>+p<date>` request look undeployed forever and redeploy every minute.
-$identity = if ($PatchDate) { "$Sha+p$PatchDate" } else { $Sha }
-
-# Compose reads this for the demo's patched images. Cleared when absent, so a
-# plain-SHA deploy goes back to the date the compose file pins.
-function Set-PatchDate {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Script-internal: sets or clears one environment variable in this process for compose to read. Nothing outside the running script changes.')]
-    param([string]$Date)
-    if ($Date) { $env:THEHUB_DEMO_PATCH_DATE = $Date }
-    else { Remove-Item Env:THEHUB_DEMO_PATCH_DATE -ErrorAction SilentlyContinue }
-}
-Set-PatchDate $PatchDate
 
 $envFile = Join-Path $here ".env"
 if (-not (Test-Path $envFile)) { throw "Missing $envFile" }
@@ -370,7 +350,7 @@ function Resolve-DigestRef {
     $digests = docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' $ImageRef 2>$null
     $match = @($digests | Where-Object { $_ -and $_.Trim().StartsWith("$repo@sha256:") }) | Select-Object -First 1
     if (-not $match) {
-        throw "Pulled $ImageRef but the registry gave it no digest under $repo; refusing to run production on a tag."
+        throw "Pulled $ImageRef but the registry gave it no digest under $repo; refusing to run $Environment on a tag."
     }
     return $match.Trim()
 }
@@ -402,11 +382,16 @@ function Invoke-ComposeUp {
         return
     }
 
-    $env:THEHUB_IMAGE = $ImageRef
+    # [TheHub #62399] Demo runs the digest too: it is exposed with its gate
+    # off, and a tag is only what the registry says today. Written as
+    # <tag>@<digest>, so `docker inspect` on the container names both the
+    # commit and the bytes; compose and the daemon resolve it by the digest.
+    $pinned = "$ImageRef@" + (Resolve-DigestRef -ImageRef $ImageRef).Split('@')[1]
+    $env:THEHUB_IMAGE = $pinned
     docker compose --project-name $project --file $composeFile up -d --remove-orphans
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed for $project" }
 
-    Assert-RunningImage -Expected $expected -ImageRef $ImageRef
+    Assert-RunningImage -Expected $expected -ImageRef $pinned
 }
 
 function Repair-CollationDrift {
@@ -499,20 +484,62 @@ function Test-Healthy {
     }
 }
 
+# -- The demo runs only what production pinned (TheHub #61949, #62399) ------
+#
+# The demo is exposed with its gate off. Its patched images (postgres, redis)
+# are named in docker-compose.demo.yml by production's `<tag>@sha256` pins, and
+# TheHub's `scripts/publish-patched-images.sh --check-demo` refuses a demo
+# reference without a digest, one that is not production's pin for its tag,
+# and a tag the registry no longer resolves to its pin. It never builds or
+# pushes. It runs before anything here changes - the wipe, the pull, compose
+# up - so a refusal leaves the demo exactly as it was.
+#
+# The image-refresh lane used to redeploy the demo on newer tags with no
+# review. It no longer does (operator decision 2026-11-28): newer images reach
+# the demo only through a reviewed re-pin of production.
+#
+# Git Bash runs TheHub's script, never a bare `bash`: in PowerShell on Windows
+# that resolves to WSL's bash.exe, which has no /bin/bash to start. THEHUB_BASH
+# in .env overrides the location.
+function Get-Bash {
+    $configured = Read-EnvValue $envFile "THEHUB_BASH" -Optional
+    if ($configured) { return $configured }
+    if ($env:OS -ne "Windows_NT") { return "bash" }
+    $gitBash = Join-Path $env:ProgramFiles "Git\bin\bash.exe"
+    if (-not (Test-Path $gitBash)) {
+        throw "Git Bash is not at $gitBash. Set THEHUB_BASH in $envFile; a bare 'bash' here is WSL's."
+    }
+    return $gitBash
+}
+
+function Assert-DemoImagePin {
+    $check = Join-Path (Join-Path (Split-Path -Parent $composeFile) "scripts") "publish-patched-images.sh"
+    if (-not (Test-Path $check)) {
+        throw "No $check beside $composeFile, so the demo's image pins cannot be checked. Nothing was changed."
+    }
+    # A script from before TheHub #61949 has no --check-demo, and its default
+    # mode BUILDS AND PUSHES: given an argument it does not know, it would
+    # publish images instead of checking them. Absent, the deploy refuses.
+    if (-not (Select-String -Path $check -SimpleMatch -Pattern "--check-demo" -Quiet)) {
+        throw ("$check has no --check-demo mode (TheHub #61949), so the TheHub checkout " +
+               "at $composeFile predates the demo's digest pins. Nothing was changed.")
+    }
+    $bash = Get-Bash
+    Write-Host "  checking the demo's image pins: publish-patched-images.sh --check-demo" -ForegroundColor DarkGray
+    # Forward slashes: the script finds its repository with `dirname "$0"`.
+    & $bash ($check -replace '\\', '/') --check-demo
+    if ($LASTEXITCODE -ne 0) {
+        throw ("publish-patched-images.sh --check-demo refused the demo's images (exit $LASTEXITCODE): " +
+               "a demo tag moved, is gone, or is not production's pin. Nothing was changed; " +
+               "the demo moves only by a reviewed re-pin of production (TheHub #62399).")
+    }
+}
+
+if ($Environment -eq "demo") { Assert-DemoImagePin }
+
 if ($Rebuild) { Invoke-Wipe }
 
 Invoke-ComposeUp -ImageRef $image
-
-# A compose file that does not read THEHUB_DEMO_PATCH_DATE ignores it and runs
-# the pinned images, and acknowledging `+p<date>` then would be a lie the
-# image-refresh lane reports as a refresh. Checked on what is running.
-if ($PatchDate) {
-    $running = docker compose --project-name $project --file $composeFile ps --format '{{.Image}}'
-    if (-not ($running | Where-Object { $_ -like "*-p$PatchDate" })) {
-        throw ("No container in $project runs a -p$PatchDate image. Does $composeFile " +
-               "read THEHUB_DEMO_PATCH_DATE? Pull TheHub's compose change first.")
-    }
-}
 
 Write-Host "Waiting for $Environment to become healthy..." -ForegroundColor Cyan
 $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
@@ -551,8 +578,8 @@ if ($healthy) {
         }
     }
 
-    Set-Content -Path $stateFile -Value $identity -Encoding ASCII
-    Write-Host "$Environment is serving $identity" -ForegroundColor Green
+    Set-Content -Path $stateFile -Value $Sha -Encoding ASCII
+    Write-Host "$Environment is serving $Sha" -ForegroundColor Green
     exit 0
 }
 
@@ -580,9 +607,9 @@ if ($Rebuild) {
 }
 
 Write-Host "Rolling back to $previous..." -ForegroundColor Yellow
-# The previous identity may carry its own +p<date>; restore that snapshot too.
-$previousSha, $previousDate = $previous -split '\+p', 2
-Set-PatchDate $previousDate
+# A state file from before TheHub #62399 may read `<sha>+p<date>`. The commit
+# is what comes back; its images are the pins the compose file names now.
+$previousSha = ($previous -split '\+p', 2)[0]
 try {
     Invoke-ComposeUp -ImageRef "${registry}/thehub:${previousSha}"
 } catch {

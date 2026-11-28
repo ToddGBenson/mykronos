@@ -255,8 +255,9 @@ EXPLAINED_DIVERGENCE = {
     ),
     "image-refresh": (
         "ours only: the daily rebuild of TheHub's patched third-party images. "
-        "It gates nothing and is gated by nothing -- it is clock-triggered and "
-        "redeploys demo only on a strictly better Trivy verdict. TheHub's "
+        "It gates nothing and is gated by nothing -- it is clock-triggered, "
+        "publishes only on a strictly better Trivy verdict, and deploys "
+        "nothing (TheHub #62399). TheHub's "
         "read-only mirror gains it on the next export after set-pipeline"
     ),
     "oracle-gate": (
