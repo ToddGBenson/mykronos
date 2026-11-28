@@ -122,12 +122,12 @@ param(
     # publish on 127.0.0.1 (TheHub #60841; see set-pipeline.ps1).
     [string]$DemoUrl = "http://192.168.65.254:8002",
     [string]$ProdUrl = "http://192.168.65.254:8000",
-    # The standing staging environment, which nothing scanned until 2026-09-03.
-    # 8081, not 8009: thehub-staging-frontend is the nginx that serves the SPA
-    # and is where the missing security headers are - the backend on 8009 sets
-    # its own. Deployed out of band by TheHub's deploy.sh, so `dast-staging`
-    # runs on the daily timer rather than after a deploy job.
-    [string]$StagingUrl = "http://192.168.65.254:8081",
+    # No -StagingUrl (TheHub #62099). Staging runs on the laptop that hosts
+    # linux-3 and `dast-staging` scans it from there, so its target is an
+    # address on that laptop, as a linux-3 task reaches it: Vault's
+    # `thehub-staging-url-on-linux-3`, never this host's view of it. The value
+    # this parameter defaulted to is this host's Docker gateway, which linux-3
+    # cannot reach (dast-staging #82-#86).
     # The public hostnames `dast-edge` scans through Cloudflare (TheHub #60708).
     # Names, not addresses: the edge and the tunnel are what is under test.
     [string]$PublicUrl = "https://hub.toddbenson.net",
@@ -545,7 +545,6 @@ try {
         "scan-timezone: $TimeZone",
         "thehub-demo-url: $DemoUrl",
         "thehub-prod-url: $ProdUrl",
-        "thehub-staging-url: $StagingUrl",
         "thehub-public-url: $PublicUrl",
         "mykronos-public-url: $MykronosPublicUrl",
         "thehub-demo-public-url: $DemoPublicUrl",
@@ -786,6 +785,6 @@ Write-Host "`nScanning branch '$Branch'." -ForegroundColor Green
 Write-Host "  This pipeline does not deploy. ADR 0072 chose Path A: production"
 Write-Host "  is shipped by TheHub's own scripts/deploy.sh from 'develop'."
 Write-Host "  prod: $ProdUrl (dast-prod, on the daily timer)"
-Write-Host "  staging: $StagingUrl (dast-staging, on the daily timer)"
+Write-Host "  staging: Vault thehub-staging-url-on-linux-3, scanned from linux-3 (dast-staging, on the daily timer)"
 Write-Host "  edge: $PublicUrl via Cloudflare (dast-edge, on the daily timer)"
 Write-Host "  $Concourse/teams/main/pipelines/$Pipeline"

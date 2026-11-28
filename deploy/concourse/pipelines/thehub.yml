@@ -549,6 +549,9 @@ anchors:
   # writes a reason: a task that ran and failed keeps its verdict.
   # `infra` is an input as well as the output, so a reason the task itself
   # wrote (a memory kill) is carried through, never replaced by an empty one.
+  # `LINUX_RERUN_WHEN` names what has to be true before a re-run, for a job
+  # whose remote step only one worker can take (dast-staging: linux-3, TheHub
+  # #62099); every other job keeps the default.
   linux_absent: &linux_absent
     task: linux-worker-absent
     container_limits: {cpu: 512}
@@ -571,7 +574,7 @@ anchors:
               echo "The linux step ran and exited $(head -c 8 ran/rc | tr -cd '0-9'); its own verdict stands."
               exit 0
             fi
-            reason="INFRASTRUCTURE, NOT A VERDICT: no linux worker finished ${LINUX_STEP:-the remote step} within its wrapping timeout (the remote host was off, asleep or unreachable, or the step was interrupted), so nothing was judged. Re-run once fly workers lists linux-1 or linux-2 as running."
+            reason="INFRASTRUCTURE, NOT A VERDICT: no linux worker finished ${LINUX_STEP:-the remote step} within its wrapping timeout (the remote host was off, asleep or unreachable, or the step was interrupted), so nothing was judged. Re-run once ${LINUX_RERUN_WHEN:-fly workers lists linux-1 or linux-2 as running}."
             echo "::error:: ${reason}"
             printf '%s\n' "$reason" > infra/reason
 
@@ -8644,6 +8647,17 @@ jobs:
       # `linux_absent` on failure and error. An absent laptop then reads as
       # errored (nothing judged), never failed and never green; a scan that
       # ran writes `ran/rc` and keeps its own verdict.
+      #
+      # dast-staging #82-#86 (TheHub #62099): every run took linux-3 and still
+      # refused, because the target was `((thehub-staging-url))` from
+      # vars/thehub.yml -- this host's Docker gateway address, which does not
+      # exist on linux-3. The target is now staging as a linux-3 task reaches
+      # it, `((thehub-staging-url-on-linux-3))`: an address on that laptop,
+      # so it lives in Vault (concourse/main/thehub/), never in this public
+      # repo or in either apply path. Not in Vault, the scan step errors with
+      # "undefined vars": errored, nothing judged, and no host scanned. `small` stays linux-3's tag alone:
+      # linux-1 and linux-2 carry only `linux`, and a bare `linux` here would
+      # send the scan to a laptop with no staging on it.
       - do:
           - <<: *linux_probe
             tags: [small]
@@ -8652,11 +8666,15 @@ jobs:
         on_failure:
           <<: *linux_absent
           input_mapping: { ran: probed }
-          params: { LINUX_STEP: the linux-3 probe }
+          params:
+            LINUX_STEP: the linux-3 probe
+            LINUX_RERUN_WHEN: &staging_rerun_when "fly workers lists linux-3 (tag small) as running and Vault holds thehub-staging-url-on-linux-3 (an undefined-vars error in this build means it does not)"
         on_error:
           <<: *linux_absent
           input_mapping: { ran: probed }
-          params: { LINUX_STEP: the linux-3 probe }
+          params:
+            LINUX_STEP: the linux-3 probe
+            LINUX_RERUN_WHEN: *staging_rerun_when
       - do:
           - task: zap-baseline
             tags: [small]
@@ -8668,7 +8686,7 @@ jobs:
               inputs: [{ name: source }]
               outputs: [{ name: dast }, { name: ran }]
               params:
-                TARGET_URL: ((thehub-staging-url))
+                TARGET_URL: ((thehub-staging-url-on-linux-3))
               run:
                 user: root
                 path: bash
@@ -8854,10 +8872,14 @@ jobs:
         timeout: 50m
         on_failure:
           <<: *linux_absent
-          params: { LINUX_STEP: dast-staging/zap-baseline }
+          params:
+            LINUX_STEP: dast-staging/zap-baseline
+            LINUX_RERUN_WHEN: *staging_rerun_when
         on_error:
           <<: *linux_absent
-          params: { LINUX_STEP: dast-staging/zap-baseline }
+          params:
+            LINUX_STEP: dast-staging/zap-baseline
+            LINUX_RERUN_WHEN: *staging_rerun_when
 
       # The upload, from this host (#62099): linux-3 cannot reach Mykronos,
       # and the token stays here. It re-refuses an empty report rather than

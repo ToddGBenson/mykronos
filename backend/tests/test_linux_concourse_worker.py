@@ -339,7 +339,8 @@ class TestTheDockerWorkersResolveThroughTheRouterFirst:
             assert service["entrypoint"] == ["dumb-init", "/cgroup-wrapper.sh"], name
             assert "./cgroup-wrapper.sh:/cgroup-wrapper.sh:ro" in service["volumes"], name
             assert service["privileged"] is True, name
-            assert service["environment"]["CONCOURSE_TAG"] == "linux", name
+            # linux-3's host sets WORKER_TAGS=linux,small (TheHub #62099).
+            assert service["environment"]["CONCOURSE_TAG"] == "${WORKER_TAGS:-linux}", name
             assert service["environment"]["CONCOURSE_RUNTIME"] == "containerd", name
 
     def test_the_second_worker_is_opt_in_and_has_its_own_name_key_and_state(self) -> None:

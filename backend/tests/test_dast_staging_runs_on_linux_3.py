@@ -22,6 +22,7 @@ What has to hold for that to be safe, and is asserted here:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PIPELINE = ROOT / "deploy" / "concourse" / "pipelines" / "thehub.yml"
+VARS = ROOT / "deploy" / "concourse" / "vars" / "thehub.yml"
+APPLY = ROOT / "deploy" / "concourse" / "set-thehub-pipeline.ps1"
+WORKER = ROOT / "deploy" / "concourse" / "linux-worker"
 
 
 def _job() -> dict[str, Any]:
@@ -170,3 +174,94 @@ def test_report_dast_needs_no_package_install() -> None:
     script = report["config"]["run"]["args"][-1]
     assert "apt-get" not in script
     assert report["image"] == "zap", "the job's own zap image ships git and pip"
+
+
+# -- dast-staging #82-#86: the right worker, this host's address (TheHub #62099) --
+#
+# Every nightly run from 11-21 to 11-28 ran `zap-baseline` on linux-3 (the
+# build's selected-worker events name it) and refused with "not answering".
+# The worker was right. The target was not: `((thehub-staging-url))` came from
+# vars/thehub.yml, which is this host's view of the estate (the registry,
+# Mykronos and TheHub are all reached through this host's Docker gateway), and
+# that address does not exist on linux-3. So no address from either copy of
+# this host's vars may reach a task on linux-3. The target is staging as a
+# linux-3 task reaches it: an address on that laptop, which this public repo
+# never holds and Vault does.
+
+
+def _vars_in(node: object) -> set[str]:
+    return set(re.findall(r"\(\(([A-Za-z0-9_.-]+)\)\)", yaml.safe_dump(node, width=10_000)))
+
+
+def _committed_vars() -> dict[str, Any]:
+    loaded: dict[str, Any] = yaml.safe_load(VARS.read_text(encoding="utf-8"))
+    return loaded
+
+
+def test_no_address_from_this_hosts_vars_reaches_linux_3() -> None:
+    committed = _committed_vars()
+    for task in _tasks(_job()["plan"]):
+        if not task.get("tags"):
+            continue
+        hosts_view = sorted(
+            name
+            for name in _vars_in(task)
+            if name in committed and re.search(r"://|:\d+$", str(committed[name]))
+        )
+        assert not hosts_view, (
+            f"{task['task']} runs on linux-3 but reads {hosts_view} from vars/thehub.yml, "
+            "an address as THIS host reaches it; linux-3 cannot route to it (dast-staging #86)"
+        )
+
+
+def test_the_target_is_one_store_var_that_neither_apply_path_writes() -> None:
+    target = str(_plan_task("zap-baseline")["config"]["params"]["TARGET_URL"])
+    match = re.fullmatch(r"\(\(([a-z0-9-]+)\)\)", target)
+    assert match, f"TARGET_URL must be one store var, never a literal address: {target!r}"
+    name = match.group(1)
+    assert name.endswith("-on-linux-3"), (
+        f"{name}: the name must say whose view of staging it is, so nobody fills it "
+        "with this host's address again"
+    )
+    assert name not in _committed_vars(), f"vars/thehub.yml must not carry {name}"
+    script = APPLY.read_text(encoding="utf-8")
+    assert f'"{name}:' not in script, f"set-thehub-pipeline.ps1 must not write {name}"
+    # The old name, which a stale checkout's apply script would still bake in
+    # with this host's address, must not be what the scan reads.
+    assert "thehub-staging-url" not in _committed_vars()
+    assert '"thehub-staging-url:' not in script
+
+
+def test_the_scan_never_asks_for_the_shared_linux_tag() -> None:
+    """GUARD (passes on main too): linux-1 and linux-2 carry `linux`, and so
+    does linux-3; only linux-3 carries `small`. A bare `linux` would let the
+    scan land on a laptop with no staging stack."""
+    for task in ("linux-worker-probe", "zap-baseline"):
+        assert _plan_task(task).get("tags") == ["small"], task
+
+
+def test_an_absent_linux_3_names_linux_3_and_the_store_var() -> None:
+    """The default re-run hint says linux-1 or linux-2, which cannot take a
+    `small` step: for this job it was the wrong advice."""
+    for wrapper in (_wrapper_of("linux-worker-probe"), _wrapper_of("zap-baseline")):
+        for hook in ("on_failure", "on_error"):
+            when = str(wrapper[hook]["params"].get("LINUX_RERUN_WHEN", ""))
+            assert "linux-3" in when and "linux-1" not in when and "linux-2" not in when, when
+            assert "thehub-staging-url-on-linux-3" in when, when
+            assert "((" not in when, "a hint must name the var, never interpolate it"
+    anchors = yaml.safe_load(PIPELINE.read_text(encoding="utf-8"))["anchors"]
+    script = anchors["linux_absent"]["config"]["run"]["args"][-1]
+    assert "${LINUX_RERUN_WHEN:-fly workers lists linux-1 or linux-2 as running}" in script, (
+        "every other job keeps the default hint"
+    )
+
+
+def test_the_reference_worker_compose_can_carry_the_staging_tag() -> None:
+    """linux-3 carries `linux,small`. A reference compose that hard-codes
+    `linux` would drop `small` the day linux-3 is aligned to it (#62067), and
+    the scan would then wait for a worker that no longer exists."""
+    compose = yaml.safe_load((WORKER / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert compose["x-worker-env"]["CONCOURSE_TAG"] == "${WORKER_TAGS:-linux}"
+    example = (WORKER / ".env.example").read_text(encoding="utf-8")
+    assert re.search(r"^WORKER_TAGS=linux$", example, re.MULTILINE), example
+    assert "small" in example and "linux-3" in example and "dast-staging" in example

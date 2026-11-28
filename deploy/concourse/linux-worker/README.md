@@ -61,7 +61,13 @@ Three steps, one script each, in this order.
 ## What the worker can and cannot run
 
 Only steps that say `tags: [linux]` run on it, and it runs nothing else:
-a tagged worker is outside the default placement. Resource checks, `get`
+a tagged worker is outside the default placement.
+
+linux-3 carries `linux,small` (`WORKER_TAGS` in its host's `.env`). TheHub
+staging runs on that laptop, and `dast-staging` asks for `small` so its scan
+lands there and on no other worker; its target is staging as a linux-3 task
+reaches it, Vault's `thehub-staging-url-on-linux-3` (TheHub #62099). Never
+give another host `small`. Resource checks, `get`
 and `put` steps and every untagged task keep running on the Windows
 workers, and Concourse streams inputs and outputs between workers.
 
