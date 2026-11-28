@@ -34,13 +34,24 @@ permissions:
   contents: read
 
 jobs:
-  backend-tests:
-    name: backend-tests
+  # [TheHub #62416] The suite in four shards, side by side. On one 4-vCPU
+  # hosted runner it took 778-1,208 s (median about 1,030) over the 20 pull
+  # requests before this change; each shard is a quarter of the test files
+  # (tests/suite_shard.py: a stable hash of each file's path, so every test
+  # runs in exactly one shard), measured at 1.15x the mean for the heaviest.
+  # Hosted, not the LAN's Linux workers: this repository is public, and a
+  # self-hosted runner would run a fork's pull request inside the LAN.
+  backend-tests-shard:
+    name: backend-tests shard ${{ matrix.shard }} of 4
     runs-on: ubuntu-latest
-    # The suite takes about 9 minutes at -n auto on the development host and
-    # about 4 minutes at -n 6 on the Concourse worker. Thirty minutes is room
-    # for a slow runner, not a target.
-    timeout-minutes: 30
+    # About 5 minutes expected; 20 is room for a slow runner, not a target.
+    timeout-minutes: 20
+    strategy:
+      # Every shard reaches its own verdict, so one red shard does not hide
+      # what else is red.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -67,13 +78,64 @@ jobs:
       # for its reason: the spec 05 section 9 budgets describe a developer's
       # machine, and a shared runner is not one. The lane prints it, so a
       # relaxed budget is never a silent one.
+      #
+      # MYKRONOS_PYTEST_SHARD: this job's quarter of the test files, applied by
+      # conftest.py after collection; the summary counts the rest as deselected.
       - name: pytest
         working-directory: backend
         env:
           MYKRONOS_PERF_MULTIPLIER: "3"
+          MYKRONOS_PYTEST_SHARD: ${{ matrix.shard }}/4
         run: |
           echo "Performance budgets scaled x${MYKRONOS_PERF_MULTIPLIER} on this runner."
           python -m pytest -q -n auto -p no:cacheprovider
+
+  # The context main requires: green only when every shard is. `always()` is
+  # load-bearing. Without it a failed shard SKIPS this job, and GitHub reads a
+  # skipped required check as passing.
+  backend-tests:
+    name: backend-tests
+    needs: backend-tests-shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.backend-tests-shard.result }}
+        run: |
+          echo "backend-tests shards: ${SHARDS}"
+          test "$SHARDS" = "success"
+
+  # [TheHub #62416] What Concourse `lint-and-types` runs on main, before the
+  # merge: ruff over the whole backend and mypy over the package, from the
+  # same hash-locked install. Never `ruff format`.
+  lint-and-types:
+    name: lint-and-types
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install the backend with its dev extras
+        working-directory: backend
+        run: |
+          python -m pip install --quiet --require-hashes -r requirements-dev.txt
+          python -m pip install --quiet --no-deps -e .
+
+      - name: ruff
+        working-directory: backend
+        run: python -m ruff check .
+
+      - name: mypy
+        working-directory: backend
+        run: python -m mypy mykronos
 
   # One test file, alone: no secret-named variable passed by value on a
   # command line (backend/tests/test_no_secret_on_a_command_line.py). It is
@@ -136,3 +198,18 @@ jobs:
       - name: Every .gitleaks.toml allowlist entry suppresses a finding
         run: |
           python scripts/check_gitleaks_allowlist.py --config .gitleaks.toml --source . --mode git --log-opts="--full-history --all"
+
+      # [TheHub #62416] The secret scan of this pull request's own commits,
+      # and it blocks. The step above proves the allowlist and the Concourse
+      # `secrets` lane scans every branch after the fact; neither fails a pull
+      # request that adds a credential. base..head is exactly the commits the
+      # pull request adds. The repository's .gitleaks.toml and .gitleaksignore
+      # apply, as in every other scan here; --redact keeps a found secret out
+      # of the log. Measured on main's last 300 commits: one finding, so this
+      # is quiet unless something is there. The shas come in through `env`.
+      - name: No secret in this pull request's commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gitleaks git . --log-opts="${BASE_SHA}..${HEAD_SHA}" --config .gitleaks.toml --redact --exit-code 1 --no-banner

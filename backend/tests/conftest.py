@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,28 @@ from mykronos.github import FakeGitHubClient
 from mykronos.github.factory import FakeGitHubClientFactory
 from mykronos.lake import Catalog, WriteAheadBuffer, compact
 from mykronos.main import create_app
+from tests import suite_shard
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """MYKRONOS_PYTEST_SHARD=K/N keeps shard K of the suite (tests/suite_shard.py).
+
+    Unset, nothing changes. Under xdist every worker collects and cuts the same
+    way, because the cut is a pure function of each file's path.
+    """
+    value = os.environ.get(suite_shard.ENV, "")
+    if not value:
+        return
+    kept, dropped = suite_shard.select(items, config.rootpath, value)
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
+
+
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    value = os.environ.get(suite_shard.ENV, "")
+    return [f"{suite_shard.ENV}={value}: one shard of the suite, by test file"] if value else []
+
 
 REPO = "example-org/payments-api"
 CAPABILITY = "sast"

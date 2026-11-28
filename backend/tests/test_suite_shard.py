@@ -115,8 +115,10 @@ def test_the_shards_partition_the_collected_items(monkeypatch: pytest.MonkeyPatc
 
 
 def test_real_pytest_collects_the_same_tests_across_the_shards() -> None:
-    """The hook as pytest runs it: the four shards' collections, together, are
-    the unsharded collection of the same files, test for test."""
+    """The hook as pytest runs it: the shards' collections, together, are the
+    unsharded collection of the same files, test for test. Two shards, not
+    four: each collection imports the app, and the fake-item test above
+    already covers four."""
     files = [
         "tests/test_backend_pr_workflow.py",
         "tests/test_action_pins.py",
@@ -140,5 +142,6 @@ def test_real_pytest_collects_the_same_tests_across_the_shards() -> None:
 
     whole = collect(None)
     assert len(whole) > 50
-    parts = [collect(f"{k}/4") for k in range(1, 5)]
+    parts = [collect(f"{k}/2") for k in (1, 2)]
+    assert all(parts), "a shard collected nothing from six files"
     assert sorted(n for part in parts for n in part) == sorted(whole)
