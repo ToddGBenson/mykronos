@@ -364,7 +364,9 @@ def test_every_apt_and_uploader_install_has_a_hard_deadline() -> None:
             if line.strip() == call:
                 installs += 1
                 assert _INSTALL_DEADLINE.match(lines[i - 1].strip()), where
-    assert apts == 15 and installs == 7, (apts, installs)
+    # 13 apt sites since guard and doc-drift moved onto `pwsh-git` (TheHub
+    # #62351) and stopped running apt.
+    assert apts == 13 and installs == 7, (apts, installs)
 
 
 def _apt_blocks() -> list[tuple[str, str]]:
@@ -540,7 +542,8 @@ def test_an_apt_failure_is_worded_by_its_exit_code(tmp_path: Path, where: str, b
 
 
 def test_the_apt_blocks_are_all_found() -> None:
-    assert len(_apt_blocks()) == 15
+    # 13 since guard and doc-drift stopped running apt (TheHub #62351).
+    assert len(_apt_blocks()) == 13
 
 
 _REASON_WRITE = re.compile(
@@ -576,7 +579,8 @@ def test_whatever_says_infrastructure_writes_the_reason() -> None:
             if any('"$dir/reason"' in ln for ln in following):
                 assert any("wrote_infra=1" in ln for ln in following), f"no output unsaid: {where}"
                 assert any("declares no infra output" in ln for ln in following), where
-    assert seen >= 24, seen
+    # 22 since guard and doc-drift dropped their apt handlers (TheHub #62351).
+    assert seen >= 22, seen
 
 
 def _deadline(script: str, pattern: str) -> int:

@@ -271,7 +271,8 @@ images, not pipeline task images. So every such pin carries a
    that the line exists and is a real date, not that it is recent: a unit
    test that turns red with time alone would block unrelated work.
 
-`personal-soc.yml`'s `checkov` is the pin this covers today. The one other
+`personal-soc.yml`'s `checkov` and `pwsh-git` (TheHub #62351) are the pins this
+covers today. The one other
 digest pin, `thehub.yml`'s `zap` (D-128), has no `pinned:` line yet and is not
 checked; it belongs to TheHub's mirror of that file.
 

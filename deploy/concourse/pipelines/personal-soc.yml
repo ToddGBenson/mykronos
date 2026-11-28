@@ -93,6 +93,29 @@ resources:
     icon: powershell
     source: { repository: mcr.microsoft.com/powershell, tag: "7.5-debian-12" }
 
+  # PowerShell and git in one prebuilt image, for `guard` and `doc-drift`
+  # (TheHub #62351). Both tasks ran `apt-get install git` on `pwsh` every
+  # build, under a 150s deadline, and guard 28-29.1 and doc-drift 29-30.1
+  # (2026-11-26 to 11-28) all died there on worker-1 with nothing judged. The
+  # mirror was only part of it: in doc-drift 30.1, apt had fetched everything
+  # 7s in, and dpkg was still running at 150s (11s in green build 28). A cache
+  # of the downloads would have changed nothing. An image that already holds
+  # git means no apt and no dpkg at run time.
+  #
+  # Microsoft's .NET SDK image is the published image that ships `pwsh` and
+  # git together (on Ubuntu, with bash). The powershell images above carry no
+  # git. It is larger, 357 MB compressed against 157, but it is pulled once
+  # per digest and served from the worker's resource cache after that. Pinned
+  # as `checkov` is, under PS-8 (TheHub #61842): the tag and the digest move
+  # together, and the digest is re-resolved at least every 90 days from the
+  # date below.
+  - name: pwsh-git
+    type: registry-image
+    icon: powershell
+    source: { repository: mcr.microsoft.com/dotnet/sdk, tag: "10.0" }
+    # pinned: 2026-11-27
+    version: { digest: "sha256:8c6edfb26c85153f236d26efebd9ad349aec403583f343f201ee67838b23658d" }
+
   # For the two jobs that are text analysis rather than PowerShell: the secret
   # scan (which uploads through mykronos.upload, a Python package) and the
   # skill-integrity check (which parses markdown). Same tag as TheHub's
@@ -217,7 +240,8 @@ anchors:
   # Third IPv6-preference fault on this host, after `localhost` resolving to a
   # squatted `::1` (#57609, #59968). The recorded eventual shape is baking
   # curl/jq/git into the task images so that no lane runs apt at all; that is
-  # a separate change and explicitly not this one.
+  # a separate change and explicitly not this one. `guard` and `doc-drift`
+  # moved first, onto `pwsh-git` (TheHub #62351), so they run no apt at all.
 
   # -- PS-12: retry the fetch, never the verdict ---------------------------
   #
@@ -703,7 +727,7 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-      - get: pwsh
+      - get: pwsh-git
         attempts: *retry_fetch
       # PS-2, and D-151: this job reports to Mykronos.
       - *preflight
@@ -713,7 +737,7 @@ jobs:
       - task: no-personal-data
         # PS-7. 10m from 6 observed run(s): median 101s, slowest 146s.
         timeout: 10m
-        image: pwsh
+        image: pwsh-git
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -723,27 +747,11 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
-                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                  || { apt_rc=$?
-                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
-                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
-                      echo "::error:: ${reason}" >&2
-                      wrote_infra=0
-                      for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
-                      done
-                      if [ "$wrote_infra" -eq 0 ]; then
-                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
-                      fi
-                      exit 75
-                    fi
-                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
-                    exit 1; }
+                # No apt here: `pwsh-git` carries git (TheHub #62351). Without
+                # git, `ls-files` prints nothing, and the tracked-file check
+                # below would pass on that.
+                command -v git >/dev/null \
+                  || { echo "::error:: the pwsh-git image has no git, so nothing here can be judged." >&2; exit 1; }
                 cd source
                 git config --global --add safe.directory "$PWD"
 
@@ -2683,12 +2691,12 @@ jobs:
       - get: source
         attempts: *retry_fetch
         trigger: true
-      - get: pwsh
+      - get: pwsh-git
         attempts: *retry_fetch
       - task: find-doc-drift
         # PS-7. 10m from 5 observed run(s): median 57s, slowest 136s.
         timeout: 10m
-        image: pwsh
+        image: pwsh-git
         config:
           platform: linux
           inputs: [{ name: source }]
@@ -2698,27 +2706,11 @@ jobs:
               - -ec
               - |
                 set -uo pipefail
-                # #59976: apt resolves deb.debian.org to IPv6 only on this host and the
-                # route is dead, so this must land before apt opens a socket. See the
-                # note at the top of `anchors:`.
-                echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-                printf 'Acquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::Retries "2";\n' > /etc/apt/apt.conf.d/99timeouts
-                timeout --kill-after=10s 150s sh -c 'apt-get update -qq && apt-get install -y -qq git >/dev/null' \
-                  || { apt_rc=$?
-                    if [ "$apt_rc" -eq 124 ] || [ "$apt_rc" -eq 137 ]; then
-                      reason="INFRASTRUCTURE, NOT A VERDICT: apt did not finish inside its 150s deadline (exit ${apt_rc}), so this task stopped before anything was judged. Re-run the job once the network is back."
-                      echo "::error:: ${reason}" >&2
-                      wrote_infra=0
-                      for dir in infra ../infra; do
-                        if [ -d "$dir" ]; then printf '%s\n' "$reason" > "$dir/reason"; wrote_infra=1; break; fi
-                      done
-                      if [ "$wrote_infra" -eq 0 ]; then
-                        echo "::error:: this task declares no infra output, so the check reports failure, not cancelled. Nothing was judged either way." >&2
-                      fi
-                      exit 75
-                    fi
-                    echo "::error:: apt failed (exit ${apt_rc}) before this task reached anything to judge." >&2
-                    exit 1; }
+                # No apt here: `pwsh-git` carries git (TheHub #62351). Without
+                # git, Find-DocDrift lists no changed files, which reads as
+                # "the docs are current".
+                command -v git >/dev/null \
+                  || { echo "::error:: the pwsh-git image has no git, so Find-DocDrift cannot answer." >&2; exit 1; }
 
                 cd source
 
