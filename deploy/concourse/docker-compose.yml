@@ -183,13 +183,25 @@ services:
   # gosu 1.19 is still Go 1.24.6 (CVE-2025-68121, CRITICAL, and friends);
   # upstream has not rebuilt it, so the recipe below does (TheHub #61617).
   concourse-db:
-    # Rollback: the vendor 15.19 this host ran before the derivative (same
-    # major, same on-disk format; `up -d --no-deps concourse-db` either way).
+    # Rollback: the snapshot this host ran before (same recipe, same 15.20 and
+    # on-disk format; `up -d --no-deps concourse-db` either way). It carries
+    # krb5 deb13u1, so test_concourse_db_image.py fails on it by design.
+    #   ${REGISTRY:-localhost:5000}/library/postgres:15.20-p20261114@sha256:b85f69d6c4e6bddf916f7e86dc764ad5f317995a04b736d18c6049e1a820f98c
+    # Before the derivative it was the vendor's 15.19:
     #   postgres:15.19@sha256:c961aa287d8698297cb26cdfadfbe9fd2cbaf77e53cfffe9636e8d8a1e4d842c
-    image: ${REGISTRY:-localhost:5000}/library/postgres:15.20-p20261114@sha256:b85f69d6c4e6bddf916f7e86dc764ad5f317995a04b736d18c6049e1a820f98c
+    image: ${REGISTRY:-localhost:5000}/library/postgres:15.20-p20261127@sha256:d6a329b6f351551e1565da0d50425e4fd10cdce1d0a6ccdcc42d294407701e4f
     # Out-of-band rebuild (mykronos.yml `image-refresh`): postgres 15.20 with
     # gosu rebuilt from source on Go 1.27.3 and `apt-get upgrade`, published
     # as <registry>/library/postgres:15.20-p<date> only when strictly better.
+    #
+    # MOVED 2026-11-28 (TheHub #62371): 15.20-p20261127, by its manifest
+    # digest. krb5 1.21.3-5+deb13u2 (libgssapi-krb5-2, libkrb5-3,
+    # libkrb5support0, libk5crypto3: 18 advisories each, 14 HIGH, on
+    # deb13u1); p20261123 is the first snapshot that carries it. image-refresh
+    # build 37 judged this date against p20261114: -58 +0 HIGH/CRITICAL,
+    # -68 +0 MEDIUM (improved). Nothing proposed the move: Patchwork's
+    # bump-image-date refuses a digest-pinned reference, so a newer date
+    # waits for a hand edit like this one.
     #
     # ADOPTED 2026-11-14 (TheHub #61701): 15.20-p20261114, the first published
     # date. Pinned by digest: the tag is a single-platform manifest (no
