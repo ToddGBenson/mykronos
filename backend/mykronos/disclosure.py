@@ -383,6 +383,91 @@ def _carried_by(
     }
 
 
+class Carried(NamedTuple):
+    """What a commit's own archived container reports say its images held
+    (TheHub #62374), keyed by image repository (`image_repository`)."""
+
+    #: (image repository, package, installed version): any result on it.
+    packages: frozenset[tuple[str, str, str]] = frozenset()
+    #: (image repository, rule, package): the advisory itself was reported.
+    advisories: frozenset[tuple[str, str, str]] = frozenset()
+
+    def covers(self, image: str, rule_id: str, package: str, version: str) -> bool:
+        """Whether the commit's image carried this finding. Either its scan
+        reported the advisory on the package, or it held the package at the
+        version the finding was seen on: Trivy matches an advisory on the
+        package and version, so the same version in the same image
+        repository is affected by the same advisory, whenever it was
+        published."""
+        from mykronos.fingerprint import image_repository
+
+        if not image or not package:
+            return False
+        repository = image_repository(image)
+        return (repository, rule_id, package) in self.advisories or bool(
+            version and (repository, package, version) in self.packages
+        )
+
+
+@lru_cache(maxsize=128)
+def _report_contents(path: str) -> Carried | None:
+    """`Carried` for one archived Trivy report, or None when it cannot say."""
+    from mykronos.adapters.containers_trivy import _INSTALLED, _PACKAGE
+    from mykronos.fingerprint import image_repository
+
+    found = _report_image(path)
+    if found is None:
+        return None
+    repository = image_repository(found[0])
+    document = json.loads(Path(path).read_bytes())
+    packages: set[tuple[str, str, str]] = set()
+    advisories: set[tuple[str, str, str]] = set()
+    for run in document["runs"]:
+        for result in run.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            message = result.get("message")
+            text = str(message.get("text") or "") if isinstance(message, dict) else ""
+            package = _PACKAGE.search(text)
+            if package is None:
+                continue
+            name = package.group("name")
+            rule_id = str(result.get("ruleId") or "")
+            if rule_id:
+                advisories.add((repository, rule_id, name))
+            version = _INSTALLED.search(text)
+            if version is not None:
+                packages.add((repository, name, version.group("version")))
+    return Carried(frozenset(packages), frozenset(advisories))
+
+
+def carried_by_scans(catalog: Any, scan_run_ids: list[str]) -> Carried:
+    """Union of what these container scans' archived reports say their
+    images held. A report that cannot be read contributes nothing, so a
+    finding it might have covered stays introduced (the module's rule)."""
+    from mykronos.adapters.registry import get_adapter
+    from mykronos.reprocess import _archives_for
+
+    pattern = get_adapter(CAPABILITY, "trivy").pattern
+    packages: set[tuple[str, str, str]] = set()
+    advisories: set[tuple[str, str, str]] = set()
+    try:
+        for scan_run_id in scan_run_ids:
+            for archive in _archives_for(catalog, catalog.root / "raw", scan_run_id, pattern):
+                contents = _report_contents(str(archive))
+                if contents is not None:
+                    packages |= contents.packages
+                    advisories |= contents.advisories
+    except Exception:  # noqa: BLE001 - no evidence means "introduced"
+        logger.warning(
+            "Could not read the baseline's container reports; its images are "
+            "taken to carry nothing.",
+            exc_info=True,
+        )
+        return Carried()
+    return Carried(frozenset(packages), frozenset(advisories))
+
+
 def _repo_of(catalog: Any, scan_run_id: str) -> str | None:
     rows = catalog.query(
         "SELECT repo_full_name FROM scan_runs WHERE scan_run_id = ? LIMIT 1",
