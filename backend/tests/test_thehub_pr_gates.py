@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.pipeline_steps import find, holder
+from tests.pipeline_steps import find, flat, holder
 
 PIPELINE = Path(__file__).resolve().parents[2] / "deploy" / "concourse" / "pipelines" / "thehub.yml"
 JOB = "pr-gates"
