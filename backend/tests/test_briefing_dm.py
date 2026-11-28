@@ -6,9 +6,11 @@ Pinned here:
   per local day; a restart or another tick the same day sends nothing, and a
   deployment that was down at 07:00 sends when it comes back;
 * **what** - the counts of merges, decisions and stories (each line once,
-  suggested focus not double-counted), the top three focus lines, every
-  section that could not be read named with its reason, one line per product
-  (including one that could not be read), and the link to `/briefing` first;
+  suggested focus not double-counted), every section that could not be read
+  named with its reason, the products as one count (naming one that could not
+  be read), and the link to `/briefing` first. Since TheHub #62419 the DM is
+  the operator's exceptions digest: focus and product lines are on the page,
+  not in the DM (`test_briefing_exceptions` pins the exceptions);
 * **not configured** - recorded `skipped` with the missing setting's name,
   never a success, and sent the same day once the setting arrives;
 * **recorded like every job** - `_every` records nothing for a tick that is
@@ -220,19 +222,18 @@ class TestCompose:
         assert dict(counts) == {"merge": 1, "decision": 1, "story": 2}
         assert "\n*Needs you:* 1 merge, 1 decision, 2 stories.\n" in sample_dm()
 
-    def test_the_top_three_focus_lines_in_order(self) -> None:
+    def test_focus_lines_are_on_the_page_not_in_the_dm(self) -> None:
+        # TheHub #62419: the DM lists exceptions only; the rest is a count.
         text = sample_dm()
-        assert "1. [decision] Acceptance RA-12 expires in 3 days - Renew it or let it lapse" in text
-        assert "2. [merge] Patchwork fix for lodash is approved" in text
-        assert "3. [story] CVE-2026-1111" in text
-        focus = text.split("*Suggested focus:*")[1].split("*Not read:*")[0]
-        assert "CVE-2026-2222" not in focus
-        assert "4. " not in focus
+        assert "*Suggested focus:*" not in text
+        assert "Patchwork fix for lodash" not in text
+        assert "CVE-2026-1111" not in text
 
     def test_every_unread_section_is_named_with_its_reason(self) -> None:
         text = sample_dm()
         rows = text.split("\n")
-        not_read = "\n".join(rows[rows.index("*Not read:*") + 1:rows.index("*Products:*")])
+        end = next(i for i, row in enumerate(rows) if row.startswith("*Products:*"))
+        not_read = "\n".join(rows[rows.index("*Not read:*") + 1:end])
         assert "Needs you today (not built yet: Reads TheHub's board and GitHub" in not_read
         assert "Can we trust our signals (unavailable: The lake could not be read" in not_read
         assert "Sprint health (not built yet:" in not_read
@@ -240,16 +241,12 @@ class TestCompose:
         # what it could not read at all.
         assert "Suggested focus" not in not_read
 
-    def test_one_line_per_product(self) -> None:
+    def test_the_products_are_one_count_naming_the_unreadable(self) -> None:
         rows = sample_dm().split("\n")
-        products = rows[rows.index("*Products:*") + 1:]
-        assert products == [
-            "• *o/mykronos*: 0 introduced, 4 closed in 24h; production current; "
-            "nothing needs you.",
-            "• *o/thehub*: 2 introduced, 1 closed in 24h; Production runs a3f9c1, 4 commits "
-            "behind main; work: 1 merge, 1 story; unread: Capability lanes.",
-            "• *o/personal-soc*: could not be read (404: no repo).",
-        ]
+        assert rows[-1] == (
+            "*Products:* 2 read (1 with a section unread), 1 could not be read: "
+            "o/personal-soc (404: no repo)."
+        )
 
     def test_an_all_clear_morning_says_so(self) -> None:
         quiet = DailyBriefingOut.model_validate({
@@ -259,7 +256,6 @@ class TestCompose:
         })
         text = briefing_dm.compose(quiet, [], url=PAGE, local_now=SEVEN_LOCAL).render()
         assert "*Needs you:* nothing." in text
-        assert "*Suggested focus:* nothing to start with." in text
         assert "*Not read:*" not in text
         assert "*Products:*" not in text
 
@@ -270,7 +266,6 @@ class TestCompose:
                                  reason="None of the sections it ranks could be read.")],
         })
         text = briefing_dm.compose(broken, [], url=PAGE, local_now=SEVEN_LOCAL).render()
-        assert "*Suggested focus:* could not be ranked today." in text
         assert "- Suggested focus (unavailable: None of the sections" in text
 
     def test_untrusted_text_cannot_forge_a_line(self) -> None:
@@ -634,7 +629,8 @@ class TestThroughTheRoute:
         )
         [note] = notifier.sent
         text = note.render()
-        assert f"• *{REPO}*:" in text
+        assert "*Products:* 1 read" in text
+        assert REPO not in text, "a product read in full is counted, not listed"
         # Whatever the route says it could not read, the DM names.
         for unread_section in overall.sections:
             if unread_section.status in ("unavailable", "not_available"):
