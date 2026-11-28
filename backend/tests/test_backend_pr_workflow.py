@@ -70,14 +70,77 @@ def test_every_action_is_pinned_by_sha(document: dict[str, Any]) -> None:
                 assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses), uses
 
 
-def test_it_runs_the_whole_suite_in_parallel(document: dict[str, Any]) -> None:
-    steps = document["jobs"]["backend-tests"]["steps"]
-    run = " ".join(str(step.get("run", "")) for step in steps)
-    assert "python -m pytest" in run
+SHARD_JOB = "backend-tests-shard"
+
+
+def _shards(document: dict[str, Any]) -> list[int]:
+    return list(document["jobs"][SHARD_JOB]["strategy"]["matrix"]["shard"])
+
+
+def test_it_runs_the_whole_suite_in_parallel_shards(document: dict[str, Any]) -> None:
+    """TheHub #62416: one 4-vCPU runner took 778-1,208 s; the shards run side
+    by side, each the whole suite's collection cut by test file (conftest.py,
+    tests/suite_shard.py), so together they are the whole suite."""
+    job = document["jobs"][SHARD_JOB]
+    shards = _shards(document)
+    assert shards == list(range(1, len(shards) + 1)) and len(shards) >= 2, shards
+    # Every shard runs to its own verdict: one red shard must not cancel the
+    # others and hide what else is red.
+    assert job["strategy"]["fail-fast"] is False
+    steps = job["steps"]
+    pytest_step = next(s for s in steps if "python -m pytest" in str(s.get("run", "")))
+    assert pytest_step["env"]["MYKRONOS_PYTEST_SHARD"] == f"${{{{ matrix.shard }}}}/{len(shards)}"
+    run = str(pytest_step["run"])
     assert "-n auto" in run
-    # The whole suite: no path, -k or -m narrows it.
+    # The whole suite: no path, -k or -m narrows it; only the shard does.
     arguments = run[run.index("python -m pytest") + len("python -m pytest") :]
     assert not re.search(r"\s(-k|-m)\s|tests/", arguments), arguments
+
+
+def test_backend_tests_is_green_only_when_every_shard_is(document: dict[str, Any]) -> None:
+    """`backend-tests` is the context main requires, so it stays one job. It
+    must run when a shard fails (`always()`): GitHub reads a SKIPPED required
+    check as passing, so a plain `needs` would turn a red shard green."""
+    job = document["jobs"]["backend-tests"]
+    assert job["needs"] in (SHARD_JOB, [SHARD_JOB])
+    assert job["if"] == "always()"
+    step = next(s for s in job["steps"] if "run" in s)
+    assert step["env"]["SHARDS"] == f"${{{{ needs.{SHARD_JOB}.result }}}}"
+    assert '"$SHARDS" = "success"' in step["run"]
+
+
+def test_lint_and_types_run_on_the_pull_request(document: dict[str, Any]) -> None:
+    """What Concourse `lint-and-types` runs on main, before the merge (#62416)."""
+    job = document["jobs"]["lint-and-types"]
+    assert job["name"] == "lint-and-types"
+    run = "\n".join(str(s.get("run", "")) for s in job["steps"])
+    assert "pip install --quiet --require-hashes -r requirements-dev.txt" in run
+    assert "python -m ruff check ." in run
+    assert "python -m mypy mykronos" in run
+    assert "ruff format" not in run
+    for step in job["steps"]:
+        if "run" in step:
+            assert step.get("working-directory") == "backend", step
+
+
+def test_secret_hygiene_scans_the_pull_requests_commits_and_blocks(
+    document: dict[str, Any],
+) -> None:
+    """The pull request's own commits, base..head, under the repository's
+    .gitleaks.toml and .gitleaksignore; a finding fails the check. Redacted,
+    so a found secret is never printed. The shas come in through `env`,
+    never interpolated into the script."""
+    job = document["jobs"]["secret-hygiene"]
+    step = next(s for s in job["steps"] if "gitleaks git" in str(s.get("run", "")))
+    assert step["env"] == {
+        "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+    }
+    run = str(step["run"])
+    assert "${{" not in run
+    assert '--log-opts="${BASE_SHA}..${HEAD_SHA}"' in run
+    assert "--config .gitleaks.toml" in run
+    assert "--redact" in run and "--exit-code 1" in run
 
 
 def test_the_secret_hygiene_check_runs_alone(document: dict[str, Any]) -> None:
