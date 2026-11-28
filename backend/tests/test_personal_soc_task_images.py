@@ -36,7 +36,7 @@ def _task(job: str, name: str) -> dict[str, Any]:
         None,
     )
     assert step is not None, f"{job} has no `{name}` task"
-    return step
+    return dict(step)
 
 
 def _script(step: dict[str, Any]) -> str:

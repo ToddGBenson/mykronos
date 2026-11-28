@@ -364,7 +364,9 @@ def test_every_apt_and_uploader_install_has_a_hard_deadline() -> None:
             if line.strip() == call:
                 installs += 1
                 assert _INSTALL_DEADLINE.match(lines[i - 1].strip()), where
-    assert apts == 15 and installs == 7, (apts, installs)
+    # 13 apt sites since guard and doc-drift moved onto `pwsh-git` (TheHub
+    # #62351) and stopped running apt.
+    assert apts == 13 and installs == 7, (apts, installs)
 
 
 def _apt_blocks() -> list[tuple[str, str]]:
