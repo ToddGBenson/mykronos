@@ -2426,7 +2426,7 @@ jobs:
                         # ("1 error in ..."), a clean collection has no pass/fail
                         # summary and reads green on exit 0. ADR 0095 amendment.
                         # [TheHub #62142] stdin from /dev/null, as pr-gates'
-                        # integration subset (#1199): this runs on the `linux`
+                        # integration subset was (#1199): this runs on the `linux`
                         # workers, where a task's stdin is a terminal and
                         # timeout(1)'s process group is not its foreground one.
                         if command -v timeout >/dev/null 2>&1; then
@@ -2790,7 +2790,7 @@ jobs:
   #   linux-suites  post-merge (`grade`) and container-tiers (`tiers`): the
   #                 two full suites, one at a time, so they never share one
   #                 remote worker's 5g (the #61106 rule, where they now run).
-  #   linux-pr      pr-gates (`gates`, `integration`) and gate-smoke (the
+  #   linux-pr      pr-gates (`gates`) and gate-smoke (the
   #                 same `gates`), so a PR verdict waits for neither a suite
   #                 nor a scan. With two remote workers and
   #                 fewest-build-containers placement it normally runs on the
@@ -2899,23 +2899,26 @@ jobs:
   # has the worker's network and no credential; TheHub's threat model for
   # #61113 records that reach.
   #
-  # [TheHub #61110] **The cheap integration tier.** deploy.sh runs its
-  # integration tier inside the production container, after the swap, and
-  # nothing ran it before a merge: it needs Postgres with pgvector, the
-  # entrypoint's schema build and a production-shaped env, and a cold
-  # dependency install alone overran this check's 10 minutes. So the
-  # `integration` task runs TheHub's `scripts/ci/container-tiers.sh <pr>
-  # subset` inside a CACHED image: registry/thehub at the newest develop
-  # commit that passed `build` (`built`, resolved by `pick`), which has every
-  # dependency preinstalled. TheHub's script lays the pull request's backend/
-  # over that image's /app (and installs its requirements.txt only if it
-  # changed), then runs only config/ci/pr-integration-subset.txt: the
-  # integration tests that rolled production back after a green `unit`,
-  # beginning with test_realtime_nudges.py, which failed deploy 7d83e24c on
-  # #518's forwarded FIELDY_HMAC_ENABLED. The list and the policy live in
-  # TheHub, as the gates' do. The task holds no credential: it runs the pull
-  # request's code. It runs after `gates`, so a head the gates refuse is not
-  # also given minutes of Postgres.
+  # [TheHub #62416] **No integration tier on the pull request.** From
+  # #61110 to #62416 an `integration` task ran TheHub's
+  # config/ci/pr-integration-subset.txt here, in the newest develop image,
+  # after the gates. That cost a 1.45 GB image fetch on this host, its
+  # ~80 s stream to a remote worker and ~75 s of Postgres, migrations and a
+  # scratch database per judged head: over the 22 judged builds before
+  # #62416 the job took 588 s median and 918 s p90, with fetch-image and
+  # integration 216 s of the median. The operator's dev process v2 (epic
+  # 62412, step 4) runs integration, coverage and container tiers after the
+  # merge only: container-tiers runs deploy.sh's integration and unit tiers
+  # on every develop commit that passed `build`, and is gating in TheHub's
+  # config/release-gates.yml, so a commit that breaks them is never
+  # deployed. What this costs is said, not hidden: an integration break is
+  # found after the merge, on develop, instead of on the pull request.
+  #
+  # Two checks rode in that task and stay on the pull request. The
+  # committed-SBOM test (TheHub #61636) now runs in `gates`, develop's copy
+  # over the branch's requirements.txt and SBOM. A requirements.txt that
+  # nothing satisfies is pip-audit's to refuse there already, as it
+  # resolves the whole set.
   - name: pr-gates
     public: true
     # The lane `post-merge` is in, for the same reason: a clock-driven quality
@@ -2923,11 +2926,7 @@ jobs:
     # 90-minute unit run on develop. pip-audit's scratch install makes this a
     # heavy job, so it is serialised like every other.
     #
-    # [TheHub #61110] It was in `pytest-memory` (#61106) as well, because the
-    # integration task starts Postgres, Redis and a pytest process beside the
-    # host's other suites.
-    #
-    # [operator decision 2026-11-16] `gates` and `integration` now run on the
+    # [operator decision 2026-11-16] `gates` runs on the
     # remote `linux` workers, so the job holds neither `dast` nor
     # `pytest-memory`: a pull request's verdict no longer queues behind a
     # post-merge grade or a DAST scan. `linux-pr` is its own lane, not
@@ -2994,13 +2993,6 @@ jobs:
       - get: live-pipeline
         resource: pipelines
         attempts: *retry_fetch
-      # [TheHub #61110] The cached image's commit: the newest develop commit
-      # that passed `build`, which pushed registry/thehub:<sha>. Not a
-      # trigger: a develop commit is not a pull request.
-      - get: built
-        resource: source
-        passed: [build]
-        attempts: *retry_fetch
       - get: python313
         attempts: *retry_fetch
       - get: image-fetcher
@@ -3036,8 +3028,7 @@ jobs:
           REPO_URI: git@github.com:ToddGBenson/TheHub.git
         config:
           platform: linux
-          inputs: [{ name: built }]
-          outputs: [{ name: pr }, { name: image }]
+          outputs: [{ name: pr }]
           caches: [{ path: memo }]
           run:
             path: bash
@@ -3060,14 +3051,6 @@ jobs:
                 echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > /tmp/ssh/known_hosts
                 ssh_cmd="ssh -i /tmp/ssh/id -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=/tmp/ssh/known_hosts -o StrictHostKeyChecking=yes"
                 trap 'rm -rf /tmp/ssh' EXIT
-
-                # [TheHub #61110] The cached image the integration task runs
-                # in, named on every tick (a tick with no head still resolves
-                # it; the worker keeps the image, so that costs a digest check).
-                git config --global --add safe.directory "$PWD/built"
-                git -C built rev-parse HEAD | tr -d '\n' > image/sha
-                grep -qE '^[0-9a-f]{40}$' image/sha
-                echo "Cached image: the develop commit build last pushed, $(cat image/sha)"
 
                 GIT_SSH_COMMAND="$ssh_cmd" git ls-remote "$REPO_URI" 'refs/heads/*' 'refs/pull/*/head' 'refs/pull/*/merge' > /tmp/refs
 
@@ -3501,10 +3484,12 @@ jobs:
                     # harden_findings_report.py and shape tests it runs, to pass.
                     # The judge is the base commit's tree (`pick` extracted it);
                     # only the branch's DATA is laid over it: the requirements
-                    # the dependency audit resolves and the mirror the shape tests
-                    # read. Regular files only: a symlink could point the judge at
+                    # the dependency audit resolves, the mirror the shape tests
+                    # read and the SBOM the committed-SBOM test reads (#62416).
+                    # Regular files only: a symlink could point the judge at
                     # anything in this container.
                     DEPLOY_RC=0
+                    SBOM_RC=0
                     JUDGE="$(mktemp -d)"
                     if [ ! -f pr/.git/judge/scripts/pr_deploy_gates.sh ]; then
                       echo "::error::The base branch has no scripts/pr_deploy_gates.sh (TheHub #61102),"
@@ -3517,7 +3502,8 @@ jobs:
                       DEPLOY_RC=1
                     else
                       cp -R pr/.git/judge/. "$JUDGE/"
-                      for f in backend/requirements.txt concourse/pipelines/thehub.yml; do
+                      for f in backend/requirements.txt concourse/pipelines/thehub.yml \
+                               docs/sbom/latest-python.cdx.json; do
                         rm -f "$JUDGE/$f"
                         if [ -L "pr/$f" ] || { [ -e "pr/$f" ] && [ ! -f "pr/$f" ]; }; then
                           echo "::error::$f on this branch is not a regular file; refusing to judge it."
@@ -3532,7 +3518,34 @@ jobs:
                       if [ "$DEPLOY_RC" -eq 0 ]; then
                         bash "$JUDGE/scripts/pr_deploy_gates.sh" --mykronos "$PWD/live-pipeline" \
                           --audit-as 65534 || DEPLOY_RC=$?
+                        # [TheHub #62416] The committed-SBOM test, moved here from
+                        # the integration task (TheHub #61636): #692 changed
+                        # requirements.txt without regenerating
+                        # docs/sbom/latest-python.cdx.json and broke develop's unit
+                        # lane. A pure file check, so it needs no image. DEVELOP's
+                        # copy of the test, run as the shape tests are, reads the
+                        # branch's two files laid over the judge above, so a branch
+                        # cannot edit the test to pass. Only when the branch
+                        # changes either file. pytest and packaging are the
+                        # hash-locked ones pr_deploy_gates.sh installed above; if
+                        # they are missing, the run fails and so does the check.
+                        SBOM_TEST=tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py
+                        if grep -qxE 'backend/requirements\.txt|docs/sbom/latest-python\.cdx\.json' \
+                            pr/.git/process-gates/changed 2>/dev/null; then
+                          if [ ! -f "$JUDGE/backend/$SBOM_TEST" ]; then
+                            echo "::warning::the base branch has no backend/$SBOM_TEST; the SBOM was not checked"
+                          else
+                            echo "== the committed SBOM against this pull request's requirements.txt =="
+                            ( cd "$JUDGE/backend" && python3 -m pytest --noconftest -p no:cacheprovider -q \
+                                --color=no -o addopts="--tb=short -ra" "$SBOM_TEST" ) || SBOM_RC=$?
+                          fi
+                        fi
                       fi
+                    fi
+                    if [ "$SBOM_RC" -ne 0 ]; then
+                      echo "::error::backend/requirements.txt and docs/sbom/latest-python.cdx.json disagree"
+                      echo "          (see above): regenerate the SBOM in the same pull request."
+                      [ "$DEPLOY_RC" -ne 0 ] || DEPLOY_RC=1
                     fi
                     if [ "$PROCESS_RC" -ne 0 ]; then
                       echo "::error::deploy.sh's process gates refused this pull request (see above)."
@@ -3552,256 +3565,6 @@ jobs:
         <<: *linux_verdict
         input_mapping: { expect: pr-tree }
         params: { EXPECT: .git/HEAD, LINUX_STEP: gates }
-      - load_var: image_sha
-        file: image/sha
-        format: raw
-        reveal: true
-      # The cached develop image, pulled on this host and handed to
-      # `integration` as an `image:` artifact (the registry faces no LAN). A
-      # tick with no head to judge hands over python313 instead: the task
-      # then only says so and exits, and 1.45 GB is not streamed for nothing.
-      - <<: *fetch_image
-        input_mapping: { when: pr-tree, fallback: python313 }
-        params:
-          REPOSITORY: ((registry))/thehub
-          TAG: ((.:image_sha))
-          ONLY_IF: .git/HEAD
-      # [TheHub #61110] The named integration subset, in the cached image. See
-      # the job's header. Measured parts in container-tiers (2026-11-05): the
-      # Postgres/Redis install ~1.5m, the bootstrap ~0.5m, the scratch
-      # database ~0.75m; the subset is four modules.
-      - do:
-          - task: integration
-            tags: [linux]
-            container_limits: {cpu: 512}
-            image: thehub-image
-            input_mapping: { pr: pr-tree }
-            params:
-              CONTAINER_TIERS_DISPOSABLE: "1"
-              # container-tiers' own cap, 240s under the task's 18m (see the
-              # `do:`'s timeout below), so a slow
-              # environment build ends with this script still alive to say it
-              # was an outage. A Concourse timeout kills the task before it can
-              # write infra/reason, and the hooks then post `failure`. The 18m
-              # starts at worker selection, this budget only once the script
-              # runs: the margin covers container creation (94s and 130s in the
-              # starved builds 1333 and 1341), ensurepip (13s) and the 30s KILL
-              # grace after TERM, with room to spare.
-              # And the budget itself must hold a healthy environment build
-              # (~315s in green build 1332: copy, apt, bootstrap, scratch db)
-              # plus the whole 300s soft cap plus slack. Otherwise a hanging
-              # test on a healthy worker is cut off before it has run its soft
-              # cap and reads as an outage (`cancelled`), not a hang (red).
-              TIER_HARD_BUDGET_S: "840"
-              # The subset's soft cap: SIGINT lets pytest write its summary, and
-              # TheHub's script turns a run that hit it into "partial", never green.
-              TIER_SOFT_TIMEOUT_S: "300"
-              # [#61106] container-tiers' budget: this task's Postgres and Redis
-              # live beside pytest in the same worker.
-              MEMORY_GUARD: *memory_guard
-              MEMORY_BUDGET_MB: "2304"
-              # [#61606] MEMORY_GUARD_SOFT_TIMEOUT_S is deliberately not set, so the
-              # guard never re-runs a kill here: this task has an 18m hard cap and a
-              # 300s soft cap, and a wait plus a second run fits in neither.
-            config:
-              platform: linux
-              # The image is `fetch-image`'s artifact, made on this host.
-              inputs: [{ name: pr }]
-              # [#61106] Written only when the subset was killed for memory; the
-              # failure hooks then report errored / cancelled, not a verdict.
-              # `ran`: rc and the commit judged, from the EXIT trap.
-              outputs: [{ name: infra, path: memory-infra }, { name: ran }]
-              # The budget (2026-11-15). container-tiers runs under timeout(1) at
-              # TIER_HARD_BUDGET_S, so an overrun is ended where the outcome can
-              # still be written down, not by Concourse, which kills the task with
-              # no outputs and so reads as a red verdict. timeout(1) exits 124
-              # after TERM and 137 after the KILL that follows; container-tiers'
-              # own 124 (the subset's soft cap) returns well inside the budget, so
-              # the clock tells them apart. The output is teed through a loop that
-              # notes when the subset tier starts: an overrun is an outage only if
-              # the environment ate the time. A subset that ran its whole soft cap
-              # and did not stop on SIGINT has a hanging test, which deploy.sh's
-              # tier would hang on too, so it stays 124: a verdict. Arithmetic is
-              # `let`, never a doubled parenthesis, which Concourse reads as a
-              # credential variable.
-              run:
-                path: bash
-                args:
-                  - -c
-                  - |
-                    set -uo pipefail
-                    trap 'printf "%s\n" "$?" > ran/rc' EXIT
-                    : > ran/commit
-                    if [ -f pr/.git/HEAD ]; then head -c 64 pr/.git/HEAD > ran/commit; fi
-                    if [ ! -f pr/.git/HEAD ]; then
-                      echo "No pull request head needs judging on this run."
-                      exit 0
-                    fi
-                    echo "Pull request #$(cat pr/.git/pr-number): the integration subset, in the cached develop image"
-                    # A branch from before TheHub's half of #61110 has no list and
-                    # no subset tier, so it cannot be judged, and says so.
-                    if [ ! -f pr/config/ci/pr-integration-subset.txt ]; then
-                      echo "::error::This branch predates config/ci/pr-integration-subset.txt (TheHub #61110),"
-                      echo "::error::so its integration subset cannot be run. Rebase it onto develop."
-                      exit 1
-                    fi
-                    # The image's entrypoint is not run: this is not the server.
-                    export CONTAINER_TIERS_OUT=/tmp/container-tiers
-                    # [TheHub #61636] A pull request that changes requirements.txt
-                    # makes container-tiers `pip install -r` the checkout's file
-                    # into this cached image, and the image has python but no pip
-                    # ("No module named pip"): TheHub #692 (a dependency floor) got
-                    # NO VERDICT and was reported failed by construction. Bootstrap
-                    # pip from the interpreter's own ensurepip first. If that too
-                    # cannot run, container-tiers says NO VERDICT and the report
-                    # below says unjudged, not failed.
-                    PY="$(command -v python3 || command -v python || true)"
-                    REQ_CHANGED=0
-                    BOOTSTRAP_FAILED=0
-                    if [ -f pr/backend/requirements.txt ] && ! cmp -s pr/backend/requirements.txt "${APP_DIR:-/app}/requirements.txt"; then
-                      REQ_CHANGED=1
-                    fi
-                    if [ "$REQ_CHANGED" -eq 1 ] && [ -n "$PY" ] && ! "$PY" -m pip --version >/dev/null 2>&1; then
-                      echo "pr-gates: the cached image has no pip; bootstrapping it with ensurepip"
-                      "$PY" -m ensurepip --upgrade || { BOOTSTRAP_FAILED=1; echo "::warning::ensurepip failed; the requirements install will say so"; }
-                    fi
-                    # The budget: see TIER_HARD_BUDGET_S and the note above `run:`.
-                    BUDGET="${TIER_HARD_BUDGET_S:-840}"
-                    SOFT="${TIER_SOFT_TIMEOUT_S:-300}"
-                    TIMER=""
-                    if command -v timeout >/dev/null 2>&1; then
-                      TIMER=timeout
-                    else
-                      echo "::warning::this image has no timeout(1); container-tiers runs under the task's timeout only"
-                    fi
-                    # stdin is /dev/null (TheHub pr-gates cancelled since #1177).
-                    # On the containerd `linux` workers a task's stdin is a
-                    # terminal, and timeout(1) runs its command in a process
-                    # group of its own, which is not the terminal's foreground
-                    # group. apt-get resets the terminal when it finishes, gets
-                    # SIGTTOU and stops: `T` in /proc, a stopped apt-get after
-                    # ~50s of real work, until the budget ends it at 840s. It
-                    # never showed on the host's guardian workers; that they
-                    # give a task no terminal is inferred from that, not
-                    # measured (TheHub #62142).
-                    run_tiers() {
-                      if [ -n "$TIMER" ]; then
-                        "$TIMER" -s TERM -k 30 "$BUDGET" bash pr/scripts/ci/container-tiers.sh pr subset < /dev/null
-                      else
-                        bash pr/scripts/ci/container-tiers.sh pr subset < /dev/null
-                      fi
-                    }
-                    let "TIERS_DEADLINE = SECONDS + BUDGET"
-                    LOG=/tmp/container-tiers.log START=/tmp/container-tiers.subset-start
-                    : > "$LOG"
-                    rm -f "$START"
-                    run_tiers 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
-                      printf '%s\n' "$line"
-                      printf '%s\n' "$line" >> "$LOG"
-                      case "$line" in
-                        *"[container-tiers] running the subset tier"*)
-                          [ -f "$START" ] || echo "$SECONDS" > "$START" ;;
-                      esac
-                    done
-                    RC=${PIPESTATUS[0]}
-                    OVERRAN=0
-                    if [ -n "$TIMER" ] && { [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; } \
-                       && [ "$SECONDS" -ge "$TIERS_DEADLINE" ]; then
-                      SUBSET_RAN=-1
-                      if [ -s "$START" ]; then
-                        let "SUBSET_RAN = SECONDS - $(cat "$START")"
-                      fi
-                      if [ "$SUBSET_RAN" -ge "$SOFT" ]; then
-                        echo "::error::the integration subset ran ${SUBSET_RAN}s, past its ${SOFT}s soft cap, and did not stop: a test in it hangs"
-                        RC=124
-                      else
-                        OVERRAN=1
-                        if [ "$SUBSET_RAN" -ge 0 ]; then
-                          WHERE="the subset started late and was cut off after ${SUBSET_RAN}s, inside its ${SOFT}s soft cap"
-                        else
-                          WHERE="it was still building the environment, so the subset never started"
-                        fi
-                        echo "::error::container-tiers overran its ${BUDGET}s budget: ${WHERE}"
-                        # Where it was: container-tiers sends each phase to a
-                        # log and tails it only on a failure, and a kill is not
-                        # one, so the last phase's log is shown here.
-                        LAST_LOG="$(ls -t "$CONTAINER_TIERS_OUT"/*.log 2>/dev/null | head -1)"
-                        if [ -n "$LAST_LOG" ]; then
-                          echo "the last phase's log, $(basename "$LAST_LOG"):"
-                          tail -15 "$LAST_LOG"
-                        fi
-                        mkdir -p memory-infra
-                        printf '%s\n' "NO VERDICT: the integration subset overran its ${BUDGET}s budget (${WHERE}), so this pull request's code was not judged. The environment was too slow; not a test failure. pick asks this head once more; a second cancelled run parks it until the branch is pushed again." > memory-infra/reason
-                        printf '2\n' > memory-infra/exit_code
-                        RC=2
-                      fi
-                    fi
-                    # [TheHub #61636] A failed `pip install -r` of the checkout's own
-                    # requirements.txt is usually the pull request's fault (a pin
-                    # nothing satisfies), so it is a verdict: failure, with pip's
-                    # error (container-tiers tails pip.log above). Only when the pip
-                    # bootstrap itself failed is it the environment's fault.
-                    if [ "$RC" -eq 2 ] && [ "$BOOTSTRAP_FAILED" -eq 0 ] \
-                       && grep -q "could not install the checkout's requirements.txt" "$LOG"; then
-                      echo "::error::this pull request's backend/requirements.txt could not be installed (pip's error is above): a real failure, not an outage"
-                      RC=1
-                    fi
-                    if [ "$OVERRAN" -eq 0 ] && [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
-                      mkdir -p memory-infra
-                      cp "$CONTAINER_TIERS_OUT/oom-reason" memory-infra/reason
-                      printf '137\n' > memory-infra/exit_code
-                    fi
-                    # [TheHub #61636] Exit 2 is "NO VERDICT: the environment was not
-                    # built". That is an outage, not a test failure: leave the same
-                    # infra marker a memory kill leaves, so the hooks report the Hub
-                    # stage `errored` and the check run `cancelled` (could not run,
-                    # nothing judged) instead of failed. Exit 1 stays a real failure.
-                    if [ "$RC" -eq 2 ] && [ "$OVERRAN" -eq 0 ]; then
-                      mkdir -p memory-infra
-                      printf '%s\n' "NO VERDICT: the integration subset's environment was not built (container-tiers exit 2), so this pull request's code was not judged. Not a test failure." > memory-infra/reason
-                      printf '2\n' > memory-infra/exit_code
-                    fi
-                    # [TheHub #61636] A requirements.txt change must also satisfy the
-                    # committed SBOM (TheHub #692 merged without regenerating
-                    # docs/sbom/latest-python.cdx.json and broke develop's unit
-                    # lane). A pure file check, so it runs from the checkout. Only
-                    # once the subset reached a verdict; a miss is a real failure.
-                    if [ "$RC" -le 1 ] && [ -n "$PY" ] && { [ "$REQ_CHANGED" -eq 1 ] || grep -qx 'backend/requirements.txt' pr/.git/process-gates/changed 2>/dev/null; }; then
-                      SBOM_TEST=pr/backend/tests/unit/scripts/test_the_committed_sbom_satisfies_requirements.py
-                      if [ -f "$SBOM_TEST" ]; then
-                        echo "pr-gates: requirements.txt changed; running the committed-SBOM test"
-                        if ! "$PY" -m pytest "$SBOM_TEST" --noconftest -c /dev/null --rootdir pr -p no:cacheprovider -q; then
-                          echo "::error::backend/requirements.txt changed but docs/sbom/latest-python.cdx.json does not satisfy it: regenerate the SBOM in the same pull request"
-                          RC=1
-                        fi
-                      else
-                        echo "::warning::this branch has no $SBOM_TEST; the committed SBOM was not checked"
-                      fi
-                    fi
-                    case "$RC" in
-                      0) echo "pr-gates: the integration subset passed on this pull request's code" ;;
-                      1) echo "::error::the integration subset failed: deploy.sh's integration tier would fail this code after the swap" ;;
-                      2) echo "::error::the environment was not built; the integration subset was not judged (reported unjudged, not failed)" ;;
-                      124) echo "::error::the integration subset hit its soft timeout; its results are partial" ;;
-                      137) echo "::error::the integration subset was killed for memory; nothing was judged" ;;
-                    esac
-                    exit "$RC"
-        # The task's own 18m (TheHub #61110 / #1175: TIER_HARD_BUDGET_S 840s
-        # plus 240s for container creation, ensurepip and the KILL grace),
-        # plus 11m for the wait for a remote worker (the probe has already
-        # found one) and the image artifact's stream to it: ~1.45 GB on every
-        # judged head, ~2m at 100 Mbit/s, ~6.5m at 30. On a `do:` this clock
-        # also covers the wait, which a task-level timeout would not bound.
-        timeout: 29m
-        on_failure:
-          <<: *linux_absent
-          params: { LINUX_STEP: integration }
-        on_error:
-          <<: *linux_absent
-          params: { LINUX_STEP: integration }
-      - <<: *linux_verdict
-        input_mapping: { expect: pr-tree }
-        params: { EXPECT: .git/HEAD, LINUX_STEP: integration }
       # Last, so a refused report is a failed job and the hooks above say so
       # (the `oracle-gate` pattern). NO_COMMIT_OK: a tick that judged nothing
       # owes no report.
@@ -6391,12 +6154,17 @@ jobs:
                       exit 2
                     fi
                     # [TheHub #62142] stdin from /dev/null, as pr-gates'
-                    # integration subset (#1199). On the `linux` workers a
-                    # task's stdin is a terminal, and container-tiers' apt-get
-                    # stopped on SIGTTOU there under timeout(1). This call has
-                    # no timeout(1) today, so it was not seen to stop here;
-                    # the redirect keeps it that way if one is added, and the
-                    # script needs no terminal either way.
+                    # integration subset had it (#1199) until #62416 took that
+                    # task off the pull request. On the containerd `linux`
+                    # workers a task's stdin is a terminal, and a command
+                    # outside the terminal's foreground process group stops on
+                    # SIGTTOU when it touches it: container-tiers' apt-get,
+                    # under timeout(1), stopped after ~50s of real work. This
+                    # call has no timeout(1) today, so it was not seen to stop
+                    # here; the redirect keeps it that way if one is added, and
+                    # the script needs no terminal either way. It never showed
+                    # on the host's guardian workers; that they give a task no
+                    # terminal is inferred from that, not measured.
                     bash source/scripts/ci/container-tiers.sh source all < /dev/null
                     RC=$?
                     if [ "$RC" -eq 137 ] && [ -s "$CONTAINER_TIERS_OUT/oom-reason" ]; then
