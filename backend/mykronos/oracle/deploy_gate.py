@@ -60,6 +60,11 @@ overwritten by any scan, pull-request scans included. So:
 * minus what `split_disclosed` calls newly disclosed (a CVE in an image whose
   bytes did not change, or on a dependency version the baseline already
   carried), which every commit carries;
+* minus, on a forward deploy, an open container finding the running image
+  already carried: its own archived reports held the package at the
+  finding's version in the same image repository, or reported the advisory
+  itself (`_carried_by_baseline`, TheHub #62374), which every later commit
+  carries too;
 * a finding that only its own pull request ever saw (first and last sighting
   the same pull request) is on no branch, so it is the same on both sides;
 * a closed (`fixed`) finding is carried by X when it was not introduced after
@@ -1537,6 +1542,8 @@ def _compare(
         if row.status == "fixed" and (row.rule_id, row.package, row.version) in renamed:
             continue
         kept.append(row)
+    if forward:
+        _carried_by_baseline(catalog, repo, base, kept)
 
     open_rows = [r for r in kept if r.status != "fixed"]
     fixed_rows = [r for r in kept if r.status == "fixed"]
@@ -1604,6 +1611,47 @@ def _compare(
         )
     ))
     return None
+
+
+def _carried_by_baseline(catalog: Any, repo: str, base: _Commit, rows: list[_Row]) -> None:
+    """Mark the open container findings the running image already carried
+    (TheHub #62374).
+
+    A base-image advisory published after the running image was last scanned
+    is first seen by the candidate's scan, in an image the candidate rebuilt,
+    so `split_disclosed` has no unchanged image to corroborate it and it read
+    as introduced: every deploy was refused for an openssl CVE on the very
+    version production runs. The running image is evidence too. Its own
+    archived reports name the packages it held, at their versions; when one
+    holds the finding's package at the finding's version in the same image
+    repository, or reports the advisory itself (a rescan of the running tag),
+    the baseline carries the finding and so does every commit after it.
+
+    Forward deploys only, and only what the reports show. A bump into a
+    vulnerable version, a package the running image lacks, or a report that
+    cannot be read leaves the finding introduced.
+    """
+    from mykronos.disclosure import CAPABILITY, carried_by_scans
+
+    candidates = [
+        r for r in rows
+        if r.capability == CAPABILITY and r.status != "fixed" and r.image and _after(r, base)
+    ]
+    if not candidates:
+        return
+    scans = catalog.query(
+        """
+        SELECT scan_run_id FROM scan_runs
+        WHERE repo_full_name = ? AND lower(commit_sha) = ? AND capability = ?
+          AND scan_status = 'success' AND coalesce(pr_number, 0) = 0
+        ORDER BY started_at
+        """,
+        [repo, base.sha, CAPABILITY],
+    )
+    carried = carried_by_scans(catalog, [str(s) for (s,) in scans])
+    for row in candidates:
+        if carried.covers(row.image or "", row.rule_id, row.package, row.version):
+            row.disclosed = True
 
 
 def _covered(engine: OracleEngine, repo_full_name: str) -> set[str]:
