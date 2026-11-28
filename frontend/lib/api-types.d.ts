@@ -2320,6 +2320,10 @@ export interface paths {
          *     read-only GitHub probe where one is registered (TheHub #60972); one
          *     observed done is listed in `data.board.operator_actions` only, not as a
          *     line, so it is not counted as needing you.
+         *
+         *     Decide lists credentials only to a principal that may write, the rule
+         *     `GET /api/credentials/expiring` applies; anyone else gets their count
+         *     (`by_class.credential`, `counts.credentials_withheld`).
          */
         get: operations["daily_briefing_route_api_briefing_daily_get"];
         put?: never;
