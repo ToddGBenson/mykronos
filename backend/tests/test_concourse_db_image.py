@@ -35,9 +35,22 @@ DOCKERFILE = RECIPE / "Dockerfile"
 #: The first Go on each line past CVE-2025-68121 and CVE-2026-111943.
 GO_FIXED: dict[tuple[int, int], tuple[int, int, int]] = {(1, 26): (1, 26, 10), (1, 27): (1, 27, 3)}
 
+#: The oldest `-p<date>` snapshot of this recipe measured to install krb5
+#: 1.21.3-5+deb13u2 (TheHub #62371). `dpkg-query` on the published tags,
+#: 2026-11-28: p20261114 (the first one adopted), p20261115 and p20261122 carry
+#: 1.21.3-5+deb13u1 in libgssapi-krb5-2, libkrb5-3, libkrb5support0 and
+#: libk5crypto3, 18 advisories on each (14 HIGH); p20261123 onward carry
+#: deb13u2. A floor, not an exact pin: image-refresh publishes a new date most
+#: days, and any later snapshot passes.
+KRB5_FIXED_SNAPSHOT = "20261123"
+
 POSTGRES_BASE = re.compile(r"^postgres:15\.(\d+)@sha256:[0-9a-f]{64}$")
 GOLANG_FROM = re.compile(
     r"^FROM golang:(\d+)\.(\d+)\.(\d+)[\w.-]*@sha256:[0-9a-f]{64} AS gosu$", re.M
+)
+#: What the service runs: the derivative, one snapshot date, by digest.
+PINNED_DERIVATIVE = re.compile(
+    r"/library/postgres:15\.\d+-p(?P<date>\d{8})@sha256:[0-9a-f]{64}$"
 )
 
 
@@ -137,6 +150,21 @@ class TestRecipe:
         baseline = _service()["x-mykronos-build"].get("baseline")
         if baseline is not None:
             assert POSTGRES_BASE.match(baseline)
+
+    def test_the_database_runs_the_derivative_by_digest(self) -> None:
+        # The digest is what the estate scan reads and what compose pulls;
+        # a tag alone would let a re-push change the bytes under the pin.
+        assert PINNED_DERIVATIVE.search(_service()["image"]), _service()["image"]
+
+    def test_the_snapshot_is_past_the_krb5_fix(self) -> None:
+        # image-refresh published deb13u2 on 2026-11-23 and nothing moved the
+        # pin: Patchwork's bump-image-date refuses a digest-pinned reference.
+        match = PINNED_DERIVATIVE.search(_service()["image"])
+        assert match, _service()["image"]
+        assert match.group("date") >= KRB5_FIXED_SNAPSHOT, (
+            f"concourse-db pins snapshot p{match.group('date')}, older than "
+            f"p{KRB5_FIXED_SNAPSHOT}, the first carrying krb5 1.21.3-5+deb13u2"
+        )
 
     def test_the_lane_plans_it(self) -> None:
         recipes = ir.plan_mykronos(REPO_ROOT, "20261113", "registry.example:5000")
