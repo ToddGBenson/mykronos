@@ -23,8 +23,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
     Unset, nothing changes. Under xdist every worker collects and cuts the same
     way, because the cut is a pure function of each file's path.
+
+    Once read, the variable leaves this process's environment: a test that
+    starts its own pytest on named files (the time-travel canary does) must
+    run those files whole, not the part of them that hashes to this shard.
+    The xdist controller never collects, so the workers it starts, or
+    restarts, still inherit it.
     """
-    value = os.environ.get(suite_shard.ENV, "")
+    value = os.environ.pop(suite_shard.ENV, "")
     if not value:
         return
     kept, dropped = suite_shard.select(items, config.rootpath, value)
