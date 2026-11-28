@@ -300,6 +300,33 @@ function Invoke-DeployRecorder {
     }
 }
 
+function Invoke-ReleaseNotes {
+    # TheHub #61703. Ask the backend, now confirmed running $Sha, to write
+    # this release's HTML notes (PREVIOUS..SHA, by pull request) and show
+    # them in the dashboard. Called only on a confirmed deploy that is not a
+    # -Restore; the backend also refuses a rollback and a sha it is not
+    # running. Never fatal: the deploy happened whatever the notes say.
+    param([string]$Sha, [string]$PreviousSha, $Answer)
+    if ($Sha -notmatch '^[0-9a-f]{40}$' -or $PreviousSha -notmatch '^[0-9a-f]{40}$') {
+        Write-Host "No release notes: the previous or new build stamp is not a full sha." -ForegroundColor DarkGray
+        return
+    }
+    $body = @{ sha = $Sha; previous_sha = $PreviousSha }
+    if ($Answer) {
+        $body.gate = @{ verdict = "$($Answer.verdict)"; direction = "$($Answer.direction)";
+            baseline_score = $Answer.baseline_score; candidate_score = $Answer.candidate_score;
+            introduced = $Answer.introduced; fixed = $Answer.fixed }
+    }
+    try {
+        $made = Invoke-RestMethod -Method Post -Uri "$PlatformUrl/api/releases" `
+            -Headers @{ Authorization = "Bearer $riskToken" } -ContentType "application/json" `
+            -Body ($body | ConvertTo-Json -Depth 4 -Compress) -TimeoutSec 120
+        Write-Host "Release notes: $($made.pull_requests.Count) pull requests, in the dashboard." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Release notes were not written: $($_.Exception.Message). The deploy is fine." -ForegroundColor Yellow
+    }
+}
+
 # ---------------------------------------------------------------------------
 # THE RISK GATE (#60487, D-183). Runs before anything is pulled, so a refusal
 # costs nothing and leaves the host exactly as it was.
@@ -1147,6 +1174,7 @@ try {
         # [TheHub #61046] Only a confirmed deploy is recorded: on a mismatch
         # the stories in the range are not what is running.
         Invoke-DeployRecorder -Sha $running -PreviousSha $previousSha
+        if (-not $Restore) { Invoke-ReleaseNotes -Sha $running -PreviousSha $previousSha -Answer $answer }
     } else {
         # Not a throw. The stack is up and healthy; what failed is the
         # deploy's intent, and the operator needs both facts.

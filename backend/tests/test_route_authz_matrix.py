@@ -83,6 +83,10 @@ ROUTES: dict[str, str] = {
     "POST /api/ingest/lane-failure": INGEST,
     "POST /api/ingest/bench-run": INGEST,
     "GET /api/bench/runs": PRINCIPAL,
+    # TheHub #61703: deploy.ps1 records a release; anyone signed in reads it.
+    "POST /api/releases": HUMAN,
+    "GET /api/releases": PRINCIPAL,
+    "GET /api/releases/{sha}": PRINCIPAL,
     "POST /api/ingest/scan-run": INGEST,
     "POST /api/ingest/findings": INGEST,
     "POST /api/ingest/raw": INGEST,
