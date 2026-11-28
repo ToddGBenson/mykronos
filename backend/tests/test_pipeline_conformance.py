@@ -633,7 +633,10 @@ TEAM_VAULT_VARS = frozenset({"slack-bot-token", "slack-alert-channel"})
 EXTRA_VAULT_VARS = {
     # "The key itself is in Vault (concourse/main/thehub/source-deploy-key), so
     # it never appears in `fly get-pipeline` output" -- pipelines/thehub.yml.
-    "thehub": frozenset({"source-deploy-key"}),
+    # `thehub-staging-url-on-linux-3` (TheHub #62099) is not a secret, but it is
+    # an address on the laptop that hosts linux-3, which this public repo never
+    # holds; every address in vars/thehub.yml is this host's view instead.
+    "thehub": frozenset({"source-deploy-key", "thehub-staging-url-on-linux-3"}),
 }
 
 #: Vars a `set_pipeline` step cannot supply and Vault does not hold, so the

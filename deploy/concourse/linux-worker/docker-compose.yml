@@ -48,7 +48,9 @@ x-worker-env: &worker-env
   CONCOURSE_WORK_DIR: /worker-state
   CONCOURSE_BAGGAGECLAIM_DRIVER: overlay
   CONCOURSE_RUNTIME: containerd
-  CONCOURSE_TAG: linux
+  # `linux` everywhere; linux-3's host sets WORKER_TAGS=linux,small (see
+  # .env.example: `small` is the staging host's tag, dast-staging needs it).
+  CONCOURSE_TAG: ${WORKER_TAGS:-linux}
   CONCOURSE_CONTAINERD_DNS_SERVER: ${WORKER_DNS_1:?},${WORKER_DNS_2:?},${WORKER_DNS_3:-8.8.8.8}
 
 services:
