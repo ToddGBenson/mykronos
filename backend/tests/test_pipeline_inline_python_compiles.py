@@ -87,7 +87,8 @@ RUNTIME_ONLY: dict[tuple[str, str, str], str] = {}
 # `pytest-on-linux` (+7) and its copy `pytest` on this host, which the walker
 # reaches twice because one YAML alias sits under on_error and on_failure
 # (+7); `export-tree` in unit (+1); the uploader line moved to `upload-unit`.
-PROGRAM_COUNTS = {"mykronos": 23, "thehub": 57, "personal-soc": 6}
+# thehub 57 -> 58 (TheHub #62421): container-tiers' `digest-verdict`.
+PROGRAM_COUNTS = {"mykronos": 23, "thehub": 58, "personal-soc": 6}
 
 
 def _tasks(node: Any, name: str = "") -> Iterator[tuple[str, dict[str, Any], dict[str, Any]]]:

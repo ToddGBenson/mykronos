@@ -56,7 +56,10 @@ def _plan() -> list[dict[str, Any]]:
 
 def _wrapper() -> dict[str, Any]:
     """The timed `do:` that holds the remote `tiers` task."""
-    return next(s for s in _plan() if "do" in s and any(t.get("task") == "tiers" for t in flat(s["do"])))
+    return next(
+        s for s in _plan()
+        if "do" in s and any(t.get("task") == "tiers" for t in flat(s["do"]))
+    )
 
 
 def _verdict_step() -> dict[str, Any]:
@@ -78,8 +81,8 @@ def test_the_tiers_run_with_coverage() -> None:
 
 def test_the_tiers_hand_over_each_tiers_result() -> None:
     script = find(_plan(), "tiers")["config"]["run"]["args"][-1]
-    assert 'tiers.json" ran/tiers.json' in script
-    assert 'coverage.pct" ran/coverage.pct' in script
+    assert '"$CONTAINER_TIERS_OUT/tiers.json" > ran/tiers.json' in script
+    assert '"$CONTAINER_TIERS_OUT/coverage.pct" > ran/coverage.pct' in script
 
 
 def test_the_digest_is_the_one_fetch_image_resolved_on_this_host() -> None:
@@ -177,7 +180,9 @@ def test_coverage_below_the_floor_is_red(tmp_path: Path) -> None:
         ("0", {"integration": "passed", "unit": "passed"}),
     ],
 )
-def test_a_tier_that_reached_no_verdict_is_indeterminate(tmp_path: Path, rc: str, tiers: Any) -> None:
+def test_a_tier_that_reached_no_verdict_is_indeterminate(
+    tmp_path: Path, rc: str, tiers: Any
+) -> None:
     _, output, block = _run(tmp_path, rc=rc, tiers=tiers)
     assert block is not None and block["verdict"] == "indeterminate", output
 
@@ -193,14 +198,17 @@ def test_a_tier_that_reached_no_verdict_is_indeterminate(tmp_path: Path, rc: str
         {"digest": ""},
         {"tiers": "not json"},
         {"tiers": {"integration": "great", "unit": "passed", "coverage": "passed"}},
-        {"tiers": {"integration": "passed", "unit": "passed", "coverage": "passed", "e2e": "passed"}},
+        {"tiers": {"integration": "passed", "unit": "passed", "coverage": "passed",
+                   "e2e": "passed"}},
         # The runner's exit code and its per-tier results disagree.
         {"rc": "0", "tiers": {"integration": "failed", "unit": "passed", "coverage": "passed"}},
         {"rc": "1", "tiers": {"integration": "passed", "unit": "passed", "coverage": "passed"}},
         {"rc": "2", "tiers": {"integration": "passed", "unit": "passed", "coverage": "passed"}},
     ],
 )
-def test_nothing_this_host_cannot_vouch_for_becomes_a_verdict(tmp_path: Path, case: dict[str, Any]) -> None:
+def test_nothing_this_host_cannot_vouch_for_becomes_a_verdict(
+    tmp_path: Path, case: dict[str, Any]
+) -> None:
     rc, output, block = _run(tmp_path, **case)
     assert rc == 0, "the step never fails the build: the job's exit code is linux-verdict's"
     assert block is None, f"{case} printed a verdict: {output}"
