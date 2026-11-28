@@ -732,9 +732,10 @@ anchors:
     image: image-fetcher
     config:
       platform: linux
-      # `when` and `fallback`, for pr-gates: with ONLY_IF set and missing
-      # from `when` there is nothing to judge, so the small `fallback` image
-      # is handed over instead of TheHub's.
+      # `when` and `fallback` were pr-gates' until TheHub #62416: with
+      # ONLY_IF set and missing from `when` there is nothing to judge, so
+      # the small `fallback` image is handed over instead of TheHub's. No
+      # call site sets ONLY_IF now, so that branch never runs.
       inputs:
         - { name: when, optional: true }
         - { name: fallback, optional: true }
@@ -2994,8 +2995,6 @@ jobs:
         resource: pipelines
         attempts: *retry_fetch
       - get: python313
-        attempts: *retry_fetch
-      - get: image-fetcher
         attempts: *retry_fetch
       - <<: *preflight
         tags: [thehub]
