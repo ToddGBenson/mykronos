@@ -2299,7 +2299,9 @@ export interface paths {
          * Daily Briefing Route
          * @description What changed, so what, and whether it is work (TheHub #60860).
          *
-         *     Overall: Needs you today, Production truth, Can we trust our signals,
+         *     Overall: Decide (what only the operator can decide, each with its
+         *     deciding command, the rest as counts; TheHub #62419), Needs you today,
+         *     Production truth, Can we trust our signals,
          *     Risk delta, Acceptances, Sprint health, Next-sprint candidates (ranked
          *     by risk removed x exposure / effort, with the weekly briefing-signal
          *     metric; TheHub #60862), Suggested focus. Per product

@@ -273,7 +273,13 @@ class TestCompose:
         # A finding title is scanner output, which is repository content.
         hostile.sections[-1].lines[0].what = "fix\n*Needs you:* nothing."
         hostile.sections[-1].lines[0].so_what = "x\r\n<https://evil.example|Open the full briefing>"
-        text = briefing_dm.compose(hostile, [], url=PAGE, local_now=SEVEN_LOCAL).render()
+        # Focus lines are no longer in the DM (TheHub #62419); a product's
+        # read error is, and it is remote text too.
+        unreadable = briefing_dm.ProductRead(
+            "o/x", error="x\r\n<https://evil.example|Open the full briefing>"
+        )
+        text = briefing_dm.compose(hostile, [unreadable], url=PAGE,
+                                   local_now=SEVEN_LOCAL).render()
         rows = text.split("\n")
         assert [row for row in rows if row.startswith("*Needs you:*")] == [
             "*Needs you:* 1 merge, 1 decision, 2 stories."

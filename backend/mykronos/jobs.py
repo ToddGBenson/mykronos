@@ -2055,6 +2055,10 @@ BRIEFING_DM_JOB = "briefing-dm"
 #: The same-day flash DM (`mykronos.briefing_flash`, TheHub #60865).
 BRIEFING_FLASH_JOB = "briefing-flash"
 
+#: One urgent question per item that cannot wait for 07:00, at most once per
+#: 12 h (`mykronos.briefing_exceptions`, TheHub #62419).
+BRIEFING_URGENT_JOB = "briefing-urgent"
+
 #: Next-sprint candidates filed to TheHub's backlog (`mykronos.sprint_signal`,
 #: TheHub #60862). Ticks hourly, acts once a UTC day.
 SIGNAL_FILING_JOB = "briefing-signal-filing"

@@ -20,6 +20,7 @@ from mykronos import (
     __version__,
     auto_triage,
     briefing_dm,
+    briefing_exceptions,
     briefing_flash,
     credential_expiry_incidents,
     environment,
@@ -99,6 +100,7 @@ from mykronos.installer import TemplateLibrary
 from mykronos.jobs import (
     BRIEFING_DM_JOB,
     BRIEFING_FLASH_JOB,
+    BRIEFING_URGENT_JOB,
     CI_STALL_JOB,
     CREDENTIAL_EXPIRY_INCIDENTS_JOB,
     DEPENDABOT_AUTOPILOT_JOB,
@@ -938,6 +940,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings, db=app.state.db, read=briefing_flash.route_reader(app)
             )
 
+        async def _briefing_urgent() -> None:
+            # One urgent question per item that cannot wait for 07:00 (TheHub
+            # #62419): a release blocked over 2 h, a critical, a credential
+            # under 24 h; each at most once per 12 h. Nothing urgent is a quiet
+            # success; no Slack with something to ask raises JobSkipped.
+            await briefing_exceptions.send_urgent_questions(settings, db=app.state.db)
+
         async def _signal_filing() -> None:
             # Next-sprint candidates to TheHub's backlog (TheHub #60862),
             # once a UTC day, read through the briefing route so it files
@@ -1140,6 +1149,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # from platform health and reading as "nothing to say".
             (BRIEFING_DM_JOB, briefing_dm.TICK_SECONDS, _briefing_dm),
             (BRIEFING_FLASH_JOB, briefing_flash.TICK_SECONDS, _briefing_flash),
+            (BRIEFING_URGENT_JOB, briefing_exceptions.TICK_SECONDS, _briefing_urgent),
             # Always scheduled, for the same reason: without TheHub it records
             # `skipped` and says so.
             (SIGNAL_FILING_JOB, sprint_signal.TICK_SECONDS, _signal_filing),
